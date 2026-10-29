@@ -53,6 +53,7 @@ pub mod schema;
 pub mod sse;
 pub mod storage_api;
 pub mod triggers;
+pub mod workspace_api;
 
 use std::fmt;
 use std::io::BufReader;
