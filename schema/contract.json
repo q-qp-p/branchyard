@@ -8478,7 +8478,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/Decision"
-          }
+          },
+          "description": "In the order to take them."
         }
       },
       "required": [
@@ -8492,10 +8493,12 @@
           "type": "object",
           "properties": {
             "kind": {
-              "$ref": "#/$defs/DecisionKind"
+              "$ref": "#/$defs/DecisionKind",
+              "description": "What shape the decision takes."
             },
             "branch": {
-              "type": "string"
+              "type": "string",
+              "description": "The branch it is about."
             },
             "waits": {
               "$ref": "#/$defs/Waits",
