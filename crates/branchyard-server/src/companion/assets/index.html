@@ -28,12 +28,16 @@
     <span id="live" class="live" data-state="off" role="status" aria-live="polite">offline</span>
   </div>
   <nav class="side-links" aria-label="Work">
-    <a class="side-link" id="new-task" href="#/new" data-route="new"><span class="side-icon" aria-hidden="true">+</span>New task</a>
+    <a class="side-link" id="new-task" href="#/new" data-route="new"><span class="side-icon" aria-hidden="true"><svg class="icon small" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg></span>New task</a>
     <a class="side-link" href="#/attention" data-route="attention"><span class="side-icon ring" aria-hidden="true"></span>Needs you <span id="attention-count" class="count" hidden></span></a>
   </nav>
   <div class="filter" id="filter" hidden>
     <label for="branch-filter" class="visually-hidden" id="branch-filter-label">Filter branches</label>
-    <input id="branch-filter" type="search" placeholder="Filter branches" autocomplete="off" spellcheck="false">
+    <div class="filter-field">
+      <svg class="icon small" viewBox="0 0 16 16" aria-hidden="true"><path d="M7 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zM10.6 10.6L14 14"/></svg>
+      <input id="branch-filter" type="search" placeholder="Filter branches" autocomplete="off" spellcheck="false">
+      <kbd aria-hidden="true">/</kbd>
+    </div>
     <p id="branch-count" class="result-count" role="status" aria-live="polite"></p>
   </div>
   <div id="branch-list" class="lanes"></div>
