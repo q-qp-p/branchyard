@@ -1865,22 +1865,34 @@ class Surfaces(ServerCase):
 
 class Approvals(ServerCase):
     def test_decisions_come_in_the_servers_order_with_what_each_is_about(self):
-        ask = {"id": "ap1", "branch": "b", "turn": 2, "subject": "tester", "about": {"kind": "tool", "tool": "write"}, "created_ms": 5}
-        self.fake.answer(
-            "GET",
-            f"{REPO}/decisions",
-            (
-                200,
-                {
-                    "decisions": [
-                        {"kind": "approval", "branch": "b", "waits": "agent", "since_ms": 5, "status": {"state": "running"}, "approval": ask},
-                        {"kind": "merge", "branch": "c", "waits": "delivery", "status": {"state": "ready"}, "candidate": {"commit": "abc", "files_changed": 1, "insertions": 2, "deletions": 0}},
-                    ]
-                },
-            ),
-        )
+        ask = {
+            "id": "ap1",
+            "branch": "b",
+            "turn": 2,
+            "subject": "tester",
+            "about": {"kind": "tool", "tool": "write"},
+            "created_ms": 5,
+        }
+        parked = {
+            "kind": "approval",
+            "branch": "b",
+            "waits": "agent",
+            "since_ms": 5,
+            "status": {"state": "running"},
+            "approval": ask,
+        }
+        ready = {
+            "kind": "merge",
+            "branch": "c",
+            "waits": "delivery",
+            "status": {"state": "ready"},
+            "candidate": {"commit": "abc", "files_changed": 1, "insertions": 2, "deletions": 0},
+        }
+        self.fake.answer("GET", f"{REPO}/decisions", (200, {"decisions": [parked, ready]}))
         decisions = self.app.decisions()
-        self.assertEqual([(d.kind, d.branch, d.waits) for d in decisions], [("approval", "b", "agent"), ("merge", "c", "delivery")])
+        self.assertEqual(
+            [(d.kind, d.branch, d.waits) for d in decisions], [("approval", "b", "agent"), ("merge", "c", "delivery")]
+        )
         self.assertEqual(decisions[0].approval["id"], "ap1")
         self.assertEqual(decisions[1].candidate["commit"], "abc")
 
