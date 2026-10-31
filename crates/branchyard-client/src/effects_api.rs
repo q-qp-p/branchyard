@@ -85,6 +85,7 @@ pub struct UndoReport {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DecisionList {
+    /// In the order to take them.
     pub decisions: Vec<Decision>,
 }
 
@@ -92,7 +93,9 @@ pub struct DecisionList {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
+    /// What shape the decision takes.
     pub kind: DecisionKind,
+    /// The branch it is about.
     pub branch: String,
     /// Who waits on the person for it.
     pub waits: Waits,
