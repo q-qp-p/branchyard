@@ -198,8 +198,12 @@ pub(crate) fn authorize_branch(
         {
             return Err(denied());
         }
+        // A branch that is gone, removed since the walk began or a parent
+        // removed after its fork, ends the walk: there is nothing above it
+        // left to authorize, and nothing of it to read.
         current = match state.yard.branch(&name) {
             Ok(branch) => branch.info().parent.clone(),
+            Err(branchyard::Error::UnknownBranch(_)) => None,
             Err(error) => return Err(crate::error::sdk(&error)),
         };
     }

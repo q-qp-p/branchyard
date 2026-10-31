@@ -20,6 +20,11 @@ shows `waiting for approval: …`. The server adds `GET …/decisions`
 (`DecisionList`, `Repo::decisions`): what waits for a person in the order to
 take it, parked agents first, oldest wait first. Nothing in it expires.
 
+Reading an operation, or a fork, no longer fails with `404 unknown_branch`
+for a branch that was removed meanwhile: a fork's removed parent, or a goal
+judge's scratch branch removed between two reads of the operation that ran
+it. The authorization walk ends at a branch that is gone.
+
 The console renders an agent's reply instead of printing it: headings, lists,
 quotes, pipe tables, emphasis, inline code and web links become elements, a
 fenced block is code under a header with a Copy button, and a JSON block shows

@@ -64,6 +64,49 @@ fn requests_need_a_valid_token() {
     assert_eq!(error.to_string(), "a valid bearer token is required");
 }
 
+/// A fork keeps its parent's name; reading it, or the operation that made
+/// it, walks up to the parent to authorize. A parent removed since must
+/// not turn that read into a 404 for a branch nobody asked about, which is
+/// also what a scratch branch removed between two reads of the same
+/// operation looks like.
+#[test]
+fn a_fork_is_still_read_once_its_parent_is_removed() {
+    let f = Fixture::new();
+    let server = Server::start(f.config());
+    let client = server.client();
+    let repo = client.repo("app");
+    let parent = run(&client, &task("WRITE p.txt=1", "parent"));
+    assert_eq!(parent.state, OperationState::Succeeded, "{parent:?}");
+    let forked = repo
+        .fork(
+            "parent",
+            &ForkRequest {
+                prompt: "WRITE c.txt=1".into(),
+                name: Some("child".into()),
+                fresh_session: true,
+                policy: PolicySpec::allow_all(),
+                ..ForkRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let forked = await_operation(&client, &forked.id);
+    assert_eq!(forked.state, OperationState::Succeeded, "{forked:?}");
+    repo.remove("parent").unwrap();
+    assert_eq!(
+        client.operation(&forked.id).unwrap().state,
+        OperationState::Succeeded
+    );
+    assert_eq!(
+        repo.branch("child").unwrap().parent.as_deref(),
+        Some("parent")
+    );
+    assert_eq!(
+        repo.branch("parent").unwrap_err().code(),
+        Some("unknown_branch")
+    );
+}
+
 #[test]
 fn a_repeated_idempotency_key_runs_once() {
     let f = Fixture::new();
