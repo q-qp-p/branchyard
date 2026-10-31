@@ -41,6 +41,9 @@ adds and removes, the composer says which key sends, the filter shows its `/`
 shortcut, and a loading conversation shows quiet bars rather than a sentence.
 Text in the sidebar, strip and conversation is larger on a phone.
 
+The README's console screenshots are regenerated for this console: the branch page
+with margin notes and a receipt, and the workspace with its table preview.
+
 ## 0.3.1 - 2026-10-31
 
 Operators can name the environments console sessions run in.

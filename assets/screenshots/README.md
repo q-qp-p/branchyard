@@ -4,7 +4,7 @@ The images in this directory show the browser console (`by serve --app --knowled
 
 | File | Shows |
 |---|---|
-| `console-branches.png`, `console-branches-dark.png` | A Rust library with branches in each lane: one interrupted branch under Needs you, two running, two ready, two merged under "Show 2 done". The ready branch `parser-fix` is open, with its prompt, the agent's reply, its five tool calls unfolded and Merge in the status strip. The Changes tab shows its diff. 1440 by 900 pixels. |
+| `console-branches.png`, `console-branches-dark.png` | A Rust library with branches in each lane: one interrupted branch under Needs you, two running, two ready, two merged under "Show 2 done". The ready branch `parser-fix` is open, with its prompt, the agent's reply, its five tool calls as margin notes beside the paragraphs they preceded, the turn's receipt and Merge in the status strip. The Changes tab shows its diff. 1440 by 900 pixels. |
 | `console-workspace.png`, `console-workspace-dark.png` | A knowledge project's workspace with two named sessions. The open session's conversation is scrolled to its latest turns, as the console opens it, and the Outputs tab previews a CSV table the session published. 1440 by 900 pixels. |
 | `console-phone.png` | The same ready branch on a phone, in one column, with Merge at the top. 390 by 844 pixels at twice the density. |
 
