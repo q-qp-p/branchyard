@@ -5668,6 +5668,7 @@ Checks on the merged result: \
                 cost_usd: cost,
                 created_at: 0,
                 stalled: false,
+                awaiting: None,
                 superseded_by: None,
                 model: None,
                 provider: "local".into(),

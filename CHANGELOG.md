@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+The console becomes a dispatcher's desk. Needs you is a deck: one decision
+at a time, shaped for what it is (an approval, a question, a merge, a stop,
+a stall), the question at the top, the evidence in the middle and the
+answers at the bottom, taken from the keyboard; an allow or a deny is held
+for eight seconds with Undo before it is sent, and a merge is a hold, not a
+dialog. Home is a board: every open branch on one clock, the last hour to
+scale, a wait on you filled amber from the moment the turn parked, with a
+steer box under a running row. A branch page reads as a report: each tool
+call is a note in the margin beside the paragraph it preceded, and each
+turn ends with a receipt.
+
+For that, a branch record now says what its running turn is parked on:
+`awaiting` names the approval ask, what it asks and since when, read from
+the pending asks whenever the branch is listed or looked up, and `by ls`
+shows `waiting for approval: …`. The server adds `GET …/decisions`
+(`DecisionList`, `Repo::decisions`): what waits for a person in the order to
+take it, parked agents first, oldest wait first. Nothing in it expires.
+
 The console renders an agent's reply instead of printing it: headings, lists,
 quotes, pipe tables, emphasis, inline code and web links become elements, a
 fenced block is code under a header with a Copy button, and a JSON block shows

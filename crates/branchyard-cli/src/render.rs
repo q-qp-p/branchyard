@@ -1117,13 +1117,18 @@ pub fn status_text(status: &BranchStatus) -> (String, Tone) {
     }
 }
 
-/// [`status_text`], with a `stalled` marker while the branch's running turn
-/// has had no harness activity for its stall window.
+/// [`status_text`], with what a running turn is parked on when it waits
+/// for an approval (`waiting for approval: …`), or else a `stalled` marker
+/// while it has had no harness activity for its stall window.
 pub fn branch_status_text(info: &BranchInfo) -> (String, Tone) {
     let (text, tone) = status_text(&info.status);
-    match info.stalled {
-        true => (format!("{text} (stalled)"), Tone::Yellow),
-        false => (text, tone),
+    match (&info.awaiting, info.stalled) {
+        (Some(awaiting), _) => (
+            format!("waiting for approval: {}", awaiting.about),
+            Tone::Yellow,
+        ),
+        (None, true) => (format!("{text} (stalled)"), Tone::Yellow),
+        (None, false) => (text, tone),
     }
 }
 
@@ -2460,6 +2465,7 @@ mod tests {
             cost_usd: None,
             created_at: 10_000,
             stalled: false,
+            awaiting: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

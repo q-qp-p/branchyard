@@ -17,7 +17,7 @@ use branchyard::connectors::GrantEntry;
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings, EffectState, Layer};
 use branchyard::Provisioning;
 use branchyard_client::api::{OperationState, TaskRequest};
-use branchyard_client::effects_api::{ApprovalAnswerRequest, UndoRequest};
+use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
 use branchyard_server::config::{ConnectorsConfig, MetricsConfig};
 use branchyard_testkit::wait;
 use common::{await_operation, get, raw, task, Fixture, Server};
@@ -136,6 +136,21 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
     assert_eq!(ask.branch, "asker");
     assert_eq!(ask.subject, "tester");
     assert_eq!(ask.resolved.as_ref().unwrap().layer, Layer::Admin);
+    // The branch says it is parked on the ask, and the decisions put it
+    // first, waiting on the person for the agent.
+    let parked = repo.branch("asker").unwrap().awaiting.unwrap();
+    assert_eq!(
+        (parked.id.as_str(), parked.since_ms),
+        (ask.id.as_str(), ask.created_ms)
+    );
+    let decisions = repo.decisions().unwrap();
+    let first = &decisions[0];
+    assert_eq!(
+        (first.kind, first.waits, first.branch.as_str()),
+        (DecisionKind::Approval, Waits::Agent, "asker")
+    );
+    assert_eq!(first.approval.as_ref().unwrap().id, ask.id);
+    assert_eq!(first.since_ms, Some(ask.created_ms));
     // `/metrics` counts it.
     let (status, _, metrics) = raw(server.addr, &get("/metrics", Some(METRICS_TOKEN)));
     assert_eq!(status, 200, "{metrics}");
@@ -171,6 +186,13 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
     );
     let done = await_operation(&client, &op.id);
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    // Answered, the branch is parked no more and the decision is gone.
+    assert!(repo.branch("asker").unwrap().awaiting.is_none());
+    assert!(repo
+        .decisions()
+        .unwrap()
+        .iter()
+        .all(|d| d.kind != DecisionKind::Approval));
 
     // The ledger: the issue made, approved by the caller; the deletion
     // blocked by the administrator, never called.

@@ -5,6 +5,7 @@
 use branchyard::effects::reconcile::Reconciled;
 use branchyard::effects::undo::{UndoOutcome, UndoPlan};
 use branchyard::effects::{ApprovalAsk, EffectEntry, EffectEvent};
+use branchyard::{BranchStatus, CandidateInfo, Message};
 use serde::{Deserialize, Serialize};
 
 use crate::http::encode;
@@ -75,9 +76,85 @@ pub struct UndoReport {
     pub outcomes: Vec<UndoOutcome>,
 }
 
+/// `GET /v1/repos/{repo}/decisions`: what waits for a person, in the order
+/// to take it. A branch parked on an approval or a question comes first,
+/// the one that has waited longest before the rest, because it moves only
+/// when someone answers; then the branches ready to merge, oldest first,
+/// because delivery waits on them; then the stopped and the stalled, which
+/// nothing waits on. Nothing here expires.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DecisionList {
+    pub decisions: Vec<Decision>,
+}
+
+/// One thing a person can decide; see [`DecisionList`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Decision {
+    pub kind: DecisionKind,
+    pub branch: String,
+    /// Who waits on the person for it.
+    pub waits: Waits,
+    /// Since when, milliseconds since the Unix epoch, when the server
+    /// knows: when the ask opened or the question was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
+    /// The branch's status at the time.
+    pub status: BranchStatus,
+    /// Its candidate commit, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<CandidateInfo>,
+    /// For an `approval`: the ask, as `GET …/approvals` lists it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalAsk>,
+    /// For a `question`: the message, as the asker's parent's inbox holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<Message>,
+}
+
+/// The shapes a decision takes.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    /// A running turn parked on an approval: allow or deny it.
+    Approval,
+    /// A question or an escalation a branch sent and nobody answered.
+    Question,
+    /// A ready branch: merge it, follow up, or discard it.
+    Merge,
+    /// A failed, interrupted or over-budget branch: resume it or let it be.
+    Stop,
+    /// A running turn with no harness activity for its stall window.
+    Stall,
+}
+
+/// Who a decision keeps waiting.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Waits {
+    /// An agent is parked mid-turn until the person answers.
+    Agent,
+    /// Nothing runs, but the work is not delivered until the person acts.
+    Delivery,
+    /// Nobody: the branch stopped, and the person decides at leisure.
+    Nobody,
+}
+
 impl Repo {
     fn repo_path(&self, rest: &str) -> String {
         format!("/v1/repos/{}{rest}", encode(self.name()))
+    }
+
+    /// What waits for a person, in the order to take it; see
+    /// [`DecisionList`].
+    pub fn decisions(&self) -> Result<Vec<Decision>, Error> {
+        Ok(self
+            .client()
+            .get::<DecisionList>(&self.repo_path("/decisions"))?
+            .decisions)
     }
 
     /// The approvals waiting, or every one with `all`; like `by approvals`.

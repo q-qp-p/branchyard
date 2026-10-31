@@ -880,6 +880,13 @@ class Approval(Record):
         return self.get("answer") is None
 
 
+class Decision(Record):
+    """One thing that waits for a person (`Decision`): `kind` (`approval`,
+    `question`, `merge`, `stop`, `stall`), `branch`, `waits` (`agent`,
+    `delivery`, `nobody`), `since_ms`, `status`, `candidate`, and the
+    `approval` or `question` it is about."""
+
+
 class Effect(Record):
     """`EffectEntry`: `id`, `task`, `branch`, `turn`, `subject`, `connector`,
     `operation`, `account`, `class`, `state`, `undo`, `approval`, ..."""
@@ -2786,6 +2793,13 @@ class Repo:
         return Record(self.client.post(self._branch(branch, "/distill"), {}, key=new_key()))
 
     # -- approvals and effects ---------------------------------------------
+
+    def decisions(self) -> list[Decision]:
+        """What waits for a person, in the order to take it: a branch parked
+        on an approval or a question first, oldest wait first, then the
+        ready branches, then the stopped and stalled ones
+        (`docs/server.md`, `GET …/decisions`). Nothing in it expires."""
+        return [Decision(d) for d in self.client.get(f"{self._base}/decisions").get("decisions", [])]
 
     def approvals(self, all: bool = False) -> list[Approval]:
         """The approvals waiting (every one with `all`): a branch's turn

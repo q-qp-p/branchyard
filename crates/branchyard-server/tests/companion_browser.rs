@@ -12,8 +12,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings};
+use branchyard_client::api::OperationState;
+use branchyard_client::new_key;
 use branchyard_server::companion::{link, store};
-use common::{run, task, Fixture, Server};
+use common::{await_operation, run, task, Fixture, Server};
 
 fn playwright() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("BY_TEST_PLAYWRIGHT") {
@@ -60,6 +63,15 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     config.app.enabled = true;
     // No push service is reachable here; the page's in-page notices remain.
     config.app.push = false;
+    // A person's policy that asks before a write, so a turn parks on an
+    // approval the page decides.
+    config.approvals = ApprovalSettings {
+        person: Some(ApprovalPolicy {
+            rules: [("write *".to_owned(), Approval::Ask)].into(),
+            ..ApprovalPolicy::default()
+        }),
+        ..ApprovalSettings::default()
+    };
     let server = Server::start(config.clone());
     let companion = store::open(&config).unwrap();
     let request = link::LinkRequest {
@@ -141,6 +153,17 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     assert!(op.state.is_terminal());
     writeln!(stdin, "report").unwrap();
     expect("RENDERED");
+    // A turn the policy parks on an approval before it writes: the page
+    // decides it. The task finishes once the page has allowed it.
+    let asker = server
+        .client()
+        .repo("app")
+        .submit_task(&task("PERMISSION WRITE d.txt=4", "asker"), &new_key())
+        .unwrap();
+    writeln!(stdin, "asker").unwrap();
+    expect("DECIDED");
+    let done = await_operation(&server.client(), &asker.id);
+    assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
     expect("DONE");
     assert!(child.wait().unwrap().success());
 

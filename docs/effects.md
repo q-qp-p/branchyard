@@ -51,7 +51,7 @@ Each tool, and each connector operation, resolves to `allow`, `ask`, `block` or 
 | `irreversible` | `stage`: written as a draft and held until approved |
 | any deletion | always `ask`, whatever the policy says, unless an administrator's policy says otherwise |
 
-An `ask` is a question in the person's inbox, answerable from `by watch`, the companion page, the server's API or a delegating parent; the turn waits, within its budget. Every answer is recorded on the ledger entry and in the task's history.
+An `ask` is a question in the person's inbox, answerable from `by watch`, the companion page, the server's API or a delegating parent; the turn waits, within its budget, and while it waits the branch says so: its record's `awaiting` names the ask, what it asks and since when (`by ls` shows `waiting for approval: …`), read from the pending asks whenever the branch is listed or looked up, and the server's `GET …/decisions` puts it first. Every answer is recorded on the ledger entry and in the task's history.
 
 ## Staged effects
 

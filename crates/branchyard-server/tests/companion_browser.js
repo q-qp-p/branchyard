@@ -11,6 +11,8 @@
 //   script: SENT              a follow-up was sent from the branch page
 //   test:   (starts a branch whose reply is markdown), then "report"
 //   script: RENDERED          the reply's markdown and JSON are elements
+//   test:   (starts a branch whose policy asks before a write), then "asker"
+//   script: DECIDED           the deck showed the ask and Enter allowed it
 //   script: DONE              and the page shows its second turn
 //
 // PLAYWRIGHT names the playwright module; BY_URL the server; BY_CODE a
@@ -185,11 +187,16 @@ const shots = process.env.BY_SCREENSHOTS;
   }, null, { timeout: 60000 });
   await page.locator('#convo .you', { hasText: 'PERMISSION_BY_ID WRITE b.txt=2' }).waitFor({ timeout: 60000 });
 
-  const fold = page.locator('#convo .turn details.tools').last();
-  await fold.locator('summary', { hasText: '1 tool call' }).waitFor({ timeout: 60000 });
-  if (await fold.evaluate((d) => d.open)) throw new Error('tool calls are not folded');
-  await fold.locator('summary').click();
-  await fold.locator('li', { hasText: 'bash' }).waitFor();
+  // The second turn's tool call is a note in the margin beside the text it
+  // preceded, named after the tool; it opens the Activity tab.
+  const note = page.locator('#convo .turn .notes .note', { hasText: 'bash' }).last();
+  await note.waitFor({ timeout: 60000 });
+  const notes = page.locator('#convo .turn').last().locator('.notes .note');
+  if (await notes.count() !== 1) throw new Error(`the second turn shows ${await notes.count()} notes, not 1`);
+  if (await page.locator('#convo details.tools').count()) throw new Error('tool calls are still folded');
+  await note.click();
+  await page.locator('#tab-activity[aria-selected="true"]').waitFor();
+  await page.getByRole('tab', { name: 'Changes' }).click();
 
   await page.locator('#files button', { hasText: 'b.txt' }).click({ timeout: 30000 });
   await page.locator('pre.diff span.add', { hasText: '+2' }).waitFor({ timeout: 30000 });
@@ -234,6 +241,49 @@ const shots = process.env.BY_SCREENSHOTS;
   if (convoText.includes('```') || convoText.includes('**')) throw new Error('markdown syntax is shown as text');
   await noOverflow('a rendered reply');
   say('RENDERED');
+
+  // A turn parked on an approval: the branch itself says so on the board
+  // and in the lane, the deck shows the ask first, Later sends it to the
+  // back and it comes round, Enter allows after an undo window, and Undo
+  // within the window sends nothing.
+  await nextLine();
+  await go('#/');
+  await page.locator('#main .board-row.board-parked[data-branch="asker"] .rail .wait').waitFor({ timeout: 60000 });
+  await page.locator('#lane-needs a', { hasText: 'asker' }).filter({ hasText: 'waiting for you' }).waitFor();
+  if (await page.title() !== '(1) Branchyard') throw new Error(`the title counts ${await page.title()}, not (1)`);
+  await go('#/attention');
+  const card = page.locator('#main .deck-card.deck-approval');
+  await card.waitFor({ timeout: 60000 });
+  await card.locator('h2', { hasText: 'asker wants to' }).waitFor();
+  if (await page.locator('#main .deck-card').count() !== 1) throw new Error('the deck shows more than one card');
+  if (!(await page.locator('#main .deck-count', { hasText: '1 of 3' }).count())) throw new Error(`the parked agent is not first: ${await page.locator('#main .deck-count').innerText()}`);
+  await card.focus();
+  await page.keyboard.press('s');
+  // Sent to the back, the older ready branches come first and the ask
+  // waits in the bay, which brings it back.
+  await page.locator('#main .deck-card.deck-merge', { hasText: 'first is ready to merge' }).waitFor();
+  await page.locator('#main .bay-item[data-decision^="approval:asker:"]').click();
+  await page.locator('#main .deck-card.deck-approval').waitFor();
+  await page.locator('#main .deck-card').focus();
+  await page.keyboard.press('Enter');
+  const held = page.locator('.bay-held', { hasText: 'asker: allowing' });
+  await held.waitFor();
+  await held.getByRole('button', { name: /^Undo/ }).click();
+  await held.waitFor({ state: 'detached' });
+  if (await page.locator('.toast', { hasText: 'Allowed' }).count()) throw new Error('an undone allow was sent');
+  await page.locator('#main .deck-card.deck-approval').waitFor();
+  await page.locator('#main .deck-card').focus();
+  await page.keyboard.press('Enter');
+  await page.locator('.bay-held', { hasText: 'asker: allowing' }).waitFor();
+  await page.locator('.toast', { hasText: 'Allowed: asker may' }).waitFor({ timeout: 30000 });
+  await page.locator('#lane-ready a', { hasText: 'asker' }).waitFor({ timeout: 60000 });
+  // Ready, it is a merge card behind the older ready branches; the bay
+  // brings it to the front.
+  await page.locator('#main .bay-item[data-decision^="merge:asker:"]').click({ timeout: 60000 });
+  await page.locator('#main .deck-card.deck-merge', { hasText: 'asker is ready to merge' }).waitFor({ timeout: 60000 });
+  await page.locator('#main .deck-card .deck-files li', { hasText: 'd.txt' }).waitFor({ timeout: 60000 });
+  await noOverflow('the deck');
+  say('DECIDED');
 
   // BY_SCREENSHOTS=DIR saves desktop and phone views in both themes, for a look.
   if (shots) {

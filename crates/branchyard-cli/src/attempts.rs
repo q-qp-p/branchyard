@@ -777,6 +777,7 @@ mod tests {
             cost_usd: None,
             created_at: 1,
             stalled: false,
+            awaiting: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

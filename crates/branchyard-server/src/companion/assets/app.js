@@ -55,9 +55,17 @@
     inbox: [],
     approvals: [],
     effects: [],
+    // What waits for a person, as the server orders it (`GET …/decisions`).
+    decisions: [],
+    // The deck: cards sent to the back, the one brought to the front, the
+    // answers held for their undo window, and the evidence fetched for a
+    // card (a branch's last turn and its diff).
+    deck: { later: [], front: null, holding: [], evidence: new Map() },
     pending: new Map(),
     merged: new Set(),
     route: { name: 'home' },
+    // The branch whose board row has its steer box open.
+    steering: null,
     pushInfo: null,
     pushOn: false,
   };
@@ -381,7 +389,7 @@
       key: 'needs', label: 'Needs you', collapsed: false,
       test: (b, attention) => attention.has(b.name) || b.stalled ||
         ['blocked', 'failed', 'interrupted', 'budget_exceeded', 'awaiting_plan_approval'].includes(b.status.state),
-      meta: (b, attention) => attention.get(b.name) || (b.stalled ? 'stalled' : statusOf(b).text.split(/[:(]/)[0].trim()),
+      meta: (b, attention) => (b.awaiting ? 'waiting for you' : attention.get(b.name) || (b.stalled ? 'stalled' : statusOf(b).text.split(/[:(]/)[0].trim())),
     },
     {
       key: 'running', label: 'Running', collapsed: false,
@@ -404,6 +412,7 @@
     const waiting = new Map();
     for (const m of state.inbox) waiting.set(m.from, m.kind);
     for (const a of state.approvals) waiting.set(a.branch, 'approval');
+    for (const b of state.branches.values()) if (b.awaiting) waiting.set(b.name, 'approval');
     return waiting;
   }
 
@@ -788,7 +797,7 @@
     if (repo !== state.repo) return;
     state.branches = new Map(branches.map((b) => [b.name, b]));
     state.loaded = true;
-    refreshInbox();
+    refreshDecisions();
     refreshApprovals();
     branchesChanged();
     if (state.route.name === 'queue') renderQueue();
@@ -898,8 +907,8 @@
       const p = state.permissions.find((x) => x.branch === entry.branch && x.decision == null);
       if (p) p.decision = a.decision.allowed ? 'allowed' : 'denied';
     }
-    if (a.message) refreshInbox();
-    if (a.effect) refreshApprovals();
+    if (a.message) refreshDecisions();
+    if (a.effect || a.status || a.snapshot) refreshApprovals();
     if (state.loaded && Date.now() - entry.at_ms < 60000) {
       const n = notice(entry);
       // On screen the branch list is the notice; a hidden tab gets the system's.
@@ -1118,7 +1127,70 @@
 
   function homeSignature() {
     const groups = lanes(Array.from(state.branches.values()));
-    return JSON.stringify([state.loaded, state.branchError, groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled])), Array.from(attention())]);
+    return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 30000),
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering]);
+  }
+
+  // The window the board draws: the last hour, now at the right edge.
+  const BOARD_WINDOW = 60 * 60 * 1000;
+  const boardX = (ms, now) => Math.max(0, Math.min(100, ((ms - (now - BOARD_WINDOW)) / BOARD_WINDOW) * 100));
+
+  // One branch on the clock: its name and state, its time on the rail,
+  // what it cost and the one thing to do with it.
+  function boardRow(b, lane, now) {
+    const s = statusOf(b);
+    const active = activeAt(b);
+    const started = b.created_at * 1000;
+    const open = !['merged', 'no_changes', 'discarded'].includes(b.status.state);
+    const rail = h('span', { class: 'rail' });
+    const place = (el, from, to) => {
+      const left = boardX(from, now);
+      const right = boardX(to, now);
+      el.style.left = `${left}%`;
+      el.style.width = `${Math.max(0.5, right - left)}%`;
+      return el;
+    };
+    if (started < now - BOARD_WINDOW) rail.append(h('i', { class: 'rail-before', title: `started ${ago(started)}` }));
+    rail.append(place(h('i', { class: `turnbar turnbar-${lane.key}`, title: `${s.text}, since ${clock(started)}` }), started, open && lane.key !== 'ready' ? now : active));
+    if (b.awaiting) rail.append(place(h('i', { class: 'wait', title: `waiting for you since ${clock(b.awaiting.since_ms)}` }), b.awaiting.since_ms, now));
+    if (lane.key === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'ready, waiting to be merged' }), active, now));
+    if (open) rail.append(h('i', { class: `head head-${lane.key}` }));
+    let meta;
+    if (b.awaiting) meta = `waiting for you · ${since(b.awaiting.since_ms)}`;
+    else if (lane.key === 'running') meta = b.status.state === 'running' ? `${s.text} · turn ${b.turns + 1}` : s.text;
+    else if (lane.key === 'ready') meta = ['ready · ', b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : null];
+    else meta = s.text;
+    let action = null;
+    if (b.awaiting || attention().has(b.name)) action = h('a', { class: 'button small needs', href: '#/attention', text: 'Answer' });
+    else if (lane.key === 'ready' && applies(ACTIONS.merge, b)) action = h('button', { type: 'button', class: 'small primary', text: 'Merge', onclick: () => runAction(ACTIONS.merge, b.name) });
+    else if (lane.key === 'running' && applies(COMPOSER.steer, b)) action = h('button', { type: 'button', class: 'small', text: 'Steer', 'aria-pressed': String(state.steering === b.name), onclick: () => { state.steering = state.steering === b.name ? null : b.name; redraw(homeSignature(), renderHome); } });
+    else if (lane.key === 'needs' && applies(ACTIONS.resume, b)) action = h('button', { type: 'button', class: 'small', text: 'Resume', onclick: () => runAction(ACTIONS.resume, b.name) });
+    else action = h('a', { class: 'button small', href: branchHref(b.name), text: 'Open' });
+    const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name },
+      h('span', { class: 'board-name' }, dot(lane.key), h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta)),
+      rail,
+      h('span', { class: 'board-act' }, b.cost_usd != null ? h('span', { class: 'mono', text: money(b.cost_usd) }) : null, action));
+    if (state.steering === b.name) return [row, steerRow(b)];
+    return row;
+  }
+
+  // One line under a running row: say something to the turn without
+  // opening the branch.
+  function steerRow(b) {
+    const field = h('input', { type: 'text', id: `steer-${b.name}`, placeholder: `Say something to ${b.name} while it works…`, autocomplete: 'off' });
+    const send = async () => {
+      const text = field.value.trim();
+      if (!text) { field.focus(); return; }
+      field.disabled = true;
+      const result = await act(COMPOSER.steer, b.name, text);
+      if (result) { state.steering = null; redraw(homeSignature(), renderHome); } else field.disabled = false;
+    };
+    field.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); send(); } if (ev.key === 'Escape') { state.steering = null; redraw(homeSignature(), renderHome); } });
+    const row = h('div', { class: 'board-steer' },
+      h('label', { class: 'visually-hidden', for: `steer-${b.name}`, text: `Steer ${b.name}` }), field,
+      h('button', { type: 'button', class: 'small', text: 'Steer', onclick: send }));
+    setTimeout(() => field.focus(), 0);
+    return row;
   }
 
   function renderHome() {
@@ -1127,25 +1199,37 @@
     const all = Array.from(state.branches.values());
     const groups = lanes(all);
     const needs = groups[0].branches;
-    const waiting = attention();
     const lede = !state.loaded
       ? state.branchError ? 'The branch list did not load.' : 'Loading…'
       : !all.length ? 'Nothing has run here yet.'
         : needs.length ? `${plural(needs.length, 'branch', 'branches')} ${needs.length === 1 ? 'needs' : 'need'} you.` : 'Nothing needs you right now.';
-    const card = (b) => {
-      const s = statusOf(b);
-      const why = waiting.get(b.name);
-      return h('li', {}, h('a', { class: 'card card-link', href: why === 'approval' || why === 'question' || why === 'escalation' ? '#/attention' : branchHref(b.name) },
-        h('span', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: b.name }), ago(activeAt(b))),
-        h('span', { class: 'card-text', text: why ? `${cap(why)} waiting for you` : cap(s.text) }),
-        b.prompt ? h('span', { class: 'card-prompt', text: b.prompt.length > 160 ? `${b.prompt.slice(0, 159)}…` : b.prompt }) : null));
-    };
-    main(h('div', { class: 'page' },
+    const now = Date.now();
+    const cost = all.reduce((sum, b) => sum + (b.cost_usd || 0), 0);
+    const spent = all.some((b) => b.cost_usd != null) ? ` · ${money(cost)} so far` : '';
+    const inflight = groups[1].branches.length;
+    const summary = state.loaded && all.length
+      ? `${plural(inflight, 'branch', 'branches')} in flight · ${needs.length} need${needs.length === 1 ? 's' : ''} you · ${groups[2].branches.length} ready · ${groups[3].branches.length} done${spent}`
+      : null;
+    const axis = h('div', { class: 'board-axis', 'aria-hidden': 'true' },
+      h('span', { class: 'board-name', text: 'Branch' }),
+      h('span', { class: 'rail-axis' }, ['‹ earlier', '−45m', '−30m', '−15m', 'now'].map((t) => h('span', { text: t }))),
+      h('span', { class: 'board-act', text: 'cost · act' }));
+    const done = groups[3].branches;
+    main(h('div', { class: 'page wide' },
       h('header', { class: 'page-head' },
-        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede }))),
-      state.loaded && all.length ? h('ul', { class: 'glance', 'aria-label': 'Branches by lane' }, groups.map(({ lane, branches }) =>
-        h('li', { class: `glance-item glance-${branches.length ? lane.key : 'done'}` }, h('span', { class: 'glance-label' }, dot(branches.length ? lane.key : 'done'), lane.label), h('b', { text: String(branches.length) })))) : null,
-      needs.length ? [h('h2', { text: 'Needs you' }), h('ul', { class: 'cards' }, needs.map(card))] : null,
+        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: summary || lede }))),
+      state.loaded && all.length ? h('section', { class: 'board', 'aria-label': 'Every branch on one clock' },
+        axis,
+        groups.slice(0, 3).map(({ lane, branches }) => branches.map((b) => boardRow(b, lane, now))),
+        done.length ? h('div', { class: 'board-row board-done' },
+          h('span', { class: 'board-name muted', text: `${plural(done.length, 'branch', 'branches')} done` }),
+          h('span', { class: 'rail rail-done' }, done.map((b) => {
+            const tick = h('i', { class: 'tick-done', title: `${b.name}: ${statusOf(b).text}` });
+            tick.style.left = `${boardX(activeAt(b), now)}%`;
+            return tick;
+          })),
+          h('span', { class: 'board-act muted', text: done.map((b) => b.name).slice(0, 3).join(', ') + (done.length > 3 ? '…' : '') })) : null) : null,
+      needs.length ? h('p', { class: 'board-note' }, 'The amber fill is a wait on you. ', h('a', { href: '#/attention', text: 'Decide' }), ' takes those one at a time.') : null,
       state.loaded && !all.length && can('run') ? h('div', { class: 'welcome' },
         h('p', { text: 'Start a task and it gets a branch of its own, with its conversation, its changes and a merge button.' }),
         h('a', { class: 'button primary', href: '#/new', text: 'Start a task' })) : null));
@@ -1398,29 +1482,60 @@
     const turns = [];
     let turn = null;
     let cut = true;
-    const open = (text, steer) => {
-      turn = { text, steer, said: [], tools: [], status: null, checkpoint: null, candidate: null };
+    const open = (text, steer, at) => {
+      turn = {
+        text, steer, said: [], tools: [], parts: [], pending: [], status: null, checkpoint: null, candidate: null,
+        started_ms: at || null, ended_ms: null,
+      };
       turns.push(turn);
       cut = true;
       return turn;
     };
-    for (const { activity: a } of events) {
+    for (const { activity: a, at_ms: at } of events) {
       const ev = a.harness || {};
-      if (a.prompt != null) open(a.prompt, false);
-      else if (a.steered) open(a.steered.text, true);
+      if (a.prompt != null) open(a.prompt, false, at);
+      else if (a.steered) open(a.steered.text, true, at);
       else if (ev.type === 'message_delta') {
-        const t = turn || open(null, false);
-        if (cut) t.said.push(ev.text); else t.said[t.said.length - 1] += ev.text;
+        const t = turn || open(null, false, at);
+        if (cut) { t.said.push(ev.text); t.parts.push({ tools: t.pending, text: ev.text }); t.pending = []; }
+        else { t.said[t.said.length - 1] += ev.text; t.parts[t.parts.length - 1].text += ev.text; }
         cut = false;
       } else if (ev.type === 'tool_started') {
-        (turn || open(null, false)).tools.push(ev.name);
+        const t = turn || open(null, false, at);
+        t.tools.push(ev.name);
+        t.pending.push(ev.name);
         cut = true;
-      } else if (a.snapshot) (turn || open(null, false)).candidate = a.snapshot;
-      else if (a.checkpoint) (turn || open(null, false)).checkpoint = a.checkpoint;
-      else if (a.status && turn && !['running', 'waiting'].includes(a.status.state)) turn.status = a.status;
+      } else if (a.snapshot) (turn || open(null, false, at)).candidate = a.snapshot;
+      else if (a.checkpoint) (turn || open(null, false, at)).checkpoint = a.checkpoint;
+      else if (a.status && turn && !['running', 'waiting'].includes(a.status.state)) { turn.status = a.status; turn.ended_ms = at || null; }
     }
-    for (const t of turns) t.said = t.said.map((s) => s.trim()).filter(Boolean);
+    for (const t of turns) {
+      // Calls after the last paragraph are notes with nothing beside them.
+      if (t.pending.length) t.parts.push({ tools: t.pending, text: '' });
+      t.pending = [];
+      t.said = t.said.map((s) => s.trim()).filter(Boolean);
+      for (const part of t.parts) part.text = part.text.trim();
+    }
     return turns;
+  }
+
+  // How many of a turn's calls read, edited and ran, by the verb each
+  // name opens with; the rest are counted as "other".
+  function toolCounts(names) {
+    const counts = { read: 0, edit: 0, run: 0, other: 0 };
+    for (const name of names) {
+      const kind = toolIcon(name);
+      counts[kind === 'eye' ? 'read' : kind === 'pencil' ? 'edit' : kind === 'terminal' ? 'run' : 'other'] += 1;
+    }
+    return counts;
+  }
+  const countsText = (counts) => Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(', ');
+  function spanText(ms) {
+    if (ms == null || ms < 0) return null;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return m < 60 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
   }
 
   // ---------------------------------------------------------------
@@ -1929,28 +2044,54 @@
     return h('p', { class: 'outcome' }, dot('running'), info.status.state === 'waiting' ? 'Waiting for its prerequisites…' : 'Working…');
   }
 
-  function turnItem(t, i, v, last) {
-    let tools = null;
-    if (t.tools.length) {
-      tools = h('details', { class: 'tools', open: v.open.has(i) },
-        h('summary', { text: plural(t.tools.length, 'tool call') }),
-        h('ol', {}, t.tools.map((name) => h('li', { class: 'mono' }, icon(toolIcon(name), true), name))));
-      tools.addEventListener('toggle', () => { if (tools.open) v.open.add(i); else v.open.delete(i); });
-    }
+  // A tool call as a note in the margin: the name the harness gave it, with
+  // the icon for its verb. Clicking opens the Activity tab, where the call
+  // is one of the events.
+  function note(name, v) {
+    return h('button', {
+      type: 'button', class: 'note', title: name,
+      onclick: () => { if (v) selectTab(v, 'activity'); },
+    }, icon(toolIcon(name), true), h('span', { text: name }));
+  }
+
+  // The turn's receipt: how long it took, what its calls did, what it
+  // changed, and how it ended.
+  function receipt(t) {
     const c = t.checkpoint || t.candidate;
     const lane = t.status ? laneOf({ name: '', status: t.status }, new Map()).key : null;
-    const outcome = t.status || c ? h('p', { class: `outcome outcome-${lane || 'done'}` },
+    if (!t.status && !c) return null;
+    const took = t.started_ms && t.ended_ms && t.ended_ms - t.started_ms >= 1000 ? spanText(t.ended_ms - t.started_ms) : null;
+    const did = t.tools.length ? countsText(toolCounts(t.tools)) : null;
+    return h('p', { class: `outcome outcome-${lane || 'done'}` },
       lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
       t.status ? cap(statusOf({ status: t.status }).text) : null,
-      c ? [t.status ? ' · ' : '', h('span', { class: 'mono', text: c.commit.slice(0, 7) }), ` · ${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null) : null;
+      took ? [' · ', took] : null,
+      did ? [' · ', did] : null,
+      c ? [' · ', h('span', { class: 'mono', text: c.commit.slice(0, 7) }), ` · ${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null);
+  }
+
+  function turnItem(t, i, v, last) {
     const info = state.branches.get(v.name);
+    const outcome = receipt(t);
     return h('article', { class: 'turn' },
       t.text != null ? h('div', { class: t.steer ? 'you steer' : 'you' },
         t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text })) : null,
-      t.said.length ? agentBlock(t.said, info && info.harness) : null,
-      tools,
+      t.parts.length ? reportBlock(t.parts, info && info.harness, v) : null,
       outcome,
       last && !outcome && info ? workingLine(info) : null);
+  }
+
+  // What the agent said as a report: each paragraph beside the calls that
+  // came before it, in the margin.
+  function reportBlock(parts, harness, v) {
+    return h('div', { class: 'agent' },
+      h('div', { class: 'agent-head' },
+        h('img', { class: 'agent-mark', src: 'icon.svg', alt: '', width: '18', height: '18' }),
+        h('span', { class: 'agent-name', text: harness || 'Agent' }),
+        h('span', { class: 'ai-tag', text: 'AI', title: 'Written by the agent' })),
+      parts.map((part) => h('div', { class: 'turn-row' },
+        h('aside', { class: 'notes', 'aria-label': part.tools.length ? plural(part.tools.length, 'tool call') : null }, part.tools.map((name) => note(name, v))),
+        part.text ? h('div', { class: 'rich' }, rich(part.text)) : h('div', { class: 'rich rich-empty' }))));
   }
 
   function composer(submit) {
@@ -3718,32 +3859,21 @@
   // permission requests seen while this page was open, and the effect
   // ledger
 
-  let inboxTimer = null;
-  function refreshInbox() {
-    clearTimeout(inboxTimer);
-    inboxTimer = setTimeout(loadInbox, 300);
+  let decisionsTimer = null;
+  function refreshDecisions() {
+    clearTimeout(decisionsTimer);
+    decisionsTimer = setTimeout(loadDecisions, 300);
   }
 
-  async function loadInbox() {
-    const parents = Array.from(state.branches.values()).filter((b) => b.children && b.children.length);
-    const asked = [];
-    const answered = new Set();
-    await Promise.all(parents.map(async (p) => {
-      try {
-        const inbox = await api('GET', `${branchPath(p.name)}/inbox`);
-        for (const m of inbox.messages) {
-          if (m.kind === 'question' || m.kind === 'escalation') asked.push(m);
-        }
-      } catch (_) { /* skip that branch */ }
-    }));
-    const askers = new Set(asked.map((m) => m.from));
-    await Promise.all(Array.from(askers).map(async (name) => {
-      try {
-        const inbox = await api('GET', `${branchPath(name)}/inbox`);
-        for (const m of inbox.messages) if (m.in_reply_to != null) answered.add(m.in_reply_to);
-      } catch (_) { /* skip */ }
-    }));
-    state.inbox = asked.filter((m) => !answered.has(m.id)).sort((a, b) => b.at_ms - a.at_ms);
+  // What waits for a person, in the server's order: a branch parked on an
+  // approval or a question first, oldest wait first, then the ready
+  // branches, then the stopped and stalled ones. The questions among them
+  // are also the inbox the lanes read.
+  async function loadDecisions() {
+    let decisions;
+    try { ({ decisions } = await api('GET', `${repoPath()}/decisions`)); } catch (_) { return; }
+    state.decisions = decisions;
+    state.inbox = decisions.filter((d) => d.kind === 'question').map((d) => d.question);
     branchesChanged();
   }
 
@@ -3762,7 +3892,7 @@
       state.approvals = approvals;
       state.effects = effects.slice(-50).reverse();
     } catch (_) { return; }
-    branchesChanged();
+    await loadDecisions();
   }
 
   function aboutText(about) {
@@ -3785,7 +3915,7 @@
       try {
         await api('POST', `${branchPath(m.to)}/answer`, { message_id: m.id, text });
         toast(`Answered ${m.from}.`);
-        loadInbox();
+        loadApprovals();
       } catch (e) {
         toast(`Could not answer: ${e.message}`);
       }
@@ -3831,8 +3961,259 @@
 
   function attentionSignature() {
     const needs = lanes(Array.from(state.branches.values()))[0].branches;
-    return JSON.stringify([state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
+    const d = state.deck;
+    return JSON.stringify([state.decisions.map(decisionKey), d.later, d.front, d.holding.map((x) => x.key),
+      Array.from(d.evidence.entries()).map(([k, e]) => [k, e.loading, e.said && e.said.length, e.files && e.files.length]),
+      state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
       state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled])]);
+  }
+
+  // How long an allow or a deny waits before it is sent, for a second
+  // thought. The agent stays parked meanwhile.
+  const UNDO_MS = 8000;
+  const HOLD_MS = 700;
+  const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : ''}`;
+  const WAITS = { agent: 'an agent is parked until you answer', delivery: 'delivery waits on you', nobody: 'nothing waits on this' };
+  const KIND_LABEL = { approval: 'Approval', question: 'Question', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent' };
+  const KIND_VERB = { approval: 'allow or deny', question: 'answer', merge: 'merge', stop: 'resume', stall: 'look' };
+
+  // The deck in the order to take it: the server's order, with the cards
+  // sent to the back at the back, the one brought forward in front, and
+  // the answers held for their undo window left out.
+  function deckOrder() {
+    const d = state.deck;
+    const held = new Set(d.holding.map((x) => x.key));
+    const cards = state.decisions.filter((x) => !held.has(decisionKey(x)));
+    const later = cards.filter((x) => d.later.includes(decisionKey(x))).sort((x, y) => d.later.indexOf(decisionKey(x)) - d.later.indexOf(decisionKey(y)));
+    const now = cards.filter((x) => !d.later.includes(decisionKey(x)));
+    const ordered = now.concat(later);
+    const front = ordered.findIndex((x) => decisionKey(x) === d.front);
+    if (front > 0) ordered.unshift(ordered.splice(front, 1)[0]);
+    return ordered;
+  }
+
+  // Send a card to the back of the deck.
+  function later(d) {
+    const key = decisionKey(d);
+    state.deck.later = state.deck.later.filter((k) => k !== key).concat(key);
+    if (state.deck.front === key) state.deck.front = null;
+    branchesChanged();
+    focusDeck();
+  }
+
+  function focusDeck() {
+    const card = document.querySelector('#main .deck-card');
+    if (card) card.focus({ preventScroll: true });
+  }
+
+  // Hold an answer for its undo window, then send it. Undo within the
+  // window and nothing was sent.
+  function holdAnswer(d, allow, reason) {
+    const entry = { key: decisionKey(d), decision: d, allow, reason, until: Date.now() + UNDO_MS, timer: null };
+    entry.timer = setTimeout(() => sendAnswer(entry), UNDO_MS);
+    state.deck.holding.push(entry);
+    branchesChanged();
+    focusDeck();
+  }
+
+  async function sendAnswer(entry) {
+    state.deck.holding = state.deck.holding.filter((x) => x !== entry);
+    const a = entry.decision.approval;
+    try {
+      await api('POST', `${repoPath()}/approvals/${enc(a.id)}/${entry.allow ? 'allow' : 'deny'}`,
+        { surface: 'companion', ...(entry.reason ? { reason: entry.reason } : {}) });
+      toast(`${entry.allow ? 'Allowed' : 'Denied'}: ${a.branch} may${entry.allow ? '' : ' not'} ${aboutText(a.about)}.`);
+    } catch (e) {
+      toast(`Could not answer the approval: ${e.message}`);
+    }
+    loadApprovals();
+  }
+
+  function undoAnswer(entry) {
+    clearTimeout(entry.timer);
+    state.deck.holding = state.deck.holding.filter((x) => x !== entry);
+    branchesChanged();
+    focusDeck();
+  }
+
+  // The evidence a merge or a stop card shows: the branch's last turn (what
+  // it said and did) and its changed files, fetched once per branch and
+  // kept until the branch's status changes.
+  function evidenceFor(d) {
+    const key = `${d.branch}@${JSON.stringify(d.status)}`;
+    const found = state.deck.evidence.get(key);
+    if (found) return found;
+    const entry = { loading: true, said: [], tools: [], files: [], error: null };
+    state.deck.evidence.set(key, entry);
+    (async () => {
+      try {
+        const page = await api('GET', `${branchPath(d.branch)}/event-page?limit=${EVENT_WINDOW}`);
+        const turns = conversation(page.events);
+        const lastTurn = turns[turns.length - 1];
+        if (lastTurn) { entry.said = lastTurn.said; entry.tools = lastTurn.tools; }
+        if (d.candidate) {
+          const diff = await api('GET', `${branchPath(d.branch)}/diff`);
+          entry.files = parseDiff(diff.diff || '');
+        }
+      } catch (e) { entry.error = e.message; }
+      entry.loading = false;
+      branchesChanged();
+    })();
+    return entry;
+  }
+
+  // Hold to act: the fill is the confirmation. Under reduced motion, two
+  // presses: the first arms, the second fires.
+  function lever(label, run) {
+    const button = h('button', { type: 'button', class: 'primary lever' }, h('span', { text: label }), h('kbd', { text: '↵' }));
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let timer = null;
+    let fired = false;
+    const fire = () => { fired = true; button.classList.remove('hold'); button.dataset.fired = ''; button.disabled = true; run(); };
+    const start = () => { if (fired || timer) return; button.classList.add('hold'); timer = setTimeout(() => { timer = null; fire(); }, HOLD_MS); };
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } if (!fired) button.classList.remove('hold'); };
+    if (reduced) {
+      button.addEventListener('click', () => {
+        if (fired) return;
+        if (button.dataset.armed) fire();
+        else { button.dataset.armed = '1'; button.firstChild.textContent = `${label} now`; setTimeout(() => { if (!fired) { delete button.dataset.armed; button.firstChild.textContent = label; } }, 4000); }
+      });
+    } else {
+      button.addEventListener('pointerdown', (ev) => { ev.preventDefault(); start(); });
+      for (const name of ['pointerup', 'pointerleave', 'pointercancel']) button.addEventListener(name, cancel);
+      button.addEventListener('keydown', (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && !ev.repeat) { ev.preventDefault(); start(); } });
+      button.addEventListener('keyup', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') cancel(); });
+      button.addEventListener('blur', cancel);
+    }
+    return button;
+  }
+
+  const layerText = (resolved) => (!resolved ? null : resolved.layer === 'admin' ? "the administrator's policy asks before this" : resolved.layer === 'person' ? 'your own policy asks before this' : `the ${resolved.layer} policy asks before this`);
+
+  // One decision as a card: the question at the top, the evidence in the
+  // middle, the answers at the bottom, where the eye ends. Keys answer.
+  function deckCard(d, position, total, rest) {
+    const b = state.branches.get(d.branch) || { name: d.branch, status: d.status, candidate: d.candidate };
+    const disabled = !can('run');
+    const draftKey = `deck:${decisionKey(d)}`;
+    let title;
+    let body = [];
+    let actions = [];
+    let primary = null;
+    const open = () => { location.hash = branchHref(d.branch); };
+    const followUp = () => { location.hash = branchHref(d.branch); setTimeout(() => { const area = $('composer-text'); if (area) area.focus(); }, 0); };
+    const since = d.since_ms ? h('span', { text: `parked on you for ${since_(d.since_ms)}` }) : null;
+    if (d.kind === 'approval') {
+      const a = d.approval;
+      const reason = h('textarea', { rows: '1', 'data-draft': draftKey, placeholder: 'A reason, if you want one' });
+      const evidence = evidenceFor(d);
+      title = [d.branch, ' wants to ', h('code', { text: aboutText(a.about) })];
+      body = [
+        h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · turn ${a.turn} · ${layerText(a.resolved) || 'the policy asks before this'}` })),
+        evidence.said.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it was doing' }), h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1]))) : null,
+        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The call' }), h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
+        h('label', { class: 'block deck-reason' }, h('span', { class: 'visually-hidden', text: 'Reason' }), reason),
+      ];
+      primary = () => holdAnswer(d, true, reason.value.trim());
+      actions = [
+        h('button', { type: 'button', class: 'primary', disabled, text: 'Allow', onclick: primary }, h('kbd', { text: '↵' })),
+        h('button', { type: 'button', class: 'danger', disabled, text: 'Deny', onclick: () => holdAnswer(d, false, reason.value.trim()) }, h('kbd', { text: 'n' })),
+      ];
+    } else if (d.kind === 'question') {
+      const m = d.question;
+      title = [m.from, m.kind === 'escalation' ? ' escalates: ' : ' asks: ', m.text];
+      body = [h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · to ${m.to}` })), answerForm(m)];
+    } else if (d.kind === 'merge') {
+      const c = d.candidate;
+      const evidence = evidenceFor(d);
+      title = [d.branch, ' is ready to merge'];
+      const meta = [c ? `${c.commit.slice(0, 7)} · ${plural(c.files_changed, 'file')} ` : null, c ? counts(c.insertions, c.deletions) : null,
+        b.turns != null ? ` · ${plural(b.turns, 'turn')}` : null, b.cost_usd != null ? ` · ${money(b.cost_usd)}` : null, b.harness ? ` · ${b.harness}` : null];
+      const did = evidence.tools.length ? toolCounts(evidence.tools) : null;
+      body = [
+        h('p', { class: 'deck-line mono' }, meta),
+        b.prompt ? h('p', { class: 'deck-asked' }, h('span', { class: 'muted', text: 'Asked: ' }), b.prompt) : null,
+        h('div', { class: 'deck-grid' },
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it says' }),
+            evidence.loading ? skeleton() : evidence.said.length ? h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1])) : h('p', { class: 'muted', text: evidence.error || 'It said nothing in its last turn.' })),
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it did' }),
+            evidence.loading ? skeleton() : did ? h('ul', { class: 'deck-did' },
+              did.run ? h('li', {}, icon('terminal', true), `ran ${plural(did.run, 'command')}`) : null,
+              did.edit ? h('li', {}, icon('pencil', true), `edited ${plural(did.edit, 'time')}`) : null,
+              did.read ? h('li', {}, icon('eye', true), `read ${plural(did.read, 'time')}`) : null,
+              did.other ? h('li', {}, icon('wrench', true), `${plural(did.other, 'other call')}`) : null,
+              h('li', { class: 'muted' }, icon('bolt', true), 'the harness reports what ran, not whether it passed'))
+              : h('p', { class: 'muted', text: 'No tool calls in its last turn.' }))),
+        evidence.files.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'Changes' }),
+          h('ul', { class: 'deck-files' }, evidence.files.map((f) => {
+            const at = f.path.lastIndexOf('/');
+            return h('li', {}, h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
+              h('span', { class: 'file-counts' }, counts(f.add, f.del)), fileBar(f.add, f.del));
+          })),
+          h('pre', { class: 'diff deck-diff', tabindex: '0', 'aria-label': `The first lines of ${evidence.files[0].path}` },
+            evidence.files[0].lines.slice(0, 14).map((l) => h('span', { class: l.kind }, l.text)),
+            h('span', { class: 'file', text: '  … the rest is in Work' }))) : null,
+      ];
+      actions = applies(ACTIONS.merge, b) ? [lever(`Merge ${c ? c.commit.slice(0, 7) : d.branch}`, () => { state.pending.set(d.branch, ACTIONS.merge.busy); act(ACTIONS.merge, d.branch).then((r) => { if (!r || !r.id) state.pending.delete(d.branch); }); })] : [];
+      actions.push(h('button', { type: 'button', text: 'Follow up', onclick: followUp }, h('kbd', { text: 'f' })));
+    } else if (d.kind === 'stop' || d.kind === 'stall') {
+      const evidence = evidenceFor(d);
+      title = d.kind === 'stall' ? [d.branch, ' has been silent for its stall window'] : [d.branch, ' ', statusOf(b).text];
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `last active ${ago(activeAt(b))}${b.turns != null ? ` · ${plural(b.turns, 'turn')}` : ''}${b.cost_usd != null ? ` · ${money(b.cost_usd)}` : ''}` })),
+        evidence.said.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'The last thing it said' }), h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1]))) : null,
+        evidence.tools.length ? h('p', { class: 'deck-line muted' }, 'Last calls: ', evidence.tools.slice(-3).map((name, i) => [i ? ', ' : '', h('code', { text: name })])) : null,
+      ];
+      if (applies(ACTIONS.resume, b)) { primary = () => runAction(ACTIONS.resume, d.branch); actions = [h('button', { type: 'button', class: 'primary', text: 'Resume', onclick: primary }, h('kbd', { text: '↵' }))]; }
+      else actions = [h('button', { type: 'button', class: 'primary', text: 'Follow up', onclick: followUp }, h('kbd', { text: 'f' }))];
+      if (d.kind === 'stall' && applies(ACTIONS.cancel, b)) actions.push(h('button', { type: 'button', class: 'danger', text: 'Cancel turn', onclick: () => runAction(ACTIONS.cancel, d.branch) }));
+    }
+    const card = h('article', { class: `deck-card deck-${d.kind}`, tabindex: '0', 'aria-label': `${KIND_LABEL[d.kind]}: ${d.branch}` },
+      h('div', { class: 'deck-head' },
+        h('span', { class: `deck-kind deck-kind-${d.waits}` }, dot(d.waits === 'agent' ? 'needs' : d.kind === 'merge' ? 'ready' : 'done'), `${KIND_LABEL[d.kind]} · ${WAITS[d.waits]}`),
+        h('h2', {}, title)),
+      h('div', { class: 'deck-body' }, body),
+      h('div', { class: 'deck-actions' }, actions,
+        h('button', { type: 'button', class: 'ghost', text: 'Open', onclick: open }, h('kbd', { text: 'o' })),
+        h('span', { class: 'spacer' }),
+        h('button', { type: 'button', class: 'ghost', text: 'Later', onclick: () => later(d) }, h('kbd', { text: 's' }))),
+      h('p', { class: 'deck-then muted' }, rest.length ? ['Then: ', rest.slice(0, 3).map((x, i) => [i ? ' · ' : '', `${x.branch} (${KIND_VERB[x.kind]})`]), rest.length > 3 ? ` · ${rest.length - 3} more` : ''] : 'Then: nothing. This is the last one.'));
+    card.addEventListener('keydown', (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.target.closest('input, textarea, select, button, a')) return;
+      const key = ev.key;
+      if (key === 'Enter' && primary && !ev.repeat) primary();
+      else if (key === 'n' && d.kind === 'approval' && !disabled) holdAnswer(d, false, '');
+      else if (key === 's') later(d);
+      else if (key === 'o') open();
+      else if (key === 'f') followUp();
+      else return;
+      ev.preventDefault();
+    });
+    return card;
+  }
+  const since_ = (ms) => since(ms).replace(/ ago$/, '');
+
+  // The bay beside the card: the answers held for undo, then what is next.
+  function deckBay(rest) {
+    const held = state.deck.holding.map((entry) => {
+      const a = entry.decision.approval;
+      const left = h('span', { class: 'undo-left', 'data-until': String(entry.until) });
+      return h('div', { class: `bay-item bay-held bay-${entry.allow ? 'allow' : 'deny'}` },
+        h('span', { class: 'bay-main' }, h('b', { text: `${a.branch}: ${entry.allow ? 'allowing' : 'denying'} ${aboutText(a.about)}` }),
+          h('span', { class: 'bay-meta', text: 'sent when the count ends; the agent stays parked meanwhile' })),
+        h('button', { type: 'button', class: 'small', onclick: () => undoAnswer(entry) }, 'Undo ', left));
+    });
+    const next = rest.map((d) => h('button', {
+      type: 'button', class: `bay-item bay-${d.kind}`, 'data-decision': decisionKey(d),
+      onclick: () => { state.deck.front = decisionKey(d); state.deck.later = state.deck.later.filter((k) => k !== decisionKey(d)); branchesChanged(); focusDeck(); },
+    }, h('span', { class: 'bay-main' },
+      h('b', { text: d.kind === 'approval' ? `${d.branch} wants to ${aboutText(d.approval.about)}` : d.kind === 'question' ? `${d.branch} asks: ${d.question.text}` : d.kind === 'merge' ? `${d.branch} is ready to merge` : d.kind === 'stall' ? `${d.branch} is silent` : `${d.branch} ${statusOf({ status: d.status }).text}` }),
+      h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? `parked ${since_(d.since_ms)}` : WAITS[d.waits]}` })),
+    h('span', { class: 'bay-verb mono', text: KIND_VERB[d.kind] })));
+    return h('aside', { class: 'deck-bay', 'aria-label': 'Up next' },
+      held.length || next.length ? h('p', { class: 'deck-label' }, 'Up next', h('span', { class: 'muted', text: ' · parked agents first, oldest wait first' })) : null,
+      held, next);
   }
 
   function renderAttention() {
@@ -3840,33 +4221,23 @@
     const drafts = new Map(Array.from(document.querySelectorAll('#main [data-draft]'), (el) => [el.dataset.draft, el.value]));
     const active = document.activeElement && document.activeElement.dataset ? document.activeElement : null;
     const focused = active && active.dataset.draft ? [active.dataset.draft, active.selectionStart, active.selectionEnd] : null;
-    const waiting = attention();
-    const stopped = lanes(Array.from(state.branches.values()))[0].branches.filter((b) => !waiting.has(b.name));
     const perms = state.permissions;
-    const total = state.approvals.length + state.inbox.length + stopped.length;
-    const section = (title, items) => h('section', { class: 'attention-group' }, h('h2', { text: title }), h('ul', { class: 'cards' }, items));
-    main(h('div', { class: 'page' },
+    const deck = deckOrder();
+    const held = state.deck.holding.length;
+    const count = deck.length;
+    main(h('div', { class: 'page wide' },
       h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
       h('header', { class: 'page-head' }, h('div', {}, h('h1', { text: 'Needs you' }),
         h('p', { class: 'lede', text: !state.repo ? 'This token reaches no repository. A workspace shows what it waits for in its own project.'
-          : total ? `${plural(total, 'thing')} ${total === 1 ? 'waits' : 'wait'} for you in ${state.repo}.` : `Nothing in ${state.repo} waits for you.` }))),
-      state.approvals.length ? section('Waiting for approval', state.approvals.map((a) => h('li', { class: 'card' },
-        h('div', { class: 'card-head' }, dot('needs'), h('a', { class: 'card-name', href: branchHref(a.branch), text: a.branch }),
-          h('span', { class: 'tag', text: a.resolved ? a.resolved.layer : 'ask' })),
-        h('p', { class: 'card-text', text: `May it ${aboutText(a.about)}?` }),
-        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The call\'s arguments' }),
-          h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
-        h('p', { class: 'item-meta' }, `turn ${a.turn} · `, ago(a.created_ms), a.deadline_ms ? ` · waits until ${clock(a.deadline_ms)}` : null),
-        approvalForm(a)))) : null,
-      state.inbox.length ? section('Questions and escalations', state.inbox.map((m) => h('li', { class: 'card' },
-        h('div', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: `${m.from} → ${m.to}` }), h('span', { class: 'tag', text: m.kind })),
-        h('p', { class: 'card-text prompt', text: m.text }),
-        h('p', { class: 'item-meta' }, ago(m.at_ms)),
-        answerForm(m)))) : null,
-      stopped.length ? section('Stopped branches', stopped.map((b) => h('li', {}, h('a', { class: 'card card-link', href: branchHref(b.name) },
-        h('span', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: b.name }), ago(activeAt(b))),
-        h('span', { class: 'card-text', text: b.stalled ? 'Running, but stalled: no harness activity' : cap(statusOf(b).text) }))))) : null,
-      total ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions and branches that stop for you appear here.'),
+          : count ? `${plural(count, 'decision')} ${count === 1 ? 'waits' : 'wait'} for you in ${state.repo}. One at a time, the parked agent first.` : held ? 'Nothing more waits for you.' : `Nothing in ${state.repo} waits for you.` }))),
+      count || held ? h('div', { class: 'deck' },
+        count ? h('div', { class: 'deck-main' },
+          h('p', { class: 'deck-count muted' }, h('b', { text: `1 of ${count}` }), count > 1 ? ` · then ${deck[1].branch}` : ' · the last one'),
+          deckCard(deck[0], 1, count, deck.slice(1)),
+          h('p', { class: 'deck-keys muted' }, h('kbd', { text: '↵' }), ' the first action (held, for a merge) · ', h('kbd', { text: 'n' }), ' deny · ', h('kbd', { text: 's' }), ' later · ', h('kbd', { text: 'o' }), ' open · ', h('kbd', { text: 'f' }), ' follow up · an allow or a deny waits ', String(UNDO_MS / 1000), ' s for an undo'))
+          : null,
+        deckBay(deck.slice(1))) : null,
+      count || held ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions, ready branches and branches that stop appear here, one at a time.'),
       h('details', { class: 'attention-group ledger' },
         h('summary', {}, h('h2', { text: `Permission requests (${perms.length})` })),
         h('p', { class: 'hint', text: 'A server decides each tool request at once by the policy its task or send was given; there is nothing to approve afterwards. Send again with "Allow every tool" to let a branch use what was denied.' }),
@@ -4083,6 +4454,7 @@
     });
     setInterval(() => {
       for (const t of document.querySelectorAll('time[data-at]')) t.textContent = since(Number(t.dataset.at)) + t.dataset.suffix;
+      for (const u of document.querySelectorAll('.undo-left[data-until]')) u.textContent = `${Math.max(0, Math.ceil((Number(u.dataset.until) - Date.now()) / 1000))} s`;
     }, 15000);
     window.addEventListener('hashchange', () => {
       const m = /^#pair=([0-9a-zA-Z]+)$/.exec(location.hash);

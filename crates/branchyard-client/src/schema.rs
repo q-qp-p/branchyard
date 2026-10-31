@@ -66,6 +66,7 @@ pub fn contract() -> Value {
     entry::<knowledge_api::PlanRejectRequest>("PlanRejectRequest", &mut types);
     entry::<branchyard::KnowledgeEntry>("KnowledgeEntry", &mut types);
     entry::<effects_api::ApprovalList>("ApprovalList", &mut types);
+    entry::<effects_api::DecisionList>("DecisionList", &mut types);
     entry::<effects_api::ApprovalAnswerRequest>("ApprovalAnswerRequest", &mut types);
     entry::<effects_api::EffectList>("EffectList", &mut types);
     entry::<effects_api::EffectDetail>("EffectDetail", &mut types);

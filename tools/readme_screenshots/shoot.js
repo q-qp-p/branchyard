@@ -58,8 +58,7 @@ async function openBranch(page) {
     let page = desktop.page;
     await page.goto(`${app}#/b/${plan.repo}/${plan.branch}`);
     await openBranch(page);
-    await page.locator('#convo details.tools summary').click();
-    await page.locator('#convo details.tools[open] li').first().waitFor();
+    await page.locator('#convo .turn .notes .note').first().waitFor();
     await shoot(page, desktop.problems, 'console-branches', ['light', 'dark']);
 
     await page.goto(`${app}#/w/${plan.workspace}/s/${plan.session}`);

@@ -317,6 +317,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 | `GET /v1/repos/{repo}/knowledge/export` | The adopted entries as an `AGENTS.md`-style file | `{"markdown", "entries"}` |
 | `POST /v1/repos/{repo}/branches/{b}/distill` | Propose entries from `b` with the deterministic extractor (`run`) | `Distilled` |
 | `GET /v1/repos/{repo}/approvals[?all=true]` | The [approvals](effects.md#approvals) waiting, or every one | `ApprovalList` |
+| `GET /v1/repos/{repo}/decisions` | What waits for a person, in the order to take it: each running branch parked on an [approval](effects.md#approvals) or an unanswered question, oldest wait first (`waits: agent`); then the ready branches (`delivery`); then the stopped and stalled ones (`nobody`). The [console](companion.md)'s Decide view | `DecisionList` |
 | `POST /v1/repos/{repo}/approvals/{id}/allow`, `/deny` (`{reason?, surface?}`) | Answer one as the caller (`run`); `surface` is `api` (default), `companion` or `watch` | `ApprovalAsk` |
 | `GET /v1/repos/{repo}/effects[?branch=B]`, `GET …/effects/{id}` | The [effect ledger](effects.md), or one entry and its events | `EffectList`, `EffectDetail` |
 | `POST /v1/repos/{repo}/effects/{id}/promote`, `POST …/effects/reconcile` | Perform a staged effect as the caller; reconcile the ledger (`run`) | `EffectEntry`, `Reconciled` |
