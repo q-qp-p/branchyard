@@ -3968,7 +3968,7 @@
 
   function answerForm(m) {
     const id = nextId('answer');
-    const area = h('textarea', { id, rows: '2', 'data-draft': `answer:${m.id}`, placeholder: m.kind === 'escalation' ? 'Optional note' : 'Your answer' });
+    const area = h('textarea', { id, rows: '2', 'data-draft': `answer:${m.id}`, placeholder: m.kind === 'escalation' ? 'Optional note' : 'Your answer (Enter sends, Shift+Enter adds a line)' });
     const disabled = !can('run');
     const send = async (prefix) => {
       const note = area.value.trim();
@@ -3982,6 +3982,15 @@
         toast(`Could not answer: ${e.message}`);
       }
     };
+    // Enter sends a question's answer, as it does in a chat box; an
+    // escalation has two answers, so its Enter stays a new line.
+    if (m.kind !== 'escalation') {
+      area.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing || ev.metaKey || ev.ctrlKey || ev.altKey || disabled) return;
+        ev.preventDefault();
+        send(null);
+      });
+    }
     return h('div', { class: 'reply' },
       h('label', { class: 'block', for: id, text: `Answer as ${m.to}` }), area,
       h('div', { class: 'row' },

@@ -14,9 +14,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings};
-use branchyard_client::api::OperationState;
+use branchyard::{Envelope, MessageKind};
+use branchyard_client::api::{OperationState, PolicySpec, SpawnRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_server::companion::{link, store};
+use branchyard_testkit::wait;
 use common::{await_operation, run, task, Fixture, Server};
 
 fn playwright() -> Option<PathBuf> {
@@ -64,6 +66,18 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     config.app.enabled = true;
     // No push service is reachable here; the page's in-page notices remain.
     config.app.push = false;
+    // A delegating parent runs a child that asks it a question. The child's
+    // `ask` is Branchyard's own MCP server, which the fake agent starts
+    // from the `by` the engine names, so the real `by` is built here.
+    config.allow_delegation = true;
+    config.by_path = Some(
+        branchyard_testkit::built(
+            "branchyard-cli",
+            "by",
+            &std::env::current_exe().expect("the path of the test executable"),
+        )
+        .to_path_buf(),
+    );
     // A person's policy that asks before a write, so a turn parks on an
     // approval the page decides.
     config.approvals = ApprovalSettings {
@@ -165,12 +179,105 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     expect("DECIDED");
     let done = await_operation(&server.client(), &asker.id);
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    // A delegating parent, and a child that asks it which parser to use and
+    // waits for the answer. The page's deck shows the question and a person
+    // answers it; the child's wait ends with that text.
+    let boss = run(
+        &server.client(),
+        &TaskRequest {
+            delegation: Some(Envelope::depth(2)),
+            ..task("say hi", "boss")
+        },
+    );
+    assert_eq!(boss.state, OperationState::Succeeded, "{boss:?}");
+    let kid = server
+        .client()
+        .repo("app")
+        .spawn(
+            "boss",
+            &SpawnRequest {
+                prompt: r#"MCP ask {"text": "Which parser?", "wait_seconds": 60}"#.into(),
+                name: Some("kid".into()),
+                policy: PolicySpec::allow_all(),
+                ..SpawnRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    // The question is in the parent's inbox, and nothing has answered it.
+    let boss_inbox =
+        |client: &branchyard_client::Client| client.repo("app").inbox("boss").unwrap().messages;
+    let question = wait::until("the child's question to reach its parent", || {
+        boss_inbox(&server.client())
+            .into_iter()
+            .find(|m| m.kind == MessageKind::Question)
+            .ok_or_else(|| "no question yet".to_owned())
+    });
+    assert_eq!(
+        (question.from.as_str(), question.text.as_str()),
+        ("kid", "Which parser?")
+    );
+    writeln!(stdin, "question").unwrap();
+    expect("ASKED");
+    // The page shows it, and the child stays parked: nothing has answered.
+    assert!(
+        !server
+            .client()
+            .operation(&kid.id)
+            .unwrap()
+            .state
+            .is_terminal(),
+        "the child finished before it was answered"
+    );
+    assert!(server
+        .client()
+        .repo("app")
+        .inbox("kid")
+        .unwrap()
+        .messages
+        .is_empty());
+    writeln!(stdin, "answer").unwrap();
+    expect("ANSWERED");
+    let done = await_operation(&server.client(), &kid.id);
+    assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    // The answer went to the child as a reply to that question, from the
+    // parent the person answered as, and the child's wait ended with it.
+    let answers = server.client().repo("app").inbox("kid").unwrap().messages;
+    let [answer] = answers.as_slice() else {
+        panic!("the child's inbox is {answers:?}, not one answer");
+    };
+    assert_eq!(answer.kind, MessageKind::Answer);
+    assert_eq!(answer.in_reply_to, Some(question.id));
+    assert_eq!(
+        (answer.from.as_str(), answer.text.as_str()),
+        ("boss", "Use the second parser.")
+    );
+    let said = server
+        .client()
+        .repo("app")
+        .events("kid", 0)
+        .unwrap()
+        .events
+        .iter()
+        .filter_map(|e| match &e.activity {
+            branchyard::Activity::Harness(branchyard::Event::MessageDelta { text, .. }) => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        said.contains("Use the second parser."),
+        "the child's wait ended without the answer: {said}"
+    );
+
     // Another open branch writes one of first's files: the page's ground
     // plan names it on first's page and on first's merge card.
     let op = run(&server.client(), &task("WRITE a.txt=rival", "rival"));
     assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
     writeln!(stdin, "ground").unwrap();
     expect("GROUND");
+
     expect("DONE");
     assert!(child.wait().unwrap().success());
 
