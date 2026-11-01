@@ -930,10 +930,24 @@ class FeedEntry(Record):
         value = activity.get("status") if isinstance(activity, dict) else None
         return Status(value) if isinstance(value, dict) else None
 
+    @property
+    def turn_cost(self) -> Optional[float]:
+        """What the turn that is ending cost on its own, in US dollars, when
+        the activity is the engine's record of it (`{"turn_cost":
+        {"cost_usd": ...}}`, after the turn's metering settled and before
+        its closing status); else `None`. A turn nothing measured records
+        none. The branch's running total stays `BranchInfo.cost_usd`."""
+        activity = self.get("activity")
+        value = activity.get("turn_cost") if isinstance(activity, dict) else None
+        cost = value.get("cost_usd") if isinstance(value, dict) else None
+        return float(cost) if isinstance(cost, (int, float)) else None
+
 
 class BranchEvents(Record):
     """`{"events": [RecordedEvent], "cursor": M}`: pass `cursor` back for
-    the events after these."""
+    the events after these. Each event is `{"at_ms", "activity"}`, the
+    activity tagged as in `FeedEntry` (`FeedEntry(event).turn_cost` reads a
+    turn's own cost)."""
 
     @property
     def events(self) -> list[JSON]:

@@ -48,7 +48,7 @@ use crate::store_codec::deadline_capped;
 use crate::{
     git, names, Activity, Branch, BranchStatus, Budget, CandidateInfo, DecisionSource,
     DeliveredVia, Error, Event, NativeSession, PermissionDecision, PermissionRequest, Policy,
-    StallAction, SteerState, TaskOptions, TurnOutcome, Yard,
+    RecordedEvent, StallAction, SteerState, TaskOptions, TurnOutcome, Yard,
 };
 use branchyard_support::time::now_ms;
 
@@ -1203,10 +1203,11 @@ fn run(
     // the branch inspecting itself, sees a figure and not "unknown".
     let mut live = LiveCost::new(record.info.cost_usd.unwrap_or(0.0));
     let shown: Cell<Option<f64>> = Cell::new(None);
-    // On the model gateway the record's cost also counts the turn's
-    // metered calls as they end; `metered_from` is what to add the turn's
-    // total to when it ends.
-    let on_gateway = model_gateway.is_some();
+    // The record's cost also counts the turn's spend so far, as it is
+    // reported (or, on the model gateway, as metered calls end);
+    // `metered_from` keeps what the branch had spent before the turn,
+    // what a gateway turn's total is added to and what the turn's own
+    // cost is counted from when it ends, here or in recovery.
     let write = |stalled: Option<bool>| -> Result<(), Error> {
         let mut updated = record.clone();
         if let Some(value) = stalled {
@@ -1214,9 +1215,7 @@ fn run(
         }
         if let Some(cost) = shown.get() {
             updated.info.cost_usd = Some(cost);
-            if on_gateway {
-                updated.metered_from = Some(record.info.cost_usd.unwrap_or(0.0));
-            }
+            updated.metered_from = Some(record.info.cost_usd.unwrap_or(0.0));
         }
         store.write_fenced(&updated, fence)
     };
@@ -2179,6 +2178,16 @@ fn effects_proxy(
     Ok(Some(proxy))
 }
 
+/// Whether the turn the events end in (the events after its prompt)
+/// already recorded its own cost.
+fn turn_cost_recorded(events: &[RecordedEvent]) -> bool {
+    events
+        .iter()
+        .rev()
+        .take_while(|event| !matches!(event.activity, Activity::Prompt(_)))
+        .any(|event| matches!(event.activity, Activity::TurnCost { .. }))
+}
+
 /// What the `snapshot` step recorded.
 #[derive(Serialize, Deserialize)]
 struct Snapshotted {
@@ -2208,14 +2217,17 @@ pub(crate) fn conclude(
         info.session = Some(session.to_string());
         record.cost_session = Some(session.to_string());
     }
-    // A turn on the model gateway wrote its metered calls into the cost as
-    // they ended; what it had spent before is what they are added to.
+    // A turn that wrote its spend into the cost as it ran (on the model
+    // gateway, its metered calls as they ended) left beside it what the
+    // branch had spent before; otherwise the record still says that.
     let before_metered = record.metered_from.take();
+    let before = before_metered.unwrap_or_else(|| info.cost_usd.unwrap_or(0.0));
+    let measured = before_metered.is_some()
+        || driven.metered.is_some()
+        || driven.cost.is_some()
+        || driven.live_cost.is_some();
     match (driven.metered, driven.cost) {
-        (Some(metered), _) => {
-            let before = before_metered.unwrap_or_else(|| info.cost_usd.unwrap_or(0.0));
-            info.cost_usd = Some(before + metered);
-        }
+        (Some(metered), _) => info.cost_usd = Some(before + metered),
         (None, Some(cost)) => info.cost_usd = Some(spent(cost, record.cost_baseline)),
         (None, None) => {
             if let Some(live) = driven.live_cost {
@@ -2226,14 +2238,30 @@ pub(crate) fn conclude(
     let message = format!("{}: turn {}\n\n{}\n", info.git_branch, info.turns, prompt);
     let previous = info.candidate.as_ref().map(|c| c.commit.clone());
     let intent = json!({ "message": message });
-    let recorded = match store
-        .backend()
-        .begin_step(fence, fence.turn, STEP_SNAPSHOT, &intent)?
-    {
-        Begun::Done(outcome) => serde_json::from_value::<Snapshotted>(outcome).ok(),
-        Begun::Fresh | Begun::Pending(_) => None,
-    };
+    let (recorded, pending) =
+        match store
+            .backend()
+            .begin_step(fence, fence.turn, STEP_SNAPSHOT, &intent)?
+        {
+            Begun::Done(outcome) => (serde_json::from_value::<Snapshotted>(outcome).ok(), false),
+            Begun::Fresh => (None, false),
+            Begun::Pending(_) => (None, true),
+        };
     let replayed = recorded.is_some();
+    // The turn's own cost, now that its metering has settled: what the
+    // branch's total grew by, so a harness's running session total counts
+    // only what this turn added. Recorded once per turn: before the
+    // snapshot step finishes, so a recovery that replays the step does not
+    // repeat it, and not again by a recovery of an attempt that recorded it
+    // and stopped before the step finished.
+    let recorded_cost = pending
+        && crate::record::read(&store, &info.name).is_ok_and(|events| turn_cost_recorded(&events));
+    if !replayed && measured && !recorded_cost {
+        let after = info.cost_usd.unwrap_or(0.0);
+        recorder.record(Activity::TurnCost {
+            cost_usd: (after - before).max(0.0),
+        })?;
+    }
     let snapshotted = match recorded {
         Some(snapshotted) => snapshotted,
         None => {
@@ -2432,6 +2460,20 @@ mod tests {
         // Past the limit stops it whether or not the report added spend: a
         // child that overshot took the parent over.
         assert!(used_up(Some(1.0), 0.4, 0.7, false));
+    }
+
+    /// A recovery that concludes a turn whose earlier attempt recorded the
+    /// turn's cost and stopped before its snapshot step finished does not
+    /// record it again; an earlier turn's cost does not count.
+    #[test]
+    fn a_turns_cost_is_recorded_once() {
+        let at = |activity| RecordedEvent { at_ms: 0, activity };
+        let cost = || at(Activity::TurnCost { cost_usd: 0.25 });
+        let prompt = || at(Activity::Prompt("go".into()));
+        assert!(turn_cost_recorded(&[prompt(), cost()]));
+        assert!(!turn_cost_recorded(&[prompt(), cost(), prompt()]));
+        assert!(!turn_cost_recorded(&[prompt()]));
+        assert!(turn_cost_recorded(&[cost()]), "a log that lost its prompt");
     }
 
     #[test]

@@ -43,6 +43,14 @@ fn a_run_that_writes_files_is_ready_with_its_diffstat() {
     );
     assert_eq!(info.turns, 1);
     assert_eq!(info.cost_usd, None, "ACP reports no cost");
+    assert!(
+        !branch
+            .events()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e.activity, Activity::TurnCost { .. })),
+        "nothing measured the turn, so it records no cost of its own"
+    );
     assert_eq!(info.base, f.git(&["rev-parse", "main"]).trim());
     let candidate = info.candidate.as_ref().unwrap();
     assert_eq!(

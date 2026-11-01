@@ -268,7 +268,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 | `POST /v1/repos/{repo}/wait` | Block until branches settle, as `by wait`; `{branches, any?, timeout_seconds?}`, the timeout capped at 30s on the server (`by --remote wait` asks again past it); a branch a queued or running send, task or spawn will run a turn of is pending until that turn has run; `read` scope | `Waited`: `{settled: [Inspection], pending, timed_out?}` |
 | `DELETE /v1/repos/{repo}/branches/{b}` | Remove worktree and record | `{"removed": "b"}` |
 | `GET /v1/repos/{repo}/branches/{b}/diff` | Candidate diff against the base | `{"diff": "..."}` |
-| `GET /v1/repos/{repo}/branches/{b}/events?cursor=N` | Recorded events after the first `N` (default 0); a branch's events are numbered from 1 | `{"events": [RecordedEvent], "cursor": M}`; pass `M` next |
+| `GET /v1/repos/{repo}/branches/{b}/events?cursor=N` | Recorded events after the first `N` (default 0); a branch's events are numbered from 1. A turn whose spend something measured carries its own cost as `{"turn_cost": {"cost_usd"}}`, before its closing status ([budgets](delegation.md#budgets)) | `{"events": [RecordedEvent], "cursor": M}`; pass `M` next |
 | `POST /v1/repos/{repo}/branches/{b}/spawn` | A child of `b`, as `by spawn --parent b` makes one; needs `--allow-delegation` | `202` operation |
 | `POST /v1/repos/{repo}/branches/{b}/integrate` | Merge delegated child `b` into the branch that delegated it, as `by integrate b` | `202` operation |
 | `GET /v1/repos/{repo}/branches/{b}/inspection` | `b` as a delegating parent sees it, as `by inspect b --json` | `Inspection` |

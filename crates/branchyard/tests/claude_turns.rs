@@ -1,12 +1,12 @@
 //! The engine driving Claude Code's stream-json profile against a shell
 //! stand-in that prints the frames Claude Code 2.1.293 prints: how a
 //! session is closed, a cost limit crossed by the turn's last message, the
-//! cost of a turn while it runs, the spending limit the harness is given
-//! and stops at itself (none on the model gateway), the cost of a fresh
-//! session after spending, the harness's private temporary directory, a
-//! cost limit that stops a turn at the usage report that takes it to the
-//! limit, and a parent's limit that stops the children of a tree that has
-//! spent it. No model is called.
+//! cost of a turn while it runs, each turn's own cost, the spending limit
+//! the harness is given and stops at itself (none on the model gateway),
+//! the cost of a fresh session after spending, the harness's private
+//! temporary directory, a cost limit that stops a turn at the usage report
+//! that takes it to the limit, and a parent's limit that stops the
+//! children of a tree that has spent it. No model is called.
 
 #![allow(clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
@@ -841,6 +841,70 @@ while [ ! -e '{go}' ]; do sleep 0.05; done
     assert_eq!(ended.cost_usd, Some(0.25), "the harness's figure wins");
 }
 
+/// What each of a branch's turns recorded it cost on its own, oldest
+/// first.
+fn turn_costs(f: &Fixture, name: &str) -> Vec<f64> {
+    f.yard
+        .branch(name)
+        .unwrap()
+        .events()
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.activity {
+            Activity::TurnCost { cost_usd } => Some(cost_usd),
+            _ => None,
+        })
+        .collect()
+}
+
+fn near(got: &[f64], want: &[f64]) -> bool {
+    got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9)
+}
+
+/// Each turn records what it cost on its own once its metering has
+/// settled, between the harness's end of the turn and the branch's
+/// closing status: for Claude Code, whose `total_cost_usd` is the
+/// session's running total, the part of it the turn added. The branch's
+/// cost stays the total, the sum of its turns', and its checkpoints carry
+/// each turn's.
+#[test]
+fn each_turn_records_its_own_cost() {
+    let f = Fixture::new();
+    let branch = f
+        .yard
+        .task("go")
+        .options(stand_in(&f, &result(0.04)))
+        .name("receipts")
+        .run()
+        .unwrap();
+    let again = branch.send("again", stand_in(&f, &result(0.03))).unwrap();
+    let costs = turn_costs(&f, "receipts");
+    assert!(
+        near(&costs, &[0.04, 0.03]),
+        "the turns', not the session's $0.07: {costs:?}"
+    );
+    let total = again.info().cost_usd.unwrap();
+    assert!((total - 0.07).abs() < 1e-9, "{total}");
+    assert!((total - costs.iter().sum::<f64>()).abs() < 1e-9);
+
+    let events = again.events().unwrap();
+    let last =
+        |want: fn(&Activity) -> bool| events.iter().rposition(|e| want(&e.activity)).unwrap();
+    let ended = last(|a| matches!(a, Activity::Harness(branchyard::Event::TurnEnded { .. })));
+    let cost = last(|a| matches!(a, Activity::TurnCost { .. }));
+    let status = last(|a| matches!(a, Activity::Status(s) if *s != BranchStatus::Running));
+    assert!(ended < cost && cost < status, "{ended} {cost} {status}");
+
+    let listed: Vec<f64> = again
+        .checkpoints()
+        .unwrap()
+        .checkpoints
+        .iter()
+        .filter_map(|entry| entry.cost_usd)
+        .collect();
+    assert!(near(&listed, &[0.04, 0.03]), "{listed:?}");
+}
+
 /// A local harness gets a private temporary directory under the
 /// branch's state, which goes when the branch does.
 #[test]
@@ -1079,6 +1143,10 @@ exit 3"#;
     assert!(argv.contains(&format!("--resume\n{session}\n")), "{argv}");
     let spent = next.info().cost_usd.unwrap();
     assert!((spent - 0.053).abs() < 1e-9, "counted twice: {spent}");
+    // The cut-off turn's own cost is its live estimate, and the turn after
+    // it counts only what it added to the session's total.
+    let costs = turn_costs(&f, "cut");
+    assert!(near(&costs, &[0.01, 0.033, 0.01]), "{costs:?}");
 }
 
 /// A branch on the model gateway is given no spending limit of its own:

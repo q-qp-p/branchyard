@@ -11,6 +11,8 @@
 //   script: SENT              a follow-up was sent from the branch page
 //   test:   (starts a branch whose reply is markdown), then "report"
 //   script: RENDERED          the reply's markdown and JSON are elements
+//   test:   (runs two turns of a harness that reports a cost), then "costly"
+//   script: COSTED            each turn's receipt shows its own cost
 //   test:   (starts a branch whose policy asks before a write), then "asker"
 //   script: DECIDED           the deck showed the ask and Enter allowed it
 //   script: DONE              and the page shows its second turn
@@ -241,6 +243,17 @@ const shots = process.env.BY_SCREENSHOTS;
   if (convoText.includes('```') || convoText.includes('**')) throw new Error('markdown syntax is shown as text');
   await noOverflow('a rendered reply');
   say('RENDERED');
+
+  // Each turn's receipt shows what that turn cost, as the engine recorded
+  // it; the strip keeps the branch's total.
+  await nextLine();
+  await go('#/b/app/costly');
+  const receipts = page.locator('#convo .turn .outcome');
+  await receipts.filter({ hasText: '$0.2500' }).waitFor({ timeout: 60000 });
+  await receipts.filter({ hasText: '$0.5000' }).waitFor({ timeout: 60000 });
+  if (await receipts.filter({ hasText: '$0.7500' }).count()) throw new Error('a receipt shows the session total, not its turn');
+  await page.locator('.strip-meta', { hasText: '$0.7500' }).waitFor();
+  say('COSTED');
 
   // A turn parked on an approval: the branch itself says so on the board
   // and in the lane, the deck shows the ask first, Later sends it to the

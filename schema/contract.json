@@ -32168,6 +32168,29 @@
             {
               "type": "object",
               "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "status": {
                   "$ref": "#/$defs/BranchStatus"
                 }
@@ -37760,6 +37783,29 @@
               ],
               "additionalProperties": false,
               "description": "A new candidate commit."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
             },
             {
               "type": "object",
@@ -48524,6 +48570,29 @@
               ],
               "additionalProperties": false,
               "description": "A new candidate commit."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
             },
             {
               "type": "object",

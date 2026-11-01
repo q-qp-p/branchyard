@@ -20,6 +20,13 @@ shows `waiting for approval: …`. The server adds `GET …/decisions`
 (`DecisionList`, `Repo::decisions`): what waits for a person in the order to
 take it, parked agents first, oldest wait first. Nothing in it expires.
 
+Each turn's receipt now says what that turn cost. The engine records a
+`turn_cost` event (`Activity::TurnCost`) when a turn's metering has settled:
+what the branch's cost grew by, so a harness's running session total counts
+only the part the turn added. A turn nothing measured records none, and the
+branch's `cost_usd` stays its total. `by log`, `by show`'s checkpoints, the
+event page and Python's `FeedEntry.turn_cost` carry it.
+
 Reading an operation, or a fork, no longer fails with `404 unknown_branch`
 for a branch that was removed meanwhile: a fork's removed parent, or a goal
 judge's scratch branch removed between two reads of the operation that ran
