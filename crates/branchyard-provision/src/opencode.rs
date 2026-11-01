@@ -56,13 +56,18 @@ pub const AUTH: Spec = Spec {
             // `opencode providers list` offers for it, is not passed on
             // (checked 25 October 2026), so it is not a method. Its Z.ai
             // providers (`zai`, `zai-coding-plan`) read ZHIPU_API_KEY.
+            // A ZAI_API_KEY secret, the name Z.ai's own documentation
+            // and Branchyard's other harnesses use, is delivered under
+            // ZHIPU_API_KEY ([`ZAI_ALIAS`]).
             &[
                 "ANTHROPIC_API_KEY",
                 "OPENAI_API_KEY",
                 "GOOGLE_GENERATIVE_AI_API_KEY",
                 "ZHIPU_API_KEY",
+                "ZAI_API_KEY",
             ],
-            "set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY or ZHIPU_API_KEY",
+            "set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, ZHIPU_API_KEY \
+             or ZAI_API_KEY",
         ),
         Method::file(
             "auth-file",
@@ -71,6 +76,11 @@ pub const AUTH: Spec = Spec {
         ),
     ],
 };
+
+/// The secret name OpenCode's Z.ai providers (`zai`, `zai-coding-plan`)
+/// do not read, and the variable they do: a `ZAI_API_KEY` secret reaches
+/// the harness as `ZHIPU_API_KEY`.
+pub const ZAI_ALIAS: (&str, &str) = ("ZAI_API_KEY", "ZHIPU_API_KEY");
 
 pub(crate) struct OpenCode;
 
@@ -102,7 +112,8 @@ impl Provisioner for OpenCode {
             match resolved.method {
                 "api-key" => {
                     let key = resolved.env()?;
-                    plan.secret_env(key, key, context.secret(key).unwrap_or_default(), true);
+                    let var = if key == ZAI_ALIAS.0 { ZAI_ALIAS.1 } else { key };
+                    plan.secret_env(key, var, context.secret(key).unwrap_or_default(), true);
                 }
                 "auth-file" => {
                     needs_private_home(context, "OpenCode's auth.json")?;
@@ -148,5 +159,40 @@ impl Provisioner for OpenCode {
             );
         }
         Ok(plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Protocol, Secret, Via};
+
+    /// A `ZAI_API_KEY` secret is the Z.ai key OpenCode reads as
+    /// `ZHIPU_API_KEY`; given under OpenCode's own name it stays as it is,
+    /// and the delivery record names the secret, not the variable.
+    #[test]
+    fn a_zai_key_is_delivered_under_the_name_opencode_reads() {
+        let mut context = Context::new("opencode", Protocol::Acp, "/h", "/w");
+        context.secrets = vec![Secret::new("ZAI_API_KEY", "k")];
+        let plan = OpenCode.plan(&context).unwrap();
+        assert_eq!(plan.auth.as_deref(), Some("api-key"));
+        let var = plan.env.iter().find(|e| e.secret).unwrap();
+        assert_eq!(
+            (var.name.as_str(), var.value.as_str()),
+            ("ZHIPU_API_KEY", "k")
+        );
+        assert!(plan.env.iter().all(|e| e.name != "ZAI_API_KEY"));
+        assert!(plan.secrets.iter().any(|d| d.secret == "ZAI_API_KEY"
+            && d.via
+                == Via::Env {
+                    var: "ZHIPU_API_KEY".into()
+                }
+            && d.tool_env));
+        assert!(plan.unused_secrets.is_empty());
+
+        context.secrets = vec![Secret::new("ZHIPU_API_KEY", "k")];
+        let plan = OpenCode.plan(&context).unwrap();
+        let var = plan.env.iter().find(|e| e.secret).unwrap();
+        assert_eq!(var.name, "ZHIPU_API_KEY");
     }
 }

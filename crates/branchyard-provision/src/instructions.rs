@@ -37,6 +37,35 @@ const END_MARKERS: &[&str] = &[
     "<!-- END SCION MANAGED -->",
 ];
 
+/// The markers of a managed block in a file whose comments are `#` lines
+/// (YAML, TOML, dotenv), where an HTML comment is not a comment.
+pub const COMMENT_BEGIN: &str = "# BEGIN BRANCHYARD MANAGED";
+pub const COMMENT_END: &str = "# END BRANCHYARD MANAGED";
+
+/// A file's marker dialect: what is written, and what is recognized.
+struct Markers {
+    begin: &'static str,
+    end: &'static str,
+    begins: &'static [&'static str],
+    ends: &'static [&'static str],
+}
+
+/// HTML comments, for Markdown instruction files.
+const HTML: Markers = Markers {
+    begin: BEGIN,
+    end: END,
+    begins: BEGIN_MARKERS,
+    ends: END_MARKERS,
+};
+
+/// `#` comment lines, for YAML and its kin.
+const COMMENT: Markers = Markers {
+    begin: COMMENT_BEGIN,
+    end: COMMENT_END,
+    begins: &[COMMENT_BEGIN],
+    ends: &[COMMENT_END],
+};
+
 /// Where a managed block is.
 enum Found {
     None,
@@ -45,15 +74,17 @@ enum Found {
     Unclosed,
 }
 
-fn find_block(content: &str) -> Found {
-    let Some((start, begin)) = BEGIN_MARKERS
+fn find_block_with(markers: &Markers, content: &str) -> Found {
+    let Some((start, begin)) = markers
+        .begins
         .iter()
         .find_map(|m| content.find(m).map(|i| (i, *m)))
     else {
         return Found::None;
     };
     let after = start + begin.len();
-    match END_MARKERS
+    match markers
+        .ends
         .iter()
         .find_map(|m| content[after..].find(m).map(|i| after + i + m.len()))
     {
@@ -65,7 +96,11 @@ fn find_block(content: &str) -> Found {
 /// `content` without its managed block. Content with a begin marker but no
 /// end marker is returned unchanged, so nothing is lost.
 pub fn strip_managed_block(content: &str) -> String {
-    match find_block(content) {
+    strip_with(&HTML, content)
+}
+
+fn strip_with(markers: &Markers, content: &str) -> String {
+    match find_block_with(markers, content) {
         Found::Block(start, end) => {
             format!(
                 "{}\n",
@@ -98,16 +133,35 @@ pub fn compose(sections: &[String]) -> Option<String> {
 /// The block comes first and user content after it. Returns `None` when
 /// nothing is left, so the file is removed.
 pub fn merge_block(current: Option<&str>, body: Option<&str>) -> Result<Option<String>, String> {
+    merge_with(&HTML, current, body)
+}
+
+/// [`merge_block`] for a file whose comments are `#` lines, between
+/// [`COMMENT_BEGIN`] and [`COMMENT_END`]. The body is the file's own
+/// syntax (a YAML mapping, say); the markers are comments to it.
+pub fn merge_comment_block(
+    current: Option<&str>,
+    body: Option<&str>,
+) -> Result<Option<String>, String> {
+    merge_with(&COMMENT, current, body)
+}
+
+fn merge_with(
+    markers: &Markers,
+    current: Option<&str>,
+    body: Option<&str>,
+) -> Result<Option<String>, String> {
     let current = current.unwrap_or("");
-    if matches!(find_block(current), Found::Unclosed) {
+    if matches!(find_block_with(markers, current), Found::Unclosed) {
         return Err(
             "has a managed-block begin marker without an end marker; not editing it".into(),
         );
     }
-    let existing = strip_managed_block(current);
+    let existing = strip_with(markers, current);
+    let (begin, end) = (markers.begin, markers.end);
     let managed = body
         .filter(|b| !b.trim().is_empty())
-        .map(|b| format!("{BEGIN}\n\n{}\n\n{END}\n", b.trim()));
+        .map(|b| format!("{begin}\n\n{}\n\n{end}\n", b.trim()));
     let unmanaged = match existing.trim() {
         "" => None,
         text => Some(format!("{text}\n")),
@@ -227,5 +281,38 @@ mod tests {
         );
         assert_eq!(merge_block(Some(&current), None).unwrap(), None);
         assert_eq!(merge_block(None, None).unwrap(), None);
+    }
+
+    /// `#` markers for a YAML file: the block is merged, replaced and
+    /// removed the same way, and an HTML-comment block in the same file is
+    /// not touched by it.
+    #[test]
+    fn comment_blocks_merge_in_yaml() {
+        let first = merge_comment_block(
+            Some("model: glm\n"),
+            Some("approvals:\n  deny:\n    - \"*\""),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            first,
+            "# BEGIN BRANCHYARD MANAGED\n\napprovals:\n  deny:\n    - \"*\"\n\n# END BRANCHYARD MANAGED\n\nmodel: glm\n"
+        );
+        let again = merge_comment_block(Some(&first), Some("approvals:\n  deny:\n    - \"*\""))
+            .unwrap()
+            .unwrap();
+        assert_eq!(again, first);
+        let replaced = merge_comment_block(Some(&first), Some("approvals: {}"))
+            .unwrap()
+            .unwrap();
+        assert!(replaced.contains("approvals: {}") && !replaced.contains("deny"));
+        assert_eq!(
+            merge_comment_block(Some(&first), None).unwrap().unwrap(),
+            "model: glm\n"
+        );
+        assert!(merge_comment_block(Some("# BEGIN BRANCHYARD MANAGED\nx"), Some("y")).is_err());
+        assert_eq!(merge_comment_block(None, None).unwrap(), None);
+        // The HTML dialect leaves a comment block alone and vice versa.
+        assert_eq!(strip_managed_block(&first), first);
     }
 }

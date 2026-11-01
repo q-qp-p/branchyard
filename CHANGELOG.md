@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+Four corrections from the 1 November qualification of the ACP harnesses.
+DeepSeek Harness and Hermes run a benign shell command without asking their
+client, so their profiles now say so (`tool_approvals` carries the caveat in
+the compatibility matrix), the qualification runner records the permission
+scenarios as declared for them, interrupts a running tool on the harness's
+own word that it started rather than waiting for a request that never comes,
+and fails `permission_allowed` where a harness that routes approvals let the
+command run unasked. Provisioning projects the branch's policy into each
+harness's own setting: `DSH_PERMISSION_MODE=read-only` for dsh unless the
+policy allows the shell outright, and an `approvals.deny: ["*"]` rule in a
+managed block of Hermes's `config.yaml` (a shared home is refused). The ACP
+driver ends a turn `interrupted` when the agent answers a cancelled prompt
+with an error instead of `cancelled` (Hermes 0.19.0), keeping the error as a
+warning, and can choose a pinned model through a session's `model` config
+option (`session/set_config_option`) where a profile turns it on. OpenCode
+takes a `ZAI_API_KEY` secret as the `ZHIPU_API_KEY` its Z.ai providers read.
+Each qualification report records the model the harness named in its usage
+(`model_reported`) beside the one asked for.
+
 ## 0.4.0 - 2026-11-01
 
 The console's second pass gives it depth and density. Surfaces have three

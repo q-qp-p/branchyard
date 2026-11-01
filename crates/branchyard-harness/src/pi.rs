@@ -448,8 +448,8 @@ impl Driver for Pi {
         }
     }
 
-    fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[
+    fn capability_reasons(&self) -> Vec<crate::CapabilityReason> {
+        vec![
             (
                 "tool_approvals",
                 "Pi never asks for tool approval; its tools run with the process's own permissions, so restrict them with --tools/--no-tools and the sandbox instead",

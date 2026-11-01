@@ -184,7 +184,7 @@ pub(crate) fn check_model(profile: &Profile, model: &str, private_home: bool) ->
     if plan.session.model.is_none() || driver.capabilities().model {
         return Ok(());
     }
-    let reasons = branchyard_harness::reasons_for(&["model"], driver.capability_reasons());
+    let reasons = branchyard_harness::reasons_for(&["model"], &driver.capability_reasons());
     Err(refuse(
         reasons.first().map_or("not verified", |(_, why)| why),
     ))

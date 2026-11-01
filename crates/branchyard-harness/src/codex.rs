@@ -505,8 +505,8 @@ impl Driver for Codex {
         }
     }
 
-    fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[("budget", BUDGET)]
+    fn capability_reasons(&self) -> Vec<crate::CapabilityReason> {
+        vec![("budget", BUDGET)]
     }
 
     fn open(&mut self, open: Open) -> Result<Opened, Rejected> {

@@ -252,8 +252,8 @@ impl Driver for Amp {
         }
     }
 
-    fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[
+    fn capability_reasons(&self) -> Vec<crate::CapabilityReason> {
+        vec![
             ("fork", "Amp cannot fork a thread"),
             (
                 "model",
