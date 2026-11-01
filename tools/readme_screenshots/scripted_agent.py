@@ -12,8 +12,9 @@ notifications and sends the agent one directive in place of the prompt. `REPLY_F
 makes the fake agent answer with the reply's text and do nothing else, which is why the filter
 does the file work itself. A scene without a reply sends `HANG`, so its turn runs until someone
 cancels it. A scene with `asks` sends `PERMISSION WRITE <asks>` instead: the fake agent asks the
-server for permission to write and the turn waits, parked on that approval, until a person answers. Every other message passes through untouched, so the server records the prompt as
-typed and the fake agent answers the rest of the protocol. The filter exits with the agent.
+server for permission to write and the turn waits, parked on that approval, until a person
+answers. Every other message passes through untouched, so the server records the prompt as typed
+and the fake agent answers the rest of the protocol. The filter exits with the agent.
 
 A scene, in SCRIPT.json's `scenes` list:
 

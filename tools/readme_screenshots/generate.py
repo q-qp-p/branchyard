@@ -7,11 +7,11 @@ It builds nothing. BY is a built `by`, and FAKE_ACP_AGENT the fake agent from
 `cargo build -p branchyard-runtime --bin fake-acp-agent`. In a new temporary directory it makes
 a small Rust repository and a server configuration that runs Claude Code's ACP profile as the
 scripted agent (scripted_agent.py) in front of the fake agent. It starts `by serve --app
---knowledge`, plays story.py through the API (branches in every lane, a knowledge workspace with
-two sessions and the tables they publish; one branch parked on an approval), and has shoot.js sign a desktop and a phone browser in
-and take the screenshots. They replace the ones in DIR (default assets/screenshots) only once
-shoot.js has taken all of them. It calls no model. A failed run keeps its temporary directory,
-with the server's log, and prints where it is.
+--knowledge`, plays story.py through the API (branches in every lane, one of them parked on an
+approval, and a knowledge workspace with two sessions and the tables they publish), and has
+shoot.js sign a desktop and a phone browser in and take the screenshots. They replace the ones in
+DIR (default assets/screenshots) only once shoot.js has taken all of them. It calls no model. A
+failed run keeps its temporary directory, with the server's log, and prints where it is.
 
 Playwright comes from PLAYWRIGHT (the module's directory) or `$(npm root -g)/playwright`, and
 PLAYWRIGHT_BROWSERS_PATH goes to it unchanged. The table preview needs the isolated converter,

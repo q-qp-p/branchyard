@@ -50,7 +50,7 @@ class Session:
 REPO = "logfmt"
 OPEN_BRANCH = "parser-fix"
 PARKED_BRANCH = "changelog"
-"""The branch whose turn waits on a write the person has not allowed: the board's amber wait and the deck's first card."""
+"""The branch whose turn waits on a write the person has not allowed: the board's amber wait, the deck's first card."""
 
 CARGO_TOML = """\
 [package]

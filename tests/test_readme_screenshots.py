@@ -89,7 +89,6 @@ class Rewriting(unittest.TestCase):
         rewritten = agent.rewrite(prompt("Fix the flaky test."), scene())
         self.assertEqual(rewritten["params"]["prompt"][0]["text"], "HANG")
 
-
     def test_a_scene_that_asks_has_the_agent_ask_permission_to_write(self):
         rewritten = agent.rewrite(prompt("Fix the flaky test."), scene(asks="RELEASE.md=draft"))
         self.assertEqual(rewritten["params"]["prompt"][0]["text"], "PERMISSION WRITE RELEASE.md=draft")
