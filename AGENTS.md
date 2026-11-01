@@ -4,7 +4,7 @@ Branchyard is a Rust workspace (the `by` CLI, the delegation engine, a server), 
 
 ## Gates
 
-- Before you push, run `python3 tools/check.py --fast`: the Python gates, ruff, mypy, every Python test and the docs checks, in about 40 seconds. Without `--fast` it also runs the cargo steps (`cargo fmt`, rustdoc with warnings denied, the missing-docs ratchet, clippy, the schema freshness tests). `--fix` rewrites what would fail first (formatting, generated schemas, `docs/facts.json`); `--only NAME` and `--keep-going` narrow or widen a run.
+- Before you push, run `python3 tools/check.py --fast`: the Python gates, ruff, mypy, every Python test and the docs checks, four steps at a time (`--jobs 1` for one), in about a minute on four cores. Without `--fast` it also runs the cargo steps (`cargo fmt`, rustdoc with warnings denied, the missing-docs ratchet, clippy, the schema freshness tests). `--fix` rewrites what would fail first (formatting, generated schemas, `docs/facts.json`); `--only NAME` and `--keep-going` narrow or widen a run.
 - `python3 tools/install_hooks.py` makes `git push` run the fast checks first. Do not push with `--no-verify` to get past a failing check.
 - Cargo runs with `--locked --offline`, as CI does. A dependency change commits `Cargo.lock`.
 - Every behaviour change ships its regression test and the docs that describe it, in the same commit. A new source file or function has a test.
