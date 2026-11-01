@@ -1,7 +1,7 @@
 // Drives the console's knowledge workspaces in headless Chromium for
 // tests/console_workspace_browser.rs, which runs the server and reads this
 // script's stdout a line at a time: LOADED, PROJECT, WORKSPACE, SOURCES,
-// SESSIONS, OUTPUTS, ACCEPTED, STALE and DONE, each once the page has shown
+// SESSIONS, OUTPUTS, ACCEPTED, STALE, DECK and DONE, each once the page has shown
 // it. Previews come from the server's own renderer: the script observes the
 // page's preview requests and checks the page shows what each answer means,
 // and writes which formats rendered to stderr.
@@ -673,6 +673,67 @@ let browser = null;
   const stillAccepted = (await callApi('GET', `/v1/workspaces/${ws}`)).body.accepted_deliverables.map((d) => d.artifact_id).sort();
   if (JSON.stringify(stillAccepted) !== JSON.stringify(want)) throw new Error(`the server holds ${JSON.stringify(stillAccepted)} as accepted, not ${JSON.stringify(want)}`);
   say('STALE');
+
+  // Needs you takes the project's decisions beside the repository's: the
+  // four outputs of the analyst's current turn wait to be accepted (the
+  // first turn's four, replaced, do not), each with the preview the
+  // workspace page shows, and accepting one from its card settles it.
+  const decided = (await callApi('GET', `/v1/projects/${pid}/decisions`)).body.decisions;
+  const outputIds = decided.filter((d) => d.kind === 'output').map((d) => d.output.id).sort();
+  if (JSON.stringify(outputIds) !== JSON.stringify(Object.values(latest).sort())) throw new Error(`the project lists outputs ${JSON.stringify(outputIds)}, not the second turn's ${JSON.stringify(Object.values(latest).sort())}`);
+  if (decided.some((d) => d.kind === 'output' && (d.waits !== 'delivery' || d.session !== analystSid || d.workspace !== ws))) throw new Error(`an output decision is not the analyst's delivery: ${JSON.stringify(decided)}`);
+  const stopped = decided.filter((d) => d.kind === 'session');
+  if (stopped.length) throw new Error(`a session that ran to its end is listed as stopped: ${JSON.stringify(stopped)}`);
+  const titleCount = () => page.evaluate(() => Number((/^\((\d+)\)/.exec(document.title) || [])[1] || 0));
+  const projectCards = decided.length;
+  const deckCard = page.locator('#main article.deck-card');
+  const deckFront = deckCard.getByRole('heading', { level: 2, name: `Backlog analyst delivered ${CSV}`, exact: true });
+  const deckPreviewPath = previewPath(latest[CSV]);
+  let deckRequests = 0;
+  page.on('request', (r) => { if (new URL(r.url()).pathname === deckPreviewPath) deckRequests++; });
+  const bay = page.locator('.deck-bay button.bay-item', { hasText: `delivered ${CSV}` });
+  const deckAnswered = page.waitForResponse((r) => new URL(r.url()).pathname === deckPreviewPath, TURN);
+  await go('#/inbox');
+  await needsYou.waitFor();
+  // The project's cards arrive after the page; the CSV's is in front or in
+  // the bay (its outputs share a turn, so their order is the ids'), and
+  // the bay brings it forward.
+  await deckFront.or(bay).first().waitFor(TURN);
+  if (!(await deckFront.count())) await bay.click();
+  const deckResponse = await deckAnswered;
+  const deckBody = await deckResponse.json().catch(() => null);
+  const deckGot = { status: deckResponse.status(), body: deckBody, answer: answerOf(deckResponse.status(), deckBody) };
+  await deckFront.waitFor();
+  if (!ALLOWED[CSV].includes(deckGot.answer)) throw new Error(`the deck's preview of ${CSV} answered ${deckGot.answer}`);
+  await SHOWN[deckGot.answer](CSV, deckGot);
+  told('CSV output on the deck', deckGot);
+  process.stderr.write(`the deck's preview: ${rendered[rendered.length - 1]}\n`);
+  await deckCard.getByRole('button', { name: 'Download original', exact: true }).waitFor();
+  sameBytes(await downloaded(() => deckCard.getByRole('button', { name: 'Download original', exact: true }).click()), CSV, 'the deck card\'s original');
+  if (await deckCard.locator('.by-artifact-preview').count() !== 1) throw new Error('the deck card does not hold exactly one preview');
+  const beforeAccept = await titleCount();
+  if (beforeAccept < projectCards) throw new Error(`the tab title counts ${beforeAccept}, fewer than the project's ${projectCards} decisions`);
+  // Hold the first action to accept, as a merge is held.
+  const acceptLever = deckCard.getByRole('button', { name: new RegExp(`^Accept ${CSV.replace('.', '\\.')}`) });
+  await acceptLever.focus();
+  await page.keyboard.down('Enter');
+  await toast(`Accepted ${CSV}.`);
+  await page.keyboard.up('Enter');
+  await deckFront.waitFor({ state: 'detached' });
+  await page.waitForFunction((n) => Number((/^\((\d+)\)/.exec(document.title) || [])[1] || 0) === n, beforeAccept - 1);
+  if (deckRequests !== 1) throw new Error(`the deck asked for the preview ${deckRequests} times`);
+  const afterAccept = (await callApi('GET', `/v1/projects/${pid}/decisions`)).body.decisions.filter((d) => d.kind === 'output').map((d) => d.output.id);
+  if (afterAccept.includes(latest[CSV]) || afterAccept.length !== 3) throw new Error(`after accepting ${CSV} the project lists ${JSON.stringify(afterAccept)}`);
+  const acceptedNow = (await callApi('GET', `/v1/workspaces/${ws}`)).body.accepted_deliverables.map((d) => d.artifact_id);
+  if (!acceptedNow.includes(latest[CSV])) throw new Error(`the card's Accept left ${JSON.stringify(acceptedNow)} accepted`);
+  // The board holds the same three outputs, one row each, on its clock.
+  await go(`#/p/${pid}`);
+  const boardRows = page.locator('#project-board .board-row[data-lane="ready"]');
+  await boardRows.nth(2).waitFor();
+  if (await boardRows.count() !== 3) throw new Error(`the project board has ${await boardRows.count()} delivered rows, not 3`);
+  await boardRows.first().getByRole('link', { name: 'Review', exact: true }).waitFor();
+  await noOverflow('the project board');
+  say('DECK');
 
   const openOutput = async (which = CSV) => {
     await page.locator('#tab-outputs').click();

@@ -7,11 +7,11 @@ It builds nothing. BY is a built `by`, and FAKE_ACP_AGENT the fake agent from
 `cargo build -p branchyard-runtime --bin fake-acp-agent`. In a new temporary directory it makes
 a small Rust repository and a server configuration that runs Claude Code's ACP profile as the
 scripted agent (scripted_agent.py) in front of the fake agent. It starts `by serve --app
---knowledge`, plays story.py through the API (branches in every lane, a knowledge workspace with
-two sessions and the tables they publish), and has shoot.js sign a desktop and a phone browser in
-and take the screenshots. They replace the ones in DIR (default assets/screenshots) only once
-shoot.js has taken all of them. It calls no model. A failed run keeps its temporary directory,
-with the server's log, and prints where it is.
+--knowledge`, plays story.py through the API (branches in every lane, one of them parked on an
+approval, and a knowledge workspace with two sessions and the tables they publish), and has
+shoot.js sign a desktop and a phone browser in and take the screenshots. They replace the ones in
+DIR (default assets/screenshots) only once shoot.js has taken all of them. It calls no model. A
+failed run keeps its temporary directory, with the server's log, and prints where it is.
 
 Playwright comes from PLAYWRIGHT (the module's directory) or `$(npm root -g)/playwright`, and
 PLAYWRIGHT_BROWSERS_PATH goes to it unchanged. The table preview needs the isolated converter,
@@ -153,6 +153,7 @@ def scene(turn: story.Turn, root: Path, number: int) -> dict[str, Any]:
         "tools": [{"kind": kind, "title": title} for kind, title in turn.tools],
         "files": files,
         "reply": str(reply) if reply else None,
+        "asks": turn.asks,
     }
 
 
@@ -189,6 +190,10 @@ def serve(by: Path, agent: Path, root: Path, env: dict[str, str]) -> Iterator[Ap
                 "repos": {story.REPO: str(repo)},
                 "tokens": [{"name": "readme", "token": token}],
                 "app": {"push": False},
+                # The policy of the token's principal, `readme`, asks before any write. Only the
+                # parked branch's agent asks permission (story.PARKED_BRANCH); the scripted turns
+                # write their own files and never ask, so no other branch or session is affected.
+                "approvals": {"people": {"readme": {"rules": {"write *": "ask"}}}},
                 "shutdown_grace_seconds": 5,
                 "harness_commands": {
                     HARNESS: [sys.executable, "-I", str(HERE / "scripted_agent.py"), str(script), "--", str(agent)]
@@ -264,17 +269,28 @@ def ready(api: Api, b: story.Branch) -> None:
     until(f"{b.name} to be ready", state_is(api, b.name, "ready"))
 
 
+def park(api: Api, b: story.Branch) -> None:
+    """Wait until the branch's turn is parked on the approval it asked for."""
+    until(f"{b.name} to wait for an approval", lambda: (listed(api, b.name) or {}).get("awaiting"))
+
+
 FATES: dict[story.Fate, Callable[[Api, story.Branch], None]] = {
     "merged": merge,
     "interrupted": interrupt,
     "running": keep_running,
     "ready": ready,
+    "parked": park,
 }
 
 
 def play_branches(api: Api) -> None:
     for b in story.BRANCHES:
-        api.call("POST", f"/v1/repos/{story.REPO}/tasks", {"prompt": b.turn.prompt, "harness": HARNESS, "name": b.name})
+        task: dict[str, Any] = {"prompt": b.turn.prompt, "harness": HARNESS, "name": b.name}
+        if b.turn.asks:
+            # The engine's own policy lets the write through ("Allow every tool"), and the person's
+            # approval policy, which only tightens it, asks.
+            task["policy"] = {"mode": "allow"}
+        api.call("POST", f"/v1/repos/{story.REPO}/tasks", task)
         until(f"{b.name} to start", partial(listed, api, b.name))
         FATES[b.fate](api, b)
 
@@ -363,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
                 play_workspace(api),
                 repo=story.REPO,
                 branch=story.OPEN_BRANCH,
+                parked=story.PARKED_BRANCH,
                 branchSays=first_line(branch.turn.reply),
                 sessionSays=first_line(session.turns[-1].reply),
             )

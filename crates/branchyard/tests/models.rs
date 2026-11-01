@@ -655,6 +655,16 @@ fn a_harness_calls_both_providers_through_its_gateway_and_never_holds_the_key() 
     let total: f64 = rows.iter().map(|r| r.cost_usd.unwrap()).sum();
     assert_eq!(branch.info().cost_usd, Some(total));
     assert!((total - expected.iter().sum::<f64>()).abs() < 1e-12);
+    // The turn's own cost, recorded once its metering settled, is its
+    // metered calls.
+    let turn: Vec<f64> = events
+        .iter()
+        .filter_map(|e| match e.activity {
+            Activity::TurnCost { cost_usd } => Some(cost_usd),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(turn, [total]);
     // The key is nowhere in what was recorded.
     let log = serde_json::to_string(&events).unwrap();
     assert!(!log.contains("sk-real"), "a key was recorded");

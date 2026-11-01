@@ -457,7 +457,7 @@ pub(super) fn branch_owned(
 }
 // A queued or failed initialization has no native reader yet. That absence does
 // not hide artifacts produced by the workspace's other existing attempts.
-fn native_artifacts(
+pub(super) fn native_artifacts(
     repo: &RepoState,
     reader: &str,
 ) -> Result<Vec<branchyard::ArtifactRef>, ApiError> {

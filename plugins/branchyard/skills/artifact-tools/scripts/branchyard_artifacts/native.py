@@ -47,6 +47,14 @@ def write_hardened_profile(profile_dir: Path) -> str:
     return profile_dir.as_uri()
 
 
+def converter_note(stderr: bytes | None) -> str:
+    """Quote the converter's first diagnostic that is not a warning, so an exit-0 run without a PDF explains itself."""
+    lines = [line.strip() for line in (stderr or b"").decode("utf-8", "replace").splitlines() if line.strip()]
+    first = next((line for line in lines if not line.startswith("Warning:")), "")
+    first = "".join(ch for ch in first if ch.isprintable())[:200]
+    return " (converter said: " + first + ")" if first else ""
+
+
 def render_page(
     path: Path,
     out_image: Path,
@@ -84,7 +92,7 @@ def render_page(
         else:
             profile = write_hardened_profile(work / "profile")
             try:
-                subprocess.run(
+                converted = subprocess.run(
                     [
                         str(office),
                         "-env:UserInstallation=" + profile,
@@ -109,7 +117,9 @@ def render_page(
                 raise ArtifactError("LibreOffice failed to convert " + escape(path.name) + " to PDF") from error
             pdf = work / (path.stem + ".pdf")
             if not pdf.is_file() or pdf.stat().st_size == 0:
-                raise ArtifactError("LibreOffice completed without producing the requested PDF")
+                raise ArtifactError(
+                    "LibreOffice completed without producing the requested PDF" + converter_note(converted.stderr)
+                )
         try:
             reader = pypdf.PdfReader(str(pdf), strict=True)
         except Exception as error:

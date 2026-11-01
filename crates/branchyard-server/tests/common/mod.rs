@@ -1,5 +1,6 @@
 //! In-process servers over real HTTP on 127.0.0.1, temporary repositories,
-//! and the fake ACP agent. Hermetic: no real harness and no network beyond
+//! the fake ACP agent, and a shell stand-in for Claude Code that reports a
+//! cost. Hermetic: no real harness and no network beyond
 //! loopback. Requires `git` and `sh`.
 
 #![allow(dead_code)]
@@ -223,6 +224,51 @@ pub fn task(prompt: &str, name: &str) -> TaskRequest {
         name: Some(name.into()),
         policy: PolicySpec::allow_all(),
         ..TaskRequest::default()
+    }
+}
+
+/// A stand-in for Claude Code's stream-json protocol that spends what its
+/// prompt names (`SPEND=0.25`) and reports, as Claude Code does, its
+/// session's running total in `total_cost_usd`, kept in the branch's
+/// private temporary directory. It answers every control request and
+/// exits when asked to end its session or when its input closes.
+const COSTLY: &str = r#"
+reply() {
+  id=$(printf '%s' "$1" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+  printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$id"
+}
+session=costly-session; previous=
+for a in "$@"; do [ "$previous" = --resume ] && session=$a; previous=$a; done
+read -r line; reply "$line"
+read -r prompt
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
+spend=$(printf '%s' "$prompt" | sed -n 's/.*SPEND=\([0-9.]*\).*/\1/p')
+before=$(cat "$TMPDIR/spent" 2>/dev/null || echo 0)
+total=$(awk -v spend="${spend:-0}" -v before="$before" 'BEGIN { print before + spend }')
+printf '%s' "$total" > "$TMPDIR/spent"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"spent","total_cost_usd":%s}\n' "$total"
+while read -r line; do
+  case "$line" in
+    *end_session*) reply "$line"; exit 0;;
+    *control_request*) reply "$line";;
+  esac
+done
+"#;
+
+/// Serve [`COSTLY`] as the `claude-code` harness, a harness that reports
+/// what it spends (the fake ACP agent reports nothing).
+pub fn costly_harness(config: &mut Config) {
+    config.harness_commands.insert(
+        "claude-code".into(),
+        vec!["sh".into(), "-c".into(), COSTLY.into(), "claude".into()],
+    );
+}
+
+/// A task for [`costly_harness`], allowed every permission.
+pub fn costly_task(prompt: &str, name: &str) -> TaskRequest {
+    TaskRequest {
+        harness: Some("claude-code".into()),
+        ..task(prompt, name)
     }
 }
 

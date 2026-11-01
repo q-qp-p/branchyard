@@ -882,9 +882,32 @@ class Approval(Record):
 
 class Decision(Record):
     """One thing that waits for a person (`Decision`): `kind` (`approval`,
-    `question`, `merge`, `stop`, `stall`), `branch`, `waits` (`agent`,
-    `delivery`, `nobody`), `since_ms`, `status`, `candidate`, and the
-    `approval` or `question` it is about."""
+    `question`, `merge`, `stop`, `stall`, and for a project's workspaces
+    `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
+    `nobody`), `since_ms`, `status`, `candidate`, and the `approval` or
+    `question` it is about. An `output` or `session` decision also names its
+    `workspace`, `workspace_title`, `session` and `session_name`; a `session`
+    carries the `phase` text, and an `output` its `output` (`id`, `name`,
+    `media_type`, `size`, `turn`)."""
+
+
+class Ground(Record):
+    """Which files are in whose hands (`Ground`): `files`, every path an
+    open branch changed, sorted, each `{"path": ..., "branches": [{"name":
+    ..., "status": {...}}, ...]}` with the open branches that changed it;
+    and `skipped`, the open branches whose diff could not be read."""
+
+    @property
+    def shared(self) -> list[Record]:
+        """The files two or more open branches changed: the ones to look at before merging either."""
+        return [Record(f) for f in self.get("files") or [] if len(f.get("branches") or []) > 1]
+
+    def holders(self, path: str) -> list[str]:
+        """The names of the open branches that changed `path`; empty when none did."""
+        for f in self.get("files") or []:
+            if f.get("path") == path:
+                return [b.get("name") for b in f.get("branches") or []]
+        return []
 
 
 class Effect(Record):
@@ -930,10 +953,24 @@ class FeedEntry(Record):
         value = activity.get("status") if isinstance(activity, dict) else None
         return Status(value) if isinstance(value, dict) else None
 
+    @property
+    def turn_cost(self) -> Optional[float]:
+        """What the turn that is ending cost on its own, in US dollars, when
+        the activity is the engine's record of it (`{"turn_cost":
+        {"cost_usd": ...}}`, after the turn's metering settled and before
+        its closing status); else `None`. A turn nothing measured records
+        none. The branch's running total stays `BranchInfo.cost_usd`."""
+        activity = self.get("activity")
+        value = activity.get("turn_cost") if isinstance(activity, dict) else None
+        cost = value.get("cost_usd") if isinstance(value, dict) else None
+        return float(cost) if isinstance(cost, (int, float)) else None
+
 
 class BranchEvents(Record):
     """`{"events": [RecordedEvent], "cursor": M}`: pass `cursor` back for
-    the events after these."""
+    the events after these. Each event is `{"at_ms", "activity"}`, the
+    activity tagged as in `FeedEntry` (`FeedEntry(event).turn_cost` reads a
+    turn's own cost)."""
 
     @property
     def events(self) -> list[JSON]:
@@ -1310,6 +1347,15 @@ class Client:
     def project(self, project: str) -> Record:
         """One project, including its source and result acceptance policy."""
         return Record(self.get(f"/v1/projects/{_q(project)}"))
+
+    def project_decisions(self, project: str) -> list[Decision]:
+        """What waits for a person in one project's workspaces, in the order
+        to take it (`docs/server.md`, `GET /v1/projects/{project}/decisions`):
+        `output` decisions (a session's file waiting to be accepted, `waits`
+        `delivery`) and `session` decisions (a session that failed, was
+        interrupted or never started, `waits` `nobody`). Accept an output with
+        `finalize_workspace`. Nothing in it expires."""
+        return [Decision(d) for d in self.get(f"/v1/projects/{_q(project)}/decisions").get("decisions", [])]
 
     def create_project(
         self, name: str, *, source: Optional[JSON] = None, result_mode: str = "artifacts", key: Optional[str] = None
@@ -2800,6 +2846,14 @@ class Repo:
         ready branches, then the stopped and stalled ones
         (`docs/server.md`, `GET …/decisions`). Nothing in it expires."""
         return [Decision(d) for d in self.client.get(f"{self._base}/decisions").get("decisions", [])]
+
+    def ground(self) -> Ground:
+        """Which files are in whose hands: every path an open branch (not
+        merged, not discarded) changed, with the branches that changed it
+        (`docs/server.md`, `GET …/ground`). The server reads every open
+        branch's diff to answer; a branch whose diff it cannot read is
+        named in `skipped`."""
+        return Ground(self.client.get(f"{self._base}/ground"))
 
     def approvals(self, all: bool = False) -> list[Approval]:
         """The approvals waiting (every one with `all`): a branch's turn

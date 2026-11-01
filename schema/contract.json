@@ -8485,7 +8485,7 @@
       "required": [
         "decisions"
       ],
-      "description": "`GET /v1/repos/{repo}/decisions`: what waits for a person, in the order\nto take it. A branch parked on an approval or a question comes first,\nthe one that has waited longest before the rest, because it moves only\nwhen someone answers; then the branches ready to merge, oldest first,\nbecause delivery waits on them; then the stopped and the stalled, which\nnothing waits on. Nothing here expires.",
+      "description": "`GET /v1/repos/{repo}/decisions` and `GET /v1/projects/{project}/decisions`:\nwhat waits for a person, in the order to take it. A branch parked on an\napproval or a question comes first, the one that has waited longest\nbefore the rest, because it moves only when someone answers; then the\nbranches ready to merge, oldest first, because delivery waits on them;\nthen the stopped and the stalled, which nothing waits on. A project's\nlist has the same order over its workspaces: an `output` waiting to be\naccepted is delivery, a `session` that stopped is nobody's. Nothing here\nexpires.",
       "title": "DecisionList",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$defs": {
@@ -8498,7 +8498,7 @@
             },
             "branch": {
               "type": "string",
-              "description": "The branch it is about."
+              "description": "The branch it is about. For an `output` or a `session` decision it is\nthe session's branch in the workspace's source, which a stopped\nsession that never started names before it exists."
             },
             "waits": {
               "$ref": "#/$defs/Waits",
@@ -8515,7 +8515,7 @@
             },
             "status": {
               "$ref": "#/$defs/BranchStatus",
-              "description": "The branch's status at the time."
+              "description": "The branch's status at the time. For a `session` that never started\nit is the failure or interruption of the operation that should have\nstarted it."
             },
             "candidate": {
               "anyOf": [
@@ -8549,6 +8549,52 @@
                 }
               ],
               "description": "For a `question`: the message, as the asker's parent's inbox holds it."
+            },
+            "workspace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's id."
+            },
+            "workspace_title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's title."
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's id."
+            },
+            "session_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's name."
+            },
+            "phase": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For a `session`: where the session stands, in the words the\nworkspace page uses (`Failed: the harness exited`, `Did not start`,\n`Interrupted`)."
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionOutput"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For an `output`: the file waiting to be accepted."
             }
           },
           "required": [
@@ -8585,6 +8631,16 @@
               "type": "string",
               "const": "stall",
               "description": "A running turn with no harness activity for its stall window."
+            },
+            {
+              "type": "string",
+              "const": "output",
+              "description": "A workspace session's output waiting to be accepted: the deliverable\nof a knowledge session, a document rather than a diff."
+            },
+            {
+              "type": "string",
+              "const": "session",
+              "description": "A workspace session that failed, was interrupted or never started."
             }
           ],
           "description": "The shapes a decision takes."
@@ -9310,6 +9366,291 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "DecisionOutput": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The artifact's id."
+            },
+            "name": {
+              "type": "string",
+              "description": "The file's name."
+            },
+            "media_type": {
+              "type": "string",
+              "description": "The file's media type."
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Its size in bytes."
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The turn of the session that published it."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "media_type",
+            "size",
+            "turn"
+          ],
+          "description": "The output an `output` decision is about: a file a workspace session\npublished from its current turn, not yet accepted. Its bytes are at\n`GET /v1/workspaces/{workspace}/artifacts/{id}/content` and a preview at\n`…/preview`; `POST /v1/workspaces/{workspace}/finalize` accepts it."
+        }
+      }
+    },
+    "Ground": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GroundFile"
+          },
+          "description": "Every path an open branch changed, sorted by path."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Open branches whose diff could not be read, sorted by name: their\nfiles are missing from `files`, and the request still succeeds.",
+          "default": []
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "description": "`GET /v1/repos/{repo}/ground`: the ground plan, which files are in\nwhose hands. Every path an open branch's candidate changed, with the\nopen branches that changed it; a path held by two or more is one a\nperson merging wants to know about first. Open means not merged and\nnot discarded; the goal judge's `judge-…` scratch branches are left\nout. The server computes it when asked, by reading every open\nbranch's diff, so a call costs what reading those diffs costs; nothing\nis stored for it.",
+      "title": "Ground",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "GroundFile": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "The path, relative to the repository's root, as the diff names it\n(a renamed file under its old path)."
+            },
+            "branches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GroundBranch"
+              },
+              "description": "The open branches whose candidate changes it, sorted by name; two\nor more means the file is in two hands."
+            }
+          },
+          "required": [
+            "path",
+            "branches"
+          ],
+          "description": "One path in the [`Ground`] and the open branches that changed it."
+        },
+        "GroundBranch": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "The branch's name."
+            },
+            "status": {
+              "$ref": "#/$defs/BranchStatus",
+              "description": "Its status when the ground was read."
+            }
+          },
+          "required": [
+            "name",
+            "status"
+          ],
+          "description": "An open branch holding a [`GroundFile`]."
+        },
+        "BranchStatus": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "running"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegated child created with prerequisites that have not all\nsettled yet: it has no worktree and has run no turn. See\n`docs/graph.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "blocked"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "A child that will not start because a prerequisite failed, was\ninterrupted, stopped at a limit, is blocked itself or was removed.\nChanging its dependencies with a graph proposal reopens it."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "ready"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed and produced a candidate."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "awaiting_plan_approval"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A planning turn proposed a plan, and the branch waits for it to be\napproved, edited or rejected before anything changes; see\n[`Yard::approve_plan`]."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting_on_children"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegating branch whose turn ended while children it delegated\nwere still running or waiting: it is parked, and its next turn\nstarts on its own once they have all settled, with a summary of\nwhat they did (`docs/delegation.md`, \"Waiting on children\"). Not\nfinished: a wait for its subtree waits for that turn too."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "no_changes"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed without changing any file."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "limit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "budget_exceeded"
+                }
+              },
+              "required": [
+                "state",
+                "limit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                },
+                "commit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "merged"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "commit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "Why, as whoever discarded it said."
+                },
+                "state": {
+                  "type": "string",
+                  "const": "discarded"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "Settled and set aside on purpose, with the reason (`by discard`):\nit runs no more turns and is never integrated, its record and cost\nare kept, and it no longer counts against its parent's\n`max_children`."
+            }
+          ],
+          "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
         }
       }
     },
@@ -32168,6 +32509,29 @@
             {
               "type": "object",
               "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "status": {
                   "$ref": "#/$defs/BranchStatus"
                 }
@@ -37760,6 +38124,29 @@
               ],
               "additionalProperties": false,
               "description": "A new candidate commit."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
             },
             {
               "type": "object",
@@ -48524,6 +48911,29 @@
               ],
               "additionalProperties": false,
               "description": "A new candidate commit."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
             },
             {
               "type": "object",

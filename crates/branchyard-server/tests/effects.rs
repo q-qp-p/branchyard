@@ -3,7 +3,8 @@
 //! policy holds over a principal's own, an ask is answered through the API
 //! as the caller, the ledger and an undo plan are read and an undo is
 //! performed through the API, and `/metrics` counts effects and waiting
-//! approvals. A shell script stands in for Anvil's packaging.
+//! approvals. A shell script stands in for Anvil's packaging. The ground
+//! plan reads the open branches' diffs.
 
 #![allow(clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
@@ -15,12 +16,13 @@ use std::os::unix::fs::PermissionsExt;
 
 use branchyard::connectors::GrantEntry;
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings, EffectState, Layer};
-use branchyard::Provisioning;
-use branchyard_client::api::{OperationState, TaskRequest};
+use branchyard::{BranchStatus, Provisioning};
+use branchyard_client::api::{MergeRequest, OperationState, TaskRequest};
 use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
+use branchyard_client::new_key;
 use branchyard_server::config::{ConnectorsConfig, MetricsConfig};
 use branchyard_testkit::wait;
-use common::{await_operation, get, raw, task, Fixture, Server};
+use common::{await_operation, get, raw, run, task, Fixture, Server};
 use mock_gateway::MockGateway;
 
 const FAKE_ANVIL: &str = r##"#!/bin/sh
@@ -234,4 +236,63 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
     assert_eq!(closed.undo_approval.unwrap().by, "tester");
     // Reconciling finds nothing to settle.
     assert!(repo.reconcile_effects().unwrap().settled.is_empty());
+}
+
+/// The ground plan: two ready branches that both wrote `shared.txt` hold
+/// it together, a third holds `only.txt` alone, and a branch merged lets
+/// go of what it held.
+#[test]
+fn the_ground_names_every_open_branch_holding_a_file_and_drops_a_merged_one() {
+    let f = Fixture::new();
+    let server = Server::start(f.config());
+    let client = server.client();
+    let repo = client.repo("app");
+    for (name, prompt) in [
+        ("app-1", "WRITE shared.txt=one"),
+        ("app-2", "WRITE shared.txt=two"),
+        ("lib", "WRITE only.txt=lib"),
+    ] {
+        let done = run(&client, &task(prompt, name));
+        assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    }
+    let held = |ground: &branchyard_client::effects_api::Ground| -> Vec<(String, Vec<String>)> {
+        ground
+            .files
+            .iter()
+            .map(|f| {
+                let names = f.branches.iter().map(|b| b.name.clone()).collect();
+                (f.path.clone(), names)
+            })
+            .collect()
+    };
+    let ground = repo.ground().unwrap();
+    assert_eq!(
+        held(&ground),
+        [
+            ("only.txt".to_owned(), vec!["lib".to_owned()]),
+            (
+                "shared.txt".to_owned(),
+                vec!["app-1".to_owned(), "app-2".to_owned()]
+            ),
+        ]
+    );
+    assert!(ground.files[1]
+        .branches
+        .iter()
+        .all(|b| b.status == BranchStatus::Ready));
+    assert!(ground.skipped.is_empty(), "{:?}", ground.skipped);
+
+    // Merged, a branch holds nothing.
+    let merge = repo
+        .merge("app-1", &MergeRequest::default(), &new_key())
+        .unwrap();
+    let merged = await_operation(&client, &merge.id);
+    assert_eq!(merged.state, OperationState::Succeeded, "{merged:?}");
+    assert_eq!(
+        held(&repo.ground().unwrap()),
+        [
+            ("only.txt".to_owned(), vec!["lib".to_owned()]),
+            ("shared.txt".to_owned(), vec!["app-2".to_owned()]),
+        ]
+    );
 }

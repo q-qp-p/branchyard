@@ -590,6 +590,37 @@ shutil.copyfile({str(template_png)!r}, prefix.parent / f"{{prefix.name}}-{{first
             self.assertEqual(call["first"], 2)
             self.assertEqual(call["last"], 2)
 
+    def test_converter_that_exits_zero_without_a_pdf_names_its_own_diagnostic(self) -> None:
+        bin_dir, _ = self.install_fake_converters(pdf_pages=1)
+        office = bin_dir / "libreoffice"
+        office.write_text(
+            f"""#!{sys.executable}
+import sys
+sys.stderr.write("Warning: failed to launch javaldx\\n")
+sys.stderr.write("soffice.bin X11 error: Can't open display: \\x07\\n")
+sys.stderr.write("   Set DISPLAY environment variable, use -display option\\n")
+""",
+            encoding="utf-8",
+        )
+        source = self.root / "report.docx"
+        source.write_bytes(_minimal_office_zip("docx"))
+
+        def fake_which(name: str) -> str | None:
+            candidate = bin_dir / name
+            return str(candidate) if candidate.is_file() else None
+
+        out_dir = self.root / "no-pdf-out"
+        with (
+            mock.patch("shutil.which", side_effect=fake_which),
+            self.assertRaisesRegex(
+                ArtifactError,
+                r"without producing the requested PDF "
+                r"\(converter said: soffice\.bin X11 error: Can't open display: \)$",
+            ),
+        ):
+            preview.preview(source, out_dir, page=1)
+        self.assertFalse(out_dir.exists())
+
     def test_huge_pdf_page_is_bounded_before_rasterization(self) -> None:
         from pypdf import PdfWriter
 
