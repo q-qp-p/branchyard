@@ -42,7 +42,7 @@ See [modes](modes.md) for how to choose between these.
 
 ## Harness drivers
 
-<!-- fact:profiles.summary -->17 driver profiles cover 15 of 16 harness targets: 9 live-qualified, 2 partial and 6 unqualified.<!-- /fact -->
+<!-- fact:profiles.summary -->18 driver profiles cover 15 of 16 harness targets: 10 live-qualified, 2 partial and 6 unqualified.<!-- /fact -->
 
 A live run is protocol qualification against the real binary as a local process. It is not a sandbox run: isolation, credentials and recovery are unqualified for every profile. "Permissions answered" and "Steer" are the two gates Branchyard can intercept mid-turn; [compatibility](compatibility.md) defines their values and lists every capability and the reason for each `no`.
 
@@ -54,7 +54,8 @@ A live run is protocol qualification against the real binary as a local process.
 | Claude Code | `claude-code-acp` (alternate) | live-qualified | 9 of 9 pass, 2026-09-26, 0.81.2 ([report](qualification/claude-code-acp.json)) | live-tested | live-tested |
 | Codex | `codex-app-server` (default) | live-qualified | 9 of 9 pass, 2026-10-25, codex-cli 0.164.0 ([report](qualification/codex-app-server.json)) | live-tested | live-tested |
 | Codex | `codex-acp` (alternate) | unqualified | not run | contract-only | not verified |
-| Antigravity | `antigravity-stream-json` (default) | live-qualified | 9 of 9 pass, 2026-10-25, 1.4.7 ([report](qualification/antigravity-stream-json.json)) | — | — |
+| Antigravity | `antigravity-acp` (default) | live-qualified | 9 of 9 pass, 2026-11-01, 1.4.12 ([report](qualification/antigravity-acp.json)) | live-tested | not verified |
+| Antigravity | `antigravity-stream-json` (alternate) | live-qualified | 9 of 9 pass, 2026-10-25, 1.4.7 ([report](qualification/antigravity-stream-json.json)) | — | — |
 | Oh My Pi | `oh-my-pi-acp` (default) | live-qualified | 9 of 9 pass, 2026-10-25, omp/18.12.6 ([report](qualification/oh-my-pi-acp.json)) | live-tested | not verified |
 | DeepSeek Harness | `deepseek-harness-acp` (default) | partial | 6 of 9 pass, 2026-10-25, 0.2.1-rc.2 ([report](qualification/deepseek-harness-acp.json)) | live-tested | not verified |
 | Gemini CLI | `gemini-cli-acp` (default) | live-qualified | 9 of 9 pass, 2026-10-25, 0.65.0 ([report](qualification/gemini-cli-acp.json)) | live-tested | not verified |

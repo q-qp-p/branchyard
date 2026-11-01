@@ -53,6 +53,15 @@ pub struct Profile {
     /// response) to authenticate with when resuming a session fails with
     /// `auth_required`; see [`Acp::with_auth_method`].
     pub acp_auth_method: Option<&'static str>,
+    /// ACP only: the agent lists its models in its `session/new` answer
+    /// (`models.availableModels`) and takes one through the unstable
+    /// `session/set_model`, so the profile offers the `model` capability
+    /// ([`Acp::with_models`]). Verified against the agent, never assumed.
+    pub acp_models: bool,
+    /// ACP only: the agent's prompt response carries the turn's token
+    /// `usage` (the unstable end-of-turn usage), which the driver reports
+    /// ([`Acp::with_usage`]). Verified against the agent, never assumed.
+    pub acp_usage: bool,
 }
 
 impl Profile {
@@ -80,6 +89,12 @@ impl Profile {
                 if let Some(method) = self.acp_auth_method {
                     driver = driver.with_auth_method(method);
                 }
+                if self.acp_models {
+                    driver = driver.with_models();
+                }
+                if self.acp_usage {
+                    driver = driver.with_usage();
+                }
                 Box::new(driver)
             }
         }
@@ -95,6 +110,8 @@ const fn acp(id: &'static str, harness: &'static str, command: &'static [&'stati
         checked_against: None,
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     }
 }
 
@@ -114,6 +131,8 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("Claude Code 2.1.283"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     },
     Profile {
         checked_against: Some("claude-agent-acp 0.81.2"),
@@ -128,8 +147,23 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("codex-cli 0.157.1"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     },
     acp("codex-acp", "codex", &["codex-acp"]),
+    // `agy acp` (Antigravity CLI 1.4.12) speaks ACP v1 and carries what
+    // the headless stream cannot: `session/cancel`, permission requests
+    // for its tools, `session/set_model` from the models its
+    // `session/new` lists, and the turn's token usage. The key alone is
+    // enough: a `session/new` it answers `auth_required` is retried after
+    // one `authenticate` with `gemini-api-key`.
+    Profile {
+        checked_against: Some("Antigravity CLI 1.4.12"),
+        acp_auth_method: Some("gemini-api-key"),
+        acp_models: true,
+        acp_usage: true,
+        ..acp("antigravity-acp", "antigravity", &["agy", "acp"])
+    },
     Profile {
         id: "antigravity-stream-json",
         harness: "antigravity",
@@ -138,6 +172,8 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("Antigravity CLI 1.2.11"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     },
     acp("oh-my-pi-acp", "oh-my-pi", &["omp", "acp"]),
     acp(
@@ -164,6 +200,8 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("pi 0.87.1"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     },
     acp("goose-acp", "goose", &["goose", "acp"]),
     acp("cursor-acp", "cursor", &["agent", "acp"]),
@@ -180,6 +218,8 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("documentation only, not recorded"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
     },
     acp("qwen-code-acp", "qwen-code", &["qwen", "--acp"]),
     acp("kimi-cli-acp", "kimi-cli", &["kimi", "acp"]),
@@ -289,12 +329,29 @@ mod tests {
 
     #[test]
     fn native_targets_default_to_their_native_drivers() {
-        for (harness, protocol) in [
-            ("antigravity", Protocol::AntigravityStreamJson),
-            ("pi", Protocol::PiRpc),
-            ("amp", Protocol::AmpStreamJson),
-        ] {
+        for (harness, protocol) in [("pi", Protocol::PiRpc), ("amp", Protocol::AmpStreamJson)] {
             assert_eq!(default_for(harness).unwrap().protocol, protocol);
+        }
+    }
+
+    /// Antigravity's default is `agy acp`, which cancels, asks and takes a
+    /// model; the headless stream stays as the alternate, and only this
+    /// profile turns on the ACP driver's verified extensions.
+    #[test]
+    fn antigravity_defaults_to_acp_and_keeps_its_stream() {
+        let default = default_for("antigravity").unwrap();
+        assert_eq!(default.id, "antigravity-acp");
+        assert_eq!(default.protocol, Protocol::Acp);
+        assert_eq!(default.command, &["agy", "acp"]);
+        assert_eq!(default.acp_auth_method, Some("gemini-api-key"));
+        assert!(default.acp_models && default.acp_usage);
+        let capabilities = default.driver().capabilities();
+        assert!(capabilities.cancellation && capabilities.tool_approvals);
+        assert!(capabilities.model && capabilities.usage);
+        let stream = by_id("antigravity-stream-json").unwrap();
+        assert_eq!(stream.protocol, Protocol::AntigravityStreamJson);
+        for profile in PROFILES.iter().filter(|p| p.id != "antigravity-acp") {
+            assert!(!profile.acp_models && !profile.acp_usage, "{}", profile.id);
         }
     }
 

@@ -865,9 +865,10 @@ pub fn harness_label(harness: &str) -> String {
     }
 }
 
-/// Profiles that cannot route tool permission requests to Branchyard.
+/// Harnesses whose default profile cannot route tool permission requests
+/// to Branchyard. Antigravity's `agy acp` asks, so it is no longer one.
 pub fn unapproved_tools(harness: &str) -> bool {
-    matches!(harness, "antigravity" | "pi" | "amp")
+    matches!(harness, "pi" | "amp")
 }
 
 /// A probe with fixed answers, for tests and examples.
@@ -915,7 +916,7 @@ impl FakeProbe {
                     Some("2.1.283 (Claude Code)"),
                 ),
                 harness("codex", "codex-app-server", true, Some("codex-cli 0.157.1")),
-                harness("antigravity", "antigravity-stream-json", false, None),
+                harness("antigravity", "antigravity-acp", false, None),
                 harness("gemini-cli", "gemini-cli-acp", false, None),
                 harness("opencode", "opencode-acp", false, None),
             ],

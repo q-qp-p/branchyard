@@ -2109,8 +2109,14 @@ mod tests {
             "by run \"fix the flaky test\" --check \"cargo test\""
         );
         assert_eq!(run_command(None, None), "by run \"fix the flaky test\"");
+        // Antigravity's default profile asks before its tools now; Pi's
+        // still does not.
         assert_eq!(
             run_command(None, Some("antigravity")),
+            "by run \"fix the flaky test\""
+        );
+        assert_eq!(
+            run_command(None, Some("pi")),
             "by run \"fix the flaky test\" --allow-unapproved-tools"
         );
         // A check with quotes or a `$` survives a shell reading the line.

@@ -25,10 +25,11 @@
 //! (Gemini CLI's `session/load` needs this where its `session/new` does not).
 //! Fork is rejected: `session/fork` is an unstable ACP method, and a driver
 //! that cannot fork must say so rather than start a fresh session.
-//! Cancellation is the `session/cancel` notification; per the protocol, the
-//! client also answers every outstanding permission request as cancelled. The
-//! turn's terminal state arrives as the prompt response's `cancelled` stop
-//! reason, not as an acknowledgment.
+//! Cancellation answers every outstanding permission request as cancelled,
+//! then sends the `session/cancel` notification, in that order (Antigravity
+//! CLI 1.4.12 never answers a prompt whose pending request is cancelled
+//! after the notification). The turn's terminal state arrives as the prompt
+//! response's `cancelled` stop reason, not as an acknowledgment.
 //!
 //! ACP v1 has no method for input into a running prompt; a second
 //! `session/prompt` is a new turn, which agents queue or refuse. Steering
@@ -44,6 +45,19 @@
 //! message, whose one response covers both; a `session/cancel` afterwards
 //! ends the prompt `cancelled` with no further model call. An agent that
 //! does not advertise the extension refuses steering with the reason.
+//!
+//! Two unstable ACP methods are used only for a profile that turns them on,
+//! each verified against its agent (Antigravity CLI 1.4.12's `agy acp`, on
+//! 1 November 2026). With [`Acp::with_models`], a model the task pins is
+//! checked against the `models.availableModels` the session answer lists
+//! and chosen with `session/set_model`; the session is ready once that is
+//! answered, and an agent that lists no models, does not offer the model, or
+//! refuses it fails the open with the models it does offer. With
+//! [`Acp::with_usage`], the prompt response's `usage` (the unstable
+//! end-of-turn token usage) is reported as the turn's own, not cumulative;
+//! its thought tokens are added to the output tokens, which is how Gemini
+//! bills them. Both stay off for every other profile, where a model is
+//! refused at open and usage is not reported.
 
 use std::collections::HashMap;
 
@@ -78,6 +92,9 @@ enum Pending {
     Prompt(u64),
     /// A `_session/steering` request: the turn and the steer's number.
     Steer(u64, u64),
+    /// The `session/set_model` sent after the session answer, naming the
+    /// pinned model; the session is ready once it is answered.
+    SetModel(String),
 }
 
 /// The ACP extension request that injects input into a running prompt.
@@ -148,6 +165,14 @@ pub struct Acp {
     /// The session request in flight, kept to send again after `authenticate`.
     session_request: Option<(String, Value)>,
     authenticated: bool,
+    /// The profile verified the agent lists models and takes
+    /// `session/set_model`.
+    models: bool,
+    /// The profile verified the agent's prompt response carries `usage`.
+    usage: bool,
+    /// The session's model id: the one pinned and set, else the one the
+    /// session answer named current.
+    model: Option<String>,
 }
 
 impl Acp {
@@ -172,7 +197,27 @@ impl Acp {
             auth_advertised: false,
             session_request: None,
             authenticated: false,
+            models: false,
+            usage: false,
+            model: None,
         }
+    }
+
+    /// Offer the `model` capability: the agent lists its models in its
+    /// session answer (`models.availableModels`) and takes one through the
+    /// unstable `session/set_model`. Only for a profile that verified both
+    /// against the agent.
+    pub fn with_models(mut self) -> Self {
+        self.models = true;
+        self
+    }
+
+    /// Offer the `usage` capability: the agent's prompt response carries
+    /// the unstable end-of-turn `usage`, reported as the turn's own tokens.
+    /// Only for a profile that verified it against the agent.
+    pub fn with_usage(mut self) -> Self {
+        self.usage = true;
+        self
     }
 
     /// Authenticate with the `authMethods` entry `id` when a resume is
@@ -319,6 +364,56 @@ impl Acp {
             },
         };
         self.session = Some(session.clone());
+        let current = result["models"]["currentModelId"]
+            .as_str()
+            .map(str::to_owned);
+        let wanted = self
+            .open
+            .as_ref()
+            .and_then(|open| open.model.clone())
+            .filter(|_| self.models);
+        let Some(wanted) = wanted else {
+            self.model = current;
+            return self.opened();
+        };
+        let Some(listed) = result["models"]["availableModels"].as_array() else {
+            return Output::event(Event::OpenFailed {
+                reason: format!("the agent lists no models, so {wanted} cannot be chosen"),
+            });
+        };
+        let offered: Vec<&str> = listed
+            .iter()
+            .filter_map(|m| m["modelId"].as_str())
+            .collect();
+        if !offered.contains(&wanted.as_str()) {
+            return Output::event(Event::OpenFailed {
+                reason: format!(
+                    "the agent does not offer model {wanted}; it offers {}",
+                    offered.join(", ")
+                ),
+            });
+        }
+        self.model = Some(wanted.clone());
+        if current.as_deref() == Some(wanted.as_str()) {
+            return self.opened();
+        }
+        Output {
+            events: Vec::new(),
+            frames: vec![self.request(
+                Pending::SetModel(wanted.clone()),
+                "session/set_model",
+                json!({"sessionId": session.as_str(), "modelId": wanted}),
+            )],
+        }
+    }
+
+    /// The session is open: ready, under the id the agent gave it.
+    fn opened(&mut self) -> Output {
+        let Some(session) = self.session.clone() else {
+            return Output::event(Event::OpenFailed {
+                reason: "the session was answered without a usable sessionId".into(),
+            });
+        };
         self.ready = true;
         Output {
             events: vec![
@@ -330,6 +425,28 @@ impl Acp {
             ],
             frames: Vec::new(),
         }
+    }
+
+    /// The turn's token usage from its prompt response, when the profile
+    /// reports it: the turn's own, with thought tokens counted as output.
+    fn usage_of(&self, response: &PromptResponse, turn: u64) -> Option<Event> {
+        if !self.usage {
+            return None;
+        }
+        let usage = response.usage.as_ref()?;
+        Some(Event::UsageObserved {
+            turn: Some(turn),
+            usage: crate::Usage {
+                cumulative: false,
+                input_tokens: Some(usage.input_tokens),
+                output_tokens: Some(usage.output_tokens + usage.thought_tokens.unwrap_or(0)),
+                cached_input_tokens: usage.cached_read_tokens,
+                cache_write_tokens: usage.cached_write_tokens,
+                cost_usd: None,
+                cache_write_1h_tokens: None,
+                model: self.model.clone(),
+            },
+        })
     }
 
     fn response(&mut self, message: &Value) -> Output {
@@ -381,6 +498,10 @@ impl Acp {
                 self.loading = false;
                 Output::event(Event::OpenFailed { reason: error })
             }
+            (Pending::SetModel(_), None) => self.opened(),
+            (Pending::SetModel(model), Some(error)) => Output::event(Event::OpenFailed {
+                reason: format!("the agent refused model {model}: {error}"),
+            }),
             (Pending::Steer(turn, steer), Some(reason)) => Output::event(Event::SteerRejected {
                 turn,
                 steer,
@@ -403,18 +524,26 @@ impl Acp {
                 self.turns.end();
                 self.permissions.clear();
                 self.tool_calls.clear();
+                let mut events = Vec::new();
                 let outcome = match error {
                     Some(message) => TurnOutcome::Failed { message },
                     None => {
                         match serde_json::from_value::<PromptResponse>(message["result"].clone()) {
-                            Ok(response) => stop_outcome(response.stop_reason),
+                            Ok(response) => {
+                                events.extend(self.usage_of(&response, turn));
+                                stop_outcome(response.stop_reason)
+                            }
                             Err(error) => TurnOutcome::Failed {
                                 message: format!("unreadable prompt response: {error}"),
                             },
                         }
                     }
                 };
-                Output::event(Event::TurnEnded { turn, outcome })
+                events.push(Event::TurnEnded { turn, outcome });
+                Output {
+                    events,
+                    frames: Vec::new(),
+                }
             }
         }
     }
@@ -626,6 +755,25 @@ fn stop_outcome(reason: StopReason) -> TurnOutcome {
     }
 }
 
+const RESUME_REASON: crate::CapabilityReason = (
+    "resume",
+    "uses session/resume when the agent advertises it, else session/load; a session that cannot resume fails to open rather than starting fresh",
+);
+const FORK_REASON: crate::CapabilityReason = (
+    "fork",
+    "ACP session/fork is an unstable method; a driver that cannot fork must say so rather than start a fresh session",
+);
+const ACK_REASON: crate::CapabilityReason = ("turn_acknowledgment", "not verified");
+const MODEL_REASON: crate::CapabilityReason = (
+    "model",
+    "ACP v1 has no model parameter; selection belongs to the agent's own configuration",
+);
+const BUDGET_REASON: crate::CapabilityReason = (
+    "budget",
+    "ACP v1 has no spending limit; a prompt runs until the agent ends it",
+);
+const USAGE_REASON: crate::CapabilityReason = ("usage", "not verified");
+
 impl Driver for Acp {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -635,32 +783,41 @@ impl Driver for Acp {
             cancellation: true,
             tool_approvals: true,
             turn_acknowledgment: false,
-            usage: false,
+            usage: self.usage,
             // Enforced again against the agent's `_meta.steering`.
             steer: true,
-            model: false,
+            // Only where the profile verified the unstable methods.
+            model: self.models,
             budget: false,
         }
     }
 
     fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[
-            (
-                "resume",
-                "uses session/resume when the agent advertises it, else session/load; a session that cannot resume fails to open rather than starting fresh",
-            ),
-            (
-                "fork",
-                "ACP session/fork is an unstable method; a driver that cannot fork must say so rather than start a fresh session",
-            ),
-            ("turn_acknowledgment", "not verified"),
-            (
-                "model",
-                "ACP v1 has no model parameter; selection belongs to the agent's own configuration",
-            ),
-            ("budget", "ACP v1 has no spending limit; a prompt runs until the agent ends it"),
-            ("usage", "not verified"),
-        ]
+        match (self.models, self.usage) {
+            (false, false) => &[
+                RESUME_REASON,
+                FORK_REASON,
+                ACK_REASON,
+                MODEL_REASON,
+                BUDGET_REASON,
+                USAGE_REASON,
+            ],
+            (true, false) => &[
+                RESUME_REASON,
+                FORK_REASON,
+                ACK_REASON,
+                BUDGET_REASON,
+                USAGE_REASON,
+            ],
+            (false, true) => &[
+                RESUME_REASON,
+                FORK_REASON,
+                ACK_REASON,
+                MODEL_REASON,
+                BUDGET_REASON,
+            ],
+            (true, true) => &[RESUME_REASON, FORK_REASON, ACK_REASON, BUDGET_REASON],
+        }
     }
 
     fn open(&mut self, open: Open) -> Result<Opened, Rejected> {
@@ -675,8 +832,9 @@ impl Driver for Acp {
                 "ACP session/fork is an unstable method".into(),
             ));
         }
-        if open.model.is_some() {
-            // ACP v1 has no model parameter; selection belongs to the profile.
+        if open.model.is_some() && !self.models {
+            // ACP v1 has no model parameter; a profile that verified the
+            // unstable session/set_model against its agent takes one.
             return Err(Rejected::Unsupported("model selection over ACP".into()));
         }
         crate::refuse_budget(
@@ -754,18 +912,28 @@ impl Driver for Acp {
     fn interrupt(&mut self) -> Result<Vec<Frame>, Rejected> {
         self.turns.active.ok_or(Rejected::NoTurn)?;
         let session = self.session.as_ref().ok_or(Rejected::NotReady)?.to_string();
-        let mut frames = vec![frame(&json!({
+        // Outstanding permission requests are answered `cancelled` before
+        // the cancel notification: Antigravity CLI 1.4.12 answered a prompt
+        // whose pending request was cancelled first `cancelled` within
+        // five seconds, and left the prompt unanswered for over a minute
+        // when the cancel came first (1 November 2026, live). The protocol
+        // asks for both and fixes no order.
+        let mut frames: Vec<Frame> = self
+            .permissions
+            .drain()
+            .map(|(_, (id, _))| {
+                frame(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"outcome": {"outcome": "cancelled"}},
+                }))
+            })
+            .collect();
+        frames.push(frame(&json!({
             "jsonrpc": "2.0",
             "method": "session/cancel",
             "params": {"sessionId": session},
-        }))];
-        for (_, (id, _)) in self.permissions.drain() {
-            frames.push(frame(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {"outcome": {"outcome": "cancelled"}},
-            })));
-        }
+        })));
         Ok(frames)
     }
 

@@ -323,16 +323,18 @@ fn the_envelope_bounds_depth_width_and_harnesses() {
     denied(plain.spawn(spawn("say p", "p")), "not given delegation");
 }
 
-/// Every child gets the delegation tools. Antigravity takes MCP servers
-/// only in its configuration, in a home private to the branch, so a child
-/// on it of a parent without one is refused when it is spawned, naming
-/// what would give it one, rather than failing its first turn; nothing is
-/// created. The harness's executable is never looked for first.
+/// Every child gets the delegation tools. Antigravity's headless stream
+/// takes MCP servers only in its configuration, in a home private to the
+/// branch, so a child on that profile of a parent without one is refused
+/// when it is spawned, naming what would give it one, rather than failing
+/// its first turn; nothing is created. The harness's executable is never
+/// looked for first. (Antigravity's default, `agy acp`, takes them on the
+/// session, so the profile is named.)
 #[test]
 fn a_child_whose_harness_cannot_take_the_tools_where_it_runs_is_refused_at_spawn() {
     let f = Fixture::new();
     let envelope = Envelope {
-        harnesses: vec!["antigravity".into()],
+        harnesses: vec!["antigravity-stream-json".into()],
         ..Envelope::default()
     };
     let options = TaskOptions {
@@ -348,7 +350,7 @@ fn a_child_whose_harness_cannot_take_the_tools_where_it_runs_is_refused_at_spawn
         .unwrap();
     let delegate = root.delegate(options).unwrap();
     let refused = delegate.spawn(Spawn {
-        harness: Some("antigravity".into()),
+        harness: Some("antigravity-stream-json".into()),
         ..spawn("x", "agy")
     });
     match refused {

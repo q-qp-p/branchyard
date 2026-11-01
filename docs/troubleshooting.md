@@ -71,7 +71,7 @@ A repository's `[workspace]` scripts run as you, so they never run before you sa
 
 ### `the CLI soft-denied a …`
 
-An Antigravity turn ended `no changes` with `warning: the CLI soft-denied a write_file (WriteFile): no permissions.allow rule in its settings lets it run`. `agy` decides its tools by its own rules and cannot ask in headless mode, and agy 1.4.7 does not allow file writes by default there (its documentation says it does). With `--isolated --secret GEMINI_API_KEY`, Branchyard writes the rules from `--yes` or `--permissions` into the branch's private home (`by log NAME` shows `permission rules: … (allow: …, write_file(…))`). In your own home it writes nothing: add `"permissions": {"allow": ["write_file(/path/to/repository/.branchyard/worktrees)"]}` to `~/.gemini/antigravity-cli/settings.json`, or use `--isolated`.
+An Antigravity turn on the `antigravity-stream-json` profile (`--harness antigravity-stream-json`; the default `antigravity-acp` asks Branchyard instead and never soft-denies) ended `no changes` with `warning: the CLI soft-denied a write_file (WriteFile): no permissions.allow rule in its settings lets it run`. `agy` decides its tools by its own rules and cannot ask in headless mode, and agy 1.4.7 does not allow file writes by default there (its documentation says it does). With `--isolated --secret GEMINI_API_KEY`, Branchyard writes the rules from `--yes` or `--permissions` into the branch's private home (`by log NAME` shows `permission rules: … (allow: …, write_file(…))`). In your own home it writes nothing: add `"permissions": {"allow": ["write_file(/path/to/repository/.branchyard/worktrees)"]}` to `~/.gemini/antigravity-cli/settings.json`, or use `--isolated`.
 
 ### `slow to start`
 

@@ -43,6 +43,10 @@ pub(crate) fn is_parent_session_variable(name: &str) -> bool {
 /// this list against `docs/qualification/`.
 pub(crate) const REPORTS: &[(&str, &str)] = &[
     (
+        "antigravity-acp",
+        include_str!("../../../docs/qualification/antigravity-acp.json"),
+    ),
+    (
         "antigravity-stream-json",
         include_str!("../../../docs/qualification/antigravity-stream-json.json"),
     ),
@@ -468,6 +472,7 @@ mod tests {
             assert!(profiles::by_id(id).is_some(), "{id} is not a profile");
         }
         assert_eq!(qualification("claude-code-acp").unwrap(), "9/9 on 0.81.2");
+        assert_eq!(qualification("antigravity-acp").unwrap(), "9/9 on 1.4.12");
         assert_eq!(qualification("gemini-cli-acp").unwrap(), "9/9 on 0.65.0");
         assert_eq!(
             qualification("antigravity-stream-json").unwrap(),

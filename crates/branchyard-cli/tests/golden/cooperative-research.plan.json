@@ -5,7 +5,7 @@
     "seat": "lead",
     "name": "cooperative-research",
     "harness": "antigravity",
-    "profile": "antigravity-stream-json",
+    "profile": "antigravity-acp",
     "budget": {
       "max_usd": 6.0,
       "max_turns": 12,
@@ -135,10 +135,5 @@
         "instances": 1
       }
     }
-  },
-  "unapproved_tools": [
-    "lead",
-    "researcher",
-    "synthesizer"
-  ]
+  }
 }

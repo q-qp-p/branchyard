@@ -413,14 +413,16 @@ fn cancel_answers_outstanding_permissions_and_awaits_the_stop_reason() {
     let prompt = decode(&driver.submit("edit").unwrap().frames[0]);
     feed(&mut driver, &permission_request(50));
     let frames = decode_all(&driver.interrupt().unwrap());
-    assert_eq!(frames[0]["method"], "session/cancel");
-    assert_conforms::<CancelNotification>(&frames[0], "/params");
-    assert_eq!(frames[1]["id"], 50);
-    assert_conforms::<RequestPermissionResponse>(&frames[1], "/result");
+    // The pending request is answered before the cancel notification: agy
+    // 1.4.12 never answers a prompt cancelled the other way round.
+    assert_eq!(frames[0]["id"], 50);
+    assert_conforms::<RequestPermissionResponse>(&frames[0], "/result");
     assert_eq!(
-        frames[1]["result"]["outcome"],
+        frames[0]["result"]["outcome"],
         json!({"outcome": "cancelled"})
     );
+    assert_eq!(frames[1]["method"], "session/cancel");
+    assert_conforms::<CancelNotification>(&frames[1], "/params");
 
     let (events, _) = feed(
         &mut driver,
@@ -1181,4 +1183,272 @@ fn authentication_is_tried_only_for_a_resume_the_agent_offers_a_method_for() {
     let (events, frames) = feed(driver.as_mut(), &auth_required(&frames[0]));
     assert!(frames.is_empty());
     assert!(matches!(&events[0], Event::OpenFailed { .. }));
+}
+
+fn antigravity_fixture(name: &str) -> Transcript {
+    Transcript::load(format!(
+        "{}/tests/fixtures/antigravity-cli-1.4.12-acp-{name}.jsonl",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+fn antigravity_acp(model: Option<&str>) -> (Box<dyn Driver>, Opened) {
+    let mut driver = branchyard_harness::profiles::by_id("antigravity-acp")
+        .unwrap()
+        .driver();
+    let opened = driver
+        .open(Open {
+            model: model.map(str::to_owned),
+            ..fresh()
+        })
+        .unwrap();
+    assert_eq!(opened.launch.argv, ["agy", "acp"]);
+    (driver, opened)
+}
+
+/// Recorded against Antigravity CLI 1.4.12's `agy acp` with a model call:
+/// the pinned model is chosen with `session/set_model` before the session
+/// is ready, `session/cancel` ends the running shell command's turn
+/// `cancelled` (the permission request the agent still sent is answered),
+/// and the prompt response's usage is the turn's, thought tokens counted
+/// as output. This is what the headless stream profile could not do.
+#[test]
+fn antigravity_acp_chooses_the_model_cancels_and_reports_usage() {
+    let recorded = antigravity_fixture("cancel");
+    let (mut driver, opened) = antigravity_acp(Some("gemini-4-argon-high"));
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt(
+            "Run exactly this shell command and nothing else: sleep 40 && echo finished. \
+             Then reply with one word.",
+        )
+        .interrupt()
+        .answer_permissions(PermissionDecision::Allow)
+        .run(driver.as_mut(), &opened);
+    assert_eq!(
+        replayed.sent, 6,
+        "initialize, session/new, session/set_model, prompt, cancel, permission answer"
+    );
+    let set_model = recorded
+        .rows
+        .iter()
+        .find(|r| r.frame["method"] == "session/set_model")
+        .unwrap();
+    assert_eq!(set_model.frame["params"]["modelId"], "gemini-4-argon-high");
+    let cancel = recorded
+        .rows
+        .iter()
+        .find(|r| r.frame["method"] == "session/cancel")
+        .unwrap();
+    assert_conforms::<CancelNotification>(&cancel.frame, "/params");
+    let events = replayed.events;
+    // Ready only once the model was set: after the set_model answer, which
+    // the recording places after the session answer.
+    let ready = events.iter().position(|e| *e == Event::Ready).unwrap();
+    assert!(matches!(&events[ready + 1], Event::SessionStarted { .. }));
+    assert!(events.iter().any(|e| matches!(e,
+        Event::ToolStarted { turn: 1, name, .. } if name == "run_command")));
+    assert!(events.iter().any(|e| matches!(e,
+        Event::PermissionRequested { request, .. } if request.tool == "run_command")));
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::Unrecognized { .. })));
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            Event::UsageObserved { turn, usage } => Some((turn, usage)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(usage.0, &Some(1));
+    assert!(!usage.1.cumulative);
+    assert_eq!(usage.1.input_tokens, Some(6867));
+    assert_eq!(
+        usage.1.output_tokens,
+        Some(49 + 157),
+        "thought tokens are output"
+    );
+    assert_eq!(usage.1.cached_input_tokens, Some(0));
+    assert_eq!(usage.1.cost_usd, None);
+    assert_eq!(usage.1.model.as_deref(), Some("gemini-4-argon-high"));
+    assert_eq!(
+        events.last(),
+        Some(&Event::TurnEnded {
+            turn: 1,
+            outcome: TurnOutcome::Interrupted
+        })
+    );
+}
+
+/// Recorded the same way: no model pinned, so the session is ready at the
+/// session answer and the usage names the model the agent said was current.
+#[test]
+fn antigravity_acp_completes_a_turn_on_the_agents_current_model() {
+    let recorded = antigravity_fixture("turn");
+    let (mut driver, opened) = antigravity_acp(None);
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt("Reply with exactly the word PELICAN-7 and nothing else.")
+        .run(driver.as_mut(), &opened);
+    assert_eq!(replayed.sent, 3, "initialize, session/new, prompt");
+    let events = replayed.events;
+    assert!(events.contains(&Event::MessageDelta {
+        turn: 1,
+        text: "PELICAN-7".into()
+    }));
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            Event::UsageObserved { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(usage.input_tokens, Some(7110));
+    assert_eq!(usage.output_tokens, Some(4 + 129));
+    assert_eq!(usage.model.as_deref(), Some("gemini-3.1-pro-low"));
+    assert_eq!(
+        events.last(),
+        Some(&Event::TurnEnded {
+            turn: 1,
+            outcome: TurnOutcome::Completed
+        })
+    );
+}
+
+/// The session answer with `models`, as agy 1.4.12 shapes it.
+fn session_with_models(id: &Value, current: &str, offered: &[&str]) -> Value {
+    let models: Vec<Value> = offered
+        .iter()
+        .map(|m| json!({"modelId": m, "name": m}))
+        .collect();
+    json!({"jsonrpc": "2.0", "id": id, "result": {
+        "sessionId": "s1",
+        "models": {"availableModels": models, "currentModelId": current},
+    }})
+}
+
+fn models_driver(model: &str) -> (Acp, Value) {
+    let mut driver = Acp::new(vec!["agy".into(), "acp".into()]).with_models();
+    let opened = driver
+        .open(Open {
+            model: Some(model.into()),
+            ..fresh()
+        })
+        .unwrap();
+    let initialize = decode(&opened.frames[0]);
+    let (_, frames) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": initialize["id"], "result": {"protocolVersion": 1, "agentCapabilities": {}}}),
+    );
+    (driver, frames[0].clone())
+}
+
+/// A pinned model the agent lists as current needs no `session/set_model`;
+/// one it lists but does not run is set, and the session is ready on the
+/// answer; one it does not list, a list it does not give, or a refusal
+/// fails the open and names what it offers.
+#[test]
+fn a_pinned_model_is_checked_against_the_agents_list_and_set() {
+    let (mut driver, new) = models_driver("fast");
+    let (events, frames) = feed(
+        &mut driver,
+        &session_with_models(&new["id"], "fast", &["fast", "slow"]),
+    );
+    assert!(frames.is_empty());
+    assert_eq!(events[0], Event::Ready);
+
+    let (mut driver, new) = models_driver("slow");
+    let (events, frames) = feed(
+        &mut driver,
+        &session_with_models(&new["id"], "fast", &["fast", "slow"]),
+    );
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(frames[0]["method"], "session/set_model");
+    assert_eq!(
+        frames[0]["params"],
+        json!({"sessionId": "s1", "modelId": "slow"})
+    );
+    assert!(matches!(driver.submit("go"), Err(Rejected::NotReady)));
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": frames[0]["id"], "result": {}}),
+    );
+    assert_eq!(events[0], Event::Ready);
+    assert!(driver.submit("go").is_ok());
+
+    let (mut driver, new) = models_driver("slow");
+    let (_, frames) = feed(
+        &mut driver,
+        &session_with_models(&new["id"], "fast", &["fast", "slow"]),
+    );
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": frames[0]["id"], "error": {"code": -32602, "message": "no such model"}}),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+        if reason.contains("refused model slow") && reason.contains("no such model")),
+        "{events:?}"
+    );
+
+    let (mut driver, new) = models_driver("huge");
+    let (events, _) = feed(
+        &mut driver,
+        &session_with_models(&new["id"], "fast", &["fast", "slow"]),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+        if reason == "the agent does not offer model huge; it offers fast, slow"),
+        "{events:?}"
+    );
+
+    let (mut driver, new) = models_driver("fast");
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": new["id"], "result": {"sessionId": "s1"}}),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+        if reason == "the agent lists no models, so fast cannot be chosen"),
+        "{events:?}"
+    );
+}
+
+/// Without the profile's say-so, a prompt response's usage is not reported
+/// and the capability stays off; with it, both are on and the reasons no
+/// longer list them.
+#[test]
+fn usage_and_model_are_reported_only_where_the_profile_verified_them() {
+    let mut plain = ready();
+    assert!(!plain.capabilities().usage && !plain.capabilities().model);
+    let prompt = decode(&plain.submit("hi").unwrap().frames[0]);
+    let (events, _) = feed(
+        &mut plain,
+        &json!({"jsonrpc": "2.0", "id": prompt["id"], "result": {"stopReason": "end_turn",
+            "usage": {"totalTokens": 10, "inputTokens": 8, "outputTokens": 2}}}),
+    );
+    assert_eq!(
+        events,
+        vec![Event::TurnEnded {
+            turn: 1,
+            outcome: TurnOutcome::Completed
+        }]
+    );
+    let verified = Acp::new(vec!["agy".into(), "acp".into()])
+        .with_models()
+        .with_usage();
+    assert!(verified.capabilities().usage && verified.capabilities().model);
+    let reasons: Vec<&str> = verified
+        .capability_reasons()
+        .iter()
+        .map(|(c, _)| *c)
+        .collect();
+    assert!(
+        !reasons.contains(&"usage") && !reasons.contains(&"model"),
+        "{reasons:?}"
+    );
+    let plain_reasons: Vec<&str> = plain.capability_reasons().iter().map(|(c, _)| *c).collect();
+    assert!(plain_reasons.contains(&"usage") && plain_reasons.contains(&"model"));
 }
