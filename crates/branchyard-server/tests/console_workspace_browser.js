@@ -492,6 +492,39 @@ let browser = null;
   }
   process.stderr.write(`previews from this server: ${rendered.join('; ')}\n`);
 
+  // The HTML output is on show as a page image; Open runs it in an iframe
+  // served from its own path under its own policy.
+  const htmlHead = page.locator('#preview .preview-head');
+  const framed = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/app/frame/'), TURN);
+  await htmlHead.getByRole('button', { name: `Open ${HTML}`, exact: true }).click();
+  const framedResponse = await framed;
+  if (framedResponse.status() !== 200) throw new Error(`the iframe's page answered ${framedResponse.status()}: ${await framedResponse.text()}`);
+  const outputFrame = page.locator('#frame-slot iframe.output-frame');
+  await outputFrame.waitFor();
+  if (await outputFrame.getAttribute('sandbox') !== 'allow-scripts') throw new Error(`the iframe is sandboxed as ${await outputFrame.getAttribute('sandbox')}`);
+  const framePath = await outputFrame.getAttribute('src');
+  if (!/^\/app\/frame\/[0-9a-f]{20,}$/.test(framePath)) throw new Error(`the iframe loads ${framePath}`);
+  const inner = page.frameLocator('#frame-slot iframe.output-frame');
+  await inner.getByRole('heading', { name: 'Open tickets' }).waitFor();
+  if (await inner.locator('#count').evaluate((el) => getComputedStyle(el).color) !== 'rgb(200, 0, 0)') throw new Error('the page\'s inline CSS did not apply');
+  for (const want of ['1', '2']) {
+    await inner.getByRole('button', { name: 'Count', exact: true }).click();
+    await inner.locator('#count', { hasText: want }).waitFor();
+  }
+  await inner.locator('#net', { hasText: 'blocked' }).waitFor();
+  const running = page.frames().find((f) => f.url().includes('/app/frame/'));
+  const reach = await running.evaluate(() => { try { return sessionStorage.getItem('branchyard.token') || 'empty'; } catch (e) { return e.name; } });
+  if (reach !== 'SecurityError') throw new Error(`the framed page reaches the console's storage: ${reach}`);
+  const served = await page.request.get(`${base}${framePath}`);
+  const frameCsp = served.headers()['content-security-policy'];
+  if (frameCsp !== "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'") throw new Error(`the frame is served with ${frameCsp}`);
+  if (served.headers()['x-frame-options']) throw new Error('the frame path sets X-Frame-Options, so the console could not frame it');
+  const shell = await page.request.get(`${base}/app/`);
+  if (shell.headers()['x-frame-options'] !== 'DENY' || !/frame-ancestors 'none'/.test(shell.headers()['content-security-policy'])) throw new Error('the console itself can be framed');
+  await htmlHead.getByRole('button', { name: `Close ${HTML}`, exact: true }).click();
+  await outputFrame.waitFor({ state: 'detached' });
+  say('HTML');
+
   // Open the same originals in the full-width viewer. These answers are never
   // intercepted: explicit converter settings must render; the default runtime
   // without its Office dependencies must explain that it cannot make previews.
@@ -577,38 +610,6 @@ let browser = null;
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('#tab-outputs').click();
 
-  // The HTML output is on show as a page image; Open runs it in an iframe
-  // served from its own path under its own policy.
-  const htmlHead = page.locator('#preview .preview-head');
-  const framed = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/app/frame/'), TURN);
-  await htmlHead.getByRole('button', { name: `Open ${HTML}`, exact: true }).click();
-  const framedResponse = await framed;
-  if (framedResponse.status() !== 200) throw new Error(`the iframe's page answered ${framedResponse.status()}: ${await framedResponse.text()}`);
-  const outputFrame = page.locator('#frame-slot iframe.output-frame');
-  await outputFrame.waitFor();
-  if (await outputFrame.getAttribute('sandbox') !== 'allow-scripts') throw new Error(`the iframe is sandboxed as ${await outputFrame.getAttribute('sandbox')}`);
-  const framePath = await outputFrame.getAttribute('src');
-  if (!/^\/app\/frame\/[0-9a-f]{20,}$/.test(framePath)) throw new Error(`the iframe loads ${framePath}`);
-  const inner = page.frameLocator('#frame-slot iframe.output-frame');
-  await inner.getByRole('heading', { name: 'Open tickets' }).waitFor();
-  if (await inner.locator('#count').evaluate((el) => getComputedStyle(el).color) !== 'rgb(200, 0, 0)') throw new Error('the page\'s inline CSS did not apply');
-  for (const want of ['1', '2']) {
-    await inner.getByRole('button', { name: 'Count', exact: true }).click();
-    await inner.locator('#count', { hasText: want }).waitFor();
-  }
-  await inner.locator('#net', { hasText: 'blocked' }).waitFor();
-  const running = page.frames().find((f) => f.url().includes('/app/frame/'));
-  const reach = await running.evaluate(() => { try { return sessionStorage.getItem('branchyard.token') || 'empty'; } catch (e) { return e.name; } });
-  if (reach !== 'SecurityError') throw new Error(`the framed page reaches the console's storage: ${reach}`);
-  const served = await page.request.get(`${base}${framePath}`);
-  const frameCsp = served.headers()['content-security-policy'];
-  if (frameCsp !== "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'") throw new Error(`the frame is served with ${frameCsp}`);
-  if (served.headers()['x-frame-options']) throw new Error('the frame path sets X-Frame-Options, so the console could not frame it');
-  const shell = await page.request.get(`${base}/app/`);
-  if (shell.headers()['x-frame-options'] !== 'DENY' || !/frame-ancestors 'none'/.test(shell.headers()['content-security-policy'])) throw new Error('the console itself can be framed');
-  await htmlHead.getByRole('button', { name: `Close ${HTML}`, exact: true }).click();
-  await outputFrame.waitFor({ state: 'detached' });
-  say('HTML');
 
   // Held, never answered, so each preview stays in flight until the page abandons it.
   await page.route(PREVIEW, () => {});
