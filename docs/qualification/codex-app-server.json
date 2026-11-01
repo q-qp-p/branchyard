@@ -8,62 +8,62 @@
   "date": "2026-11-01",
   "installed_from": "npm @openai/codex@0.166.0",
   "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
-  "seconds": 49.0,
+  "seconds": 38.0,
   "harness_estimated_cost_usd": "not reported by the harness; the cost cap did not apply",
   "scenarios": [
     {
       "name": "fresh_turn",
       "passed": true,
-      "detail": "session 01a195d2-16dc-7f53-89ca-3c2f9ce4fda2; replied \"OK\"",
-      "seconds": 5.6
+      "detail": "session 01a1960f-2d1c-7b41-be0a-735595536488; replied \"OK\"",
+      "seconds": 8.6
     },
     {
       "name": "permission_denied",
       "passed": true,
       "detail": "1 request(s) denied; marker absent; turn Completed",
-      "seconds": 10.2
+      "seconds": 4.4
     },
     {
       "name": "permission_allowed",
       "passed": true,
       "detail": "request allowed; command ran",
-      "seconds": 6.2
+      "seconds": 3.8
     },
     {
       "name": "interrupt_during_permission",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: true; pending request withdrawn by harness: false",
-      "seconds": 4.9
+      "seconds": 2.5
     },
     {
       "name": "interrupt_during_tool",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: true",
-      "seconds": 6.9
+      "seconds": 7.7
     },
     {
       "name": "clean_close",
       "passed": true,
       "detail": "closed cleanly; no descendants outlived the harness; session cost $0.0000",
-      "seconds": 0.0
+      "seconds": 0.1
     },
     {
       "name": "resume",
       "passed": true,
-      "detail": "session 01a195d2-16dc-7f53-89ca-3c2f9ce4fda2; remembered PELICAN-7; cost $0.0000",
-      "seconds": 5.4
+      "detail": "session 01a1960f-2d1c-7b41-be0a-735595536488; remembered PELICAN-7; cost $0.0000",
+      "seconds": 3.0
     },
     {
       "name": "fork",
       "passed": true,
-      "detail": "session 01a195d2-afb3-7891-ae13-3aeac8d9fcbd; remembered PELICAN-7; cost $0.0000",
-      "seconds": 5.0
+      "detail": "session 01a1960f-a224-7610-87f1-a9bc2c53322f; remembered PELICAN-7; cost $0.0000",
+      "seconds": 3.4
     },
     {
       "name": "connection_lost",
       "passed": true,
       "detail": "killed mid-turn; outcome reported unknown",
-      "seconds": 5.1
+      "seconds": 4.4
     }
   ]
 }

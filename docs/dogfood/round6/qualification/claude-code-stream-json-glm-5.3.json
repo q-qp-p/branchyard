@@ -8,62 +8,62 @@
   "date": "2026-11-01",
   "installed_from": "preinstalled npm @anthropic-ai/claude-code 2.1.316",
   "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
-  "seconds": 70.0,
-  "harness_estimated_cost_usd": 0.23,
+  "seconds": 62.0,
+  "harness_estimated_cost_usd": 0.0704,
   "scenarios": [
     {
       "name": "fresh_turn",
       "passed": true,
-      "detail": "session 56c6a290-9ca5-408a-a5cc-44284a4f0cc8; replied \"OK\"",
-      "seconds": 9.3
+      "detail": "session a23be2f5-8dd8-4aec-9a3c-eb90230f5979; replied \"OK\"",
+      "seconds": 5.3
     },
     {
       "name": "permission_denied",
       "passed": true,
       "detail": "1 request(s) denied; marker absent; turn Completed",
-      "seconds": 15.5
+      "seconds": 10.8
     },
     {
       "name": "permission_allowed",
       "passed": true,
       "detail": "request allowed; command ran",
-      "seconds": 9.9
+      "seconds": 10.5
     },
     {
       "name": "interrupt_during_permission",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: true; pending request withdrawn by harness: true",
-      "seconds": 7.1
+      "seconds": 1.6
     },
     {
       "name": "interrupt_during_tool",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: true",
-      "seconds": 10.0
+      "seconds": 8.8
     },
     {
       "name": "clean_close",
       "passed": true,
-      "detail": "closed cleanly; no descendants outlived the harness; session cost $0.2124",
-      "seconds": 1.5
+      "detail": "closed cleanly; no descendants outlived the harness; session cost $0.0529",
+      "seconds": 0.2
     },
     {
       "name": "resume",
       "passed": true,
-      "detail": "session 56c6a290-9ca5-408a-a5cc-44284a4f0cc8; remembered PELICAN-7; cost $0.2184",
-      "seconds": 2.8
+      "detail": "session a23be2f5-8dd8-4aec-9a3c-eb90230f5979; remembered PELICAN-7; cost $0.0587",
+      "seconds": 11.8
     },
     {
       "name": "fork",
       "passed": true,
-      "detail": "session 5c711ef6-65d0-4b26-a374-1abeecddc860; remembered PELICAN-7; cost $0.2240",
-      "seconds": 6.0
+      "detail": "session 959c9af9-ece1-452a-b164-7370308e77f9; remembered PELICAN-7; cost $0.0646",
+      "seconds": 6.9
     },
     {
       "name": "connection_lost",
       "passed": true,
       "detail": "killed mid-turn; outcome reported unknown",
-      "seconds": 7.7
+      "seconds": 5.6
     }
   ]
 }
