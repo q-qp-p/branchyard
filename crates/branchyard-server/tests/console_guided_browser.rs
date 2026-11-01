@@ -136,7 +136,7 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
                 {"id": "local", "label": "Local workers",
                  "description": "Runs on this Branchyard server with its installed harnesses.",
                  "provider": {"kind": "local"},
-                 "harnesses": [models, {"harness": "antigravity"}]},
+                 "harnesses": [models, {"harness": "antigravity-stream-json"}]},
                 {"id": "substrate-closed", "label": "Substrate, cluster closed",
                  "description": "Runs each session in a Substrate actor; this cluster does not answer.",
                  "provider": substrate("substrate/live.key"), "harnesses": [models]},
@@ -157,7 +157,7 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
     );
     config
         .harness_commands
-        .insert("antigravity".into(), vec![agy.display().to_string()]);
+        .insert("antigravity-stream-json".into(), vec![agy.display().to_string()]);
     config.shutdown_grace = Duration::from_secs(10);
     config.poll_interval = Duration::from_millis(100);
     config.log_requests = false;
