@@ -369,8 +369,24 @@
     {
       "harness": "Antigravity",
       "id": "antigravity",
-      "profile": "antigravity-stream-json",
+      "profile": "antigravity-acp",
       "role": "default",
+      "permissions_answered": "live-tested",
+      "steer": "not verified",
+      "live": {
+        "passed": 9,
+        "total": 9,
+        "report": "qualification/antigravity-acp.json",
+        "date": "2026-11-01",
+        "version": "1.4.12"
+      },
+      "status": "live-qualified"
+    },
+    {
+      "harness": "Antigravity",
+      "id": "antigravity",
+      "profile": "antigravity-stream-json",
+      "role": "alternate",
       "permissions_answered": "\u2014",
       "steer": "\u2014",
       "live": {
