@@ -263,7 +263,10 @@ fn arguments(
         ("LANG", "C.UTF-8"),
         ("LC_ALL", "C.UTF-8"),
         ("PYTHONDONTWRITEBYTECODE", "1"),
-        ("SAL_USE_VCLPLUGIN", "gen"),
+        // `svp` is LibreOffice's display-less backend. `gen` is its X11 backend: it
+        // overrides `--headless`, finds no display in the empty namespace and
+        // exits 0 without writing a PDF.
+        ("SAL_USE_VCLPLUGIN", "svp"),
     ] {
         push(&[os("--setenv"), os(name), os(value)]);
     }
@@ -445,6 +448,51 @@ mod tests {
                 .windows(3)
                 .any(|a| a == ["--ro-bind", "/etc/libreoffice", "/etc/libreoffice"]));
         }
+    }
+
+    #[test]
+    fn libreoffice_gets_the_display_less_backend_and_nothing_wider() {
+        let runtime = Runtime {
+            executable: "/usr/bin/python3".into(),
+            prefix: "/usr".into(),
+            base_prefix: "/usr".into(),
+            version: "fixture".into(),
+        };
+        let args = arguments(
+            &runtime,
+            Path::new("/owned/input/source.docx"),
+            Path::new("/owned/helper"),
+            Path::new("/owned/output"),
+            &PreviewOptions::default(),
+        )
+        .unwrap();
+        let values: Vec<_> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let before_command = values.iter().position(|a| a == "--").unwrap();
+        let environment: Vec<(&str, &str)> = values[..before_command]
+            .windows(3)
+            .filter(|a| a[0] == "--setenv")
+            .map(|a| (a[1].as_str(), a[2].as_str()))
+            .collect();
+        assert!(environment.contains(&("SAL_USE_VCLPLUGIN", "svp")));
+        let names: Vec<_> = environment.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "TMPDIR",
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "PYTHONDONTWRITEBYTECODE",
+                "SAL_USE_VCLPLUGIN"
+            ]
+        );
+        assert!(!values.iter().any(|a| a == "gen" || a == "DISPLAY"));
+        assert!(values.contains(&"--unshare-all".to_owned()));
+        assert!(!values.contains(&"--share-net".to_owned()));
     }
 
     #[test]
