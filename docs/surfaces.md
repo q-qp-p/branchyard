@@ -292,6 +292,13 @@ Setup and configuration are the CLI's: they write files for `by` and the server 
 | `Repository::check_commit`, `CheckResult` (`branchyard-workspace`) | none | a check on an exact commit in a private worktree |
 | `refs/branchyard/<branch>/<incarnation>/turn-N`, `refs/branchyard-try/*`, `.branchyard/try/` | none | checkpoint refs (deleted by `rm`), and a try's pins and saved state |
 
+## Added with per-turn cost
+
+| Surface | Before | Now |
+|---|---|---|
+| `Activity::TurnCost` (`schema/contract.json`) | the branch's running `cost_usd` only | `turn_cost` (`cost_usd`): what each turn cost on its own, recorded when its metering settled, none for a turn nothing measured ([budgets](delegation.md#budgets)); in the event page and stream, `by log` (`turn cost $X`, `turn_cost` in `--json`), the console's receipts and Python's `FeedEntry.turn_cost`; a new variant of the event enum |
+| `CheckpointEntry::cost_usd` | none | the turn's own cost beside its checkpoint, in `by show`'s checkpoints after the diff counts |
+
 ## Added with pull requests
 
 GitHub is reached through the user's `gh`, which runs where the repository and its git remote are ([pull requests](pull-requests.md)). The SDK records and folds the steps; the CLI talks to `gh`.

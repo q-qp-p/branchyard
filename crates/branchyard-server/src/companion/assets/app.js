@@ -1525,6 +1525,7 @@
       case 'status': return `status: ${statusOf({ status: v }).text}`;
       case 'warning': return `warning: ${v}`;
       case 'checkpoint': return `checkpoint ${v.turn} at ${v.commit.slice(0, 10)}`;
+      case 'turn_cost': return `turn cost ${money(v.cost_usd)}`;
       case 'steered': return `steered by ${v.by}: ${v.text}`;
       case 'stalled': return 'stalled: no harness activity';
       case 'resumed': return 'active again';
@@ -1572,7 +1573,7 @@
     const open = (text, steer, at) => {
       turn = {
         text, steer, said: [], tools: [], parts: [], pending: [], status: null, checkpoint: null, candidate: null,
-        started_ms: at || null, ended_ms: null,
+        cost: null, started_ms: at || null, ended_ms: null,
       };
       turns.push(turn);
       cut = true;
@@ -1594,6 +1595,7 @@
         cut = true;
       } else if (a.snapshot) (turn || open(null, false, at)).candidate = a.snapshot;
       else if (a.checkpoint) (turn || open(null, false, at)).checkpoint = a.checkpoint;
+      else if (a.turn_cost) (turn || open(null, false, at)).cost = a.turn_cost.cost_usd;
       else if (a.status && turn && !['running', 'waiting'].includes(a.status.state)) { turn.status = a.status; turn.ended_ms = at || null; }
     }
     for (const t of turns) {
@@ -2144,8 +2146,9 @@
     }, icon(toolIcon(name), true), h('span', { text: name }));
   }
 
-  // The turn's receipt: how long it took, what its calls did, what it
-  // changed, and how it ended.
+  // The turn's receipt: how long it took, what it cost (the engine's own
+  // record of the turn's spend, when something measured it), what its
+  // calls did, what it changed, and how it ended.
   function receipt(t) {
     const c = t.checkpoint || t.candidate;
     const lane = t.status ? laneOf({ name: '', status: t.status }, new Map()).key : null;
@@ -2156,6 +2159,7 @@
       lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
       t.status ? cap(statusOf({ status: t.status }).text) : null,
       took ? [' · ', took] : null,
+      t.cost != null ? [' · ', money(t.cost)] : null,
       did ? [' · ', did] : null,
       c ? [' · ', h('span', { class: 'mono', text: c.commit.slice(0, 7) }), ` · ${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null);
   }

@@ -1,7 +1,8 @@
 //! The companion page in headless Chromium against a real server: it pairs
 //! from a link, sees a branch appear and settle over the event stream,
-//! sends a follow-up from the branch page, decides from the deck, and shows
-//! which files two open branches hold. Driven by Playwright
+//! sends a follow-up from the branch page, shows each turn's own cost on its
+//! receipt, decides from the deck, and shows which files two open branches
+//! hold. Driven by Playwright
 //! (`companion_browser.js`); skipped, saying so, when Node or Playwright's
 //! module is not installed. `BY_TEST_PLAYWRIGHT` names the module's
 //! directory; otherwise `$(npm root -g)/playwright` is tried, with
@@ -15,11 +16,11 @@ use std::process::{Command, Stdio};
 
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings};
 use branchyard::{Envelope, MessageKind};
-use branchyard_client::api::{OperationState, PolicySpec, SpawnRequest, TaskRequest};
+use branchyard_client::api::{OperationState, PolicySpec, SendRequest, SpawnRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_server::companion::{link, store};
 use branchyard_testkit::wait;
-use common::{await_operation, run, task, Fixture, Server};
+use common::{await_operation, costly_task, run, task, Fixture, Server};
 
 fn playwright() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("BY_TEST_PLAYWRIGHT") {
@@ -64,6 +65,7 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     let f = Fixture::new();
     let mut config = f.config();
     config.app.enabled = true;
+    common::costly_harness(&mut config);
     // No push service is reachable here; the page's in-page notices remain.
     config.app.push = false;
     // A delegating parent runs a child that asks it a question. The child's
@@ -168,6 +170,26 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     assert!(op.state.is_terminal());
     writeln!(stdin, "report").unwrap();
     expect("RENDERED");
+    // Two turns of a harness that reports its session's running total: each
+    // receipt shows the turn's own cost.
+    let op = run(&server.client(), &costly_task("SPEND=0.25", "costly"));
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    let again = server
+        .client()
+        .repo("app")
+        .send(
+            "costly",
+            &SendRequest {
+                prompt: "SPEND=0.5".into(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let again = await_operation(&server.client(), &again.id);
+    assert_eq!(again.state, OperationState::Succeeded, "{again:?}");
+    writeln!(stdin, "costly").unwrap();
+    expect("COSTED");
     // A turn the policy parks on an approval before it writes: the page
     // decides it. The task finishes once the page has allowed it.
     let asker = server

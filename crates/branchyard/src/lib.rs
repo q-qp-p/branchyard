@@ -2677,6 +2677,22 @@ pub enum Activity {
     },
     /// A new candidate commit.
     Snapshot(CandidateInfo),
+    /// What the turn that is ending cost on its own, in US dollars,
+    /// recorded once its metering has settled (the harness's closing
+    /// figure folded in) and before the branch's closing status. For a
+    /// harness that reports its session's running total, the part of it
+    /// this turn added, never the total; on the model gateway, the turn's
+    /// metered calls. Recorded only for a turn whose spend something
+    /// measured: a harness that reports no usage records none. The
+    /// branch's running total stays [`BranchInfo::cost_usd`]. A record of
+    /// its own rather than a field of the harness's `turn_ended`, which
+    /// arrives before the harness's closing figure, or of
+    /// [`Activity::Checkpoint`], which a turn whose snapshot failed does
+    /// not record. See `docs/delegation.md#budgets`.
+    TurnCost {
+        /// The turn's own cost.
+        cost_usd: f64,
+    },
     /// The branch's status changed.
     Status(BranchStatus),
     /// Something the engine noticed, such as descendants that outlived the

@@ -2398,6 +2398,10 @@ class GrantsAndNames(unittest.TestCase):
         self.assertEqual(
             bc.FeedEntry({"seq": 2, "branch": "a", "activity": {"status": {"state": "ready"}}}).status, "ready"
         )
+        self.assertIsNone(entry.turn_cost)
+        self.assertEqual(
+            bc.FeedEntry({"seq": 3, "branch": "a", "activity": {"turn_cost": {"cost_usd": 0.25}}}).turn_cost, 0.25
+        )
 
 
 class ModuleSpawnAndReport(unittest.TestCase):
