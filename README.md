@@ -11,6 +11,14 @@ Run several AI agents at once, each on its own branch, then review and merge onl
 
 <sub>A scripted agent produced the demo data in these screenshots, and no model ran. [How to regenerate them](assets/screenshots/README.md).</sub>
 
+Home is a board: every open branch on one clock, a wait on you filled amber.
+
+<img src="assets/screenshots/console-board.png" alt="The console's home in a desktop browser. A board lists a Rust library's open branches on one time axis: the branch changelog waiting for you in an amber row with an Answer button, an interrupted branch with Resume, two running branches with Steer and two ready branches with Merge.">
+
+Needs you is a deck: one decision at a time, with the question, the evidence and the answers.
+
+<img src="assets/screenshots/console-decide.png" alt="The console's Needs you view. One card asks whether the agent on the changelog branch may use a write tool, with what it was doing, a reason field and the answers Allow, Deny, Open and Later; beside it, a queue of the two ready branches to merge and the interrupted branch.">
+
 ## Why
 
 One coding agent in one checkout works. Two agents in the same checkout overwrite each other's files, and you lose track of which change came from which request. When a task finishes, you still have to find its changes, run the tests and decide whether to merge.

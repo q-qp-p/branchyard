@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Fate = Literal["merged", "interrupted", "running", "ready"]
+Fate = Literal["merged", "interrupted", "running", "ready", "parked"]
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,8 @@ class Turn:
     files: dict[str, str] = field(default_factory=dict)
     outputs: dict[str, str] = field(default_factory=dict)
     """CSV files the turn publishes, by name under outputs/."""
+    asks: str | None = None
+    """`PATH=CONTENT` the agent asks permission to write: the turn parks on that approval."""
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ class Session:
 
 REPO = "logfmt"
 OPEN_BRANCH = "parser-fix"
+PARKED_BRANCH = "changelog"
+"""The branch whose turn waits on a write the person has not allowed: the board's amber wait and the deck's first card."""
 
 CARGO_TOML = """\
 [package]
@@ -338,6 +342,17 @@ BRANCHES = (
             None,
             say="Setting up fuzz/fuzz_targets/parse.rs, then a five-minute run.",
             tools=(("execute", "Run cargo fuzz init"), ("execute", "Run cargo fuzz run parse -- -max_total_time=300")),
+        ),
+    ),
+    Branch(
+        PARKED_BRANCH,
+        "parked",
+        Turn(
+            "Add a 0.4.2 entry to CHANGELOG.md.",
+            None,
+            say="Collecting what changed since 0.4.1 from the merged branches, then writing the entry.",
+            tools=(("read", "Read README.md"), ("read", "Read Cargo.toml")),
+            asks="CHANGELOG.md=draft",
         ),
     ),
     Branch(

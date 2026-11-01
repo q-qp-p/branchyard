@@ -90,6 +90,14 @@ class Rewriting(unittest.TestCase):
         self.assertEqual(rewritten["params"]["prompt"][0]["text"], "HANG")
 
 
+    def test_a_scene_that_asks_has_the_agent_ask_permission_to_write(self):
+        rewritten = agent.rewrite(prompt("Fix the flaky test."), scene(asks="RELEASE.md=draft"))
+        self.assertEqual(rewritten["params"]["prompt"][0]["text"], "PERMISSION WRITE RELEASE.md=draft")
+
+    def test_asking_wins_over_a_reply(self):
+        self.assertEqual(agent.directive(scene(asks="a.txt=1", reply="/r/1.txt")), "PERMISSION WRITE a.txt=1")
+
+
 class Updates(unittest.TestCase):
     def test_the_text_comes_first_then_each_tool_call_for_the_session(self):
         tools = [{"kind": "read", "title": "Read src/lib.rs"}, {"kind": "execute", "title": "Run cargo test"}]
@@ -133,6 +141,12 @@ class Scenes(unittest.TestCase):
     def test_a_tool_kind_must_be_one_acp_has(self):
         with self.assertRaises(ValueError):
             scene(tools=[{"kind": "browse", "title": "Open the docs"}])
+
+    def test_what_a_scene_asks_to_write_is_one_word_with_an_equals_sign(self):
+        for asks in ("RELEASE.md", "a b=c", "a.txt=two words", ""):
+            with self.assertRaises(ValueError, msg=asks):
+                scene(asks=asks)
+        self.assertEqual(scene(asks="a.txt=1").asks, "a.txt=1")
 
     def test_two_scenes_may_not_share_a_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,7 +225,9 @@ class Story(unittest.TestCase):
                 self.assertIsNotNone(found, turn.prompt)
                 assert found is not None
                 self.assertEqual(found.prompt, turn.prompt)
-                if turn.reply is None:
+                if turn.asks:
+                    self.assertEqual(agent.directive(found), f"PERMISSION WRITE {turn.asks}")
+                elif turn.reply is None:
                     self.assertEqual(agent.directive(found), "HANG")
                 else:
                     self.assertEqual(Path(found.reply or "").read_text(), turn.reply)
@@ -223,6 +239,13 @@ class Story(unittest.TestCase):
         manifest = json.loads(files["outputs/artifacts.json"])
         self.assertEqual([f["path"] for f in manifest["files"]], list(turn.outputs))
         self.assertTrue(all(f"outputs/{name}" in files for name in turn.outputs))
+
+    def test_one_branch_is_parked_on_an_approval_and_only_it_asks(self):
+        asking = [b.name for b in story.BRANCHES if b.turn.asks]
+        self.assertEqual(asking, [story.PARKED_BRANCH])
+        self.assertEqual(next(b for b in story.BRANCHES if b.name == story.PARKED_BRANCH).fate, "parked")
+        self.assertFalse([t for s in story.SESSIONS for t in s.turns if t.asks], "a session turn would park too")
+        self.assertEqual(set(generate.FATES), {"merged", "interrupted", "running", "ready", "parked"})
 
     def test_what_the_screenshots_open_exists(self):
         self.assertIn(story.OPEN_BRANCH, [b.name for b in story.BRANCHES])
