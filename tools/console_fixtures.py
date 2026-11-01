@@ -245,6 +245,11 @@ def _pptx_specs(staging: Path) -> Path:
         path = staging / f"section-{index}.json"
         _write_json(path, section)
         section_refs.append({"id": section["id"], "path": path.name, "sha256": digest(path)})
+    # One slide per section, in order; `zip(strict=True)` would say the same
+    # but needs Python 3.10, and the artifacts CI runs this on 3.9.
+    slide_ids = ["overview", "closures", "actions"]
+    if len(section_refs) != len(slide_ids):
+        raise ValueError(f"expected {len(slide_ids)} sections, got {len(section_refs)}")
     return _write_json(
         staging / "deck.json",
         {
@@ -253,10 +258,7 @@ def _pptx_specs(staging: Path) -> Path:
             "id": "backlog-briefing",
             "design": design,
             "sections": section_refs,
-            "slide_order": [
-                f"{ref['id']}/{slide_id}"
-                for ref, slide_id in zip(section_refs, ["overview", "closures", "actions"], strict=True)
-            ],
+            "slide_order": [f"{ref['id']}/{slide_id}" for ref, slide_id in zip(section_refs, slide_ids)],
         },
     )
 
