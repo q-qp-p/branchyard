@@ -216,6 +216,41 @@ entrypoint assets and built archives. Build provenance is attached to the
 platform artifacts. For a manual check, use `gh attestation verify` with the
 archive and `--repo vamsiramakrishnan/branchyard`.
 
+### Cutting a release
+
+`tools/release_cut.py` turns the changelog's `## Unreleased` section into a
+release and sets every version field, so a release commit is one command and
+its diff. The release notes are the Unreleased section as it stands; write them
+first.
+
+```sh
+python3 tools/release_cut.py VERSION [--date YYYY-MM-DD]   # changelog, every version field, docs facts
+python3 tools/check.py --fast                              # the gates (without --fast, the cargo steps too)
+git add -u && git commit -m "Release VERSION"
+gh workflow run release.yml --ref BRANCH                   # rehearse the build on the PR's branch
+# after the PR merges, on the merge commit:
+python3 tools/release_version.py --tag vVERSION            # the tag names the workspace version
+git tag vVERSION && git push origin vVERSION               # builds, smoke-tests and drafts the release
+```
+
+Then review the draft GitHub release and publish it; publication is manual.
+
+The cut moves the body of `## Unreleased` under `## VERSION - DATE` (today's
+date unless `--date`) and leaves a fresh empty `## Unreleased` above it, runs
+`release_version.py --set VERSION` and `docs_facts.py --write`, and prints the
+files it changed and these steps. It refuses a version that is not `X.Y.Z` (or
+`-alpha.N`, `-beta.N`, `-rc.N`), one not greater than the newest released
+section (so a second cut of the same version), a date in the future, and an
+empty Unreleased section; a refusal writes nothing.
+
+`python3 tools/release_cut.py --check` is the gate `tools/check.py` runs
+(`release_cut`): it writes nothing and fails when CHANGELOG.md's newest released
+heading is not the workspace version, when a released date is malformed or in
+the future, when the released versions are not newest first, or when
+`## Unreleased` is missing or not first. Notes under Unreleased are fine: that
+is work after the release. A release commit that sets the version and forgets
+the changelog fails here, before the Release workflow does.
+
 ### Release maintenance
 
 Use the pinned dist tool (the release binary of the version
