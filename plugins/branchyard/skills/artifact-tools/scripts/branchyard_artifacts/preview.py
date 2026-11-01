@@ -21,6 +21,7 @@ from .native import (
     MAX_RENDER_PAGES,
     MAX_RENDER_PIXELS,
     RENDER_TIMEOUT_SECONDS,
+    render_html,
     render_page,
 )
 
@@ -53,7 +54,8 @@ MACRO_SUFFIXES = {
     ".ppsm",
     ".sldm",
 }
-ACTIVE_MARKUP_SUFFIXES = {".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml", ".mhtml"}
+ACTIVE_MARKUP_SUFFIXES = {".svg", ".svgz", ".xhtml", ".xml", ".mhtml"}
+HTML_SUFFIXES = {".html", ".htm"}
 IMAGE_FORMATS = {
     ".png": "png",
     ".jpg": "jpeg",
@@ -417,6 +419,28 @@ def _preview_document_page(path: Path, out: Path, fmt: str, page: int) -> dict[s
     }
 
 
+def _preview_html(path: Path, out: Path, page: int) -> dict[str, Any]:
+    """Render the page once in headless Chromium; the server runs this inside its network-less namespace."""
+    if page != 1:
+        raise ArtifactError("HTML preview has 1 page; requested page " + str(page) + " is out of range")
+    payload = _read_regular(path, MAX_INPUT_BYTES)
+    if b"\x00" in payload:
+        raise ArtifactError("HTML input contains NUL bytes")
+    target = out / "page-1.png"
+    rendered = render_html(path, target, max_output_bytes=MAX_OUTPUT_IMAGE_BYTES, timeout=PROCESS_TIMEOUT_SECONDS)
+    return {
+        "status": "passed",
+        "kind": "pages",
+        "format": "html",
+        "page": 1,
+        "pages": rendered["pages"],
+        "image": "page-1.png",
+        "width": rendered["width"],
+        "height": rendered["height"],
+        "warnings": rendered["warnings"],
+    }
+
+
 def _preview_image(path: Path, out: Path, fmt: str, page: int) -> dict[str, Any]:
     if page != 1:
         raise ArtifactError("Image preview has 1 page; requested page " + str(page) + " is out of range")
@@ -542,7 +566,16 @@ def preview(
     if suffix in MACRO_SUFFIXES:
         raise ArtifactError("Macro-enabled Office formats are refused for preview: " + suffix)
     if suffix in ACTIVE_MARKUP_SUFFIXES:
-        raise ArtifactError("Active or executable markup formats (SVG/HTML/XML) are refused: " + suffix)
+        raise ArtifactError("Active or executable markup formats (SVG/XML) are refused: " + suffix)
+
+    if suffix in HTML_SUFFIXES:
+        if view not in {"auto", "pages"}:
+            raise ArtifactError("HTML files support pages preview only")
+        if sheet is not None:
+            raise ArtifactError("HTML preview does not support --sheet")
+        if offset != 0:
+            raise ArtifactError("Page preview uses --page rather than --offset")
+        return _preview_html(source, out_dir, page)
 
     if suffix == ".csv":
         if view not in {"auto", "table"}:

@@ -29,6 +29,10 @@ pub(super) fn router() -> Router<Shared> {
             get(source_asset),
         )
         .route(
+            "/v1/workspaces/{workspace}/artifacts/{artifact}/frame",
+            axum::routing::post(open_frame),
+        )
+        .route(
             "/v1/workspaces/{workspace}/artifacts/{artifact}/preview",
             get(artifact_preview),
         )
@@ -90,6 +94,54 @@ async fn artifact_asset(
         Some(asset),
     )
     .await
+}
+
+/// The largest HTML output the console will frame.
+const MAX_FRAME: usize = 8 * 1024 * 1024;
+
+/// `POST .../artifacts/{artifact}/frame`: the address `/app/frame/{ticket}`
+/// the console puts in a sandboxed iframe. It names an HTML output only.
+async fn open_frame(
+    State(app): State<Shared>,
+    Extension(caller): Extension<Caller>,
+    Path((workspace, id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let companion = app
+        .companion
+        .clone()
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "the console is off"))?;
+    authorize(&app, &caller, &workspace, &id, Original::Artifact)?;
+    let grant = crate::companion::FrameGrant::new(&caller, &workspace, &id);
+    // Name and size are checked now so a wrong format is refused before a frame exists.
+    frame_html(&app, &grant).await?;
+    let ticket = companion.grant_frame(&caller, &workspace, &id, std::time::Instant::now())?;
+    Ok(Json(
+        serde_json::json!({ "path": format!("/app/frame/{ticket}") }),
+    ))
+}
+
+/// The bytes of an HTML output for its iframe, after the caller's current rights are checked.
+pub(crate) async fn frame_html(
+    app: &Shared,
+    grant: &crate::companion::FrameGrant,
+) -> Result<Vec<u8>, ApiError> {
+    let (caller, workspace, id) = (&grant.caller, &grant.workspace, &grant.artifact);
+    authorize(app, caller, workspace, id, Original::Artifact)?;
+    let permit = app.preview.admit()?;
+    let input = load(app, caller, workspace, id, Original::Artifact, &permit).await?;
+    let name = input.name.to_ascii_lowercase();
+    if !(name.ends_with(".html") || name.ends_with(".htm")) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "preview_unsupported",
+            "only an HTML output can be opened in a frame",
+        ));
+    }
+    if input.bytes.len() > MAX_FRAME {
+        return Err(too_large());
+    }
+    authorize(app, caller, workspace, id, Original::Artifact)?;
+    Ok(input.bytes)
 }
 
 async fn render(

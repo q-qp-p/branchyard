@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-01
+
 The console's second pass gives it depth and density. Surfaces have three
 elevations (the page, raised panels and cards, and the overlay for the one
 object a page asks about), each a background, a border and a shadow in light
@@ -20,6 +22,20 @@ Empty yards, decks, branches and workspaces say what to do. The README
 screenshots add dark variants of the board and the deck, from a demo whose
 branches run Claude Code's stream-json profile through a script that reports
 cost.
+
+An HTML output of a workspace session can be seen and used from the console.
+It previews as a page image like a DOCX (headless Chromium inside the
+converter's Bubblewrap namespace, no network, the source read-only, so `GET
+…/preview` answers `passed` with one page instead of `422 preview_unsupported`),
+and **Open** runs the page in a sandboxed iframe: served from `/app/frame/{ticket}`
+(minted by `POST …/artifacts/{artifact}/frame`) with `Content-Security-Policy:
+sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline';
+style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'`, framed with
+`sandbox="allow-scripts"` and no `allow-same-origin`, so it reaches neither the
+console's storage nor its token. The rest of the console keeps
+`X-Frame-Options: DENY`; its policy gains `frame-src 'self'`.
+`BRANCHYARD_PREVIEW_CHROMIUM` names the browser; the default is the one under
+`PLAYWRIGHT_BROWSERS_PATH` or `/opt/pw-browsers`.
 
 The console becomes a dispatcher's desk. Needs you is a deck: one decision
 at a time, shaped for what it is (an approval, a question, a merge, a stop,
