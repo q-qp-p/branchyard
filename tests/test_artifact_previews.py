@@ -758,6 +758,7 @@ if {write_shot!r}:
         )
         return path
 
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
     def test_html_previews_as_one_page_image_through_chromium(self) -> None:
         chromium, log_file = self.install_fake_chromium()
         source = self.page()
@@ -796,6 +797,7 @@ if {write_shot!r}:
         with self.assertRaisesRegex(ArtifactError, "pages preview only"):
             preview.preview(source, self.root / "table-out", view="table")
 
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
     def test_chromium_that_writes_no_screenshot_is_a_named_failure(self) -> None:
         chromium, _ = self.install_fake_chromium(write_shot=False)
         with (
