@@ -202,7 +202,7 @@ const same = (got, want, what) => {
   await form.getByRole('radio', { name: 'Local workers', exact: true }).check();
   const harness = form.getByLabel('Harness', { exact: true });
   const model = form.getByLabel('Model', { exact: true });
-  same(await harness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity', false]], 'the local harnesses');
+  same(await harness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity-stream-json', false]], 'the local harnesses');
   same(await model.locator('option').evaluateAll((os) => os.map((o) => o.value)), ['fake-fast', 'fake-deep'], 'the models offered');
   if (await model.inputValue() !== 'fake-fast') throw new Error('the preset\'s default model is not chosen');
   const harnessRows = await form.locator('#sf-harness-ready').innerText();
@@ -455,7 +455,7 @@ const same = (got, want, what) => {
   say('ARCHIVED');
 
   await plus.click();
-  await harness.selectOption('antigravity');
+  await harness.selectOption('antigravity-stream-json');
   await form.getByText('This environment chooses the model.', { exact: true }).waitFor();
   const ack = form.getByRole('checkbox', { name: ACK, exact: true });
   if (await ack.isChecked()) throw new Error('the tool acknowledgement starts ticked');
@@ -466,15 +466,15 @@ const same = (got, want, what) => {
   const sentBefore = starts.length;
   await form.getByRole('button', { name: 'Start session', exact: true }).click();
   await page.waitForFunction(() => document.activeElement && document.activeElement.id === 'sf-ack');
-  await statusSays(`Tick “${ACK}” to start antigravity as a writer, or choose another harness.`);
+  await statusSays(`Tick “${ACK}” to start antigravity-stream-json as a writer, or choose another harness.`);
   if (starts.length !== sentBefore) throw new Error('Start sent a request without the acknowledgement');
   await ack.check();
   const agy = await start();
-  same([agy.body.harness, agy.body.preset, agy.body.unapproved_tools, 'model' in agy.body, agy.body.access], ['antigravity', 'local', true, false, 'writer'], 'the Antigravity start');
+  same([agy.body.harness, agy.body.preset, agy.body.unapproved_tools, 'model' in agy.body, agy.body.access], ['antigravity-stream-json', 'local', true, false, 'writer'], 'the Antigravity start');
   const agySid = await opened(agy);
   await phase(agySid, /: Completed/);
   const agyJson = await sessionJson(agySid);
-  same([agyJson.preset, agyJson.harness, agyJson.unapproved_tools, agyJson.status_detail.state], ['local', 'antigravity', true, 'no_changes'], 'the Antigravity session');
+  same([agyJson.preset, agyJson.harness, agyJson.unapproved_tools, agyJson.status_detail.state], ['local', 'antigravity-stream-json', true, 'no_changes'], 'the Antigravity session');
   say('ANTIGRAVITY');
 
   const signIn = async (secret, who) => {
@@ -505,8 +505,8 @@ const same = (got, want, what) => {
   if (await access.inputValue() !== 'reviewer' || !(await access.isDisabled())) throw new Error('a reviewer\'s access is not fixed to reviewer');
   await review.getByRole('radio', { name: 'Local workers', exact: true }).check();
   const reviewHarness = review.getByLabel('Harness', { exact: true });
-  same(await reviewHarness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity', true]], 'the reviewer\'s harnesses');
-  await review.getByText('antigravity is not available: reviewers need a harness that routes each tool request for approval.', { exact: true }).waitFor();
+  same(await reviewHarness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity-stream-json', true]], 'the reviewer\'s harnesses');
+  await review.getByText('antigravity-stream-json is not available: reviewers need a harness that routes each tool request for approval.', { exact: true }).waitFor();
   if (await review.getByRole('checkbox', { name: ACK, exact: true }).count()) throw new Error('a reviewer is asked for the tool acknowledgement');
   if (await review.getByRole('checkbox', { name: 'Collect outputs (outputs/artifacts.json)', exact: true }).count()) throw new Error('a reviewer is offered Collect outputs');
   await review.getByLabel('Session name', { exact: true }).fill('Review');
@@ -558,7 +558,7 @@ const same = (got, want, what) => {
   await tabTo('sf-harness');
   const changed = await press('ArrowDown');
   await form.locator('#sf-ack').waitFor();
-  if (changed.value !== 'antigravity' || (await focused()).id !== 'sf-harness') throw new Error(`the redraw after choosing a harness left ${JSON.stringify(await focused())}`);
+  if (changed.value !== 'antigravity-stream-json' || (await focused()).id !== 'sf-harness') throw new Error(`the redraw after choosing a harness left ${JSON.stringify(await focused())}`);
   await press('ArrowUp');
   await form.locator('#sf-ack').waitFor({ state: 'detached' });
   if ((await focused()).id !== 'sf-harness') throw new Error('the redraw after choosing a harness again lost the focus');

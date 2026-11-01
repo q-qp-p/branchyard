@@ -2179,7 +2179,8 @@ mod tests {
             .all(|c| c.model.is_none() && c.effort.is_none()));
         assert_eq!(fleet.judge.unwrap().harness, "gemini-cli");
         assert_eq!((fleet.attempts, fleet.failover), (None, None));
-        // Isolated, Codex takes effort medium; Antigravity is never judge.
+        // Isolated, Codex takes effort medium; Antigravity, first in the
+        // list and routing permission requests over ACP, is the judge.
         let isolated = resolve(
             &|a| questions(&facts, a),
             &answers(
@@ -2193,7 +2194,7 @@ mod tests {
         let judge = fleet.judge.unwrap();
         assert_eq!(
             (judge.harness.as_str(), judge.effort.as_deref()),
-            ("codex", Some("medium"))
+            ("antigravity", None)
         );
         // A [fleet] in either file is the configuration's: not asked.
         let mut configured = probe.clone();

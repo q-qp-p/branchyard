@@ -283,13 +283,13 @@ async fn discovery_offers_tenant_presets_with_fixed_readiness_and_contacts_nothi
         let substrate = |key: &std::path::Path| json!({"kind":"substrate","endpoint":url,"router":url,"template":"harnesses","key":key});
         config.execution_presets = presets(json!([
             {"id":"local","label":"This server","provider":{"kind":"local"},
-             "harnesses":[{"harness":"gemini-cli","models":["fast","deep"]},{"harness":"antigravity"}],
+             "harnesses":[{"harness":"gemini-cli","models":["fast","deep"]},{"harness":"antigravity-stream-json"}],
              "secrets":["GEMINI_API_KEY"]},
             {"id":"substrate-gke","label":"Substrate on GKE","provider":substrate(&missing),
-             "harnesses":[{"harness":"antigravity","models":["flash"]}],"secrets":["GEMINI_API_KEY"],
+             "harnesses":[{"harness":"antigravity-stream-json","models":["flash"]}],"secrets":["GEMINI_API_KEY"],
              "tenants":["default"],"require_labels":["substrate-gke"]},
             {"id":"substrate-ready","label":"Substrate, keys present","provider":substrate(&live),
-             "harnesses":[{"harness":"antigravity"}]},
+             "harnesses":[{"harness":"antigravity-stream-json"}]},
             {"id":"foreign-only","label":"Foreign","provider":{"kind":"local"},
              "harnesses":[{"harness":"gemini-cli"}],"tenants":["foreign"]}
         ]));
@@ -325,7 +325,7 @@ async fn discovery_offers_tenant_presets_with_fixed_readiness_and_contacts_nothi
     assert_eq!(gemini["executable"]["state"], "ready", "{gemini}");
     assert_eq!(gemini["executable"]["scope"], "api_host");
     assert!(gemini["executable"]["checked_ms_ago"].is_u64());
-    let agy = harness(local, "antigravity");
+    let agy = harness(local, "antigravity-stream-json");
     assert_eq!(agy["tool_approvals"], false);
     assert_eq!(agy["writer"], true, "the operator allows unapproved tools");
     assert_eq!(agy["reviewer"], false);
@@ -346,7 +346,7 @@ async fn discovery_offers_tenant_presets_with_fixed_readiness_and_contacts_nothi
         json!({"state":"unknown","scope":"environment",
             "reason":"The cluster is contacted when a session starts, not before.","action":null})
     );
-    let remote = harness(gke, "antigravity");
+    let remote = harness(gke, "antigravity-stream-json");
     assert_eq!(remote["default_model"], "flash");
     assert_eq!(
         (
@@ -360,7 +360,7 @@ async fn discovery_offers_tenant_presets_with_fixed_readiness_and_contacts_nothi
         "ready"
     );
     assert_eq!(
-        harness(preset(&list, "substrate-ready"), "antigravity")["credentials"],
+        harness(preset(&list, "substrate-ready"), "antigravity-stream-json")["credentials"],
         "none"
     );
     let rendered = list.to_string();
@@ -397,7 +397,7 @@ async fn discovery_offers_tenant_presets_with_fixed_readiness_and_contacts_nothi
     assert_eq!(
         preset(&reviewing, "substrate-gke")["can_start"],
         false,
-        "antigravity cannot enforce a reviewer's read-only policy"
+        "the Antigravity stream profile cannot enforce a reviewer's read-only policy"
     );
     case.grant(&wid, "tokenonly", "viewer").await;
     let (_, viewing) = case.presets(TOKENONLY, Some(&wid)).await;

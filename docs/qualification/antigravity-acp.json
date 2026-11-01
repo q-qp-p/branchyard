@@ -1,0 +1,70 @@
+{
+  "profile": "antigravity-acp",
+  "harness": "antigravity",
+  "command": "/home/user/wt/bin/agy acp",
+  "harness_version": "1.4.12",
+  "driver_version": "0.3.1",
+  "host": "Linux 6.18.44-fc-v185 x86_64",
+  "date": "2026-11-01",
+  "installed_from": "tools/fetch_agy.py (deploy/agy-release.json), agy 1.4.12; the runner's home seeded with modelProvider gemini",
+  "model": "gemini-4-argon-high",
+  "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
+  "seconds": 119.0,
+  "harness_estimated_cost_usd": "not reported by the harness; the cost cap did not apply",
+  "scenarios": [
+    {
+      "name": "fresh_turn",
+      "passed": true,
+      "detail": "session c7d75095-0bed-4063-b54d-df705d87affb; replied \"OK\"",
+      "seconds": 3.4
+    },
+    {
+      "name": "permission_denied",
+      "passed": true,
+      "detail": "1 request(s) denied; marker absent; turn Completed",
+      "seconds": 7.8
+    },
+    {
+      "name": "permission_allowed",
+      "passed": true,
+      "detail": "request allowed; command ran",
+      "seconds": 44.4
+    },
+    {
+      "name": "interrupt_during_permission",
+      "passed": true,
+      "detail": "stopped 0.0s after interrupt; acknowledged: false; pending request withdrawn by harness: false",
+      "seconds": 5.8
+    },
+    {
+      "name": "interrupt_during_tool",
+      "passed": true,
+      "detail": "stopped 0.0s after interrupt; acknowledged: false",
+      "seconds": 30.6
+    },
+    {
+      "name": "clean_close",
+      "passed": true,
+      "detail": "closed cleanly; no descendants outlived the harness; session cost $0.0000",
+      "seconds": 0.1
+    },
+    {
+      "name": "resume",
+      "passed": true,
+      "detail": "session c7d75095-0bed-4063-b54d-df705d87affb; remembered PELICAN-7; cost $0.0000",
+      "seconds": 9.0
+    },
+    {
+      "name": "fork",
+      "passed": true,
+      "detail": "rejected before launch as declared: unsupported: ACP session/fork is an unstable method",
+      "seconds": 0.0
+    },
+    {
+      "name": "connection_lost",
+      "passed": true,
+      "detail": "killed mid-turn; outcome reported unknown",
+      "seconds": 17.9
+    }
+  ]
+}

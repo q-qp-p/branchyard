@@ -91,7 +91,7 @@
         {
           "value": "antigravity",
           "label": "Antigravity",
-          "description": "not found on PATH; cannot route permission requests"
+          "description": "not found on PATH"
         },
         {
           "value": "oh-my-pi",

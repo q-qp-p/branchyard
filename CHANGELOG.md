@@ -121,6 +121,18 @@ display-less backend the Docker backend already used; isolation is unchanged.
 When a converter exits cleanly without a PDF, the failure message quotes its
 first diagnostic line.
 
+Antigravity runs over ACP by default. `antigravity-acp` launches `agy acp`,
+the CLI's ACP server, so a branch on Antigravity can be cancelled
+(`session/cancel` ends the turn `cancelled`), its shell and file tools ask
+Branchyard before they run (`session/request_permission`, answered from the
+branch's policy, so `--allow-unapproved-tools` is no longer needed), `--model`
+is honoured through `session/set_model` against the models the agent lists,
+and each turn reports its tokens. The headless stream stays as
+`antigravity-stream-json`, with its permission rules. The ACP driver gained
+the two unstable methods behind per-profile flags (`acp_models`, `acp_usage`),
+off for every other agent. Checked against Antigravity CLI 1.4.12 with model
+calls, recorded as fixtures, and live-qualified 9 of 9.
+
 ## 0.3.1 - 2026-10-31
 
 Operators can name the environments console sessions run in.

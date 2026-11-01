@@ -30,7 +30,7 @@ cargo run -p branchyard-qualify -- --profile codex-app-server \
     --report /tmp/codex-app-server.json     # or rely on `codex login`
 ```
 
-The ACP profiles (`gemini-cli-acp`, `opencode-acp`, `goose-acp` and others) take the same command. The Antigravity and Amp drivers are unqualified here and need the most attention (Pi's passed 9 of 9 on Pi 1.4.0 on 25 October 2026; a Pi older than 0.80.4 never ends a turn and is refused first): Amp's driver was written from documentation only.
+The ACP profiles (`gemini-cli-acp`, `opencode-acp`, `goose-acp` and others) take the same command. The Amp driver is unqualified here and needs the most attention (`antigravity-acp` and `antigravity-stream-json` passed 9 of 9 on agy 1.4.12 on 1 November 2026; Pi's passed 9 of 9 on Pi 1.4.0 on 25 October 2026; a Pi older than 0.80.4 never ends a turn and is refused first): Amp's driver was written from documentation only.
 
 **Pass:** every scenario passes, or each failure is understood and filed.
 
@@ -189,7 +189,8 @@ Model calls happen only in the last step. The Substrate provider has run only ag
 | Codex over ACP, model | `--harness codex-acp --model <name>` | codex-acp uses the `model` from `config.toml` |
 | Gemini CLI | `--harness gemini-cli --isolated --secret GEMINI_API_KEY --model <name>` | `security.auth.selectedType` and `model.name` in `settings.json` are honored over ACP |
 | Copilot, Hermes, OpenCode | each with its secret (see the table in [provisioning](provisioning.md#harnesses)) | Each authenticates from what was written; record any file the harness does not read |
-| Antigravity MCP | `--harness antigravity --isolated --secret GEMINI_API_KEY --mcp docs=/abs/path/to/an/mcp-server --allow-unapproved-tools` | `agy` loads the server from `~/.gemini/config/mcp_config.json` and the instructions from `~/.gemini/GEMINI.md` |
+| Antigravity MCP, over ACP (the default) | `--harness antigravity --isolated --secret GEMINI_API_KEY --mcp docs=/abs/path/to/an/mcp-server` | `agy acp` is given the server on `session/new` and the instructions in the first prompt; `by log` shows no `permission rules:` line, and a shell command shows as `asks run_command` answered from the policy |
+| Antigravity MCP, headless stream | `--harness antigravity-stream-json --isolated --secret GEMINI_API_KEY --mcp docs=/abs/path/to/an/mcp-server --allow-unapproved-tools` | `agy` loads the server from `~/.gemini/config/mcp_config.json` and the instructions from `~/.gemini/GEMINI.md` |
 | Telemetry | any of the above with `--telemetry http://127.0.0.1:4317` and an OpenTelemetry collector listening there | Metrics or logs arrive; no prompt text in them; `--telemetry off` sends nothing |
 | In a sandbox | the Codex row with `--provider microsandbox` (section 5) and `--provider substrate` (section 6) | The same files, with the same modes, inside the sandbox; after the turn the private home holds them |
 | Secrets stay out | after the rows above, `grep -rF <each key> .branchyard/state.db .branchyard/server by/ 2>/dev/null` and in the worktrees | Found only under `.branchyard/homes/` |

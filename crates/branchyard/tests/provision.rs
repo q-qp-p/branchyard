@@ -672,15 +672,17 @@ fn an_acp_harness_without_a_model_setting_refuses_one() {
 
 #[test]
 fn antigravity_accepts_mcp_servers_through_its_configuration() {
-    // Its driver has no session channel for MCP servers and used to refuse
-    // them; with a private home they go into its mcp_config.json. The
+    // The headless stream profile, named: its driver has no session channel
+    // for MCP servers and used to refuse them; with a private home they go
+    // into its mcp_config.json (the default, `agy acp`, takes them on the
+    // session: the test after this one). The
     // command is not Antigravity, so the turn fails after launch, not at
     // the driver.
     let f = Fixture::new();
     let branch = f
         .task("x")
         .options(TaskOptions {
-            harness: Some("antigravity".into()),
+            harness: Some("antigravity-stream-json".into()),
             command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
             unapproved_tools: true,
             isolated: true,
@@ -709,7 +711,7 @@ fn antigravity_accepts_mcp_servers_through_its_configuration() {
     let branch = f
         .task("x")
         .options(TaskOptions {
-            harness: Some("antigravity".into()),
+            harness: Some("antigravity-stream-json".into()),
             command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
             unapproved_tools: true,
             provision: Some(Provisioning {
@@ -725,6 +727,36 @@ fn antigravity_accepts_mcp_servers_through_its_configuration() {
         matches!(&branch.info().status, BranchStatus::Failed { reason } if reason.contains("--isolated")),
         "{:?}",
         branch.info().status
+    );
+}
+
+/// Antigravity's default profile, `agy acp`, carries MCP servers and
+/// instructions on the ACP session, so a local branch on it with a server is
+/// not refused for want of a private home: the turn gets as far as its
+/// command, a shell that exits without speaking ACP, and fails there.
+#[test]
+fn antigravity_over_acp_takes_mcp_servers_on_the_session_without_a_private_home() {
+    let f = Fixture::new();
+    let branch = f
+        .task("x")
+        .options(TaskOptions {
+            harness: Some("antigravity".into()),
+            command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
+            provision: Some(Provisioning {
+                mcp_servers: vec![McpServerSpec::parse("docs=/usr/bin/docs-mcp").unwrap()],
+                ..Provisioning::default()
+            }),
+            ..TaskOptions::default()
+        })
+        .name("agy-acp-local")
+        .run()
+        .unwrap();
+    let BranchStatus::Failed { reason } = &branch.info().status else {
+        panic!("{:?}", branch.info().status);
+    };
+    assert!(
+        !reason.contains("--isolated") && !reason.contains("cannot be provisioned"),
+        "{reason}"
     );
 }
 
@@ -748,7 +780,7 @@ fn a_sandboxed_antigravity_turn_is_given_the_delegation_endpoint_and_rules_for_i
     let branch = f
         .task("x")
         .options(TaskOptions {
-            harness: Some("antigravity".into()),
+            harness: Some("antigravity-stream-json".into()),
             command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
             unapproved_tools: true,
             provider: Some(Provider::Microsandbox(SandboxOptions {

@@ -40,6 +40,8 @@ struct Config {
     keep_env: BTreeSet<String>,
     report: Option<PathBuf>,
     installed_from: Option<String>,
+    /// The model every session is opened with, for a profile that chooses one.
+    model: Option<String>,
 }
 
 /// The command line, before the profile and work directory are checked.
@@ -75,6 +77,10 @@ struct Args {
     /// such as "npm @openai/codex@0.157.1"
     #[arg(long, value_name = "TEXT")]
     installed_from: Option<String>,
+    /// The model to open every session with, such as gemini-4-argon-high; the
+    /// profile must offer the model capability, else the open is refused
+    #[arg(long, value_name = "NAME")]
+    model: Option<String>,
 }
 
 fn parse_args() -> Result<Config, String> {
@@ -93,6 +99,7 @@ fn parse_args() -> Result<Config, String> {
         keep_env: args.keep_env.into_iter().collect(),
         report: args.report,
         installed_from: args.installed_from,
+        model: args.model,
     })
 }
 
@@ -278,7 +285,7 @@ impl Run<'_> {
         let open = Open {
             mode,
             cwd: self.cwd().display().to_string(),
-            model: None,
+            model: self.config.model.clone(),
             max_budget_usd: None,
             mcp_servers: Vec::new(),
             instructions: None,
@@ -554,7 +561,7 @@ fn scenarios(run: &mut Run) {
             let rejected = driver.open(Open {
                 mode: SessionMode::Fork(parent.clone()),
                 cwd: run.cwd().display().to_string(),
-                model: None,
+                model: run.config.model.clone(),
                 max_budget_usd: None,
                 mcp_servers: Vec::new(),
                 instructions: None,
@@ -720,6 +727,7 @@ fn report(run: &Run, elapsed: Duration) {
         // The UTC day of the run, as docs/compatibility.md's matrix dates it.
         "date": &branchyard_support::time::rfc3339(branchyard_support::time::now_ms())[..10],
         "installed_from": run.config.installed_from,
+        "model": run.config.model,
         "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
         "seconds": elapsed.as_secs_f64().round(),
         "harness_estimated_cost_usd": if run.cost_observed {

@@ -69,11 +69,11 @@
     }
   },
   "tests": {
-    "total": 3203,
+    "total": 3210,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
-        "tests": 988,
+        "tests": 989,
         "ignored": 17
       },
       "branchyard-bridge": {
@@ -97,7 +97,7 @@
         "ignored": 0
       },
       "branchyard-harness": {
-        "tests": 154,
+        "tests": 159,
         "ignored": 0
       },
       "branchyard-herdr": {
@@ -113,7 +113,7 @@
         "ignored": 8
       },
       "branchyard-provision": {
-        "tests": 190,
+        "tests": 191,
         "ignored": 0
       },
       "branchyard-qualify": {
@@ -369,8 +369,24 @@
     {
       "harness": "Antigravity",
       "id": "antigravity",
-      "profile": "antigravity-stream-json",
+      "profile": "antigravity-acp",
       "role": "default",
+      "permissions_answered": "live-tested",
+      "steer": "not verified",
+      "live": {
+        "passed": 9,
+        "total": 9,
+        "report": "qualification/antigravity-acp.json",
+        "date": "2026-11-01",
+        "version": "1.4.12"
+      },
+      "status": "live-qualified"
+    },
+    {
+      "harness": "Antigravity",
+      "id": "antigravity",
+      "profile": "antigravity-stream-json",
+      "role": "alternate",
       "permissions_answered": "\u2014",
       "steer": "\u2014",
       "live": {
