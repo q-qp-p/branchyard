@@ -84,6 +84,12 @@ fn decide(yard: &Yard) -> Result<Vec<Decision>, branchyard::Error> {
         candidate: b.candidate.clone(),
         approval: None,
         question: None,
+        workspace: None,
+        workspace_title: None,
+        session: None,
+        session_name: None,
+        phase: None,
+        output: None,
     };
     for b in &branches {
         if let Some(awaiting) = &b.awaiting {

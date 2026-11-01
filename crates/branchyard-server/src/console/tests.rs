@@ -1,5 +1,6 @@
 //! HTTP and durable worker regressions, using only fake agents and providers.
 
+mod decisions;
 mod discovery;
 mod harness_input;
 mod inputs;

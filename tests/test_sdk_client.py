@@ -772,6 +772,43 @@ class WorkspaceRequests(unittest.TestCase):
         self.assertEqual(result, [project])
         self.assertIsInstance(result[0], bc.Record)
         self.assert_request(lambda: c.project("p /one"), project, "GET", "/v1/projects/p%20%2Fone", query=None)
+        output = {
+            "kind": "output",
+            "branch": "analyst",
+            "waits": "delivery",
+            "since_ms": 7000,
+            "status": {"state": "ready"},
+            "workspace": "w1",
+            "workspace_title": "Backlog review",
+            "session": "s1",
+            "session_name": "Analyst",
+            "output": {"id": "a1", "name": "backlog.csv", "media_type": "text/csv", "size": 42, "turn": 1},
+        }
+        stopped = {
+            "kind": "session",
+            "branch": "reviewer",
+            "waits": "nobody",
+            "status": {"state": "failed", "reason": "harness exited"},
+            "workspace": "w1",
+            "workspace_title": "Backlog review",
+            "session": "s2",
+            "session_name": "Reviewer",
+            "phase": "Failed: harness exited",
+        }
+        decisions = self.assert_request(
+            lambda: c.project_decisions("p /one"),
+            {"decisions": [output, stopped]},
+            "GET",
+            "/v1/projects/p%20%2Fone/decisions",
+            query=None,
+        )
+        self.assertIsInstance(decisions[0], bc.Decision)
+        self.assertEqual(
+            [(d.kind, d.waits, d.session) for d in decisions],
+            [("output", "delivery", "s1"), ("session", "nobody", "s2")],
+        )
+        self.assertEqual(decisions[0].output["name"], "backlog.csv")
+        self.assertEqual(decisions[1].phase, "Failed: harness exited")
         workspace = {"id": "w1", "revision": 0, "sources": [], "accepted_deliverables": []}
         self.assert_request(
             lambda: c.workspaces("p & one"),
@@ -3196,6 +3233,7 @@ class OneErrorHierarchy(unittest.TestCase):
 COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/projects": [lambda c, _r: c.projects(), lambda c, _r: c.create_project("Research")],
     "/v1/projects/{project}": [lambda c, _r: c.project("p1")],
+    "/v1/projects/{project}/decisions": [lambda c, _r: c.project_decisions("p1")],
     "/v1/workspaces": [lambda c, _r: c.workspaces(), lambda c, _r: c.create_workspace("p1", "Brief")],
     "/v1/workspaces/{workspace}": [lambda c, _r: c.workspace("w1")],
     "/v1/workspaces/{workspace}/sessions": [

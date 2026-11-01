@@ -16,6 +16,10 @@ pub(crate) fn router() -> Router<Shared> {
     Router::new()
         .route("/v1/projects", get(projects).post(create_project))
         .route("/v1/projects/{project}", get(project))
+        .route(
+            "/v1/projects/{project}/decisions",
+            get(super::decisions::decisions),
+        )
         .route("/v1/workspaces", get(workspaces).post(create_workspace))
         .route("/v1/workspaces/{workspace}", get(workspace))
         .route(
@@ -40,7 +44,12 @@ pub(crate) fn router() -> Router<Shared> {
         .merge(super::previews::router())
         .merge(super::collaboration::router())
 }
-fn project_access(app: &App, caller: &Caller, p: &Record, required: &str) -> Result<(), ApiError> {
+pub(super) fn project_access(
+    app: &App,
+    caller: &Caller,
+    p: &Record,
+    required: &str,
+) -> Result<(), ApiError> {
     scope(caller, required)?;
     if p.tenant != caller.tenant() {
         return Err(ApiError::new(

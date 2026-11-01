@@ -57,6 +57,11 @@
     effects: [],
     // What waits for a person, as the server orders it (`GET …/decisions`).
     decisions: [],
+    // The same for the listed project's workspaces (`GET /v1/projects/{id}/decisions`):
+    // outputs waiting to be accepted and sessions that stopped; and the
+    // sessions its board shows running.
+    projectDecisions: { project: null, list: [] },
+    projectSessions: { project: null, list: [] },
     // The deck: cards sent to the back, the one brought to the front, the
     // answers held for their undo window, and the evidence fetched for a
     // card (a branch's last turn and its diff).
@@ -533,7 +538,8 @@
       repos: [], repo: null, source: { kind: 'none' }, projects: null,
       workspaces: { project: null, list: [], loaded: false, error: null },
       branches: new Map(), lastActive: new Map(), loaded: false, branchError: null,
-      permissions: [], inbox: [], approvals: [], effects: [],
+      permissions: [], inbox: [], approvals: [], effects: [], decisions: [],
+      projectDecisions: { project: null, list: [] }, projectSessions: { project: null, list: [] },
     });
     $('sidebar').hidden = true;
     document.title = 'Branchyard';
@@ -745,12 +751,33 @@
     if (state.workspaces.project !== project) return;
     state.workspaces = { project, list: workspaces, loaded: true, error: null };
     workspacesChanged();
+    loadProjectWork(project, workspaces);
     if (workspaces.some((w) => workspaceLane(w).key === 'running')) {
       workspacesTimer = setTimeout(() => {
         if (state.source.kind === 'project' && state.source.id === project) loadWorkspaces(project);
       }, 3000);
     }
   }
+
+  // What the project's workspaces ask of a person (the server's decisions)
+  // and the sessions running in them (for the board), read together after
+  // each workspace list.
+  async function loadProjectWork(project, workspaces) {
+    const current = () => state.source.kind === 'project' && state.source.id === project;
+    const open = workspaces.filter((w) => ['ready', 'running'].includes(w.state));
+    const [decisions, ...sessions] = await Promise.all([
+      api('GET', `/v1/projects/${enc(project)}/decisions`).then((r) => r.decisions, () => null),
+      ...open.map((w) => api('GET', `${workspacePath(w.id)}/sessions`).then((r) => r.sessions.map((s) => ({ ...s, workspace: w })), () => [])),
+    ]);
+    if (!current()) return;
+    if (decisions) state.projectDecisions = { project, list: decisions };
+    state.projectSessions = { project, list: sessions.flat().filter(sessionActive) };
+    branchesChanged();
+    updateProjectGlance();
+  }
+
+  // The listed project's decisions, once it is the listed source.
+  const projectCards = () => (state.source.kind === 'project' && state.projectDecisions.project === state.source.id ? state.projectDecisions.list : []);
 
   function workspacesChanged() {
     renderLanes();
@@ -929,7 +956,12 @@
     home: renderHome,
     branch: renderBranch,
     new: renderNew,
-    attention: renderAttention,
+    attention: () => {
+      // The project's cards are read again on arrival; the repository's
+      // are kept current by its stream.
+      if (state.source.kind === 'project') loadWorkspaces(state.source.id);
+      return renderAttention();
+    },
     triggers: renderTriggers,
     queue: renderQueue,
     settings: renderSettings,
@@ -996,7 +1028,7 @@
 
   function renderLanes() {
     const list = $('branch-list');
-    const needs = lanes(Array.from(state.branches.values()))[0].branches.length;
+    const needs = lanes(Array.from(state.branches.values()))[0].branches.length + projectCards().length;
     document.title = needs ? `(${needs}) Branchyard` : 'Branchyard';
     $('attention-count').hidden = !needs;
     $('attention-count').textContent = String(needs);
@@ -1344,6 +1376,7 @@
         h('h1', { text: project.name }),
         h('p', { class: 'lede', id: 'project-lede' }))),
       h('ul', { class: 'glance', id: 'project-glance', 'aria-label': 'Workspaces by state' }),
+      h('section', { class: 'board', id: 'project-board', 'aria-label': 'Everything open in this project on one clock', hidden: true }),
       can('run') ? h('section', { class: 'card new-workspace', 'aria-label': 'New workspace' },
         h('label', { class: 'block', for: 'workspace-title', text: 'Workspace title' }),
         h('div', { class: 'row inline-form' }, titleField, create),
@@ -1366,6 +1399,7 @@
       const n = list.filter((w) => workspaceLane(w) === lane).length;
       return h('li', { class: 'glance-item' }, h('span', { class: 'glance-label' }, dot(n ? lane.key : 'done'), lane.label), h('b', { text: String(n) }));
     }) : null);
+    updateProjectBoard();
     const sorted = list.slice().sort((x, y) => y.created_at_ms - x.created_at_ms);
     fill($('project-cards'), error ? h('p', { class: 'error', text: error })
       : !loaded ? h('p', { class: 'muted', text: 'Loading…' })
@@ -1377,6 +1411,56 @@
               h('span', { class: 'card-text', text: cap(workspaceStateText(w)) }),
               w.error ? h('span', { class: 'card-prompt', text: w.error.message }) : null));
           })));
+  }
+
+  // Everything open in the project, on the board's clock: a row for each
+  // session running or waiting, each output delivered and waiting to be
+  // accepted, and each session that stopped. The same decisions the deck
+  // takes one at a time.
+  function updateProjectBoard() {
+    const board = $('project-board');
+    if (!board) return;
+    const id = state.workspaces.project;
+    const running = state.projectSessions.project === id ? state.projectSessions.list : [];
+    const cards = state.projectDecisions.project === id ? state.projectDecisions.list : [];
+    const now = Date.now();
+    const rows = [
+      ...cards.filter((d) => d.kind === 'session').map((d) => ({ lane: 'needs', d })),
+      ...running.map((s) => ({ lane: 'running', s })),
+      ...cards.filter((d) => d.kind === 'output').map((d) => ({ lane: 'ready', d })),
+    ];
+    board.hidden = !rows.length;
+    if (!rows.length) { fill(board); return; }
+    const place = (el, from, to) => {
+      const left = boardX(from, now);
+      el.style.left = `${left}%`;
+      el.style.width = `${Math.max(0.5, boardX(to, now) - left)}%`;
+      return el;
+    };
+    const row = ({ lane, d, s }) => {
+      const started = s ? s.created_at_ms : d.kind === 'output' ? d.since_ms : now;
+      const name = s ? s.name : d.session_name;
+      const where = s ? s.workspace.title : d.workspace_title;
+      const href = s ? workspaceHref(s.workspace.id, s.id) : workspaceHref(d.workspace, d.session);
+      const meta = s ? `${where} · ${sessionPhase(s).label.toLowerCase()}` : d.kind === 'output' ? `${where} · delivered ${d.output.name}` : `${where} · ${d.phase.toLowerCase()}`;
+      const rail = h('span', { class: 'rail' });
+      if (started < now - BOARD_WINDOW) rail.append(h('i', { class: 'rail-before', title: `started ${ago(started)}` }));
+      rail.append(place(h('i', { class: `turnbar turnbar-${lane}`, title: `since ${clock(started)}` }), started, now));
+      if (lane === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'delivered, waiting to be accepted' }), started, now));
+      if (lane !== 'needs') rail.append(h('i', { class: `head head-${lane}` }));
+      const action = lane === 'running' ? h('a', { class: 'button small', href, text: 'Open' })
+        : h('a', { class: 'button small needs', href: '#/attention', text: lane === 'ready' ? 'Review' : 'Decide' });
+      return h('div', { class: `board-row board-${lane}`, 'data-session': s ? s.id : d.session, 'data-lane': lane },
+        h('span', { class: 'board-name' }, dot(lane), h('a', { href, text: name }), h('span', { class: 'board-meta', text: meta })),
+        rail,
+        h('span', { class: 'board-act' }, action));
+    };
+    fill(board,
+      h('div', { class: 'board-axis', 'aria-hidden': 'true' },
+        h('span', { class: 'board-name', text: 'Session' }),
+        h('span', { class: 'rail-axis' }, ['‹ earlier', '−45m', '−30m', '−15m', 'now'].map((t) => h('span', { text: t }))),
+        h('span', { class: 'board-act', text: 'act' })),
+      rows.map(row));
   }
 
   // A workspace is reserved at once and set up by a queued operation; it
@@ -2721,6 +2805,7 @@
   // keeps fetching.
   let livePreview = null;
   function closePreview() {
+    closeDeckPreview();
     if (livePreview) livePreview.dispose();
     livePreview = null;
     if (!wsView) return;
@@ -3871,6 +3956,7 @@
   // are also the inbox the lanes read.
   async function loadDecisions() {
     let decisions;
+    if (!state.repo) return;
     try { ({ decisions } = await api('GET', `${repoPath()}/decisions`)); } catch (_) { return; }
     state.decisions = decisions;
     state.inbox = decisions.filter((d) => d.kind === 'question').map((d) => d.question);
@@ -3964,6 +4050,7 @@
     const d = state.deck;
     return JSON.stringify([state.decisions.map(decisionKey), d.later, d.front, d.holding.map((x) => x.key),
       Array.from(d.evidence.entries()).map(([k, e]) => [k, e.loading, e.said && e.said.length, e.files && e.files.length]),
+      projectCards().map(decisionKey), state.workspaces.list.map((w) => w.title),
       state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
       state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled])]);
   }
@@ -3972,10 +4059,33 @@
   // thought. The agent stays parked meanwhile.
   const UNDO_MS = 8000;
   const HOLD_MS = 700;
-  const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : ''}`;
+  const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : d.output ? d.output.id : ''}`;
   const WAITS = { agent: 'an agent is parked until you answer', delivery: 'delivery waits on you', nobody: 'nothing waits on this' };
-  const KIND_LABEL = { approval: 'Approval', question: 'Question', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent' };
-  const KIND_VERB = { approval: 'allow or deny', question: 'answer', merge: 'merge', stop: 'resume', stall: 'look' };
+  const KIND_LABEL = { approval: 'Approval', question: 'Question', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent', output: 'Delivered', session: 'Stopped' };
+  const KIND_VERB = { approval: 'allow or deny', question: 'answer', merge: 'merge', stop: 'resume', stall: 'look', output: 'accept', session: 'open' };
+  // Who a card is about: a branch, or a workspace's session.
+  const subjectOf = (d) => (d.session_name || d.branch);
+  // What the bay and the line under a card say of a decision.
+  function summaryOf(d) {
+    switch (d.kind) {
+      case 'approval': return `${d.branch} wants to ${aboutText(d.approval.about)}`;
+      case 'question': return `${d.branch} asks: ${d.question.text}`;
+      case 'merge': return `${d.branch} is ready to merge`;
+      case 'stall': return `${d.branch} is silent`;
+      case 'output': return `${d.session_name} delivered ${d.output.name}`;
+      case 'session': return `${d.session_name}: ${d.phase.toLowerCase()}`;
+      default: return `${d.branch} ${statusOf({ status: d.status }).text}`;
+    }
+  }
+
+  // The decisions in the server's order: a parked agent first, then what
+  // waits on delivery, then what nobody waits on; the repository's before
+  // the project's within each.
+  const WAIT_RANK = { agent: 0, delivery: 1, nobody: 2 };
+  function allDecisions() {
+    return state.decisions.concat(projectCards())
+      .map((d, i) => [d, i]).sort((x, y) => WAIT_RANK[x[0].waits] - WAIT_RANK[y[0].waits] || x[1] - y[1]).map(([d]) => d);
+  }
 
   // The deck in the order to take it: the server's order, with the cards
   // sent to the back at the back, the one brought forward in front, and
@@ -3983,7 +4093,7 @@
   function deckOrder() {
     const d = state.deck;
     const held = new Set(d.holding.map((x) => x.key));
-    const cards = state.decisions.filter((x) => !held.has(decisionKey(x)));
+    const cards = allDecisions().filter((x) => !held.has(decisionKey(x)));
     const later = cards.filter((x) => d.later.includes(decisionKey(x))).sort((x, y) => d.later.indexOf(decisionKey(x)) - d.later.indexOf(decisionKey(y)));
     const now = cards.filter((x) => !d.later.includes(decisionKey(x)));
     const ordered = now.concat(later);
@@ -4062,6 +4172,86 @@
     return entry;
   }
 
+  // The one preview a deck card mounts, kept across the redraws of the
+  // card (its table or page is not fetched again) and disposed when
+  // another card comes to the front or the page is left.
+  let deckPreview = null;
+  function closeDeckPreview() {
+    if (deckPreview) deckPreview.handle.dispose();
+    deckPreview = null;
+  }
+  function deckPreviewHost(d, base) {
+    const key = decisionKey(d);
+    if (!deckPreview || deckPreview.key !== key) {
+      closeDeckPreview();
+      const host = h('div', { class: 'preview-host', id: 'preview-host' });
+      deckPreview = { key, host, handle: window.BranchyardArtifactPreview.mount(host, { baseUrl: base, mediaType: d.output.media_type, fetchAuthenticated: authFetch }) };
+    }
+    return deckPreview.host;
+  }
+
+  // Accept an output where the workspace page does: the workspace's current
+  // revision with the output's id. A refusal says why and the cards reload.
+  async function acceptOutput(d) {
+    const name = d.output.name;
+    try {
+      const ws = await api('GET', workspacePath(d.workspace));
+      await api('POST', `${workspacePath(d.workspace)}/finalize`, { revision: ws.revision, artifacts: [d.output.id] });
+      toast(`Accepted ${name}.`);
+    } catch (e) {
+      toast(e.code === 'deliverable_not_current' ? `Not accepted: ${name} is no longer its session's current result.` : `Could not accept ${name}: ${e.message}`);
+    }
+    await loadProjectWork(state.projectDecisions.project, state.workspaces.list);
+    drawn = null;
+    branchesChanged();
+    focusDeck();
+  }
+
+  // Resume an interrupted session as the workspace page's message box does.
+  async function resumeSession(d) {
+    try {
+      await api('POST', `${workspacePath(d.workspace)}/sessions/${enc(d.session)}/messages`, { prompt: RESUME_PROMPT, action: 'resume' });
+      toast(`Resuming ${d.session_name}. A new turn is starting.`);
+    } catch (e) {
+      toast(`Could not resume ${d.session_name}: ${e.message}`);
+    }
+    await loadProjectWork(state.projectDecisions.project, state.workspaces.list);
+    drawn = null;
+    branchesChanged();
+  }
+
+  // What a stopped session last said, fetched once per state it stopped in.
+  function sessionEvidence(d) {
+    const key = `${d.session}@${d.phase}`;
+    const found = state.deck.evidence.get(key);
+    if (found) return found;
+    // A session that never started has no log to read.
+    const entry = { loading: !d.phase.startsWith('Did not start'), said: null, error: null };
+    state.deck.evidence.set(key, entry);
+    if (!entry.loading) return entry;
+    (async () => {
+      try {
+        // The log is read a page at a time from its cursor, as the
+        // workspace page reads it; the last line is on the last page.
+        const messages = [];
+        for (let cursor = '0'; ;) {
+          const page = await api('GET', `${workspacePath(d.workspace)}/sessions/${enc(d.session)}/messages?after=${enc(cursor)}`);
+          messages.push(...page.messages);
+          if (page.next_cursor === cursor) break;
+          cursor = page.next_cursor;
+        }
+        const turns = conversation(messages.map((m) => ({
+          activity: m.role === 'user' ? { prompt: m.text } : { harness: { type: 'message_delta', text: m.text } },
+        })));
+        const said = turns.length ? turns[turns.length - 1].said : [];
+        entry.said = said.length ? said[said.length - 1] : null;
+      } catch (e) { entry.error = e.message; }
+      entry.loading = false;
+      branchesChanged();
+    })();
+    return entry;
+  }
+
   // Hold to act: the fill is the confirmation. Under reduced motion, two
   // presses: the first arms, the second fires.
   function lever(label, run) {
@@ -4100,8 +4290,8 @@
     let body = [];
     let actions = [];
     let primary = null;
-    const open = () => { location.hash = branchHref(d.branch); };
-    const followUp = () => { location.hash = branchHref(d.branch); setTimeout(() => { const area = $('composer-text'); if (area) area.focus(); }, 0); };
+    const open = () => { location.hash = d.workspace ? workspaceHref(d.workspace, d.session) : branchHref(d.branch); };
+    const followUp = () => { location.hash = d.workspace ? workspaceHref(d.workspace, d.session) : branchHref(d.branch); setTimeout(() => { const area = $('composer-text'); if (area) area.focus(); }, 0); };
     const since = d.since_ms ? h('span', { text: `parked on you for ${since_(d.since_ms)}` }) : null;
     if (d.kind === 'approval') {
       const a = d.approval;
@@ -4167,8 +4357,42 @@
       if (applies(ACTIONS.resume, b)) { primary = () => runAction(ACTIONS.resume, d.branch); actions = [h('button', { type: 'button', class: 'primary', text: 'Resume', onclick: primary }, h('kbd', { text: '↵' }))]; }
       else actions = [h('button', { type: 'button', class: 'primary', text: 'Follow up', onclick: followUp }, h('kbd', { text: 'f' }))];
       if (d.kind === 'stall' && applies(ACTIONS.cancel, b)) actions.push(h('button', { type: 'button', class: 'danger', text: 'Cancel turn', onclick: () => runAction(ACTIONS.cancel, d.branch) }));
+    } else if (d.kind === 'output') {
+      const o = d.output;
+      const base = `${workspacePath(d.workspace)}/artifacts/${enc(o.id)}`;
+      title = `${d.session_name} delivered ${o.name}`;
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `${d.workspace_title} · ${formatOf(o.media_type, o.name)} · ${size(o.size)} · turn ${o.turn} · delivered ${since_(d.since_ms)} ago` })),
+        h('div', { class: 'deck-section' },
+          h('div', { class: 'preview-head' },
+            h('h3', { class: 'deck-file', title: o.name, text: o.name }),
+            h('button', { type: 'button', text: 'Download original', onclick: () => download(`${base}/content`, o.name) })),
+          deckPreviewHost(d, base)),
+      ];
+      if (can('run')) {
+        actions = [lever(`Accept ${o.name}`, () => acceptOutput(d))];
+      } else {
+        actions = [h('button', { type: 'button', class: 'primary', disabled: true, text: 'Accept' })];
+      }
+    } else if (d.kind === 'session') {
+      const evidence = sessionEvidence(d);
+      const interrupted = d.status.state === 'interrupted' && !!d.phase && d.phase === 'Interrupted';
+      title = d.status.state === 'awaiting_plan_approval' ? [d.session_name, `'s plan waits for your approval`] : [d.session_name, ` ${(d.phase.split(':')[0] || 'stopped').toLowerCase()}`];
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `${d.workspace_title} · ${d.phase}` })),
+        evidence.said ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'The last thing it said' }), h('div', { class: 'rich' }, rich(evidence.said))) : null,
+        evidence.loading ? skeleton() : null,
+        !evidence.loading && !evidence.said ? h('p', { class: 'muted', text: evidence.error || 'It has said nothing.' }) : null,
+      ];
+      if (interrupted && can('run')) {
+        primary = () => resumeSession(d);
+        actions = [h('button', { type: 'button', class: 'primary', text: 'Resume', onclick: primary }, h('kbd', { text: '↵' }))];
+      } else {
+        primary = open;
+        actions = [h('button', { type: 'button', class: 'primary', text: 'Open', onclick: open }, h('kbd', { text: '↵' }))];
+      }
     }
-    const card = h('article', { class: `deck-card deck-${d.kind}`, tabindex: '0', 'aria-label': `${KIND_LABEL[d.kind]}: ${d.branch}` },
+    const card = h('article', { class: `deck-card deck-${d.kind}`, tabindex: '0', 'aria-label': `${KIND_LABEL[d.kind]}: ${subjectOf(d)}` },
       h('div', { class: 'deck-head' },
         h('span', { class: `deck-kind deck-kind-${d.waits}` }, dot(d.waits === 'agent' ? 'needs' : d.kind === 'merge' ? 'ready' : 'done'), `${KIND_LABEL[d.kind]} · ${WAITS[d.waits]}`),
         h('h2', {}, title)),
@@ -4177,7 +4401,7 @@
         h('button', { type: 'button', class: 'ghost', text: 'Open', onclick: open }, h('kbd', { text: 'o' })),
         h('span', { class: 'spacer' }),
         h('button', { type: 'button', class: 'ghost', text: 'Later', onclick: () => later(d) }, h('kbd', { text: 's' }))),
-      h('p', { class: 'deck-then muted' }, rest.length ? ['Then: ', rest.slice(0, 3).map((x, i) => [i ? ' · ' : '', `${x.branch} (${KIND_VERB[x.kind]})`]), rest.length > 3 ? ` · ${rest.length - 3} more` : ''] : 'Then: nothing. This is the last one.'));
+      h('p', { class: 'deck-then muted' }, rest.length ? ['Then: ', rest.slice(0, 3).map((x, i) => [i ? ' · ' : '', `${subjectOf(x)} (${KIND_VERB[x.kind]})`]), rest.length > 3 ? ` · ${rest.length - 3} more` : ''] : 'Then: nothing. This is the last one.'));
     card.addEventListener('keydown', (ev) => {
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (ev.target.closest('input, textarea, select, button, a')) return;
@@ -4208,8 +4432,8 @@
       type: 'button', class: `bay-item bay-${d.kind}`, 'data-decision': decisionKey(d),
       onclick: () => { state.deck.front = decisionKey(d); state.deck.later = state.deck.later.filter((k) => k !== decisionKey(d)); branchesChanged(); focusDeck(); },
     }, h('span', { class: 'bay-main' },
-      h('b', { text: d.kind === 'approval' ? `${d.branch} wants to ${aboutText(d.approval.about)}` : d.kind === 'question' ? `${d.branch} asks: ${d.question.text}` : d.kind === 'merge' ? `${d.branch} is ready to merge` : d.kind === 'stall' ? `${d.branch} is silent` : `${d.branch} ${statusOf({ status: d.status }).text}` }),
-      h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? `parked ${since_(d.since_ms)}` : WAITS[d.waits]}` })),
+      h('b', { text: summaryOf(d) }),
+      h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? (d.kind === 'output' ? `delivered ${since_(d.since_ms)} ago` : `parked ${since_(d.since_ms)}`) : WAITS[d.waits]}` })),
     h('span', { class: 'bay-verb mono', text: KIND_VERB[d.kind] })));
     return h('aside', { class: 'deck-bay', 'aria-label': 'Up next' },
       held.length || next.length ? h('p', { class: 'deck-label' }, 'Up next', h('span', { class: 'muted', text: ' · parked agents first, oldest wait first' })) : null,
@@ -4222,22 +4446,25 @@
     const active = document.activeElement && document.activeElement.dataset ? document.activeElement : null;
     const focused = active && active.dataset.draft ? [active.dataset.draft, active.selectionStart, active.selectionEnd] : null;
     const perms = state.permissions;
+    const project = state.source.kind === 'project' ? projectOf(state.source.id) : null;
+    const scope = [state.repo, project && project.name].filter(Boolean).join(' and ');
     const deck = deckOrder();
+    if (!deck.length || deck[0].kind !== 'output' || decisionKey(deck[0]) !== (deckPreview && deckPreview.key)) closeDeckPreview();
     const held = state.deck.holding.length;
     const count = deck.length;
     main(h('div', { class: 'page wide' },
       h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
       h('header', { class: 'page-head' }, h('div', {}, h('h1', { text: 'Needs you' }),
-        h('p', { class: 'lede', text: !state.repo ? 'This token reaches no repository. A workspace shows what it waits for in its own project.'
-          : count ? `${plural(count, 'decision')} ${count === 1 ? 'waits' : 'wait'} for you in ${state.repo}. One at a time, the parked agent first.` : held ? 'Nothing more waits for you.' : `Nothing in ${state.repo} waits for you.` }))),
+        h('p', { class: 'lede', text: !scope ? 'This token reaches no repository and no project is listed. Choose one in the sidebar.'
+          : count ? `${plural(count, 'decision')} ${count === 1 ? 'waits' : 'wait'} for you in ${scope}. One at a time, the parked agent first.` : held ? 'Nothing more waits for you.' : `Nothing in ${scope} waits for you.` }))),
       count || held ? h('div', { class: 'deck' },
         count ? h('div', { class: 'deck-main' },
-          h('p', { class: 'deck-count muted' }, h('b', { text: `1 of ${count}` }), count > 1 ? ` · then ${deck[1].branch}` : ' · the last one'),
+          h('p', { class: 'deck-count muted' }, h('b', { text: `1 of ${count}` }), count > 1 ? ` · then ${subjectOf(deck[1])}` : ' · the last one'),
           deckCard(deck[0], 1, count, deck.slice(1)),
           h('p', { class: 'deck-keys muted' }, h('kbd', { text: '↵' }), ' the first action (held, for a merge) · ', h('kbd', { text: 'n' }), ' deny · ', h('kbd', { text: 's' }), ' later · ', h('kbd', { text: 'o' }), ' open · ', h('kbd', { text: 'f' }), ' follow up · an allow or a deny waits ', String(UNDO_MS / 1000), ' s for an undo'))
           : null,
         deckBay(deck.slice(1))) : null,
-      count || held ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions, ready branches and branches that stop appear here, one at a time.'),
+      count || held ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions, ready branches, branches that stop, outputs to accept and sessions that stop appear here, one at a time.'),
       h('details', { class: 'attention-group ledger' },
         h('summary', {}, h('h2', { text: `Permission requests (${perms.length})` })),
         h('p', { class: 'hint', text: 'A server decides each tool request at once by the policy its task or send was given; there is nothing to approve afterwards. Send again with "Allow every tool" to let a branch use what was denied.' }),

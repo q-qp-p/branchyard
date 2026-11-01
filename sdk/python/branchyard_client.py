@@ -882,9 +882,13 @@ class Approval(Record):
 
 class Decision(Record):
     """One thing that waits for a person (`Decision`): `kind` (`approval`,
-    `question`, `merge`, `stop`, `stall`), `branch`, `waits` (`agent`,
-    `delivery`, `nobody`), `since_ms`, `status`, `candidate`, and the
-    `approval` or `question` it is about."""
+    `question`, `merge`, `stop`, `stall`, and for a project's workspaces
+    `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
+    `nobody`), `since_ms`, `status`, `candidate`, and the `approval` or
+    `question` it is about. An `output` or `session` decision also names its
+    `workspace`, `workspace_title`, `session` and `session_name`; a `session`
+    carries the `phase` text, and an `output` its `output` (`id`, `name`,
+    `media_type`, `size`, `turn`)."""
 
 
 class Effect(Record):
@@ -1310,6 +1314,15 @@ class Client:
     def project(self, project: str) -> Record:
         """One project, including its source and result acceptance policy."""
         return Record(self.get(f"/v1/projects/{_q(project)}"))
+
+    def project_decisions(self, project: str) -> list[Decision]:
+        """What waits for a person in one project's workspaces, in the order
+        to take it (`docs/server.md`, `GET /v1/projects/{project}/decisions`):
+        `output` decisions (a session's file waiting to be accepted, `waits`
+        `delivery`) and `session` decisions (a session that failed, was
+        interrupted or never started, `waits` `nobody`). Accept an output with
+        `finalize_workspace`. Nothing in it expires."""
+        return [Decision(d) for d in self.get(f"/v1/projects/{_q(project)}/decisions").get("decisions", [])]
 
     def create_project(
         self, name: str, *, source: Optional[JSON] = None, result_mode: str = "artifacts", key: Optional[str] = None
