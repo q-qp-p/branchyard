@@ -37,9 +37,10 @@ const END_MARKERS: &[&str] = &[
     "<!-- END SCION MANAGED -->",
 ];
 
-/// The markers of a managed block in a file whose comments are `#` lines
-/// (YAML, TOML, dotenv), where an HTML comment is not a comment.
+/// The begin marker of a managed block in a file whose comments are `#`
+/// lines (YAML, TOML, dotenv), where an HTML comment is not a comment.
 pub const COMMENT_BEGIN: &str = "# BEGIN BRANCHYARD MANAGED";
+/// The end marker of that block.
 pub const COMMENT_END: &str = "# END BRANCHYARD MANAGED";
 
 /// A file's marker dialect: what is written, and what is recognized.
