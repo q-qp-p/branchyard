@@ -31,6 +31,7 @@ fn query_validation_rejects_ambiguity_and_unbounded_work() {
     assert_eq!(options.view.as_str(), "table");
     for invalid in [
         "page=0",
+        "page=65",
         "page=501",
         "limit=0",
         "limit=501",
@@ -98,6 +99,16 @@ fn embedded_helper_materialization_stays_inside_the_trusted_package() {
     let scratch = Scratch::new("preview-embed");
     materialize_helper(scratch.path()).unwrap();
     assert!(scratch.join("launcher.py").is_file());
+    for module in ["native.py", "preview.py"] {
+        let canonical = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sdk/python/branchyard_artifacts")
+            .join(module);
+        assert_eq!(
+            fs::read_to_string(scratch.join("branchyard_artifacts").join(module)).unwrap(),
+            fs::read_to_string(canonical).unwrap(),
+            "embedded {module} is stale; rebuild branchyard-provision/src/skills.rs from this worktree"
+        );
+    }
     assert!(scratch.join("branchyard_artifacts/__main__.py").is_file());
     assert!(!scratch.join("SKILL.md").exists());
     assert!(!scratch.join("INDEX.md").exists());
@@ -681,4 +692,74 @@ async fn a_cancelled_request_keeps_capacity_until_its_blocking_reader_finishes()
     job.await.unwrap();
     assert!(service.admit().is_ok());
     drop(second);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn document_pages_are_requested_and_cached_individually_in_the_namespace() {
+    let scratch = Scratch::new("preview-document-pages");
+    let record = scratch.join("page-requests");
+    let python = scratch.join("python");
+    script(&python, "#!/bin/sh\nprintf '%s\\n' '{\"executable\":\"/usr/bin/python3\",\"prefix\":\"/usr\",\"base_prefix\":\"/usr\",\"version\":\"fixture\"}'\n");
+    let bwrap = scratch.join("bwrap");
+    script(
+        &bwrap,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+output=''
+page=''
+view=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bind) output="$2"; shift 3 ;;
+    --page) page="$2"; shift 2 ;;
+    --view) view="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s %s\n' "$view" "$page" >> '{}'
+mkdir "$output/derived"
+printf '\211PNG\r\n\032\n%s' "$page" > "$output/derived/page-$page.png"
+printf '{{"status":"passed","kind":"pages","format":"docx","page":%s,"pages":3,"image":"page-%s.png","width":320,"height":240,"warnings":[]}}\n' "$page" "$page"
+"#,
+            record.display()
+        ),
+    );
+    let service = PreviewService::with_settings(
+        scratch.join("cache"),
+        sandbox::Settings::Bubblewrap { python, bwrap },
+    )
+    .unwrap();
+    for extension in ["docx", "pptx"] {
+        let input = || {
+            let mut input = original();
+            input.name = format!("document.{extension}");
+            input
+        };
+        for page in 1..=3 {
+            let options = PreviewOptions {
+                view: View::Pages,
+                page,
+                ..PreviewOptions::default()
+            };
+            let first = service.preview(input(), options.clone()).await.unwrap();
+            assert_eq!(first["page"], page);
+            assert_eq!(first["pages"], 3);
+            let image = format!("page-{page}.png");
+            let asset = service
+                .asset(input(), options.clone(), &image)
+                .await
+                .unwrap();
+            assert!(asset.starts_with(b"\x89PNG\r\n\x1a\n"));
+            assert_eq!(asset.last(), Some(&(b'0' + page as u8)));
+            assert_eq!(service.preview(input(), options).await.unwrap(), first);
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(record).unwrap(),
+        "pages 1\npages 2\npages 3\npages 1\npages 2\npages 3\n"
+    );
+    let capped = PreviewOptions::parse(Some("view=pages&page=65")).unwrap_err();
+    assert!(capped.body.message.contains("64"));
 }

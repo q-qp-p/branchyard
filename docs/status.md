@@ -42,7 +42,7 @@ See [modes](modes.md) for how to choose between these.
 
 ## Harness drivers
 
-<!-- fact:profiles.summary -->18 driver profiles cover 15 of 16 harness targets: 10 live-qualified, 2 partial and 6 unqualified.<!-- /fact -->
+<!-- fact:profiles.summary -->17 driver profiles cover 15 of 16 harness targets: 9 live-qualified, 2 partial and 6 unqualified.<!-- /fact -->
 
 A live run is protocol qualification against the real binary as a local process. It is not a sandbox run: isolation, credentials and recovery are unqualified for every profile. "Permissions answered" and "Steer" are the two gates Branchyard can intercept mid-turn; [compatibility](compatibility.md) defines their values and lists every capability and the reason for each `no`.
 

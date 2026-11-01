@@ -23,6 +23,13 @@ screenshots add dark variants of the board and the deck, from a demo whose
 branches run Claude Code's stream-json profile through a script that reports
 cost.
 
+Office files open in a full-width console viewer: DOCX pages load as you scroll,
+PPTX slides have thumbnails and keyboard navigation, and XLSX workbooks have
+sheet tabs, column widths, merged cells, formatted cached values with formula
+tooltips, frozen headers and <!-- fact:artifact_preview.row_page -->200<!-- /fact -->-row pagination. Print view renders the selected
+sheet through LibreOffice and Poppler. Page previews are cached individually
+and bounded to <!-- fact:artifact_preview.page_cap -->64<!-- /fact --> pages, with download guidance for longer originals.
+
 An HTML output of a workspace session can be seen and used from the console.
 It previews as a page image like a DOCX (headless Chromium inside the
 converter's Bubblewrap namespace, no network, the source read-only, so `GET

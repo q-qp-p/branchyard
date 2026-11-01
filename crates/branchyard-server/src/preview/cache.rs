@@ -173,7 +173,7 @@ pub(super) fn validate_response(value: &Value, output: &FilePath) -> Result<(), 
                 || value
                     .get("pages")
                     .and_then(Value::as_u64)
-                    .is_none_or(|pages| pages == 0 || pages > 500)
+                    .is_none_or(|pages| pages == 0 || pages > 64)
             {
                 return Err(invalid());
             }

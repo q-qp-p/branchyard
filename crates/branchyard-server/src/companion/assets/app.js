@@ -984,6 +984,7 @@
     newProject: renderNewProject,
     project: renderProject,
     workspace: renderWorkspace,
+    document: renderDocument,
   };
 
   function parseRoute() {
@@ -992,9 +993,10 @@
     if (parts[0] === 'b') return { name: 'branch', repo: parts[1], branch: parts.slice(2).join('/') };
     if (parts[0] === 'p' && parts[1] === 'new') return { name: 'newProject' };
     if (parts[0] === 'p' && parts[1]) return { name: 'project', project: parts[1], creating: parts[2] === 'new' };
+    if (parts[0] === 'w' && parts[1] && parts[2] === 'doc' && parts[3]) return { name: 'document', workspace: parts[1], artifact: parts[3] };
     if (parts[0] === 'w' && parts[1]) return { name: 'workspace', workspace: parts[1], session: parts[2] === 's' && parts[3] ? parts[3] : null };
     const name = ALIASES[parts[0]] || parts[0];
-    return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace'].includes(name) ? name : 'home' };
+    return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace', 'document'].includes(name) ? name : 'home' };
   }
 
   async function route() {
@@ -3773,10 +3775,60 @@
     fill(slot,
       h('div', { class: 'preview-head' },
         h('h3', { id: 'preview-title', text: item.name, title: item.name }),
-        runnable ? h('button', { type: 'button', text: 'Open', 'aria-label': `Open ${item.name}`, onclick: (e) => openFrame(item, frameSlot, e.currentTarget) }) : null,
+        runnable ? h('button', { type: 'button', text: 'Open', 'aria-label': `Open ${item.name}`, onclick: (e) => openFrame(item, frameSlot, e.currentTarget) })
+          : h('a', { class: 'button', text: 'Open', href: `#/w/${enc(v.id)}/doc/${enc(item.key.startsWith('source:') ? item.key : item.key.slice(7))}` }),
         h('button', { type: 'button', text: 'Download original', onclick: () => download(`${item.base}/content`, item.name) })),
       host, frameSlot);
     livePreview = window.BranchyardArtifactPreview.mount(host, { baseUrl: item.base, mediaType: item.mediaType, fetchAuthenticated: authFetch });
+  }
+
+  // The viewer resolves its file from current workspace grants on every arrival;
+  // the hash identifies an artifact, never an arbitrary fetch URL.
+  async function renderDocument() {
+    const r = state.route;
+    const back = workspaceHref(r.workspace);
+    main(h('div', { class: 'document-viewer', id: 'document-viewer' },
+      h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+      h('p', { role: 'status', text: 'Opening the document…' })));
+    try {
+      const ws = await api('GET', workspacePath(r.workspace));
+      const sourceId = r.artifact.startsWith('source:') ? r.artifact.slice(7) : null;
+      const artifacts = sourceId ? [] : (await api('GET', `${workspacePath(r.workspace)}/artifacts`)).artifacts;
+      if (state.route !== r) return;
+      const item = sourceId ? (ws.sources || []).find((a) => a.id === sourceId) : artifacts.find((a) => a.id === r.artifact);
+      if (!item) throw new Error('This document is no longer available in the workspace.');
+      const name = sourceId ? item.title : item.name;
+      const base = `${workspacePath(r.workspace)}/${sourceId ? 'sources' : 'artifacts'}/${enc(item.id)}`;
+      const host = h('div', { id: 'document-preview', class: 'document-preview' });
+      const accepted = (ws.accepted_deliverables || []).some((a) => a.artifact_id === item.id);
+      const session = (ws.sessions || []).find((s) => s.branch === item.publisher_branch);
+      const accept = !sourceId && !accepted && workspaceCanRun({ workspace: ws }) ? h('button', {
+        type: 'button', id: 'document-accept', text: 'Accept', disabled: standing(item, session, new Set()) !== 'current',
+        onclick: async () => {
+          if (!(await confirmDialog('Accept output?', `${name} becomes an accepted deliverable of ${ws.title}.`, 'Accept'))) return;
+          if (state.route !== r) return;
+          accept.disabled = true;
+          try {
+            const latest = await api('GET', workspacePath(r.workspace));
+            await api('POST', `${workspacePath(r.workspace)}/finalize`, { revision: latest.revision, artifacts: [item.id] });
+            accept.textContent = 'Accepted';
+            toast(`Accepted ${name}.`);
+          } catch (e) { accept.disabled = false; toast(`Could not accept: ${e.message}`); }
+        },
+      }) : null;
+      main(h('section', { class: 'document-viewer', id: 'document-viewer', 'aria-label': 'Document viewer' },
+        h('header', { class: 'document-head' },
+          h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+          h('h1', { text: name, title: name }),
+          h('div', { class: 'row' },
+            h('button', { type: 'button', text: 'Download original', onclick: () => download(`${base}/content`, name) }), accept)), host));
+      livePreview = window.BranchyardArtifactPreview.mount(host, { baseUrl: base, mediaType: item.media_type, viewer: true, fetchAuthenticated: authFetch });
+    } catch (e) {
+      if (state.route !== r) return;
+      main(h('section', { class: 'document-viewer', id: 'document-viewer' },
+        h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+        h('h1', { text: 'Document not available' }), h('p', { class: 'error', text: e.message })));
+    }
   }
 
   // Run an HTML output in a sandboxed iframe. The server mints a short-lived
@@ -5044,6 +5096,7 @@
     });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
+      if (state.route.name === 'document' && !$('confirm').open) { ev.preventDefault(); go(workspaceHref(state.route.workspace)); }
       for (const menu of document.querySelectorAll('details.menu[open]')) { menu.open = false; menu.querySelector('summary').focus(); }
     });
     setInterval(() => {

@@ -536,8 +536,102 @@ async function runTests() {
   assert(blobsRevokedAfterDispose > initialRevokedBlobs, 'Blob URL must be revoked on dispose');
   console.log('  ✓ Blob URL revocation passed.');
 
+  // Full viewer pages remain separate authenticated derivatives and load on demand.
+  console.log('Test 8: Full document viewer, slides and workbook grid...');
+  const viewerRequests = [];
+  let viewerFormat = 'docx';
+  await page.route('https://api.branchyard.local/v1/workspaces/ws-1/artifacts/viewer/**', async (route) => {
+    const url = new URL(route.request().url());
+    viewerRequests.push(url.pathname + url.search);
+    if (url.pathname.includes('/assets/')) {
+      await route.fulfill({ status: 200, contentType: 'image/png', body: samplePngBuffer });
+      return;
+    }
+    const number = Number(url.searchParams.get('page') || 1);
+    if (viewerFormat === 'xlsx') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        status: 'passed', kind: 'table', format: 'xlsx', sheet: url.searchParams.get('sheet') || 'Summary', sheets: ['Summary', 'Data'],
+        columns: ['Title', ''], rows: [[1234.5, 2], [null, 5]], offset: 0, next_offset: 200,
+        column_widths: [201, 131], frozen_rows: 1,
+        merges: [{ min_row: 1, max_row: 1, min_col: 1, max_col: 2 }],
+        cell_details: [[{ formatted: '1,234.50', formula: '=SUM(C1:C3)' }, { formatted: '2' }], [{ formatted: '' }, { formatted: '5' }]], warnings: []
+      }) });
+    } else await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      status: 'passed', kind: 'pages', format: viewerFormat, page: number, pages: 3,
+      image: 'page-' + number + '.png', width: 600, height: 800, warnings: []
+    }) });
+  });
+  const mountViewer = async () => page.evaluate(() => {
+    if (window.viewerPreview) window.viewerPreview.dispose();
+    document.getElementById('preview-container').textContent = '';
+    window.viewerPreview = window.BranchyardArtifactPreview.mount(document.getElementById('preview-container'), {
+      baseUrl: 'https://api.branchyard.local/v1/workspaces/ws-1/artifacts/viewer', viewer: true, fetchAuthenticated: window.mockFetchAuthenticated
+    });
+  });
+  await mountViewer();
+  await page.locator('.by-preview-document-page[data-page="1"] img').waitFor();
+  assert(!viewerRequests.some((url) => url.includes('page=3')), 'Offscreen third page must not be eagerly rendered');
+  await page.getByRole('button', { name: 'Next page', exact: true }).click();
+  await page.locator('.by-preview-document-page[data-page="2"] img').waitFor();
+  await page.keyboard.press('End');
+  await page.locator('.by-preview-document-page[data-page="3"] img').waitFor();
+  assert.strictEqual(await page.locator('.by-preview-page-indicator').textContent(), '3 / 3');
+  assert(viewerRequests.some((url) => url.includes('view=pages&page=3')));
+  await page.getByRole('combobox', { name: 'Zoom' }).selectOption('125');
+  assert.strictEqual(await page.locator('.by-artifact-preview').getAttribute('data-zoom'), '125');
+
+  // At phone width the final page fits completely, leaving a sliver of the
+  // preceding page above it. The label follows the largest visible page.
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.evaluate(() => { document.body.style.width = '390px'; document.body.style.height = '700px'; });
+  await mountViewer();
+  await page.locator('.by-preview-document-page[data-page="1"] img').waitFor();
+  await page.locator('.by-preview-document-page[data-page="3"]').scrollIntoViewIfNeeded();
+  await page.locator('.by-preview-document-page[data-page="3"] img').waitFor();
+  await page.waitForFunction(() => document.querySelector('.by-preview-page-indicator').textContent === '3 / 3');
+  const precedingOverlap = await page.locator('.by-preview-document-page[data-page="2"]').evaluate((slot) => {
+    const viewport = document.querySelector('.by-preview-content').getBoundingClientRect();
+    const bounds = slot.getBoundingClientRect();
+    return Math.min(bounds.bottom, viewport.bottom) - Math.max(bounds.top, viewport.top);
+  });
+  assert(precedingOverlap > 40, 'Regression fixture leaves part of page 2 visible above page 3');
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.evaluate(() => { document.body.style.width = '800px'; document.body.style.height = '600px'; });
+
+  viewerFormat = 'pptx';
+  await mountViewer();
+  await page.locator('.by-preview-slide[data-page="1"] img').waitFor();
+  await page.getByRole('button', { name: 'Slide 3', exact: true }).click();
+  await page.locator('.by-preview-slide[data-page="3"] img').waitFor();
+  await page.keyboard.press('ArrowLeft');
+  await page.locator('.by-preview-slide[data-page="2"] img').waitFor();
+  await page.setViewportSize({ width: 390, height: 700 });
+  await mountViewer();
+  await page.locator('.by-preview-slide[data-page="1"] img').waitFor();
+  assert.strictEqual(await page.locator('.by-preview-thumbnails').getAttribute('open'), null, 'Thumbnails fold on a phone');
+  await page.setViewportSize({ width: 800, height: 600 });
+
+  viewerFormat = 'xlsx';
+  await mountViewer();
+  await page.getByRole('tab', { name: 'Summary', exact: true }).waitFor();
+  assert.strictEqual(await page.locator('.by-preview-table th').count(), 1, 'Merged header has one spanning cell');
+  assert.strictEqual(await page.locator('.by-preview-table th').getAttribute('colspan'), '2');
+  assert.strictEqual(await page.locator('.by-preview-table tbody td').first().textContent(), '1,234.50');
+  assert.strictEqual(await page.locator('.by-preview-table tbody td').first().getAttribute('title'), '=SUM(C1:C3)');
+  assert.strictEqual(await page.locator('.by-preview-table col').first().evaluate((el) => el.style.width), '201px');
+  assert(await page.locator('.by-preview-frozen-header').count());
+  const firstColumnWidth = await page.locator('.by-preview-table tbody td').first().evaluate((el) => el.getBoundingClientRect().width);
+  assert(Math.abs(firstColumnWidth - 201) <= 2, `Saved column width was rendered as ${firstColumnWidth}px, expected 201px`);
+  assert.strictEqual(await page.locator('.by-preview-table th').evaluate((el) => getComputedStyle(el).position), 'sticky');
+  assert(await page.getByRole('button', { name: 'Next 200' }).count());
+  assert(viewerRequests.some((url) => url.includes('limit=200')));
+  await page.getByRole('tab', { name: 'Data', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"]').textContent === 'Data');
+  await page.evaluate(() => window.viewerPreview.dispose());
+  console.log('  ✓ Lazy stacked pages, slide keys/thumbnails, phone layout, formatted cells, merges and sheet tabs passed.');
+
   await browser.close();
-  console.log('\nAll 7 hermetic Playwright component regression tests PASSED successfully!\n');
+  console.log('\nAll 8 hermetic Playwright component regression tests PASSED successfully!\n');
 }
 
 runTests().catch((err) => {

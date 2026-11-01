@@ -48,6 +48,17 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         return;
     };
     let f = Fixture::new();
+    let real_previews = std::env::var_os("BRANCHYARD_PREVIEW_BWRAP").is_some()
+        && std::env::var_os("BRANCHYARD_PREVIEW_PYTHON").is_some();
+    if !real_previews {
+        // This binary has one test. Select a missing namespace command before
+        // starting any server threads so the default run stays hermetic even on
+        // a machine whose system Python happens to include Office libraries.
+        std::env::set_var(
+            "BRANCHYARD_PREVIEW_BWRAP",
+            f.dir.join("missing-preview-renderer"),
+        );
+    }
     let fixtures = f.dir.join("fixtures");
     let generated = branchyard_testkit::hermetic(&mut Command::new("python3"))
         .arg("-I")
@@ -138,6 +149,10 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         .env("BY_CODE", &code)
         .env("BY_KNOWLEDGE_TOKEN", KNOWLEDGE_TOKEN)
         .env("BY_FIXTURES", &fixtures)
+        .env(
+            "BY_EXPECT_DOCUMENT_PREVIEWS",
+            if real_previews { "1" } else { "0" },
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -168,6 +183,7 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         "SESSIONS",
         "HTML",
         "OUTPUTS",
+        "DOCUMENTS",
         "ACCEPTED",
         "STALE",
         "DECK",
