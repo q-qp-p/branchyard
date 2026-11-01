@@ -19,6 +19,7 @@ BANLIST = ROOT / "tools/handrolled_banlist.toml"
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 BANNED = {
     "percent-codec": "fn percent_decode(text: &str) -> String { String::new() }\n",
+    "percent-match": "fn f(bytes: &[u8]) -> bool { bytes.iter().any(|&b| (b'%', b) == (b'%', 0)) }\n",
     "percent-escape": 'fn f(b: u8) -> String { format!("%{b:02X}") }\n',
     "hex-codec": "fn hex(bytes: &[u8]) -> String { String::new() }\n",
     "base64-alphabet": f'const T: &[u8; 64] = b"{ALPHABET}";\n',
