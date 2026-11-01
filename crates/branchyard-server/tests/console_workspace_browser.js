@@ -727,7 +727,7 @@ let browser = null;
   say('STALE');
 
   // Needs you takes the project's decisions beside the repository's: the
-  // four outputs of the analyst's current turn wait to be accepted (the
+  // five outputs of the analyst's current turn wait to be accepted (the
   // first turn's five, replaced, do not), each with the preview the
   // workspace page shows, and accepting one from its card settles it.
   const decided = (await callApi('GET', `/v1/projects/${pid}/decisions`)).body.decisions;
@@ -778,7 +778,7 @@ let browser = null;
   if (afterAccept.includes(latest[CSV]) || afterAccept.length !== 4) throw new Error(`after accepting ${CSV} the project lists ${JSON.stringify(afterAccept)}`);
   const acceptedNow = (await callApi('GET', `/v1/workspaces/${ws}`)).body.accepted_deliverables.map((d) => d.artifact_id);
   if (!acceptedNow.includes(latest[CSV])) throw new Error(`the card's Accept left ${JSON.stringify(acceptedNow)} accepted`);
-  // The board holds the same three outputs, one row each, on its clock.
+  // The board holds the same four outputs, one row each, on its clock.
   await go(`#/p/${pid}`);
   const boardRows = page.locator('#project-board .board-row[data-lane="ready"]');
   await boardRows.nth(3).waitFor();
