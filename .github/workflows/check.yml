@@ -388,9 +388,14 @@ jobs:
       - run: python tools/install_ci_tool.py cargo-llvm-cov
       - run: python tools/install_ci_tool.py cargo-nextest
       - run: cargo fetch --locked
-      - run: cargo llvm-cov nextest --workspace --locked --offline --profile ci --partition "slice:${{ matrix.shard }}/3" --lcov --output-path "lcov-${{ matrix.shard }}.info"
+      # A test that kills a `by` process group mid-write leaves a half-written
+      # .profraw, and llvm-profdata's default refuses the whole merge over one
+      # such file ("file header is corrupt", "no profile can be merged").
+      # `--failure-mode all` merges every readable profile and fails only when
+      # none is; the killed process's own lines were never recorded anyway.
+      - run: cargo llvm-cov nextest --failure-mode all --workspace --locked --offline --profile ci --partition "slice:${{ matrix.shard }}/3" --lcov --output-path "lcov-${{ matrix.shard }}.info"
       - if: matrix.shard == 1
-        run: cargo llvm-cov nextest -p branchyard -p branchyard-provision -p branchyard-substrate --lib --locked --offline --profile ci --lcov --output-path unit.lcov
+        run: cargo llvm-cov nextest --failure-mode all -p branchyard -p branchyard-provision -p branchyard-substrate --lib --locked --offline --profile ci --lcov --output-path unit.lcov
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lcov-${{ matrix.shard }}
