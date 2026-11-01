@@ -493,6 +493,9 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
                 candidate_text(Some(candidate))
             ),
         ),
+        Activity::TurnCost { cost_usd } => {
+            style.paint(Tone::Dim, &format!("turn cost {}", usd(*cost_usd)))
+        }
         Activity::Status(status) => {
             let (text, tone) = status_text(status);
             style.paint(tone, &format!("status: {text}"))
@@ -1117,13 +1120,18 @@ pub fn status_text(status: &BranchStatus) -> (String, Tone) {
     }
 }
 
-/// [`status_text`], with a `stalled` marker while the branch's running turn
-/// has had no harness activity for its stall window.
+/// [`status_text`], with what a running turn is parked on when it waits
+/// for an approval (`waiting for approval: …`), or else a `stalled` marker
+/// while it has had no harness activity for its stall window.
 pub fn branch_status_text(info: &BranchInfo) -> (String, Tone) {
     let (text, tone) = status_text(&info.status);
-    match info.stalled {
-        true => (format!("{text} (stalled)"), Tone::Yellow),
-        false => (text, tone),
+    match (&info.awaiting, info.stalled) {
+        (Some(awaiting), _) => (
+            format!("waiting for approval: {}", awaiting.about),
+            Tone::Yellow,
+        ),
+        (None, true) => (format!("{text} (stalled)"), Tone::Yellow),
+        (None, false) => (text, tone),
     }
 }
 
@@ -2199,6 +2207,17 @@ mod tests {
 
     const PLAIN: Style = Style::PLAIN;
 
+    /// A turn's own cost is a line of `by log`, and an object of
+    /// `by log --json`.
+    #[test]
+    fn a_turns_cost_is_a_line_of_its_own() {
+        let activity = Activity::TurnCost { cost_usd: 0.03 };
+        assert_eq!(activity_line(&activity, PLAIN).unwrap(), "turn cost $0.03");
+        let recorded = crate::json::recorded(&branchyard::RecordedEvent { at_ms: 7, activity });
+        assert_eq!(recorded["activity"], "turn_cost");
+        assert_eq!(recorded["cost_usd"], 0.03);
+    }
+
     #[test]
     fn sandbox_events_say_which_path_a_turn_took() {
         use branchyard::{SandboxEvent, SandboxOrigin, SnapshotMethod};
@@ -2460,6 +2479,7 @@ mod tests {
             cost_usd: None,
             created_at: 10_000,
             stalled: false,
+            awaiting: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

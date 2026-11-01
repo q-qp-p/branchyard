@@ -11,14 +11,16 @@ session's copy. It then reports the scene's text and tool calls as `session/upda
 notifications and sends the agent one directive in place of the prompt. `REPLY_FILE <reply>`
 makes the fake agent answer with the reply's text and do nothing else, which is why the filter
 does the file work itself. A scene without a reply sends `HANG`, so its turn runs until someone
-cancels it. Every other message passes through untouched, so the server records the prompt as
-typed and the fake agent answers the rest of the protocol. The filter exits with the agent.
+cancels it. A scene with `asks` sends `PERMISSION WRITE <asks>` instead: the fake agent asks the
+server for permission to write and the turn waits, parked on that approval, until a person
+answers. Every other message passes through untouched, so the server records the prompt as typed
+and the fake agent answers the rest of the protocol. The filter exits with the agent.
 
 A scene, in SCRIPT.json's `scenes` list:
 
     {"prompt": "...", "say": "text before the tool calls",
      "tools": [{"kind": "read", "title": "Read src/record.rs"}],
-     "files": {"src/record.rs": "..."}, "reply": "/abs/reply.txt"}
+     "files": {"src/record.rs": "..."}, "reply": "/abs/reply.txt", "asks": "NOTES.md=draft"}
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ class Scene:
     tools: tuple[Tool, ...] = ()
     files: tuple[tuple[str, str], ...] = ()
     reply: str | None = None
+    asks: str | None = None
 
 
 def scene(value: dict[str, Any]) -> Scene:
@@ -67,7 +70,10 @@ def scene(value: dict[str, Any]) -> Scene:
             raise ValueError(f"file {path} is not inside the working directory")
         if not isinstance(text, str):
             raise ValueError(f"file {path} needs its text")
-    return Scene(prompt, value.get("say"), tools, files, value.get("reply"))
+    asks = value.get("asks")
+    if asks is not None and (not isinstance(asks, str) or "=" not in asks or any(c.isspace() for c in asks)):
+        raise ValueError("asks is one PATH=CONTENT word, with no whitespace")
+    return Scene(prompt, value.get("say"), tools, files, value.get("reply"), asks)
 
 
 def load(path: Path) -> list[Scene]:
@@ -93,6 +99,8 @@ def match(scenes: list[Scene], text: str) -> Scene | None:
 
 
 def directive(scene: Scene) -> str:
+    if scene.asks:
+        return f"PERMISSION WRITE {scene.asks}"
     return f"REPLY_FILE {scene.reply}" if scene.reply else "HANG"
 
 

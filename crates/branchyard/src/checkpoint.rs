@@ -107,6 +107,7 @@ pub fn entries(events: &[RecordedEvent]) -> Vec<CheckpointEntry> {
         .into_iter()
         .map(|checkpoint| CheckpointEntry {
             prompt: texts.get(&checkpoint.turn).map(|t| t.prompt.clone()),
+            cost_usd: texts.get(&checkpoint.turn).and_then(|t| t.cost_usd),
             checkpoint,
             available: true,
         })
@@ -133,6 +134,10 @@ pub struct CheckpointEntry {
     pub checkpoint: Checkpoint,
     /// The turn's prompt, without a generated summary it began with.
     pub prompt: Option<String>,
+    /// What the turn cost on its own, from its [`Activity::TurnCost`];
+    /// `None` when nothing measured its spend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
     /// Whether the ref still names the commit, so the checkpoint can be
     /// rewound or forked to.
     pub available: bool,
@@ -380,29 +385,36 @@ pub(crate) fn continuity(
     SessionContinuity::Native { session }
 }
 
-/// A turn's prompt and the harness's reply, as its events recorded them.
+/// A turn's prompt, the harness's reply and the turn's own cost, as its
+/// events recorded them.
 struct TurnText {
     prompt: String,
     reply: String,
+    cost_usd: Option<f64>,
 }
 
 fn turn_texts(events: &[RecordedEvent]) -> BTreeMap<u32, TurnText> {
     let mut texts = BTreeMap::new();
     let mut prompt = String::new();
     let mut reply = String::new();
+    let mut cost = None;
     for event in events {
         match &event.activity {
             Activity::Prompt(text) => {
                 prompt = own_prompt(text).to_owned();
                 reply.clear();
+                cost = None;
             }
             Activity::Harness(Event::MessageDelta { text, .. }) => reply.push_str(text),
+            // Recorded as the turn concludes, before its checkpoint.
+            Activity::TurnCost { cost_usd } => cost = Some(*cost_usd),
             Activity::Checkpoint(checkpoint) => {
                 texts.insert(
                     checkpoint.turn,
                     TurnText {
                         prompt: prompt.clone(),
                         reply: reply.clone(),
+                        cost_usd: cost,
                     },
                 );
             }

@@ -407,6 +407,10 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
     let sessions = client.workspace_sessions(&workspace.id).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, session);
+    // A repository project's finished session is a branch of its
+    // repository, and no output waits: nothing in the project's own list.
+    assert_eq!(client.project_decisions(&project.id).unwrap(), vec![]);
+    assert!(client.project_decisions("no-such-project").is_err());
     let page = client
         .workspace_messages(&workspace.id, &session, None)
         .unwrap();

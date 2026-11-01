@@ -1817,6 +1817,7 @@ mod tests {
             cost_usd: None,
             created_at: 10_000,
             stalled: false,
+            awaiting: None,
             superseded_by: None,
             model: None,
             provider: provider.into(),

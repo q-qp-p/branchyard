@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+The console becomes a dispatcher's desk. Needs you is a deck: one decision
+at a time, shaped for what it is (an approval, a question, a merge, a stop,
+a stall), the question at the top, the evidence in the middle and the
+answers at the bottom, taken from the keyboard; an allow or a deny is held
+for eight seconds with Undo before it is sent, and a merge is a hold, not a
+dialog. Home is a board: every open branch on one clock, the last hour to
+scale, a wait on you filled amber from the moment the turn parked, with a
+steer box under a running row. A branch page reads as a report: each tool
+call is a note in the margin beside the paragraph it preceded, and each
+turn ends with a receipt.
+
+For that, a branch record now says what its running turn is parked on:
+`awaiting` names the approval ask, what it asks and since when, read from
+the pending asks whenever the branch is listed or looked up, and `by ls`
+shows `waiting for approval: …`. The server adds `GET …/decisions`
+(`DecisionList`, `Repo::decisions`): what waits for a person in the order to
+take it, parked agents first, oldest wait first. Nothing in it expires.
+
+The ground plan says which files are in two hands: `GET …/ground`
+(`Ground`, `Repo::ground`, `app.ground()`) lists every path an open branch
+changed with the open branches that changed it, read from their diffs when
+asked; a branch whose diff cannot be read is named in `skipped`. A branch
+page gains a Ground tab ("also in app-2" or "only here") and a merge card
+names the files another open branch also holds.
+
+In the deck, Enter in a question's answer box sends the answer (Shift+Enter adds a
+line); it used to add a line, so only the Answer button sent.
+
+Knowledge work reaches the deck. `GET /v1/projects/{project}/decisions`
+(`Client::project_decisions`, `Client.project_decisions`) lists a project's
+workspace outputs waiting to be accepted (`output`) and its sessions that
+failed, were interrupted or never started (`session`) as `Decision`s, and
+Needs you shows them beside the repository's: an output card mounts the
+preview, with Download original and a held Accept, instead of a diff; the
+project page's board draws its open sessions on one clock; the tab title
+counts the cards.
+
+Each turn's receipt now says what that turn cost. The engine records a
+`turn_cost` event (`Activity::TurnCost`) when a turn's metering has settled:
+what the branch's cost grew by, so a harness's running session total counts
+only the part the turn added. A turn nothing measured records none, and the
+branch's `cost_usd` stays its total. `by log`, `by show`'s checkpoints, the
+event page and Python's `FeedEntry.turn_cost` carry it.
+
+Reading an operation, or a fork, no longer fails with `404 unknown_branch`
+for a branch that was removed meanwhile: a fork's removed parent, or a goal
+judge's scratch branch removed between two reads of the operation that ran
+it. The authorization walk ends at a branch that is gone.
+
 The console renders an agent's reply instead of printing it: headings, lists,
 quotes, pipe tables, emphasis, inline code and web links become elements, a
 fenced block is code under a header with a Copy button, and a JSON block shows
@@ -17,6 +66,18 @@ the open branch carries its lane's colour, the changed files show how much each
 adds and removes, the composer says which key sends, the filter shows its `/`
 shortcut, and a loading conversation shows quiet bars rather than a sentence.
 Text in the sidebar, strip and conversation is larger on a phone.
+
+The README's console screenshots are regenerated for this console: the branch page
+with margin notes and a receipt, and the workspace with its table preview.
+
+DOCX and PPTX previews work under the default Bubblewrap backend. The namespace
+set `SAL_USE_VCLPLUGIN=gen`, LibreOffice's X11 backend, which overrides
+`--headless`, finds no display and exits 0 without a PDF, so every Office page
+preview failed with "LibreOffice completed without producing the requested
+PDF" while CSV and XLSX tables rendered. The namespace now sets `svp`, the
+display-less backend the Docker backend already used; isolation is unchanged.
+When a converter exits cleanly without a PDF, the failure message quotes its
+first diagnostic line.
 
 ## 0.3.1 - 2026-10-31
 

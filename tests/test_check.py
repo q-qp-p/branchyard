@@ -400,6 +400,11 @@ class Workflow(unittest.TestCase):
         self.assertEqual(numbers, list(range(1, count + 1)))
         self.assertIn(f'--partition "slice:${{{{ matrix.shard }}}}/{count}"', shard)
         self.assertIn("cargo llvm-cov nextest --workspace", shard)
+        # A process a test kills mid-write leaves a corrupt .profraw; the merge must
+        # survive it, in both the shard report and the unit report.
+        commands = [line for line in shard.splitlines() if "cargo llvm-cov nextest" in line]
+        self.assertGreaterEqual(len(commands), 2)
+        self.assertTrue(all("--failure-mode all" in line for line in commands), commands)
         self.assertIn("if: matrix.shard == 1", shard)
         self.assertIn("--lib --locked --offline --profile ci --lcov --output-path unit.lcov", shard)
         join = job_text("coverage")

@@ -8,7 +8,8 @@
 //! page where it renders, otherwise the matching unavailable, unsupported
 //! or failed state), downloads and accepts the actual immutable originals,
 //! continues a session so a stale page's acceptance of an earlier turn's
-//! output is refused, and the branch routes still work beside it. Driven
+//! output is refused, Needs you shows the current outputs as cards with their
+//! previews and accepts one, and the branch routes still work beside it. Driven
 //! by Playwright (`console_workspace_browser.js`) with documents from
 //! `tools/console_fixtures.py`; skipped, saying so, when
 //! Node or Playwright's module is not installed. `BY_TEST_PLAYWRIGHT`
@@ -168,6 +169,7 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         "OUTPUTS",
         "ACCEPTED",
         "STALE",
+        "DECK",
         "DONE",
     ] {
         expect(step);

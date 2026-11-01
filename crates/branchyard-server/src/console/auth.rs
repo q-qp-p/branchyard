@@ -198,8 +198,12 @@ pub(crate) fn authorize_branch(
         {
             return Err(denied());
         }
+        // A parent removed after its fork ends the walk: there is nothing
+        // above it left to authorize. The branch asked about itself must
+        // exist, so a request for one that does not stays a 404.
         current = match state.yard.branch(&name) {
             Ok(branch) => branch.info().parent.clone(),
+            Err(branchyard::Error::UnknownBranch(_)) if name != branch => None,
             Err(error) => return Err(crate::error::sdk(&error)),
         };
     }
@@ -235,13 +239,16 @@ pub(crate) fn authorize_operation(
         if binding(app, caller, &format!("{}:{branch}", operation.repo), scope)? {
             continue;
         }
-        // A task-creation operation may name an attempt before its yard exists.
-        if app
-            .repos
-            .get(&operation.repo)
-            .is_some_and(|r| r.yard.branch(branch).is_ok())
-        {
-            authorize_branch(app, caller, &operation.repo, branch, scope)?;
+        // A task-creation operation may name an attempt before its yard
+        // exists, and a scratch branch (a goal judge's) may be removed
+        // between two reads of the operation that ran it: a branch that is
+        // not there has nothing to authorize.
+        if !app.repos.contains_key(&operation.repo) {
+            continue;
+        }
+        match authorize_branch(app, caller, &operation.repo, branch, scope) {
+            Err(error) if error.body.code == "unknown_branch" => continue,
+            result => result?,
         }
     }
     Ok(())

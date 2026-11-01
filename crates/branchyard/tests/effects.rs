@@ -18,8 +18,8 @@ use branchyard::effects::{
     Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectState, Layer, UndoKind,
 };
 use branchyard::{
-    Activity, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy, Provisioning, Spawn,
-    TaskOptions,
+    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy,
+    Provisioning, Spawn, TaskOptions,
 };
 use branchyard_testkit::wait;
 use common::{fake_agent, text, Fixture};
@@ -412,11 +412,34 @@ fn a_tool_approval_asks_and_never_loosens_the_policy() {
                 tool: "write marker".into()
             }
         );
+        // While it waits, the branch itself says so: listed and looked up.
+        let parked = f
+            .yard
+            .branch("tool")
+            .unwrap()
+            .info()
+            .awaiting
+            .clone()
+            .unwrap();
+        assert_eq!(
+            (parked.kind, parked.id.as_str()),
+            (AwaitingKind::Approval, ask.id.as_str())
+        );
+        assert_eq!(
+            (parked.about.as_str(), parked.since_ms),
+            ("tool write marker", ask.created_ms)
+        );
+        let listed = f.yard.branches().unwrap();
+        assert_eq!(
+            listed.iter().find(|b| b.name == "tool").unwrap().awaiting,
+            Some(parked)
+        );
         f.yard
             .answer_approval(&ask.id, true, "ana", "cli", None)
             .unwrap();
         let branch = run.join().unwrap().unwrap();
         assert!(branch.info().worktree.join("p.txt").is_file());
+        assert!(f.yard.branch("tool").unwrap().info().awaiting.is_none());
         let source = branch
             .events()
             .unwrap()

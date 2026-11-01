@@ -176,6 +176,7 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             "source": source(s),
         }),
         Activity::Snapshot(c) => json!({ "activity": "snapshot", "candidate": candidate(c) }),
+        Activity::TurnCost { cost_usd } => json!({ "activity": "turn_cost", "cost_usd": cost_usd }),
         Activity::Status(s) => json!({ "activity": "status", "status": status(s) }),
         Activity::Warning(message) => json!({ "activity": "warning", "message": message }),
         Activity::Delegation {
@@ -402,6 +403,7 @@ mod tests {
             cost_usd: None,
             created_at: 7,
             stalled: false,
+            awaiting: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

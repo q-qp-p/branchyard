@@ -25,7 +25,7 @@ Each checkpoint is also an event, `Activity::Checkpoint`:
 | `files_changed`, `insertions`, `deletions` | Against the branch's base |
 | `sandbox` | The provider snapshot taken with the checkpoint, when the branch keeps its sandbox and its provider can: `provider`, `handle`, `scope`, `consistency`, `method`. Absent otherwise. See [sandbox snapshots](sandbox-snapshots.md) |
 
-`by show` lists them, marking the one the branch is at (`*`) and flagging a ref that no longer names its commit; `by show --json` adds a `checkpoints` object. `by log` prints each as `checkpoint N at <commit> (...)`. In the SDK, `Branch::checkpoints` returns them with each turn's prompt, and `branchyard::recorded_checkpoints` reads them from any event list, which is how `by --remote show` lists them.
+`by show` lists them, marking the one the branch is at (`*`), with the turn's own cost after its diff counts when something measured it ([budgets](delegation.md#budgets)), and flagging a ref that no longer names its commit; `by show --json` adds a `checkpoints` object. `by log` prints each as `checkpoint N at <commit> (...)`. In the SDK, `Branch::checkpoints` returns them with each turn's prompt, and `branchyard::recorded_checkpoints` reads them from any event list, which is how `by --remote show` lists them.
 
 **Turn numbers only grow.** A rewind does not renumber: after rewinding from turn 3 to turn 1, the next turn is 4, with `after: 1`. Nothing is overwritten, so every checkpoint stays reachable until the branch is removed. `by rm` deletes the branch's refs with it (for every incarnation of the name); a merged branch keeps its git branch, as before, but not its checkpoint refs. There is no other garbage collection: the refs are small, and the commits are the branch's own.
 

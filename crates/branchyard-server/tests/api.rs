@@ -64,6 +64,49 @@ fn requests_need_a_valid_token() {
     assert_eq!(error.to_string(), "a valid bearer token is required");
 }
 
+/// A fork keeps its parent's name; reading it, or the operation that made
+/// it, walks up to the parent to authorize. A parent removed since must
+/// not turn that read into a 404 for a branch nobody asked about, which is
+/// also what a scratch branch removed between two reads of the same
+/// operation looks like.
+#[test]
+fn a_fork_is_still_read_once_its_parent_is_removed() {
+    let f = Fixture::new();
+    let server = Server::start(f.config());
+    let client = server.client();
+    let repo = client.repo("app");
+    let parent = run(&client, &task("WRITE p.txt=1", "parent"));
+    assert_eq!(parent.state, OperationState::Succeeded, "{parent:?}");
+    let forked = repo
+        .fork(
+            "parent",
+            &ForkRequest {
+                prompt: "WRITE c.txt=1".into(),
+                name: Some("child".into()),
+                fresh_session: true,
+                policy: PolicySpec::allow_all(),
+                ..ForkRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let forked = await_operation(&client, &forked.id);
+    assert_eq!(forked.state, OperationState::Succeeded, "{forked:?}");
+    repo.remove("parent").unwrap();
+    assert_eq!(
+        client.operation(&forked.id).unwrap().state,
+        OperationState::Succeeded
+    );
+    assert_eq!(
+        repo.branch("child").unwrap().parent.as_deref(),
+        Some("parent")
+    );
+    assert_eq!(
+        repo.branch("parent").unwrap_err().code(),
+        Some("unknown_branch")
+    );
+}
+
 #[test]
 fn a_repeated_idempotency_key_runs_once() {
     let f = Fixture::new();
@@ -1251,4 +1294,65 @@ fn an_operation_queued_at_shutdown_runs_after_a_restart_and_is_found_by_its_key(
             .branch("long")
             .is_ok_and(|b| b.status != BranchStatus::Running)
     });
+}
+
+/// The engine records each turn's own cost on the branch's event log once
+/// the turn's metering has settled, so the event page carries it and a
+/// client need not add up usage reports: for a harness reporting its
+/// session's running total, the part each turn added. The branch's
+/// `cost_usd` stays the total.
+#[test]
+fn the_event_page_carries_each_turns_own_cost() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    common::costly_harness(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let first = run(&client, &common::costly_task("SPEND=0.25", "costly"));
+    assert_eq!(first.state, OperationState::Succeeded, "{first:?}");
+    let repo = client.repo("app");
+    let sent = repo
+        .send(
+            "costly",
+            &SendRequest {
+                prompt: "SPEND=0.5".into(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let sent = await_operation(&client, &sent.id);
+    assert_eq!(sent.state, OperationState::Succeeded, "{sent:?}");
+    assert_eq!(repo.branch("costly").unwrap().cost_usd, Some(0.75));
+
+    let costs: Vec<f64> = repo
+        .events("costly", 0)
+        .unwrap()
+        .events
+        .iter()
+        .filter_map(|e| match e.activity {
+            branchyard::Activity::TurnCost { cost_usd } => Some(cost_usd),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(costs, [0.25, 0.5], "each turn's, not the session's total");
+    // On the wire: `{"turn_cost": {"cost_usd": ...}}`.
+    let (status, _, body) = raw(
+        server.addr,
+        &get("/v1/repos/app/branches/costly/events", Some(TOKEN)),
+    );
+    assert_eq!(status, 200, "{body}");
+    let wire: Vec<Value> = json(&body)["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["activity"].get("turn_cost").cloned())
+        .collect();
+    assert_eq!(
+        wire,
+        [
+            serde_json::json!({"cost_usd": 0.25}),
+            serde_json::json!({"cost_usd": 0.5})
+        ]
+    );
 }

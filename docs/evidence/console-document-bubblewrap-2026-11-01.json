@@ -1,0 +1,74 @@
+{
+  "recorded": "2026-11-01",
+  "what": "DOCX and PPTX workspace outputs previewed through GET /v1/workspaces/{workspace}/artifacts/{artifact}/preview on a local `by serve --app --knowledge`, default Bubblewrap backend, real LibreOffice and Poppler, fake ACP agent producing the outputs (no model).",
+  "versions": {
+    "bubblewrap": "0.9.0",
+    "libreoffice": "24.2.7.2 420(Build:2)",
+    "poppler_pdftoppm": "24.02.0",
+    "preview_python": "3.13.18",
+    "pypdf": "6.21.4",
+    "pillow": "13.0.0",
+    "openpyxl": "3.1.5",
+    "python-docx": "1.2.0 (fixture generation only)",
+    "python-pptx": "1.0.2 (fixture generation only)",
+    "kernel": "Linux 6.18.44-fc-v185"
+  },
+  "failure_before": {
+    "request_result": "status failed, kind invalid_artifact, LibreOffice completed without producing the requested PDF",
+    "cause": "the namespace set SAL_USE_VCLPLUGIN=gen; LibreOffice 24.2 then uses its X11 backend despite --headless, prints 'soffice.bin X11 error: Can't open display:' and exits 0 without a PDF",
+    "invocation": "bwrap --die-with-parent --new-session --unshare-all --clearenv --proc /proc --dev /dev --tmpfs /tmp --dir /home --dir /home/preview --dir /input --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind <venv> <venv> --ro-bind /etc/fonts /etc/fonts --ro-bind /etc/ld.so.cache /etc/ld.so.cache --ro-bind /etc/libreoffice /etc/libreoffice --ro-bind <source.docx> /input/source.docx --ro-bind <helper> /helper --bind <output> /output --chdir /tmp --setenv HOME /home/preview --setenv TMPDIR /tmp --setenv PATH /usr/bin:/bin --setenv LANG C.UTF-8 --setenv LC_ALL C.UTF-8 --setenv PYTHONDONTWRITEBYTECODE 1 --setenv SAL_USE_VCLPLUGIN gen -- <venv>/bin/python -I /helper/launcher.py 2097152 --file /input/source.docx --out /output/derived --view pages --page 1 --offset 0 --limit 100",
+    "soffice_stderr": [
+      "Warning: failed to launch javaldx - java may not function correctly",
+      "/usr/lib/libreoffice/program/soffice.bin X11 error: Can't open display: ",
+      "   Set DISPLAY environment variable, use -display option",
+      "   or check permissions of your X-Server"
+    ],
+    "the_one_difference": "SAL_USE_VCLPLUGIN=svp (or unset) instead of gen; every other argument and binding identical"
+  },
+  "after": {
+    "revenue_by_plan.csv": {
+      "http": 200,
+      "status": "passed",
+      "kind": "table",
+      "format": "csv",
+      "pages": null,
+      "image": null,
+      "width": null,
+      "height": null
+    },
+    "revenue_model.xlsx": {
+      "http": 200,
+      "status": "passed",
+      "kind": "table",
+      "format": "xlsx",
+      "pages": null,
+      "image": null,
+      "width": null,
+      "height": null
+    },
+    "board_brief.docx": {
+      "http": 200,
+      "status": "passed",
+      "kind": "pages",
+      "format": "docx",
+      "pages": 1,
+      "image": "page-1.png",
+      "width": 1583,
+      "height": 2048,
+      "png_bytes": 73942,
+      "png_magic": "89504e470d0a1a0a"
+    },
+    "board_deck.pptx": {
+      "http": 200,
+      "status": "passed",
+      "kind": "pages",
+      "format": "pptx",
+      "pages": 3,
+      "image": "page-1.png",
+      "width": 2048,
+      "height": 1536,
+      "png_bytes": 47936,
+      "png_magic": "89504e470d0a1a0a"
+    }
+  }
+}

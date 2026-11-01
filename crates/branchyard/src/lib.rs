@@ -306,7 +306,7 @@ pub use snapshots::{
     SandboxSnapshot, SnapshotMethod, Transfer,
 };
 pub use spotlight::{TryEntry, TryFile, TryState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 pub use storage::{ArtifactRef, ScratchArea, ScratchLock, DEFAULT_ARTIFACT_LIMIT};
 pub use workspace::{
     check_glob as check_workspace_glob, RanIn, WorkspaceInfo, WorkspacePhase, WorkspaceReport,
@@ -685,23 +685,43 @@ impl Yard {
         }
     }
 
-    /// Every branch Branchyard knows, oldest first.
+    /// Every branch Branchyard knows, oldest first, each with what its
+    /// running turn waits on a person for ([`BranchInfo::awaiting`]).
     pub fn branches(&self) -> Result<Vec<BranchInfo>, Error> {
+        let parked = self.parked()?;
         Ok(self
             .store()
             .list()?
             .into_iter()
-            .map(|record| record.info)
+            .map(|record| with_awaiting(record.info, &parked))
             .collect())
     }
 
     /// Look up one branch by name.
     pub fn branch(&self, name: &str) -> Result<Branch, Error> {
         let record = self.store().read(name)?;
+        let parked = self.parked()?;
         Ok(Branch {
             yard: self.clone(),
-            info: record.info,
+            info: with_awaiting(record.info, &parked),
         })
+    }
+
+    /// The oldest pending ask of each branch that has one, by branch: what
+    /// a running turn is parked on.
+    fn parked(&self) -> Result<HashMap<String, Awaiting>, Error> {
+        let mut parked = HashMap::new();
+        for ask in self.store().effects().asks(true)? {
+            parked
+                .entry(ask.branch.clone())
+                .or_insert_with(|| Awaiting {
+                    kind: AwaitingKind::Approval,
+                    id: ask.id.clone(),
+                    about: ask.about.describe(),
+                    since_ms: ask.created_ms,
+                });
+        }
+        Ok(parked)
     }
 
     /// Merge `branch`'s candidate into the local branch `target`, running the
@@ -2213,6 +2233,14 @@ pub struct BranchInfo {
     /// `false` once the turn has ended.
     #[serde(default)]
     pub stalled: bool,
+    /// What the running turn is parked on, waiting for a person: the
+    /// oldest approval ask it has open (`docs/effects.md#approvals`).
+    /// Read from the pending asks when the record is listed or looked up,
+    /// never stored, so it is exact: `None` the moment the ask is
+    /// answered, and `None` whenever the branch is not running. A parked
+    /// turn is never stalled; it moves only when someone answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<Awaiting>,
     /// The branch [`Branch::reincarnate`] started from this one's latest
     /// candidate, with a fresh session and a handoff brief.
     #[serde(default)]
@@ -2244,6 +2272,39 @@ pub struct BranchInfo {
 /// The `provider` of a record that predates the field.
 fn local_provider() -> String {
     "local".to_owned()
+}
+
+/// `info` with what its turn is parked on, if it is running and has an
+/// ask open; any other state waits on nobody.
+fn with_awaiting(mut info: BranchInfo, parked: &HashMap<String, Awaiting>) -> BranchInfo {
+    info.awaiting = match info.status {
+        BranchStatus::Running => parked.get(&info.name).cloned(),
+        _ => None,
+    };
+    info
+}
+
+/// What a running turn waits on a person for; see [`BranchInfo::awaiting`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Awaiting {
+    /// What kind of answer it waits for.
+    pub kind: AwaitingKind,
+    /// The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`.
+    pub id: String,
+    /// What it asks, in words, as [`effects::AskAbout::describe`] puts it.
+    pub about: String,
+    /// When the turn parked, milliseconds since the Unix epoch.
+    pub since_ms: u64,
+}
+
+/// The kinds of answer a parked turn waits for.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingKind {
+    /// An [`effects::ApprovalAsk`]: may the turn run a tool or a call?
+    Approval,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -2616,6 +2677,22 @@ pub enum Activity {
     },
     /// A new candidate commit.
     Snapshot(CandidateInfo),
+    /// What the turn that is ending cost on its own, in US dollars,
+    /// recorded once its metering has settled (the harness's closing
+    /// figure folded in) and before the branch's closing status. For a
+    /// harness that reports its session's running total, the part of it
+    /// this turn added, never the total; on the model gateway, the turn's
+    /// metered calls. Recorded only for a turn whose spend something
+    /// measured: a harness that reports no usage records none. The
+    /// branch's running total stays [`BranchInfo::cost_usd`]. A record of
+    /// its own rather than a field of the harness's `turn_ended`, which
+    /// arrives before the harness's closing figure, or of
+    /// [`Activity::Checkpoint`], which a turn whose snapshot failed does
+    /// not record. See `docs/delegation.md#budgets`.
+    TurnCost {
+        /// The turn's own cost.
+        cost_usd: f64,
+    },
     /// The branch's status changed.
     Status(BranchStatus),
     /// Something the engine noticed, such as descendants that outlived the

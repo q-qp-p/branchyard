@@ -56,10 +56,21 @@ async function openBranch(page) {
   try {
     const desktop = await signIn(browser, { viewport: { width: 1440, height: 900 } });
     let page = desktop.page;
+    // Home is the board: every open branch on one clock, the parked branch's wait filled amber.
+    await page.goto(`${app}#/`);
+    await page.locator(`#main .board-row.board-parked[data-branch="${plan.parked}"] .rail .wait`).waitFor(TURN);
+    await page.locator('#main .board-row.board-running').first().waitFor(TURN);
+    await shoot(page, desktop.problems, 'console-board', ['light']);
+
+    // Needs you is a deck: the parked branch's ask first, the ready branches queued in the bay.
+    await page.goto(`${app}#/attention`);
+    await page.locator('#main .deck-card.deck-approval').waitFor(TURN);
+    await page.locator('#main .bay-item').first().waitFor(TURN);
+    await shoot(page, desktop.problems, 'console-decide', ['light']);
+
     await page.goto(`${app}#/b/${plan.repo}/${plan.branch}`);
     await openBranch(page);
-    await page.locator('#convo details.tools summary').click();
-    await page.locator('#convo details.tools[open] li').first().waitFor();
+    await page.locator('#convo .turn .notes .note').first().waitFor();
     await shoot(page, desktop.problems, 'console-branches', ['light', 'dark']);
 
     await page.goto(`${app}#/w/${plan.workspace}/s/${plan.session}`);
