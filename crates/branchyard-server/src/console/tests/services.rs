@@ -50,9 +50,10 @@ for number, line in enumerate(sys.stdin):
     print(json.dumps({'event':'result','result':{'conversation_id':session,'status':'SUCCESS','response':'Checked evidence','num_turns':number+1}}),flush=True)
 "#).unwrap();
         std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
-        app.config
-            .harness_commands
-            .insert("antigravity-stream-json".into(), vec![agy.display().to_string()]);
+        app.config.harness_commands.insert(
+            "antigravity-stream-json".into(),
+            vec![agy.display().to_string()],
+        );
         let by = app.config.data_dir.parent().unwrap().join("fake-by");
         std::fs::write(
             &by,

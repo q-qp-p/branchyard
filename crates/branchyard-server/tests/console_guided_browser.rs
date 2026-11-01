@@ -155,9 +155,10 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
         "claude-code-acp".into(),
         vec![fake_agent().display().to_string()],
     );
-    config
-        .harness_commands
-        .insert("antigravity-stream-json".into(), vec![agy.display().to_string()]);
+    config.harness_commands.insert(
+        "antigravity-stream-json".into(),
+        vec![agy.display().to_string()],
+    );
     config.shutdown_grace = Duration::from_secs(10);
     config.poll_interval = Duration::from_millis(100);
     config.log_requests = false;
