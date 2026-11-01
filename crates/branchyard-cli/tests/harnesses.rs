@@ -391,7 +391,7 @@ fn the_full_listing_says_how_to_install_log_in_and_key_the_harnesses_that_were_r
 fn detection_reads_versions_and_logins_without_reading_secrets() {
     let w = World::new();
     // Codex: its own status command says logged in (verified).
-    w.fake_codex(&w.bin, "0.164.0");
+    w.fake_codex(&w.bin, "0.166.0");
     fs::write(w.bin.join("codex.status"), "Logged in using ChatGPT\n").unwrap();
     // Claude Code: a credential file (likely logged in).
     w.script("claude", "#!/bin/sh\necho '2.1.283 (Claude Code)'\n");
@@ -431,7 +431,7 @@ fn detection_reads_versions_and_logins_without_reading_secrets() {
     assert!(harness(&inventory, "opencode").is_none());
 
     let codex = harness(&inventory, "codex").unwrap();
-    assert_eq!(codex["version"], "0.164.0");
+    assert_eq!(codex["version"], "0.166.0");
     assert_eq!(codex["login"]["state"], "logged_in");
     assert_eq!(codex["login"]["evidence"], "verified");
     assert!(codex["login"]["detail"]
