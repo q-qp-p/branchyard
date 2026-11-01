@@ -9,6 +9,8 @@
 //   test:   (starts another branch), then "refresh"
 //   script: FILTER PRESERVED  the live update kept the query and selection
 //   script: SENT              a follow-up was sent from the branch page
+//   test:   (starts a branch whose reply is markdown), then "report"
+//   script: RENDERED          the reply's markdown and JSON are elements
 //   script: DONE              and the page shows its second turn
 //
 // PLAYWRIGHT names the playwright module; BY_URL the server; BY_CODE a
@@ -20,9 +22,14 @@ const readline = require('readline');
 
 const lines = readline.createInterface({ input: process.stdin });
 const waiting = [];
-lines.on('line', (line) => { const w = waiting.shift(); if (w) w.resolve(line); });
-lines.on('close', () => { for (const w of waiting.splice(0)) w.reject(new Error('the test controller closed stdin')); });
-const nextLine = () => new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+// A line that arrives before the script asks for it waits its turn.
+const arrived = [];
+let closed = false;
+lines.on('line', (line) => { const w = waiting.shift(); if (w) w.resolve(line); else arrived.push(line); });
+lines.on('close', () => { closed = true; for (const w of waiting.splice(0)) w.reject(new Error('the test controller closed stdin')); });
+const nextLine = () => (arrived.length ? Promise.resolve(arrived.shift())
+  : closed ? Promise.reject(new Error('the test controller closed stdin'))
+    : new Promise((resolve, reject) => waiting.push({ resolve, reject })));
 let shown = null;
 let browser = null;
 const say = (text) => process.stdout.write(`${text}\n`);
@@ -194,6 +201,39 @@ const shots = process.env.BY_SCREENSHOTS;
     await go(hash);
     await page.getByRole('heading', { level: 1, name: 'Needs you' }).waitFor();
   }
+
+  // A reply written as markdown renders as elements, never as HTML: its
+  // emphasis, headings, nested lists, table, web link and code; a JSON
+  // fence as its keys and values. A relative link target stays text.
+  await nextLine();
+  await go('#/b/app/report');
+  const rich = page.locator('#convo .turn .agent .rich').first();
+  await rich.waitFor({ timeout: 60000 });
+  await rich.locator('strong', { hasText: 'two files' }).waitFor();
+  await rich.locator('h3.md-h', { hasText: 'What changed' }).waitFor();
+  await rich.locator('ul > li > ul > li', { hasText: 'nested note' }).waitFor();
+  await rich.locator('li code', { hasText: 'src/record.rs' }).first().waitFor();
+  await rich.locator('table.md-table td.num', { hasText: '21.7' }).waitFor();
+  const webLink = rich.locator('a', { hasText: 'the logfmt spec' });
+  if (await webLink.getAttribute('href') !== 'https://brandur.org/logfmt' || await webLink.getAttribute('rel') !== 'noopener noreferrer') throw new Error('a web link is not a safe link');
+  if (await rich.locator('a', { hasText: 'a local file' }).count()) throw new Error('a relative target became a link');
+  const json = rich.locator('figure.code-block.is-json');
+  await json.locator('.code-head', { hasText: 'JSON' }).waitFor();
+  await json.locator('dl.json-facts dt', { hasText: 'summary' }).waitFor();
+  await json.locator('dl.json-facts dd', { hasText: 'Two files changed.' }).waitFor();
+  await json.locator('dl.json-facts dd .j-num', { hasText: '2' }).waitFor();
+  if (await json.locator('details[open]').count()) throw new Error('the JSON text is open before it is asked for');
+  await json.locator('details > summary').click();
+  await json.locator('pre .j-key', { hasText: '"summary"' }).waitFor();
+  const shell = rich.locator('figure.code-block:not(.is-json)');
+  await shell.locator('.code-head', { hasText: 'sh' }).waitFor();
+  await shell.locator('pre code', { hasText: 'cargo test --test parser' }).waitFor();
+  await shell.getByRole('button', { name: 'Copy sh', exact: true }).waitFor();
+  if (!(await page.locator('#convo .agent-head .ai-tag').count())) throw new Error('the reply is not labelled as the agent\'s');
+  const convoText = await page.locator('#convo').innerText();
+  if (convoText.includes('```') || convoText.includes('**')) throw new Error('markdown syntax is shown as text');
+  await noOverflow('a rendered reply');
+  say('RENDERED');
 
   // BY_SCREENSHOTS=DIR saves desktop and phone views in both themes, for a look.
   if (shots) {

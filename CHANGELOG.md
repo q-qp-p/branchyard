@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+The console renders an agent's reply instead of printing it: headings, lists,
+quotes, pipe tables, emphasis, inline code and web links become elements, a
+fenced block is code under a header with a Copy button, and a JSON block shows
+its keys and values with the text one click away. Nothing from the server is
+parsed as HTML, and a relative link target stays text. Each reply sits under a
+head that names the harness and marks it as the agent's, and each tool call
+carries an icon for its verb.
+
+The page gains depth and the same system in both themes: three surfaces, three
+shadows, one radius scale and motion that only moves and fades, still under
+reduced motion. State is a tinted pill in the strip and on each turn's outcome,
+the open branch carries its lane's colour, the changed files show how much each
+adds and removes, the composer says which key sends, the filter shows its `/`
+shortcut, and a loading conversation shows quiet bars rather than a sentence.
+Text in the sidebar, strip and conversation is larger on a phone.
+
 ## 0.3.1 - 2026-10-31
 
 Operators can name the environments console sessions run in.

@@ -145,6 +145,43 @@
     return svg;
   }
 
+  // Inline icons: strokes on a 16-unit grid, drawn here so the page loads
+  // no file for them. Each is decorative; the text beside it says what it is.
+  const ICONS = {
+    plus: 'M8 3.5v9M3.5 8h9',
+    dots: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
+    copy: 'M6 6h7v7H6zM3 10V3h7',
+    search: 'M7 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zM10.6 10.6L14 14',
+    terminal: 'M3 4l4 4-4 4M8.5 12H13',
+    eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 9.8a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z',
+    pencil: 'M11.5 2.5l2 2L5 13H3v-2zM9.5 4.5l2 2',
+    globe: 'M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13',
+    bolt: 'M9 1.5L3 9h4l-1 5.5L13 7H9z',
+    wrench: 'M9.6 2.4a3.3 3.3 0 0 0 4 4.2l-5.8 5.8a1.5 1.5 0 0 1-2.2-2.2l5.8-5.8a3.3 3.3 0 0 0-1.8-2z',
+  };
+  function icon(name, small) {
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('class', small ? 'icon small' : 'icon');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', ICONS[name]);
+    svg.append(path);
+    return svg;
+  }
+  // A tool call's icon, from the verb its name opens with.
+  const TOOL_ICONS = [
+    [/^(run|bash|sh|shell|exec|execute|cargo|npm|make|python|node|git)\b/i, 'terminal'],
+    [/^(read|view|cat|open|inspect|show)\b/i, 'eye'],
+    [/^(edit|write|create|patch|replace|apply|update|delete|move|rename)\b/i, 'pencil'],
+    [/^(search|grep|glob|find|list|ls)\b/i, 'search'],
+    [/^(fetch|web|http|browse|curl|download)\b/i, 'globe'],
+    [/^(mcp|tool|call|task|agent|delegate)\b/i, 'bolt'],
+  ];
+  const toolIcon = (name) => (TOOL_ICONS.find(([re]) => re.test(name)) || [null, 'wrench'])[1];
+  // What the page shows where a conversation will be: a few quiet bars.
+  const skeleton = () => h('div', { class: 'skeleton', role: 'status', 'aria-label': 'Loading the conversation' }, h('i'), h('i'), h('i'), h('i'));
+
   // Only what the person did here gets a toast: the branch list is the
   // notice for everything else.
   function toast(text, href) {
@@ -152,7 +189,7 @@
     const toasts = $('toasts');
     toasts.append(box);
     while (toasts.children.length > 2) toasts.firstChild.remove();
-    setTimeout(() => box.remove(), 6000);
+    setTimeout(() => box.remove(), 5000);
   }
 
   function setLive(which, text) {
@@ -1107,7 +1144,7 @@
       h('header', { class: 'page-head' },
         h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede }))),
       state.loaded && all.length ? h('ul', { class: 'glance', 'aria-label': 'Branches by lane' }, groups.map(({ lane, branches }) =>
-        h('li', { class: 'glance-item' }, h('span', { class: 'glance-label' }, dot(branches.length ? lane.key : 'done'), lane.label), h('b', { text: String(branches.length) })))) : null,
+        h('li', { class: `glance-item glance-${branches.length ? lane.key : 'done'}` }, h('span', { class: 'glance-label' }, dot(branches.length ? lane.key : 'done'), lane.label), h('b', { text: String(branches.length) })))) : null,
       needs.length ? [h('h2', { text: 'Needs you' }), h('ul', { class: 'cards' }, needs.map(card))] : null,
       state.loaded && !all.length && can('run') ? h('div', { class: 'welcome' },
         h('p', { text: 'Start a task and it gets a branch of its own, with its conversation, its changes and a merge button.' }),
@@ -1386,6 +1423,233 @@
     return turns;
   }
 
+  // ---------------------------------------------------------------
+  // The agent's text as a small markdown, built as elements and never
+  // parsed as HTML: paragraphs, headings, lists, quotes, rules, pipe
+  // tables, inline code, emphasis, and links to http(s) addresses only.
+  // A fenced block is code under a header with a copy button; one that
+  // holds JSON is shown as the facts it holds, its text one click away.
+
+  const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([\w.+-]*)\s*$/;
+  const LIST = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+  const RULE = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
+  const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const QUOTE = /^ {0,3}>/;
+  const TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+  const INLINE = /(`+)([^`][\s\S]*?)\1(?!`)|\*\*([^*]+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|(?<![\w])_([^_\s][^_]*?)_(?![\w])|~~([^~]+?)~~|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+
+  function rich(text) {
+    const out = [];
+    const lines = text.split('\n');
+    let para = [];
+    const flush = () => {
+      if (para.length) out.push(h('p', {}, inline(para.join('\n'))));
+      para = [];
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = FENCE.exec(line);
+      if (fence) {
+        flush();
+        const close = new RegExp(`^ {0,3}\\${fence[1][0]}{${fence[1].length},}\\s*$`);
+        const body = [];
+        i += 1;
+        while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
+        i += 1;
+        out.push(codeBlock(body.join('\n'), fence[2].toLowerCase()));
+        continue;
+      }
+      if (!line.trim()) { flush(); i += 1; continue; }
+      const heading = HEADING.exec(line);
+      if (heading) {
+        flush();
+        out.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { class: 'md-h' }, inline(heading[2])));
+        i += 1;
+        continue;
+      }
+      if (RULE.test(line)) { flush(); out.push(h('hr')); i += 1; continue; }
+      if (QUOTE.test(line)) {
+        flush();
+        const quoted = [];
+        while (i < lines.length && QUOTE.test(lines[i])) quoted.push(lines[i++].replace(/^ {0,3}> ?/, ''));
+        out.push(h('blockquote', {}, rich(quoted.join('\n'))));
+        continue;
+      }
+      if (LIST.test(line)) {
+        flush();
+        const [el, next] = list(lines, i);
+        out.push(el);
+        i = next;
+        continue;
+      }
+      if (line.includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+        flush();
+        const rows = [];
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(lines[i++]);
+        out.push(table(rows));
+        continue;
+      }
+      para.push(line);
+      i += 1;
+    }
+    flush();
+    return out;
+  }
+
+  // A list from line `i`: items at the first item's indent; a deeper item
+  // nests under the one before it; a shallower one ends this list. An
+  // indented line that is not an item continues the last item; one at the
+  // margin ends the list, as agents mean it to. Returns the element and
+  // the line after the list.
+  function list(lines, i) {
+    const first = LIST.exec(lines[i]);
+    const base = first[1].length;
+    const ordered = /\d/.test(first[2]);
+    const start = ordered ? parseInt(first[2], 10) : 1;
+    const el = h(ordered ? 'ol' : 'ul', { start: start !== 1 ? String(start) : null });
+    let item = null;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) {
+        const next = lines[i + 1];
+        const continues = next != null && (LIST.test(next) ? LIST.exec(next)[1].length >= base : /^\s{2,}\S/.test(next));
+        if (!continues) break;
+        i += 1;
+        continue;
+      }
+      const m = LIST.exec(line);
+      if (m && m[1].length < base) break;
+      if (m && m[1].length === base) {
+        item = h('li', {}, inline(m[3]));
+        el.append(item);
+        i += 1;
+      } else if (m && item) {
+        const [sub, next] = list(lines, i);
+        item.append(sub);
+        i = next;
+      } else if (item && /^\s/.test(line)) {
+        item.append(' ', ...inline(line.trim()));
+        i += 1;
+      } else break;
+    }
+    return [el, i];
+  }
+
+  const cells = (row) => {
+    let t = row.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+  };
+  function table(rows) {
+    const head = cells(rows[0]);
+    const numeric = cells(rows[1]).map((c) => c.endsWith(':') && !c.startsWith(':'));
+    const tr = (cols, tag) => h('tr', {}, head.map((_, k) => h(tag, { class: numeric[k] ? 'num' : null }, inline(cols[k] || ''))));
+    return h('div', { class: 'md-table-wrap' }, h('table', { class: 'md-table' },
+      h('thead', {}, tr(head, 'th')), h('tbody', {}, rows.slice(2).map((r) => tr(cells(r), 'td')))));
+  }
+
+  const breaks = (text) => text.split('\n').flatMap((part, k) => (k ? [h('br'), part] : [part]));
+  function inline(text) {
+    const out = [];
+    let last = 0;
+    for (const m of text.matchAll(INLINE)) {
+      if (m.index > last) out.push(...breaks(text.slice(last, m.index)));
+      if (m[2] != null) out.push(h('code', { text: m[2].replace(/^ (?=\S)| (?<=\S)$/g, '') }));
+      else if (m[3] != null) out.push(h('strong', {}, inline(m[3])));
+      else if (m[4] != null || m[5] != null) out.push(h('em', {}, inline(m[4] != null ? m[4] : m[5])));
+      else if (m[6] != null) out.push(h('s', {}, inline(m[6])));
+      else out.push(link(m[7], m[8]));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(...breaks(text.slice(last)));
+    return out;
+  }
+  // Only an absolute web address becomes a link, opened in a new tab; any
+  // other target stays as the text it was written as.
+  function link(label, href) {
+    let url = null;
+    if (/^https?:/i.test(href)) { try { url = new URL(href); } catch (_) { url = null; } }
+    if (!url) return [`[`, ...inline(label), `](${href})`];
+    return h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer' }, inline(label));
+  }
+
+  function codeBlock(text, lang) {
+    const parsed = lang === 'json' || lang === '' ? parseJson(text) : undefined;
+    if (parsed !== undefined) return jsonBlock(parsed);
+    return h('figure', { class: 'code-block' }, codeHead(lang || 'Code', text), h('pre', {}, h('code', { text })));
+  }
+  function parseJson(text) {
+    const t = text.trim();
+    if (!/^[[{]/.test(t)) return undefined;
+    try { return JSON.parse(t); } catch (_) { return undefined; }
+  }
+  function codeHead(label, text) {
+    const copy = h('button', { type: 'button', class: 'copy', 'aria-label': `Copy ${label}` }, icon('copy', true), 'Copy');
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(text); } catch (_) { return; }
+      copy.dataset.done = '';
+      copy.lastChild.textContent = 'Copied';
+      setTimeout(() => { delete copy.dataset.done; copy.lastChild.textContent = 'Copy'; }, 1500);
+    });
+    return h('div', { class: 'code-head' }, h('span', { class: 'code-lang', text: label }), h('span', { class: 'spacer' }), copy);
+  }
+  // JSON: a flat object is a list of its keys and values; anything else is
+  // its text, pretty-printed, with keys, strings and numbers told apart.
+  const scalar = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+  const jsonClass = (v) => (v === null ? 'j-null' : typeof v === 'boolean' ? 'j-bool' : typeof v === 'number' ? 'j-num' : 'j-str');
+  const JSON_TOKEN = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|([{}[\],:])/g;
+  function jsonTokens(text) {
+    const out = [];
+    let last = 0;
+    for (const m of text.matchAll(JSON_TOKEN)) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      if (m[1] != null) {
+        out.push(h('span', { class: m[2] ? 'j-key' : 'j-str', text: m[1] }));
+        if (m[2]) out.push(h('span', { class: 'j-punct', text: m[2] }));
+      } else if (m[3] != null) out.push(h('span', { class: 'j-num', text: m[3] }));
+      else if (m[4] != null) out.push(h('span', { class: 'j-bool', text: m[4] }));
+      else if (m[5] != null) out.push(h('span', { class: 'j-null', text: m[5] }));
+      else out.push(h('span', { class: 'j-punct', text: m[6] }));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+  function jsonBlock(value) {
+    const pretty = JSON.stringify(value, null, 2);
+    const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [];
+    const flat = keys.length > 0 && keys.length <= 24 && keys.every((k) => scalar(value[k]));
+    const pre = h('pre', {}, h('code', {}, jsonTokens(pretty)));
+    if (!flat) return h('figure', { class: 'code-block is-json' }, codeHead('JSON', pretty), pre);
+    const facts = h('dl', { class: 'json-facts' }, keys.map((k) => [h('dt', { text: k }),
+      h('dd', {}, typeof value[k] === 'string' ? value[k] : h('span', { class: jsonClass(value[k]), text: JSON.stringify(value[k]) }))]));
+    return h('figure', { class: 'code-block is-json' }, codeHead('JSON', pretty), facts,
+      h('details', {}, h('summary', { text: 'Show as text' }), pre));
+  }
+
+  // What the agent said, under a small head that names it as the agent's
+  // and which harness it was.
+  function agentBlock(said, harness) {
+    return h('div', { class: 'agent' },
+      h('div', { class: 'agent-head' },
+        h('img', { class: 'agent-mark', src: 'icon.svg', alt: '', width: '18', height: '18' }),
+        h('span', { class: 'agent-name', text: harness || 'Agent' }),
+        h('span', { class: 'ai-tag', text: 'AI', title: 'Written by the agent' })),
+      said.map((s) => h('div', { class: 'rich' }, rich(s))));
+  }
+
+  // Five blocks that show how much of a file's change adds and removes.
+  function fileBar(add, del) {
+    const total = add + del;
+    let adds = total ? Math.round((add / total) * 5) : 0;
+    if (add && del) adds = Math.min(4, Math.max(1, adds));
+    const dels = total ? 5 - adds : 0;
+    return h('span', { class: 'file-bar', 'aria-hidden': 'true' },
+      Array.from({ length: 5 }, (_, k) => h('i', { class: k < adds ? 'add' : k < adds + dels ? 'del' : null })));
+  }
+
   // A unified diff split at each file: its path, its counts, and its lines
   // marked as they render. The file list already names the path, so git's
   // own header lines are dropped; a mode, rename or binary note stays.
@@ -1555,7 +1819,7 @@
     main(h('div', { class: 'branch' },
       h('section', { class: 'focus', 'aria-label': 'Conversation' },
         h('header', { class: 'strip', id: 'strip' }),
-        h('div', { class: 'convo', id: 'convo' }, h('p', { class: 'muted', text: 'Loading the conversation…' })),
+        h('div', { class: 'convo', id: 'convo' }, skeleton()),
         composer(() => submitComposer())),
       h('aside', { class: 'inspector', id: 'inspector', 'aria-label': 'Inspector' },
         tablist(BRANCH_TABS, () => v.tab, (k) => selectTab(v, k)),
@@ -1670,7 +1934,7 @@
     if (t.tools.length) {
       tools = h('details', { class: 'tools', open: v.open.has(i) },
         h('summary', { text: plural(t.tools.length, 'tool call') }),
-        h('ol', {}, t.tools.map((name) => h('li', { class: 'mono', text: name }))));
+        h('ol', {}, t.tools.map((name) => h('li', { class: 'mono' }, icon(toolIcon(name), true), name))));
       tools.addEventListener('toggle', () => { if (tools.open) v.open.add(i); else v.open.delete(i); });
     }
     const c = t.checkpoint || t.candidate;
@@ -1683,7 +1947,7 @@
     return h('article', { class: 'turn' },
       t.text != null ? h('div', { class: t.steer ? 'you steer' : 'you' },
         t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text })) : null,
-      t.said.length ? h('div', { class: 'agent' }, t.said.map((s) => h('p', { text: s }))) : null,
+      t.said.length ? agentBlock(t.said, info && info.harness) : null,
       tools,
       outcome,
       last && !outcome && info ? workingLine(info) : null);
@@ -1706,8 +1970,11 @@
           $('composer-text').focus();
         } }),
         h('span', { class: 'spacer' }),
+        h('span', { class: 'kbd-hint', 'aria-hidden': 'true' }, h('kbd', { text: MOD_KEY }), h('kbd', { text: '↵' })),
         h('button', { type: 'button', class: 'primary', id: 'composer-go', onclick: () => submit() })));
   }
+  // The modifier that sends with Enter, as the platform names it.
+  const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl';
 
   function applyComposer(info) {
     const { mode, why } = composerMode(info, view.forking);
@@ -1769,7 +2036,7 @@
 
   function menuOf(items, info) {
     const menu = h('details', { class: 'menu' },
-      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, icon('dots')),
       h('div', { class: 'menu-list' }, items.map((a) => h('button', {
         type: 'button', class: a.danger ? 'menu-item danger-text' : 'menu-item', text: a.label,
         onclick: () => { menu.open = false; if (a.pick) a.pick(); else runAction(a, info.name); },
@@ -1848,7 +2115,7 @@
         type: 'button', class: 'file-row', 'aria-pressed': String(f === file), 'data-path': f.path, title: f.path,
         onclick: () => { v.file = f.path; renderChanges(v, true); },
       }, h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
-      h('span', { class: 'file-counts' }, counts(f.add, f.del))));
+      h('span', { class: 'file-counts' }, counts(f.add, f.del)), fileBar(f.add, f.del)));
     }));
     const pre = h('pre', { class: 'diff', tabindex: '0', 'aria-label': `Diff of ${file.path}` },
       file.lines.map((l) => h('span', { class: l.kind }, l.text)));
@@ -2630,7 +2897,7 @@
 
   function workspaceMenu(v, s, items) {
     const menu = h('details', { class: 'menu' },
-      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, icon('dots')),
       h('div', { class: 'menu-list' }, items.map(({ item, why }) => h('button', {
         type: 'button', class: item.danger ? 'menu-item danger-text' : 'menu-item', disabled: why != null,
         onclick: () => { menu.open = false; item.run(v, s); },
@@ -2733,7 +3000,7 @@
       m && m.error ? h('p', { class: 'error', text: m.error }) : null,
       turns.map((t, i) => h('article', { class: 'turn' },
         t.text != null ? h('div', { class: 'you' }, h('p', { text: t.text })) : null,
-        t.said.length ? h('div', { class: 'agent' }, t.said.map((x) => h('p', { text: x }))) : null,
+        t.said.length ? agentBlock(t.said, s.harness) : null,
         working && i === turns.length - 1 ? workingLine() : null)),
       working && !turns.length ? workingLine() : null,
       RECOVERABLE_PHASES.includes(phase.key) ? h('section', { class: 'recovery', 'aria-label': `${s.name}: ${phase.label}` },

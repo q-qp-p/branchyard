@@ -24,6 +24,31 @@ fn playwright() -> Option<PathBuf> {
     Some(PathBuf::from(root.trim()).join("playwright")).filter(|p| p.is_dir())
 }
 
+/// What the fake agent replies on the `report` branch: the markdown a
+/// harness writes, with a JSON fence, a web link and a relative one.
+const MARKDOWN_REPLY: &str = "\
+Done. I changed **two files** and kept `Record` in line order.
+
+## What changed
+- `src/record.rs` keeps fields in a `Vec`
+- `tests/parser.rs` covers the repeated key
+  - nested note
+
+| Plan | Lost % |
+|---|---:|
+| Starter | 21.7 |
+
+See [the logfmt spec](https://brandur.org/logfmt) and [a local file](src/record.rs).
+
+```json
+{\"summary\": \"Two files changed.\", \"files\": 2, \"ok\": true}
+```
+
+```sh
+cargo test --test parser
+```
+";
+
 #[test]
 fn the_page_pairs_follows_the_stream_and_sends() {
     let Some(module) = playwright() else {
@@ -105,6 +130,17 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     writeln!(stdin, "refresh").unwrap();
     expect("FILTER PRESERVED");
     expect("SENT");
+    // A reply written as markdown, with a JSON fence, as a harness would
+    // write one; the page renders it as elements.
+    let reply = f.dir.join("reply.md");
+    std::fs::write(&reply, MARKDOWN_REPLY).unwrap();
+    let op = run(
+        &server.client(),
+        &task(&format!("REPLY_FILE {}", reply.display()), "report"),
+    );
+    assert!(op.state.is_terminal());
+    writeln!(stdin, "report").unwrap();
+    expect("RENDERED");
     expect("DONE");
     assert!(child.wait().unwrap().success());
 
