@@ -234,6 +234,9 @@ STEPS = (
     Step("test_scion", "controls", (PY, "tools/test_scion.py", "--qualified")),
     Step("check_scion_compatibility", "controls", (PY, "tools/check_scion_compatibility.py")),
     Step("test_distribution", "controls", (PY, "tests/test_distribution.py")),
+    # CHANGELOG.md's newest released section is the workspace version, dated, with Unreleased above it.
+    Step("release_cut", "controls", (PY, "tools/release_cut.py", "--check")),
+    Step("test_release_cut", "controls", (PY, "tests/test_release_cut.py")),
     Step("test_schema_validation", "controls", (PY, "tests/test_schema_validation.py")),
     Step("test_sdk_client", "controls", (PY, "tests/test_sdk_client.py")),
     # examples/python/ against a built `by` and the fake agent. This job has no cargo build when it
