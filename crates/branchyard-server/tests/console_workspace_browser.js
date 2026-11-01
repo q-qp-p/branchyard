@@ -28,6 +28,7 @@ const CSV = 'ticket_backlog.csv';
 const XLSX = 'backlog_metrics.xlsx';
 const DOCX = 'backlog_report.docx';
 const PPTX = 'backlog_briefing.pptx';
+const HTML = 'ticket_counter.html';
 const NOTES = 'meeting-notes.rtf';
 // CSV's bytes under a name with accents, an apostrophe and parentheses
 // (which encodeURIComponent leaves bare), CJK and an emoji.
@@ -41,6 +42,7 @@ const ALLOWED = {
   [XLSX]: ['table', 'renderer unavailable'],
   [DOCX]: ['pages', 'conversion failed', 'renderer unavailable'],
   [PPTX]: ['pages', 'conversion failed', 'renderer unavailable'],
+  [HTML]: ['pages', 'conversion failed', 'renderer unavailable'],
   [NOTES]: ['unsupported'],
 };
 const answerOf = (status, body) => {
@@ -52,6 +54,21 @@ const answerOf = (status, body) => {
   return `HTTP ${status} ${error.code || ''}`.trim();
 };
 const files = JSON.parse(fs.readFileSync(path.join(fixtures, 'manifest.json'), 'utf8')).files;
+// A vibe-coded page: inline CSS and JS, a counter button, and a script that
+// tries to reach the network, which its sandbox must refuse.
+const HTML_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Ticket counter</title>
+<style>body{font-family:sans-serif}#count{color:rgb(200,0,0);font-size:48px}</style></head>
+<body><h1>Open tickets</h1><p id="count">0</p><button id="up" type="button">Count</button><p id="net">checking</p>
+<script>
+document.getElementById('up').addEventListener('click', function () {
+  var c = document.getElementById('count'); c.textContent = String(Number(c.textContent) + 1);
+});
+fetch('/app/').then(function () { document.getElementById('net').textContent = 'reached'; },
+  function () { document.getElementById('net').textContent = 'blocked'; });
+</script></body></html>
+`;
+fs.writeFileSync(path.join(fixtures, HTML), HTML_PAGE);
+files.push({ filename: HTML, media_type: 'text/html', sha256: require('crypto').createHash('sha256').update(HTML_PAGE).digest('hex') });
 const mediaType = (name) => files.find((f) => f.filename === name).media_type;
 const format = (name) => path.extname(name).slice(1).toUpperCase();
 const fixture = (name) => fs.readFileSync(path.join(fixtures, name));
@@ -76,7 +93,9 @@ let browser = null;
   const page = await context.newPage();
   shown = () => page.locator('main').innerText();
   const problems = [];
-  page.on('console', (m) => { if (m.type() === 'error') problems.push(m.text()); });
+  // The framed HTML output deliberately tries a request its policy must refuse; that report is expected.
+  const expected = (text) => /Connecting to '[^']*\/app\/' violates .*default-src 'none'|Fetch API cannot load [^ ]*\/app\/\. /.test(text);
+  page.on('console', (m) => { if (m.type() === 'error' && !expected(m.text())) problems.push(m.text()); });
   page.on('pageerror', (e) => problems.push(String(e)));
   const go = (hash) => page.evaluate((h) => { location.hash = h; }, hash);
   const hash = () => new URL(page.url()).hash;
@@ -447,13 +466,13 @@ let browser = null;
   say('SESSIONS');
 
   await page.locator('#tab-outputs').click();
-  await outputs.nth(3).waitFor(TURN);
-  if (await outputs.count() !== 4) throw new Error(`${await outputs.count()} outputs, not 4`);
+  await outputs.nth(4).waitFor(TURN);
+  if (await outputs.count() !== 5) throw new Error(`${await outputs.count()} outputs, not 5`);
   const groups = page.locator('#outputs-list section.output-group');
   if (await groups.count() !== 1) throw new Error(`the outputs of one session show in ${await groups.count()} groups`);
   await groups.getByRole('heading', { level: 3, name: /^Backlog analyst/ }).waitFor();
   const artifact = {};
-  for (const name of [CSV, XLSX, DOCX, PPTX]) {
+  for (const name of [CSV, XLSX, DOCX, PPTX, HTML]) {
     artifact[name] = await outputRow(name).getAttribute('data-artifact');
     const label = (await outputName(name).innerText()).trim();
     if (label !== name) throw new Error(`output ${name} is labelled ${JSON.stringify(label)}`);
@@ -464,7 +483,7 @@ let browser = null;
     if (!(await outputRow(name).locator('.item-meta').innerText()).endsWith('turn 1')) throw new Error(`output ${name} does not name its turn`);
   }
   const previewPath = (id) => `/v1/workspaces/${ws}/artifacts/${id}/preview`;
-  for (const name of [CSV, XLSX, DOCX, PPTX]) {
+  for (const name of [CSV, XLSX, DOCX, PPTX, HTML]) {
     const got = await previewed(() => outputName(name).click(), previewPath(artifact[name]));
     if (await outputName(name).getAttribute('aria-pressed') !== 'true') throw new Error(`${name} is not marked as previewed`);
     if (!(await page.locator('#panel-outputs #preview-host').count())) throw new Error('the output preview is not in the Outputs panel');
@@ -472,6 +491,39 @@ let browser = null;
     told(`${format(name)} output`, got);
   }
   process.stderr.write(`previews from this server: ${rendered.join('; ')}\n`);
+
+  // The HTML output is on show as a page image; Open runs it in an iframe
+  // served from its own path under its own policy.
+  const htmlHead = page.locator('#preview .preview-head');
+  const framed = page.waitForResponse((r) => new URL(r.url()).pathname.startsWith('/app/frame/'), TURN);
+  await htmlHead.getByRole('button', { name: `Open ${HTML}`, exact: true }).click();
+  const framedResponse = await framed;
+  if (framedResponse.status() !== 200) throw new Error(`the iframe's page answered ${framedResponse.status()}: ${await framedResponse.text()}`);
+  const outputFrame = page.locator('#frame-slot iframe.output-frame');
+  await outputFrame.waitFor();
+  if (await outputFrame.getAttribute('sandbox') !== 'allow-scripts') throw new Error(`the iframe is sandboxed as ${await outputFrame.getAttribute('sandbox')}`);
+  const framePath = await outputFrame.getAttribute('src');
+  if (!/^\/app\/frame\/[0-9a-f]{20,}$/.test(framePath)) throw new Error(`the iframe loads ${framePath}`);
+  const inner = page.frameLocator('#frame-slot iframe.output-frame');
+  await inner.getByRole('heading', { name: 'Open tickets' }).waitFor();
+  if (await inner.locator('#count').evaluate((el) => getComputedStyle(el).color) !== 'rgb(200, 0, 0)') throw new Error('the page\'s inline CSS did not apply');
+  for (const want of ['1', '2']) {
+    await inner.getByRole('button', { name: 'Count', exact: true }).click();
+    await inner.locator('#count', { hasText: want }).waitFor();
+  }
+  await inner.locator('#net', { hasText: 'blocked' }).waitFor();
+  const running = page.frames().find((f) => f.url().includes('/app/frame/'));
+  const reach = await running.evaluate(() => { try { return sessionStorage.getItem('branchyard.token') || 'empty'; } catch (e) { return e.name; } });
+  if (reach !== 'SecurityError') throw new Error(`the framed page reaches the console's storage: ${reach}`);
+  const served = await page.request.get(`${base}${framePath}`);
+  const frameCsp = served.headers()['content-security-policy'];
+  if (frameCsp !== "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'") throw new Error(`the frame is served with ${frameCsp}`);
+  if (served.headers()['x-frame-options']) throw new Error('the frame path sets X-Frame-Options, so the console could not frame it');
+  const shell = await page.request.get(`${base}/app/`);
+  if (shell.headers()['x-frame-options'] !== 'DENY' || !/frame-ancestors 'none'/.test(shell.headers()['content-security-policy'])) throw new Error('the console itself can be framed');
+  await htmlHead.getByRole('button', { name: `Close ${HTML}`, exact: true }).click();
+  await outputFrame.waitFor({ state: 'detached' });
+  say('HTML');
 
   // Held, never answered, so each preview stays in flight until the page abandons it.
   await page.route(PREVIEW, () => {});
@@ -621,13 +673,13 @@ let browser = null;
   await go(`#/w/${ws}`);
   await titled('Backlog review').waitFor();
   await page.locator('#tab-outputs').click();
-  await outputs.nth(3).waitFor();
+  await outputs.nth(4).waitFor();
   const continued = await callApi('POST', `/v1/workspaces/${ws}/sessions/${analystSid}/messages`, { prompt: capturePrompt, action: 'send' });
   if (continued.status >= 300) throw new Error(`continuing the analyst answered ${continued.status}: ${JSON.stringify(continued.body)}`);
   const second = await awaitOperation(continued.body.id);
   if (second.state !== 'succeeded') throw new Error(`the analyst's second turn ${second.state}`);
   const listed = (await callApi('GET', `/v1/workspaces/${ws}/artifacts`)).body.artifacts.length;
-  if (listed !== 8) throw new Error(`the workspace lists ${listed} outputs after the second turn, not 8`);
+  if (listed !== 10) throw new Error(`the workspace lists ${listed} outputs after the second turn, not 10`);
   if (await byId(artifact[DOCX]).getAttribute('data-standing') !== 'current') throw new Error('the page saw the second turn by itself, so it is not a stale page');
   await choose(DOCX).check();
   const { revision } = (await callApi('GET', `/v1/workspaces/${ws}`)).body;
@@ -646,7 +698,7 @@ let browser = null;
   const refused = await refusal.json();
   if (refusal.status() !== 409 || refused.error.code !== 'deliverable_not_current') throw new Error(`accepting a stale output answered ${refusal.status()} ${JSON.stringify(refused)}`);
   await toast('Not accepted: an output you chose is no longer its session\'s current result. The outputs are reloaded; accept the ones marked Current.');
-  await outputs.nth(7).waitFor(TURN);
+  await outputs.nth(9).waitFor(TURN);
   const earlier = byId(artifact[DOCX]);
   await page.waitForFunction((id) => document.querySelector(`#outputs-list li[data-artifact="${id}"]`).dataset.standing === 'earlier', artifact[DOCX]);
   if (!(await earlier.locator('.item-meta').innerText()).endsWith('Earlier turn 1 — not the current result')) throw new Error(`the earlier DOCX says ${await earlier.locator('.item-meta').innerText()}`);
@@ -657,7 +709,7 @@ let browser = null;
   if (await standingOf(artifact[PPTX]) !== 'earlier') throw new Error('the first turn\'s PPTX is not marked earlier');
   for (const name of [CSV, XLSX]) if (await standingOf(artifact[name]) !== 'accepted') throw new Error(`accepted ${name} lost its mark`);
   const latest = {};
-  for (const name of [CSV, XLSX, DOCX, PPTX]) {
+  for (const name of [CSV, XLSX, DOCX, PPTX, HTML]) {
     const fresh = outputRow(name).and(page.locator('[data-standing="current"]'));
     latest[name] = await fresh.getAttribute('data-artifact');
     if (!(await fresh.locator('.item-meta').innerText()).endsWith('turn 2')) throw new Error(`the second turn's ${name} does not say turn 2`);
@@ -676,7 +728,7 @@ let browser = null;
 
   // Needs you takes the project's decisions beside the repository's: the
   // four outputs of the analyst's current turn wait to be accepted (the
-  // first turn's four, replaced, do not), each with the preview the
+  // first turn's five, replaced, do not), each with the preview the
   // workspace page shows, and accepting one from its card settles it.
   const decided = (await callApi('GET', `/v1/projects/${pid}/decisions`)).body.decisions;
   const outputIds = decided.filter((d) => d.kind === 'output').map((d) => d.output.id).sort();
@@ -723,14 +775,14 @@ let browser = null;
   await page.waitForFunction((n) => Number((/^\((\d+)\)/.exec(document.title) || [])[1] || 0) === n, beforeAccept - 1);
   if (deckRequests !== 1) throw new Error(`the deck asked for the preview ${deckRequests} times`);
   const afterAccept = (await callApi('GET', `/v1/projects/${pid}/decisions`)).body.decisions.filter((d) => d.kind === 'output').map((d) => d.output.id);
-  if (afterAccept.includes(latest[CSV]) || afterAccept.length !== 3) throw new Error(`after accepting ${CSV} the project lists ${JSON.stringify(afterAccept)}`);
+  if (afterAccept.includes(latest[CSV]) || afterAccept.length !== 4) throw new Error(`after accepting ${CSV} the project lists ${JSON.stringify(afterAccept)}`);
   const acceptedNow = (await callApi('GET', `/v1/workspaces/${ws}`)).body.accepted_deliverables.map((d) => d.artifact_id);
   if (!acceptedNow.includes(latest[CSV])) throw new Error(`the card's Accept left ${JSON.stringify(acceptedNow)} accepted`);
   // The board holds the same three outputs, one row each, on its clock.
   await go(`#/p/${pid}`);
   const boardRows = page.locator('#project-board .board-row[data-lane="ready"]');
-  await boardRows.nth(2).waitFor();
-  if (await boardRows.count() !== 3) throw new Error(`the project board has ${await boardRows.count()} delivered rows, not 3`);
+  await boardRows.nth(3).waitFor();
+  if (await boardRows.count() !== 4) throw new Error(`the project board has ${await boardRows.count()} delivered rows, not 4`);
   await boardRows.first().getByRole('link', { name: 'Review', exact: true }).waitFor();
   await noOverflow('the project board');
   say('DECK');

@@ -3571,12 +3571,38 @@
     const slot = $('preview');
     $(`panel-${v.tab}`).append(slot);
     const host = h('div', { class: 'preview-host', id: 'preview-host' });
+    const frameSlot = h('div', { class: 'frame-slot', id: 'frame-slot' });
+    // An HTML output can also be run: Open puts it in an iframe that has
+    // its own origin and no network (see openFrame).
+    const runnable = item.key.startsWith('output:') && /\.html?$/i.test(item.name);
     fill(slot,
       h('div', { class: 'preview-head' },
         h('h3', { id: 'preview-title', text: item.name, title: item.name }),
+        runnable ? h('button', { type: 'button', text: 'Open', 'aria-label': `Open ${item.name}`, onclick: (e) => openFrame(item, frameSlot, e.currentTarget) }) : null,
         h('button', { type: 'button', text: 'Download original', onclick: () => download(`${item.base}/content`, item.name) })),
-      host);
+      host, frameSlot);
     livePreview = window.BranchyardArtifactPreview.mount(host, { baseUrl: item.base, mediaType: item.mediaType, fetchAuthenticated: authFetch });
+  }
+
+  // Run an HTML output in a sandboxed iframe. The server mints a short-lived
+  // address for it (a frame cannot send the bearer token) and serves that
+  // path with a policy of its own; `sandbox="allow-scripts"` without
+  // `allow-same-origin` gives the page an opaque origin, so it reaches
+  // neither this page's storage nor its token.
+  async function openFrame(item, slot, button) {
+    if (slot.firstChild) { fill(slot); button.textContent = 'Open'; button.setAttribute('aria-label', `Open ${item.name}`); return; }
+    button.disabled = true;
+    try {
+      const { path } = await call(`${item.base}/frame`, { method: 'POST' });
+      const frame = h('iframe', { class: 'output-frame', title: `Running ${item.name}`, sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', src: path });
+      fill(slot, frame);
+      button.textContent = 'Close';
+      button.setAttribute('aria-label', `Close ${item.name}`);
+    } catch (e) {
+      toast(`Could not open ${item.name}: ${e.message}`);
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function drawDetails(v) {

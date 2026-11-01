@@ -7,10 +7,16 @@ import resource
 import sys
 from pathlib import Path
 
+# Chromium reserves far more address space than it uses (V8 cage, partition
+# allocator) and crashes under a 2 GiB limit, so an HTML source gets none; the
+# network-less namespace, CPU and file-size limits and the 45-second deadline
+# still bound it.
+browser = "--file" in sys.argv and sys.argv[sys.argv.index("--file") + 1].lower().endswith((".html", ".htm"))
 resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
 resource.setrlimit(resource.RLIMIT_FSIZE, (32 * 1024 * 1024, 32 * 1024 * 1024))
-resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
-resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+if not browser:
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024) if browser else (128, 128))
 os.umask(0o077)
 sys.path.insert(0, str(Path(__file__).parent))
 

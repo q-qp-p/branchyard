@@ -27,7 +27,7 @@ mod qr_fixtures;
 pub mod store;
 
 use branchyard_support::LockExt as _;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -53,7 +53,7 @@ use store::{CompanionStore, Subscription};
 /// page's token that way); requests only to this server; no inline script
 /// or style, no plugins, no framing, no form posts, no `<base>`.
 pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-    img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
+    img-src 'self' blob:; frame-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; \
     base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Redemption attempts per server per window; more are refused `429`.
@@ -116,7 +116,43 @@ pub struct Companion {
     /// The HTTP client pushes are sent with; `None` when push is off.
     pub client: Option<reqwest::Client>,
     attempts: Mutex<VecDeque<Instant>>,
+    frames: Mutex<HashMap<String, FrameGrant>>,
 }
+
+/// How long a minted frame address stays good, and how many are held.
+const FRAME_TTL: Duration = Duration::from_secs(600);
+const FRAME_GRANTS: usize = 64;
+
+/// A short-lived address for one HTML output, minted for an authorized
+/// caller. The frame cannot send a bearer token, so the address is the
+/// capability; the caller's rights are checked again on every request.
+#[derive(Clone)]
+pub(crate) struct FrameGrant {
+    pub caller: Caller,
+    pub workspace: String,
+    pub artifact: String,
+    expires: Instant,
+}
+
+impl FrameGrant {
+    /// A grant that is not stored: the console checks one output before minting its address.
+    pub(crate) fn new(caller: &Caller, workspace: &str, artifact: &str) -> Self {
+        Self {
+            caller: caller.clone(),
+            workspace: workspace.to_owned(),
+            artifact: artifact.to_owned(),
+            expires: Instant::now() + FRAME_TTL,
+        }
+    }
+}
+
+/// The policy an HTML output is served with, in its own iframe: scripts and
+/// styles inline only, images from `data:` only, no requests anywhere, and
+/// an opaque origin (`sandbox` without `allow-same-origin`). Only this
+/// server's own pages may frame it.
+pub const FRAME_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
+    script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; \
+    frame-ancestors 'self'";
 
 impl Companion {
     /// Open the store and, with push on, the VAPID key. Blocking.
@@ -147,7 +183,43 @@ impl Companion {
             vapid,
             client,
             attempts: Mutex::new(VecDeque::new()),
+            frames: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Mint the address `/app/frame/{ticket}` for one output.
+    pub(crate) fn grant_frame(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        artifact: &str,
+        now: Instant,
+    ) -> Result<String, ApiError> {
+        let ticket = random_hex(24).map_err(ApiError::internal)?;
+        let mut frames = self.frames.lock_recovering("frames");
+        frames.retain(|_, grant| grant.expires > now);
+        if frames.len() >= FRAME_GRANTS {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "too many open HTML previews; try again shortly",
+            ));
+        }
+        frames.insert(
+            ticket.clone(),
+            FrameGrant {
+                caller: caller.clone(),
+                workspace: workspace.to_owned(),
+                artifact: artifact.to_owned(),
+                expires: now + FRAME_TTL,
+            },
+        );
+        Ok(ticket)
+    }
+
+    fn frame_grant(&self, ticket: &str, now: Instant) -> Option<FrameGrant> {
+        let frames = self.frames.lock_recovering("frames");
+        frames.get(ticket).filter(|g| g.expires > now).cloned()
     }
 
     /// Count a redemption attempt; false when over the limit.
@@ -203,8 +275,14 @@ pub(crate) fn is_public(app: &App, method: &Method, path: &str) -> bool {
         || path
             .strip_prefix("/app/")
             .is_some_and(|file| ASSETS.iter().any(|(p, _, _)| *p == file));
+    // An HTML output's frame address: its ticket is the capability, and the
+    // handler checks it (and the caller's rights) before sending anything.
+    let frame = path
+        .strip_prefix("/app/frame/")
+        .is_some_and(|ticket| ticket.len() == 48 && ticket.bytes().all(|b| b.is_ascii_hexdigit()));
     match *method {
-        Method::GET | Method::HEAD => page,
+        Method::GET => page || frame,
+        Method::HEAD => page,
         Method::POST => path == "/app/pair",
         _ => false,
     }
@@ -288,6 +366,7 @@ pub fn router() -> Router<Shared> {
         .route("/app", get(redirect))
         .route("/app/", get(asset))
         .route("/app/pair", post(pair))
+        .route("/app/frame/{ticket}", get(frame))
         .route("/app/{file}", get(asset))
         .route("/v1/app/me", get(me))
         .route("/v1/app/push", get(push_info))
@@ -357,6 +436,35 @@ async fn asset(State(app): State<Shared>, request: Request) -> Response {
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     if let Ok(value) = HeaderValue::from_str(&etag) {
         headers.insert(header::ETAG, value);
+    }
+    response
+}
+
+/// `GET /app/frame/{ticket}`: an HTML output, for the console's sandboxed
+/// iframe. Rights are checked again here; the ticket only names the output.
+async fn frame(
+    State(app): State<Shared>,
+    axum::extract::Path(ticket): axum::extract::Path<String>,
+) -> Response {
+    let Some(companion) = app.companion.clone() else {
+        return not_found().into_response();
+    };
+    let Some(grant) = companion.frame_grant(&ticket, Instant::now()) else {
+        return not_found().into_response();
+    };
+    let html = match crate::console::frame_html(&app, &grant).await {
+        Ok(html) => html,
+        Err(error) => return error.into_response(),
+    };
+    let mut response = ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response();
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("content-security-policy", FRAME_CSP),
+        ("x-content-type-options", "nosniff"),
+        ("referrer-policy", "no-referrer"),
+        ("cache-control", "private, no-store"),
+    ] {
+        headers.insert(name, HeaderValue::from_static(value));
     }
     response
 }
@@ -633,6 +741,7 @@ mod tests {
             vapid: None,
             client: None,
             attempts: Mutex::new(VecDeque::new()),
+            frames: Mutex::new(HashMap::new()),
         };
         let start = Instant::now();
         for _ in 0..PAIR_ATTEMPTS {
@@ -664,6 +773,20 @@ mod tests {
         // Blob URLs are for images only; scripts and fetches stay same-origin.
         let directives: Vec<&str> = CSP.split(';').map(str::trim).collect();
         assert!(directives.contains(&"img-src 'self' blob:"));
+        assert!(directives.contains(&"frame-src 'self'"));
+        // The HTML output's policy: sandboxed, inline code only, no requests.
+        let frame: Vec<&str> = FRAME_CSP.split(';').map(str::trim).collect();
+        for want in [
+            "sandbox allow-scripts",
+            "default-src 'none'",
+            "script-src 'unsafe-inline'",
+            "style-src 'unsafe-inline'",
+            "img-src data:",
+            "frame-ancestors 'self'",
+        ] {
+            assert!(frame.contains(&want), "{want} missing from {FRAME_CSP}");
+        }
+        assert!(!FRAME_CSP.contains("allow-same-origin") && !FRAME_CSP.contains("connect-src"));
         assert_eq!(CSP.matches("blob:").count(), 1);
         let named = |file: &str| ASSETS.iter().any(|(path, _, _)| *path == file);
         let page = ASSETS[0].2;

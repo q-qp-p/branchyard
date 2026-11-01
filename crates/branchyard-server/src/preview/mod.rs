@@ -138,6 +138,7 @@ impl PreviewOptions {
 }
 
 /// Original bytes already authorized and digest-checked by the caller.
+#[derive(Clone)]
 pub struct PreviewInput {
     /// Artifact bytes, never modified by conversion.
     pub bytes: Vec<u8>,

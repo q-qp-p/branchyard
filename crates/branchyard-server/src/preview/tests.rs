@@ -89,7 +89,8 @@ fn cache_identity_binds_tenant_bytes_options_runtime_and_format() {
     );
     assert_eq!(suffix("../../a.XLSX").unwrap(), "xlsx");
     assert!(suffix("document.xlsm").is_err());
-    assert!(suffix("document.html").is_err());
+    assert_eq!(suffix("page.HTM").unwrap(), "html");
+    assert!(suffix("document.xhtml").is_err());
 }
 
 #[test]
@@ -255,6 +256,55 @@ async fn derivation_is_cached_and_failed_conversion_is_never_published() {
     assert!(fs::read_dir(&failure.root)
         .unwrap()
         .all(|entry| !entry.unwrap().path().is_dir()));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn an_html_page_is_converted_as_source_html_and_published_as_a_page_image() {
+    let scratch = Scratch::new("preview-html-service");
+    let record = scratch.join("bwrap-arguments");
+    let python = scratch.join("python");
+    script(&python, "#!/bin/sh\nprintf '%s\\n' '{\"executable\":\"/usr/bin/python3\",\"prefix\":\"/usr\",\"base_prefix\":\"/usr\",\"version\":\"fixture\"}'\n");
+    let bwrap = scratch.join("bwrap");
+    let page = json!({"status":"passed","kind":"pages","format":"html","page":1,"pages":1,"image":"page-1.png","width":1280,"height":1024,"warnings":[]});
+    script(
+        &bwrap,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --bind ]; then output=\"$2\"; shift 3; else shift; fi\ndone\nmkdir -p \"$output/derived\"\nprintf '\\211PNG\\r\\n\\032\\n' > \"$output/derived/page-1.png\"\nprintf '%s\\n' '{}'\n",
+            record.display(),
+            page
+        ),
+    );
+    let service = PreviewService::with_settings(
+        scratch.join("cache"),
+        sandbox::Settings::Bubblewrap { python, bwrap },
+    )
+    .unwrap();
+    let mut input = original();
+    input.name = "counter.html".into();
+    input.media_type = "text/html".into();
+    input.bytes = b"<button onclick=\"this.textContent=1\">0</button>".to_vec();
+    let response = service
+        .preview(input.clone(), PreviewOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "passed");
+    assert_eq!(response["pages"], 1);
+    let image = service
+        .asset(input, PreviewOptions::default(), "page-1.png")
+        .await
+        .unwrap();
+    assert!(image.starts_with(b"\x89PNG"));
+    let recorded = fs::read_to_string(&record).unwrap();
+    let args: Vec<&str> = recorded.lines().collect();
+    assert!(
+        args.iter().any(|a| a.ends_with("/input/source.html")),
+        "{args:?}"
+    );
+    assert!(
+        args.contains(&"--unshare-all") && !args.contains(&"--share-net"),
+        "{args:?}"
+    );
 }
 
 #[cfg(target_os = "linux")]
