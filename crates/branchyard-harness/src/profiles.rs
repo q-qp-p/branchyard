@@ -369,7 +369,12 @@ mod tests {
         assert_eq!(stream.protocol, Protocol::AntigravityStreamJson);
         // Only the profiles a probe verified turn these on; see the
         // comments on each profile.
-        let verified = ["antigravity-acp", "oh-my-pi-acp", "opencode-acp", "hermes-acp"];
+        let verified = [
+            "antigravity-acp",
+            "oh-my-pi-acp",
+            "opencode-acp",
+            "hermes-acp",
+        ];
         for profile in PROFILES.iter().filter(|p| !verified.contains(&p.id)) {
             assert!(!profile.acp_models && !profile.acp_usage, "{}", profile.id);
         }

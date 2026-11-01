@@ -1504,8 +1504,15 @@ fn replay_two_turns(
         assert_eq!(*turn, Some(index as u64 + 1), "{file}: turn number");
         assert!(!got.cumulative, "{file}: each turn's usage is its own");
         assert_eq!(got.input_tokens, Some(*input), "{file}: turn {index} input");
-        assert_eq!(got.output_tokens, Some(*output), "{file}: turn {index} output");
-        assert_eq!(got.cached_input_tokens, *cached, "{file}: turn {index} cached");
+        assert_eq!(
+            got.output_tokens,
+            Some(*output),
+            "{file}: turn {index} output"
+        );
+        assert_eq!(
+            got.cached_input_tokens, *cached,
+            "{file}: turn {index} cached"
+        );
     }
     usage
 }
