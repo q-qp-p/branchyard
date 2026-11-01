@@ -102,6 +102,22 @@ dbg_macro = "deny"
 zstd = { path = "patches/zstd-0.13" }
 
 # Optimized portable release artifacts built by dist.
+# Cargo's build-performance guide: line tables only for the workspace (enough for a
+# panic's stack trace), split out of the binaries, and no debug info for dependencies.
+# `cargo build --profile debugging` opts back into full debug info for a debugger.
+# CARGO_PROFILE_DEV_DEBUG=0 in the environment, which the gates set, still overrides
+# `debug`.
+[profile.dev]
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
+
 [profile.dist]
 inherits = "release"
 lto = "thin"

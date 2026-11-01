@@ -13,8 +13,10 @@ import importlib.util
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -71,6 +73,33 @@ class Verdict(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("ok      c", lines)
         self.assertEqual(lines[-1], "check: FAILED (2 steps)")
+
+    def test_parallel_steps_print_in_table_order_whatever_order_they_finish(self):
+        # `slow` finishes only once `last` has run (it waits for the marker `last` writes),
+        # so with three workers the finishing order is the reverse of the table's.
+        marker = Path(tempfile.mkdtemp()) / "last-ran"
+        self.addCleanup(shutil.rmtree, marker.parent)
+        wait = f"import os, time\nwhile not os.path.exists({str(marker)!r}): time.sleep(0.01)\nprint('z')"
+        slow = check.Step("slow", "controls", (sys.executable, "-c", wait))
+        last = check.Step("last", "controls", (sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"))
+        code, lines = run((slow, fake("quick"), last), "--jobs", "3")
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ["ok      slow", "ok      quick", "ok      last", "check: PASSED"])
+
+    def test_one_job_is_the_serial_run(self):
+        code, lines = run((fake("a"), fake("b", code=1), fake("c")), "--jobs", "1")
+        self.assertEqual(code, 1)
+        self.assertEqual(lines[:2], ["ok      a", "FAILED  b"])
+        self.assertFalse(any(line.endswith(" c") for line in lines), lines)
+
+    def test_a_failed_rewrite_still_stops_before_any_parallel_check(self):
+        code, lines = run((fake("fix", code=1, fix=True), fake("a"), fake("b")), "--fix", "--jobs", "4")
+        self.assertEqual(code, 1)
+        self.assertEqual([line for line in lines if line.startswith(("ok", "FAILED"))], ["FAILED  fix"])
+
+    def test_zero_jobs_is_a_usage_error(self):
+        with self.assertRaises(SystemExit):
+            run((fake("a"),), "--jobs", "0")
 
     def test_a_command_that_cannot_start_is_a_failed_step(self):
         missing = check.Step("missing", "controls", ("no-such-command-for-check-py",))

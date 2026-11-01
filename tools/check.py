@@ -6,10 +6,16 @@
     python3 tools/check.py --fix            rewrite first: docs facts, cargo fmt, ruff format, the schemas
     python3 tools/check.py --only A,B       only the named steps
     python3 tools/check.py --keep-going     run past a failing step and report every failure
+    python3 tools/check.py --jobs 1         one step at a time (the default is up to four Python steps at once)
 
 Each step prints `ok` or `FAILED` (with the last lines of its output); a step that --fast
 skips prints `skip`. The verdict is `check: PASSED` or `check: FAILED (n steps)`, and the exit
 code is 0 or 1. Standard library only.
+
+The Python steps (every step that is not a rewrite and not a cargo step) run up to --jobs at a
+time, four by default; the rewrites run first, one at a time, and the cargo steps one at a time
+in their place, since cargo serializes on its own lock. Results print in table order whatever
+order the steps finish in, so the output reads the same as a serial run.
 
 CI's fast job runs `--fast --keep-going` (and rustfmt), so each Python gate is defined once,
 here, and runs once. The cargo steps stay in the workflow's other jobs, where they are: they
@@ -18,6 +24,7 @@ gate goes in STEPS; tests/test_check.py fails when check.yml runs a script that 
 """
 
 import argparse
+import concurrent.futures
 import os
 import subprocess
 import sys
@@ -392,6 +399,57 @@ def say(status, name):
     print(f"{status:<8}{name}", flush=True)
 
 
+def default_jobs():
+    """Up to four Python steps at once; one where the machine has one core."""
+    return max(1, min(4, os.cpu_count() or 1))
+
+
+def run_all(chosen, jobs, keep_going):
+    """Run the planned steps, printing each result in table order; the number that failed.
+
+    The rewrites run first, one at a time, and a failed rewrite stops everything. Then the
+    checks: the Python ones through a pool of `jobs` workers, the cargo ones inline, each
+    reported in table order as its turn comes. Without `keep_going` the first failure in
+    that order ends the run; steps already running finish, but nothing else starts.
+    """
+    failed = 0
+
+    def report(step, result):
+        nonlocal failed
+        code, out, shown = result
+        if code == 0:
+            if step.stdout:
+                (ROOT / step.stdout).write_bytes(out)
+            say("ok", step.name)
+            return True
+        failed += 1
+        say("FAILED", step.name)
+        for line in shown.splitlines()[-TAIL_LINES:]:
+            print(f"    {line}", flush=True)
+        return keep_going
+
+    rewrites = [(step, skipped) for step, skipped in chosen if step.fix]
+    checks = [(step, skipped) for step, skipped in chosen if not step.fix]
+    for step, skipped in rewrites:
+        if skipped:
+            say("skip", step.name)
+        elif not report(step, run_step(step)):
+            return failed
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+    try:
+        futures = {step: pool.submit(run_step, step) for step, skipped in checks if not skipped and not step.cargo}
+        for step, skipped in checks:
+            if skipped:
+                say("skip", step.name)
+                continue
+            result = futures[step].result() if step in futures else run_step(step)
+            if not report(step, result):
+                break
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    return failed
+
+
 def main(argv=None, steps=STEPS):
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter
@@ -400,28 +458,17 @@ def main(argv=None, steps=STEPS):
     parser.add_argument("--fix", action="store_true", help="rewrite the generated files and formatting first")
     parser.add_argument("--only", metavar="NAME[,NAME]", help="run only these steps")
     parser.add_argument("--keep-going", action="store_true", help="run past a failing step")
+    parser.add_argument(
+        "--jobs", type=int, default=default_jobs(), metavar="N", help="Python steps at once (default: up to 4)"
+    )
     args = parser.parse_args(argv)
+    if args.jobs < 1:
+        parser.error("--jobs needs a number of 1 or more")
     try:
         chosen = plan(steps, args.only, args.fast, args.fix)
     except ValueError as error:
         parser.error(str(error))
-    failed = 0
-    for step, skipped in chosen:
-        if skipped:
-            say("skip", step.name)
-            continue
-        code, out, shown = run_step(step)
-        if code == 0:
-            if step.stdout:
-                (ROOT / step.stdout).write_bytes(out)
-            say("ok", step.name)
-            continue
-        failed += 1
-        say("FAILED", step.name)
-        for line in shown.splitlines()[-TAIL_LINES:]:
-            print(f"    {line}", flush=True)
-        if not args.keep_going:
-            break
+    failed = run_all(chosen, args.jobs, args.keep_going)
     if failed:
         print(f"check: FAILED ({failed} {'step' if failed == 1 else 'steps'})", flush=True)
         return 1
