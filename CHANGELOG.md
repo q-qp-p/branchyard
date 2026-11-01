@@ -20,6 +20,9 @@ shows `waiting for approval: …`. The server adds `GET …/decisions`
 (`DecisionList`, `Repo::decisions`): what waits for a person in the order to
 take it, parked agents first, oldest wait first. Nothing in it expires.
 
+In the deck, Enter in a question's answer box sends the answer (Shift+Enter adds a
+line); it used to add a line, so only the Answer button sent.
+
 Reading an operation, or a fork, no longer fails with `404 unknown_branch`
 for a branch that was removed meanwhile: a fork's removed parent, or a goal
 judge's scratch branch removed between two reads of the operation that ran
