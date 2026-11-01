@@ -37,6 +37,13 @@
 //!   model is `deepseek-official`'s. The gateway without a model is refused:
 //!   the provider needs the model's id.
 //!
+//! - **The permission mode**, when the turn has a policy
+//!   ([`Context::permissions`]): [`PERMISSION_MODE`] in the harness's
+//!   environment, `workspace-write` (its default) where the policy allows
+//!   the shell outright and `read-only` otherwise, so a write the policy
+//!   would deny or ask about reaches it as a request instead of running
+//!   inside the sandbox unasked.
+//!
 //! The patch file is Branchyard's: written whole, and left as it is by a
 //! turn that names no model. Reasoning effort and telemetry are refused:
 //! the provider profile has a `reasoning` level, but its values were not
@@ -45,11 +52,26 @@
 use crate::edit::Edit;
 use crate::generic::KEY_SUFFIX;
 use crate::{
-    needs_private_home, pass_session, unsupported, unused, Context, Plan, Provisioner, Refused,
+    needs_private_home, pass_session, unsupported, unused, Context, EnvVar, Plan, Provisioner,
+    Refused,
 };
 
 /// The patch file this provisioner writes, under the default `DSH_HOME`.
 pub const PATCH: &str = ".dsh/cordis.patch.yml";
+
+/// The variable dsh's `sandbox-policy` plugin reads its permission preset
+/// from (`cordis.patch.yml` of `@deepseek-ai/dsh-base` 0.2.1-rc.5:
+/// `mode: process.env.DSH_PERMISSION_MODE ?? 'workspace-write'`).
+pub const PERMISSION_MODE: &str = "DSH_PERMISSION_MODE";
+/// Its preset that asks before every write: `sandbox: read-only, approval:
+/// ask`.
+pub const READ_ONLY: &str = "read-only";
+/// Its default preset: writes inside the workspace without asking, a
+/// request for anything that leaves it.
+pub const WORKSPACE_WRITE: &str = "workspace-write";
+/// The tool name dsh's shell requests carry (`bash`), which a policy
+/// decides.
+const SHELL_TOOL: &str = "bash";
 
 /// The provider written for the model gateway.
 pub const GATEWAY_PROVIDER: &str = "branchyard";
@@ -115,6 +137,22 @@ impl Provisioner for DeepSeekHarness {
         }
         plan.unused_secrets = unused(context, &keys);
         pass_session(context, &mut plan);
+        // Its own sandbox decides what asks. `workspace-write`, its
+        // default, asks only for a command that leaves the workspace, so a
+        // policy that denies the shell never sees `echo > file` (it ran
+        // under a denying policy on 25 October and 1 November 2026);
+        // `read-only` asks for every write, which the policy then decides.
+        // The mode follows the policy: a shell allowed outright keeps the
+        // default, anything else (denied, or to be asked about) makes every
+        // write ask. `danger-full-access`, whose approval policy is
+        // `never`, is never written.
+        if let Some(permissions) = &context.permissions {
+            let mode = match permissions.decide(SHELL_TOOL) {
+                Some(true) => WORKSPACE_WRITE,
+                _ => READ_ONLY,
+            };
+            plan.set_env(EnvVar::plain(PERMISSION_MODE, mode));
+        }
 
         let Some(model) = context.model.as_deref() else {
             if context.model_gateway.is_some() {
@@ -233,6 +271,55 @@ mod tests {
             [Edit::Put(text)] => text.clone(),
             other => panic!("{other:?}"),
         }
+    }
+
+    fn env(plan: &Plan, name: &str) -> Option<String> {
+        plan.env
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.value.clone())
+    }
+
+    /// The policy chooses dsh's own permission preset: the shell allowed
+    /// outright keeps `workspace-write`; denied or asked about, every write
+    /// asks (`read-only`); no policy leaves the variable alone, as does a
+    /// shared home, since the variable is the turn's and not the file's.
+    #[test]
+    fn the_policy_sets_the_permission_mode() {
+        use crate::permissions::{Fallback, PermissionRule, Permissions};
+        let plan = DeepSeekHarness.plan(&context()).unwrap();
+        assert!(env(&plan, PERMISSION_MODE).is_none());
+
+        let mut full = context();
+        full.permissions = Some(Permissions::new(Fallback::Allow));
+        let plan = DeepSeekHarness.plan(&full).unwrap();
+        assert_eq!(
+            env(&plan, PERMISSION_MODE).as_deref(),
+            Some(WORKSPACE_WRITE)
+        );
+        assert!(!plan
+            .env
+            .iter()
+            .any(|e| e.name == PERMISSION_MODE && e.secret));
+
+        let mut denying = context();
+        denying.permissions = Some(Permissions {
+            rules: vec![PermissionRule {
+                tool: "bash".into(),
+                allow: false,
+                delegation_by: None,
+            }],
+            ..Permissions::new(Fallback::Allow)
+        });
+        let plan = DeepSeekHarness.plan(&denying).unwrap();
+        assert_eq!(env(&plan, PERMISSION_MODE).as_deref(), Some(READ_ONLY));
+
+        let mut asking = context();
+        asking.permissions = Some(Permissions::new(Fallback::Ask));
+        asking.private_home = false;
+        let plan = DeepSeekHarness.plan(&asking).unwrap();
+        assert_eq!(env(&plan, PERMISSION_MODE).as_deref(), Some(READ_ONLY));
+        assert!(plan.files.is_empty());
     }
 
     #[test]

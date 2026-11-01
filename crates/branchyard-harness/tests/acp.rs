@@ -6,7 +6,7 @@
 use agent_client_protocol_schema::v1::{
     AuthenticateRequest, CancelNotification, InitializeRequest, LoadSessionRequest,
     McpServer as AcpMcpServer, NewSessionRequest, PromptRequest, RequestPermissionResponse,
-    ResumeSessionRequest,
+    ResumeSessionRequest, SetSessionConfigOptionRequest,
 };
 use branchyard_harness::acp::{Acp, REPLAY_FENCE};
 use branchyard_harness::conformance::{
@@ -1451,4 +1451,347 @@ fn usage_and_model_are_reported_only_where_the_profile_verified_them() {
     );
     let plain_reasons: Vec<&str> = plain.capability_reasons().iter().map(|(c, _)| *c).collect();
     assert!(plain_reasons.contains(&"usage") && plain_reasons.contains(&"model"));
+}
+
+/// A recording from `crates/branchyard-harness/tests/fixtures/<file>`, made
+/// with the live probe on 1 November 2026.
+fn probe_fixture(file: &str) -> Transcript {
+    Transcript::load(format!(
+        "{}/tests/fixtures/{file}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The named profile's ACP driver, opened fresh with `model`.
+fn profile_acp(profile: &str, model: Option<&str>) -> (Box<dyn Driver>, Opened) {
+    let mut driver = branchyard_harness::profiles::by_id(profile)
+        .unwrap()
+        .driver();
+    let opened = driver
+        .open(Open {
+            model: model.map(str::to_owned),
+            ..fresh()
+        })
+        .unwrap();
+    (driver, opened)
+}
+
+/// Replays two prompts and returns the usage each turn reported, in order,
+/// as `(turn, usage)`. Each expected row is `(input, output, cached)`.
+fn replay_two_turns(
+    profile: &str,
+    file: &str,
+    expected: &[(u64, u64, Option<u64>)],
+) -> Vec<(Option<u64>, branchyard_harness::Usage)> {
+    let recorded = probe_fixture(file);
+    let (mut driver, opened) = profile_acp(profile, None);
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt("Reply with exactly the word PELICAN-7 and nothing else.")
+        .prompt("Reply with exactly the word PELICAN-8 and nothing else.")
+        .run(driver.as_mut(), &opened);
+    let usage: Vec<(Option<u64>, branchyard_harness::Usage)> = replayed
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::UsageObserved { turn, usage } => Some((*turn, usage.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(usage.len(), expected.len(), "{file}: one usage per turn");
+    for (index, ((turn, got), (input, output, cached))) in usage.iter().zip(expected).enumerate() {
+        assert_eq!(*turn, Some(index as u64 + 1), "{file}: turn number");
+        assert!(!got.cumulative, "{file}: each turn's usage is its own");
+        assert_eq!(got.input_tokens, Some(*input), "{file}: turn {index} input");
+        assert_eq!(
+            got.output_tokens,
+            Some(*output),
+            "{file}: turn {index} output"
+        );
+        assert_eq!(
+            got.cached_input_tokens, *cached,
+            "{file}: turn {index} cached"
+        );
+    }
+    usage
+}
+
+/// Recorded against Hermes 0.19.0's `hermes acp` on `zai:glm-5.3`: the
+/// agent lists its models in `session/new`, the driver takes the pinned one
+/// with `session/set_model` (answered `{}`) before the session is ready.
+#[test]
+fn hermes_acp_chooses_the_model_before_ready() {
+    let recorded = probe_fixture("hermes-0.19.0-acp-models.jsonl");
+    let (mut driver, opened) = profile_acp("hermes-acp", Some("zai:glm-5.2"));
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .run(driver.as_mut(), &opened);
+    assert_eq!(
+        replayed.sent, 3,
+        "initialize, session/new, session/set_model"
+    );
+    let set_model = recorded
+        .rows
+        .iter()
+        .find(|r| r.frame["method"] == "session/set_model")
+        .unwrap();
+    assert_eq!(set_model.frame["params"]["modelId"], "zai:glm-5.2");
+    let events = replayed.events;
+    let ready = events.iter().position(|e| *e == Event::Ready).unwrap();
+    assert!(matches!(&events[ready + 1], Event::SessionStarted { .. }));
+}
+
+/// Recorded against Hermes 0.19.0 on `zai:glm-5.3`: each prompt response's
+/// usage is that turn's own; thought tokens are counted as output.
+#[test]
+fn hermes_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "hermes-acp",
+        "hermes-0.19.0-acp-usage.jsonl",
+        // 38 + 30 and 109 + 93 output, thought tokens included.
+        &[(11523, 68, Some(11264)), (23071, 202, Some(22784))],
+    );
+}
+
+/// Recorded against Oh My Pi 18.15.0 on `zai/glm-5.3`: per-turn usage.
+#[test]
+fn oh_my_pi_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "oh-my-pi-acp",
+        "oh-my-pi-18.15.0-acp-usage.jsonl",
+        &[(33, 8, Some(7680)), (58, 20, Some(7680))],
+    );
+}
+
+/// Recorded against OpenCode 1.19.5 on `google/gemini-flash-lite-latest`:
+/// per-turn usage. The first turn reports no cached tokens.
+#[test]
+fn opencode_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "opencode-acp",
+        "opencode-1.19.5-acp-usage.jsonl",
+        &[(8388, 4, None), (2325, 4, Some(6082))],
+    );
+}
+
+/// DeepSeek Harness 0.2.1-rc.5, recorded live on `zai glm-5.3`: its
+/// `session/new` lists no models (a `model` config option instead), and a
+/// `session/cancel` during a running `bash` call ends the prompt
+/// `cancelled` at once. The command wrote nothing outside the workspace, so
+/// no permission request came, as the profile's caveat says.
+#[test]
+fn deepseek_harness_acp_cancels_a_running_command() {
+    let recorded = probe_fixture("deepseek-harness-0.2.1-rc.5-acp-cancel.jsonl");
+    let (mut driver, opened) = profile_acp("deepseek-harness-acp", None);
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt("Run the shell command: sleep 40 && echo finished")
+        .interrupt()
+        .run(driver.as_mut(), &opened);
+    assert_eq!(replayed.sent, 4, "initialize, session/new, prompt, cancel");
+    let events = replayed.events;
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::ToolStarted { turn: 1, name, .. } if name == "bash")),
+        "{events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::PermissionRequested { .. })),
+        "a command inside the workspace asks nobody: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&Event::TurnEnded {
+            turn: 1,
+            outcome: TurnOutcome::Interrupted
+        })
+    );
+}
+
+/// Hermes 0.19.0, recorded live on `zai:glm-5.3`: a `session/cancel`
+/// during a running terminal command is answered with a JSON-RPC internal
+/// error on the prompt (`'NoneType' object has no attribute 'startswith'`)
+/// rather than `cancelled`. Branchyard ended the turn, so it is interrupted,
+/// with the agent's error kept as a warning; the same error with no cancel
+/// in flight is still a failure.
+#[test]
+fn hermes_acp_cancel_answered_with_an_error_ends_the_turn_interrupted() {
+    let recorded = probe_fixture("hermes-0.19.0-acp-cancel.jsonl");
+    let (mut driver, opened) = profile_acp("hermes-acp", None);
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt("Run the shell command: sleep 40 && echo finished")
+        .interrupt()
+        .run(driver.as_mut(), &opened);
+    assert_eq!(replayed.sent, 4, "initialize, session/new, prompt, cancel");
+    let events = replayed.events;
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Warning { message }
+            if message.contains("cancelled prompt") && message.contains("startswith"))),
+        "{events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&Event::TurnEnded {
+            turn: 1,
+            outcome: TurnOutcome::Interrupted
+        })
+    );
+
+    let (mut driver, new) = models_driver("fast");
+    feed(
+        &mut driver,
+        &session_with_models(&new["id"], "fast", &["fast"]),
+    );
+    let submitted = driver.submit("go").unwrap();
+    let prompt = decode(&submitted.frames[0]);
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": prompt["id"], "error": {"code": -32603, "message": "Internal error"}}),
+    );
+    assert_eq!(
+        events,
+        [Event::TurnEnded {
+            turn: submitted.turn,
+            outcome: TurnOutcome::Failed {
+                message: "Internal error".into()
+            }
+        }]
+    );
+}
+
+/// DeepSeek Harness 0.2.1-rc.5's session answer, as recorded: no `models`,
+/// a `model` config option whose values are JSON provider-model pairs in a
+/// group, and a reasoning-effort option the driver leaves alone.
+fn session_with_config_option(id: &Value, current: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": {
+        "sessionId": "s1",
+        "configOptions": [
+            {"id": "model", "name": "Model", "category": "model", "type": "select",
+             "currentValue": current,
+             "options": [{"group": "zai", "name": "zai", "options": [
+                 {"value": "[\"zai\",\"glm-5.3\"]", "name": "GLM-5.3"},
+                 {"value": "[\"zai\",\"glm-5.2\"]", "name": "GLM-5.2"},
+             ]}]},
+            {"id": "reasoning_effort", "name": "Reasoning effort", "category": "thought_level",
+             "type": "select", "currentValue": "",
+             "options": [{"value": "", "name": "Provider default"}, {"value": "high", "name": "High"}]},
+        ],
+    }})
+}
+
+fn config_model_driver(model: &str) -> (Acp, Value) {
+    let mut driver =
+        Acp::new(vec!["dsh".into(), "--profile".into(), "acp".into()]).with_config_model();
+    let opened = driver
+        .open(Open {
+            model: Some(model.into()),
+            ..fresh()
+        })
+        .unwrap();
+    let initialize = decode(&opened.frames[0]);
+    let (_, frames) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": initialize["id"], "result": {"protocolVersion": 1, "agentCapabilities": {}}}),
+    );
+    (driver, frames[0].clone())
+}
+
+/// Where the profile verified it, a pinned model is chosen among the
+/// `model` config option's values (by value, by name, or as
+/// `provider/model` for a pair) with `session/set_config_option` before
+/// the session is ready; the current value needs no request; a model the
+/// option does not offer, or the agent refuses, fails the open naming the
+/// values on offer. Without the flag a model is refused at open.
+#[test]
+fn a_pinned_model_is_chosen_among_the_sessions_config_option_values() {
+    let pair = "[\"zai\",\"glm-5.2\"]";
+    for wanted in ["zai/glm-5.2", "GLM-5.2", pair] {
+        let (mut driver, new) = config_model_driver(wanted);
+        let (events, frames) = feed(
+            &mut driver,
+            &session_with_config_option(&new["id"], "[\"zai\",\"glm-5.3\"]"),
+        );
+        assert!(events.is_empty(), "{wanted}: {events:?}");
+        assert_eq!(frames[0]["method"], "session/set_config_option", "{wanted}");
+        assert_eq!(
+            frames[0]["params"],
+            json!({"sessionId": "s1", "configId": "model", "value": pair}),
+            "{wanted}"
+        );
+        assert_conforms::<SetSessionConfigOptionRequest>(&frames[0], "/params");
+        assert!(matches!(driver.submit("go"), Err(Rejected::NotReady)));
+        let (events, _) = feed(
+            &mut driver,
+            &json!({"jsonrpc": "2.0", "id": frames[0]["id"], "result": {"configOptions": []}}),
+        );
+        assert_eq!(events[0], Event::Ready, "{wanted}");
+        assert!(driver.capabilities().model);
+        assert!(!driver
+            .capability_reasons()
+            .iter()
+            .any(|(c, _)| *c == "model"));
+    }
+
+    let (mut driver, new) = config_model_driver("zai/glm-5.3");
+    let (events, frames) = feed(
+        &mut driver,
+        &session_with_config_option(&new["id"], "[\"zai\",\"glm-5.3\"]"),
+    );
+    assert!(frames.is_empty());
+    assert_eq!(events[0], Event::Ready);
+
+    let (mut driver, new) = config_model_driver("zai/glm-5.2");
+    let (_, frames) = feed(
+        &mut driver,
+        &session_with_config_option(&new["id"], "[\"zai\",\"glm-5.3\"]"),
+    );
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": frames[0]["id"], "error": {"code": -32602, "message": "unknown value"}}),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+            if reason.contains("refused model zai/glm-5.2") && reason.contains("unknown value")),
+        "{events:?}"
+    );
+
+    let (mut driver, new) = config_model_driver("deepseek/v4");
+    let (events, _) = feed(
+        &mut driver,
+        &session_with_config_option(&new["id"], "[\"zai\",\"glm-5.3\"]"),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+            if reason == "the agent does not offer model deepseek/v4; it offers \
+                GLM-5.3 ([\"zai\",\"glm-5.3\"]), GLM-5.2 ([\"zai\",\"glm-5.2\"])"),
+        "{events:?}"
+    );
+
+    let (mut driver, new) = config_model_driver("zai/glm-5.2");
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"jsonrpc": "2.0", "id": new["id"], "result": {"sessionId": "s1"}}),
+    );
+    assert!(
+        matches!(&events[0], Event::OpenFailed { reason }
+            if reason == "the agent lists no models, so zai/glm-5.2 cannot be chosen"),
+        "{events:?}"
+    );
+
+    let mut plain = Acp::new(vec!["dsh".into(), "--profile".into(), "acp".into()]);
+    assert!(matches!(
+        plain.open(Open {
+            model: Some("zai/glm-5.2".into()),
+            ..fresh()
+        }),
+        Err(Rejected::Unsupported(_))
+    ));
 }

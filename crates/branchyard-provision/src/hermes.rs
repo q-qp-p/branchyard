@@ -17,12 +17,27 @@
 
 use crate::auth::{Method, Spec};
 use crate::edit::Edit;
+use crate::permissions::PermissionsWritten;
 use crate::{
     needs_private_home, pass_session, unsupported, unused, Context, EnvVar, Plan, Provisioner,
     Refused, Via,
 };
 
 const DOTENV: &str = ".hermes/.env";
+
+/// Hermes's configuration file, where its approval rules live.
+pub const CONFIG: &str = ".hermes/config.yaml";
+
+/// The deny rule written for a policy that does not allow the shell: the
+/// glob that matches every command.
+pub const DENY_ALL: &str = "*";
+
+/// The managed block carrying it, as the file's own YAML.
+const DENY_SHELL: &str = "approvals:\n  deny:\n    - \"*\"";
+
+/// The tool name Hermes's shell requests carry over ACP: its calls of kind
+/// `execute`, named by kind since the request names no tool.
+const SHELL_TOOL: &str = "acp:execute";
 
 /// Scion's model when Vertex AI is used and none is asked for.
 pub const VERTEX_DEFAULT_MODEL: &str = "google/gemini-2.5-flash";
@@ -81,6 +96,28 @@ impl Provisioner for Hermes {
         }
         let mut plan = Plan::default();
         pass_session(context, &mut plan);
+        // Hermes asks its client only for the shell commands its own
+        // dangerous-command list names (`tools/approval_detection.py`);
+        // any other command runs, so `echo qualified > deny-marker.txt`
+        // ran under a denying policy (25 October and 1 November 2026). A
+        // policy that does not allow the shell outright is written as its
+        // `approvals.deny` rule, a case-insensitive glob matched before any
+        // prompt and not lifted by yolo mode: `"*"`, every command, since
+        // what the policy would ask a person about cannot be asked here.
+        // File edits still reach the policy as `acp:edit` requests.
+        if let Some(permissions) = &context.permissions {
+            if permissions.decide(SHELL_TOOL) == Some(true) {
+                plan.edit(CONFIG, false, Edit::CommentBlock(None));
+            } else {
+                needs_private_home(context, "Hermes's approvals.deny rule (config.yaml)")?;
+                plan.edit(CONFIG, false, Edit::CommentBlock(Some(DENY_SHELL.into())));
+                plan.permissions = Some(PermissionsWritten {
+                    path: CONFIG.into(),
+                    allow: Vec::new(),
+                    deny: vec![DENY_ALL.into()],
+                });
+            }
+        }
         let given: Vec<&str> = context.secrets.iter().map(|s| s.name.as_str()).collect();
         let resolved = AUTH.select(&given, context.auth.as_deref())?;
         let mut model = context.model.clone();
@@ -229,6 +266,64 @@ mod tests {
             env(&plan, "HERMES_INFERENCE_MODEL").unwrap(),
             "anthropic/claude"
         );
+    }
+
+    /// A policy that does not allow the shell outright becomes Hermes's
+    /// own deny rule in a managed block of its config; one that allows it
+    /// takes the block back; no policy writes nothing; a shared home
+    /// cannot take the rule and is refused.
+    #[test]
+    fn a_policy_that_denies_the_shell_becomes_an_approvals_deny_rule() {
+        use crate::permissions::{Fallback, PermissionRule, Permissions};
+        let mut denying = context(&[("OPENAI_API_KEY", "k")]);
+        denying.permissions = Some(Permissions {
+            rules: vec![PermissionRule {
+                tool: "acp:execute".into(),
+                allow: false,
+                delegation_by: None,
+            }],
+            ..Permissions::new(Fallback::Allow)
+        });
+        let plan = Hermes.plan(&denying).unwrap();
+        let file = plan.files.iter().find(|f| f.path == CONFIG).unwrap();
+        assert!(!file.secret);
+        assert_eq!(
+            file.edits,
+            [Edit::CommentBlock(Some(
+                "approvals:\n  deny:\n    - \"*\"".into()
+            ))]
+        );
+        let written = plan.permissions.unwrap();
+        assert_eq!((written.path.as_str(), written.allow.len()), (CONFIG, 0));
+        assert_eq!(written.deny, ["*"]);
+        // The block as it lands in the file, beside what was there.
+        let text = file.edits[0]
+            .apply(Some("model: glm-5.3\n"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            text.starts_with("# BEGIN BRANCHYARD MANAGED\n\napprovals:\n  deny:\n    - \"*\"\n")
+        );
+        assert!(text.ends_with("# END BRANCHYARD MANAGED\n\nmodel: glm-5.3\n"));
+
+        let mut asking = context(&[("OPENAI_API_KEY", "k")]);
+        asking.permissions = Some(Permissions::new(Fallback::Ask));
+        assert!(Hermes.plan(&asking).unwrap().permissions.is_some());
+
+        let mut allowing = context(&[("OPENAI_API_KEY", "k")]);
+        allowing.permissions = Some(Permissions::new(Fallback::Allow));
+        let plan = Hermes.plan(&allowing).unwrap();
+        let file = plan.files.iter().find(|f| f.path == CONFIG).unwrap();
+        assert_eq!(file.edits, [Edit::CommentBlock(None)]);
+        assert!(plan.permissions.is_none());
+
+        let plan = Hermes.plan(&context(&[("OPENAI_API_KEY", "k")])).unwrap();
+        assert!(plan.files.iter().all(|f| f.path != CONFIG));
+
+        let mut shared = denying.clone();
+        shared.private_home = false;
+        let refused = Hermes.plan(&shared).unwrap_err();
+        assert!(refused.0.contains("approvals.deny"), "{}", refused.0);
     }
 
     #[test]

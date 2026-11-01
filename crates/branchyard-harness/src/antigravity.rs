@@ -250,8 +250,8 @@ impl Driver for Antigravity {
         }
     }
 
-    fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[
+    fn capability_reasons(&self) -> Vec<crate::CapabilityReason> {
+        vec![
             ("fork", "the Antigravity CLI cannot fork a conversation"),
             ("budget", "the Antigravity CLI has no spending limit flag"),
             (

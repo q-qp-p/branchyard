@@ -56,10 +56,10 @@ A live run is protocol qualification against the real binary as a local process.
 | Codex | `codex-acp` (alternate) | unqualified | not run | contract-only | not verified |
 | Antigravity | `antigravity-acp` (default) | live-qualified | 9 of 9 pass, 2026-11-01, 1.4.12 ([report](qualification/antigravity-acp.json)) | live-tested | not verified |
 | Antigravity | `antigravity-stream-json` (alternate) | live-qualified | 9 of 9 pass, 2026-11-01, 1.4.12 ([report](qualification/antigravity-stream-json.json)) | — | — |
-| Oh My Pi | `oh-my-pi-acp` (default) | live-qualified | 9 of 9 pass, 2026-10-25, omp/18.12.6 ([report](qualification/oh-my-pi-acp.json)) | live-tested | not verified |
-| DeepSeek Harness | `deepseek-harness-acp` (default) | partial | 6 of 9 pass, 2026-10-25, 0.2.1-rc.2 ([report](qualification/deepseek-harness-acp.json)) | live-tested | not verified |
+| Oh My Pi | `oh-my-pi-acp` (default) | live-qualified | 9 of 9 pass, 2026-11-01, omp/18.15.0 ([report](qualification/oh-my-pi-acp.json)) | live-tested | not verified |
+| DeepSeek Harness | `deepseek-harness-acp` (default) | partial | 6 of 9 pass, 2026-11-01, 0.2.1-rc.5 ([report](qualification/deepseek-harness-acp.json)) | live-tested | not verified |
 | Gemini CLI | `gemini-cli-acp` (default) | live-qualified | 9 of 9 pass, 2026-11-01, 0.66.0 ([report](qualification/gemini-cli-acp.json)) | live-tested | not verified |
-| OpenCode | `opencode-acp` (default) | live-qualified | 9 of 9 pass, 2026-10-25, 1.19.4 ([report](qualification/opencode-acp.json)) | live-tested | not verified |
+| OpenCode | `opencode-acp` (default) | live-qualified | 9 of 9 pass, 2026-11-01, 1.19.5 ([report](qualification/opencode-acp.json)) | live-tested | not verified |
 | Pi | `pi-rpc` (default) | live-qualified | 9 of 9 pass, 2026-10-25, 1.4.0 ([report](qualification/pi-rpc.json)) | — | live-tested |
 | Goose | `goose-acp` (default) | unqualified | not run | contract-only | not verified |
 | Aider | none | not built | — | — | — |
@@ -68,7 +68,7 @@ A live run is protocol qualification against the real binary as a local process.
 | Amp | `amp-stream-json` (default) | unqualified | not run | — | — |
 | Qwen Code | `qwen-code-acp` (default) | live-qualified | 9 of 9 pass, 2026-10-25, 0.26.0 ([report](qualification/qwen-code-acp.json)) | live-tested | not verified |
 | Kimi CLI | `kimi-cli-acp` (default) | unqualified | not run | contract-only | not verified |
-| Hermes | `hermes-acp` (default) | partial | 6 of 9 pass, 2026-10-25, Hermes Agent v0.19.0 (2026.7.20) ([report](qualification/hermes-acp.json)) | live-tested | not verified |
+| Hermes | `hermes-acp` (default) | partial | 6 of 9 pass, 2026-11-01, Hermes Agent v0.19.0 (2026.7.20) ([report](qualification/hermes-acp.json)) | live-tested | not verified |
 
 <!-- /fact -->
 
