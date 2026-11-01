@@ -3435,8 +3435,12 @@ EXCUSED: dict[str, str] = {
     "/app/": f"{NOT_A_CLIENT_ROUTE}: the companion web app's pages, for a browser",
     "/app/pair": f"{NOT_A_CLIENT_ROUTE}: the companion's pairing, a phone redeeming a one-time code for "
     "a token of its own; a client already holds one",
+    "/app/frame/{ticket}": f"{NOT_A_CLIENT_ROUTE}: an HTML output for the console's sandboxed iframe, which "
+    "cannot send a bearer token",
     "/app/{file}": f"{NOT_A_CLIENT_ROUTE}: the companion web app's files, for a browser",
     "/metrics": f"{NOT_A_CLIENT_ROUTE}: Prometheus scrapes it",
+    "/v1/workspaces/{workspace}/artifacts/{artifact}/frame": f"{NOT_A_CLIENT_ROUTE}: mints the console's "
+    "iframe address for an HTML output",
     "/v1/triggers/{t}/fire": f"{NOT_A_CLIENT_ROUTE}: a webhook sender's, signed rather than bearer-authenticated",
     "/v1/triggers/{t}/fire/{token}": f"{NOT_A_CLIENT_ROUTE}: a webhook sender's, its token in the path",
 }

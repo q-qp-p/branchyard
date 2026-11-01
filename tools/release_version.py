@@ -53,6 +53,8 @@ TOML_FIELDS: dict[str, tuple[str | None, bool]] = {
 TEXT_FIELDS: dict[str, str] = {
     "tools/compute_gce.py": r'^RELEASE_VERSION = "([^"\n]+)"$',
     "docs/compute-gce.md": r"(?:--version=|branchyard-agy:)(\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)",
+    "docs/distribution.md": r"sh install\.sh --version (\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)",
+    "docs/sdk.md": r"branchyard-sdk-(\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?)\.zip",
 }
 
 

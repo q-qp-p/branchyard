@@ -1039,7 +1039,7 @@ sys.stderr.write("   Set DISPLAY environment variable, use -display option\\n")
 
         for name, content in [
             ("vector.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'),
-            ("page.html", b"<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"),
+            ("page.xhtml", b"<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"),
             ("disguised.png", b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
             ("corrupt.png", b"not-a-valid-png-payload"),
         ]:
@@ -1048,6 +1048,89 @@ sys.stderr.write("   Set DISPLAY environment variable, use -display option\\n")
             with self.subTest(name=name), self.assertRaises(ArtifactError):
                 preview.preview(bad_path, self.root / "rejected-out")
             self.assertFalse((self.root / "rejected-out").exists())
+
+
+class HtmlPreviewTests(PreviewTestCase):
+    """An HTML page previews as one page image from a headless Chromium, here a fake that records its arguments."""
+
+    def install_fake_chromium(self, *, write_shot: bool = True) -> tuple[Path, Path]:
+        from PIL import Image
+
+        template = self.root / "chromium-template.png"
+        Image.new("RGB", (1280, 1024), "white").save(template, format="PNG")
+        log_file = self.root / "chromium-calls.json"
+        script = self.root / "fake-chromium"
+        script.write_text(
+            f"""#!{sys.executable}
+import json, pathlib, shutil, sys
+args = sys.argv[1:]
+shot = next(a for a in args if a.startswith("--screenshot=")).split("=", 1)[1]
+page = pathlib.Path(args[-1].removeprefix("file://"))
+pathlib.Path({str(log_file)!r}).write_text(json.dumps({{"args": args, "html": page.read_text()}}))
+if {write_shot!r}:
+    shutil.copyfile({str(template)!r}, shot)
+""",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script, log_file
+
+    def page(self, name: str = "counter.html") -> Path:
+        path = self.root / name
+        path.write_text(
+            "<!doctype html><style>b{color:red}</style><b id=c>0</b>"
+            '<button onclick="c.textContent=+c.textContent+1">+</button>',
+            encoding="utf-8",
+        )
+        return path
+
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
+    def test_html_previews_as_one_page_image_through_chromium(self) -> None:
+        chromium, log_file = self.install_fake_chromium()
+        source = self.page()
+        out_dir = self.root / "html-out"
+        with mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(chromium)}):
+            result = preview.preview(source, out_dir)
+        self.assertEqual(
+            {key: result[key] for key in ("status", "kind", "format", "page", "pages", "image", "width", "height")},
+            {
+                "status": "passed",
+                "kind": "pages",
+                "format": "html",
+                "page": 1,
+                "pages": 1,
+                "image": "page-1.png",
+                "width": 1280,
+                "height": 1024,
+            },
+        )
+        self.assertTrue((out_dir / "page-1.png").read_bytes().startswith(b"\x89PNG"))
+        call = json.loads(log_file.read_text())
+        self.assertIn("--no-sandbox", call["args"])
+        self.assertIn("--host-resolver-rules=MAP * ~NOTFOUND", call["args"])
+        self.assertIn("c.textContent", call["html"])
+        self.assertEqual(source.read_text(), call["html"])
+
+    def test_html_without_chromium_is_unavailable_and_second_page_is_refused(self) -> None:
+        source = self.page()
+        with (
+            mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(self.root / "missing")}),
+            self.assertRaisesRegex(Exception, "headless Chromium"),
+        ):
+            preview.preview(source, self.root / "none-out")
+        with self.assertRaisesRegex(ArtifactError, "1 page"):
+            preview.preview(source, self.root / "two-out", page=2)
+        with self.assertRaisesRegex(ArtifactError, "pages preview only"):
+            preview.preview(source, self.root / "table-out", view="table")
+
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
+    def test_chromium_that_writes_no_screenshot_is_a_named_failure(self) -> None:
+        chromium, _ = self.install_fake_chromium(write_shot=False)
+        with (
+            mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(chromium)}),
+            self.assertRaisesRegex(ArtifactError, "without producing a screenshot"),
+        ):
+            preview.preview(self.page(), self.root / "empty-out")
 
 
 class TextAndSecurityBoundaryTests(PreviewTestCase):

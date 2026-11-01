@@ -167,12 +167,13 @@
     }
   },
   "http": {
-    "route_count": 127,
+    "route_count": 129,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
       "/app",
       "/app/",
+      "/app/frame/{ticket}",
       "/app/pair",
       "/app/{file}",
       "/healthz",
@@ -273,6 +274,7 @@
       "/v1/workspaces/{workspace}/actions/{action}",
       "/v1/workspaces/{workspace}/artifacts",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/content",
+      "/v1/workspaces/{workspace}/artifacts/{artifact}/frame",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/preview",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/preview/assets/{asset}",
       "/v1/workspaces/{workspace}/comments",

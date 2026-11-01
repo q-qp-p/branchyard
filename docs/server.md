@@ -856,6 +856,7 @@ fields. Poll the existing operation route to determine its outcome.
 | `GET /v1/workspaces/{workspace}/artifacts/{artifact}/content` | Download a permitted digest-verified native artifact |
 | `GET /v1/workspaces/{workspace}/artifacts/{artifact}/preview` | Render a bounded artifact owned by this workspace |
 | `GET /v1/workspaces/{workspace}/artifacts/{artifact}/preview/assets/{asset}` | Read a derived PNG after rechecking the artifact publisher and membership |
+| `POST /v1/workspaces/{workspace}/artifacts/{artifact}/frame` | Mint the short-lived path `/app/frame/{ticket}` that serves an HTML output for the console's sandboxed iframe, see [document previews](artifact-previews.md#run-an-html-output) |
 | `POST /v1/workspaces/{workspace}/finalize` | Accept `{revision,artifacts:[IDs]}` independently of code integration |
 | `GET /v1/workspaces/{workspace}/members` | List roles |
 | `GET /v1/workspaces/{workspace}/members/{subject}` | Read one verified subject's membership |

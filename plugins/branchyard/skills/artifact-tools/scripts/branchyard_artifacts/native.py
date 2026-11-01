@@ -287,6 +287,92 @@ def render_page(
     }
 
 
+CHROMIUM_ENV = "BRANCHYARD_CHROMIUM"
+HTML_VIEWPORT = (1280, 1024)
+HTML_VIRTUAL_TIME_MS = 2000
+
+
+def find_chromium() -> str | None:
+    """The headless Chromium the operator selected, or one under the shared browsers directory."""
+    chosen = os.environ.get(CHROMIUM_ENV)
+    if chosen:
+        return chosen if os.access(chosen, os.X_OK) else None
+    root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "/opt/pw-browsers")
+    for pattern in ("chromium_headless_shell-*/*/chrome-headless-shell", "chromium-*/*/chrome"):
+        for candidate in sorted(root.glob(pattern)):
+            if os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
+
+
+def render_html(
+    path: Path,
+    out_image: Path,
+    *,
+    max_output_bytes: int = MAX_RENDER_IMAGE_BYTES,
+    timeout: int = RENDER_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Screenshot an HTML file with headless Chromium; the caller supplies the network-less namespace."""
+    chromium = find_chromium()
+    if not chromium:
+        raise Unavailable(
+            "HTML preview needs headless Chromium; set " + CHROMIUM_ENV + " or install it for the rendering server"
+        )
+    pil_image = library("PIL.Image")
+    with tempfile.TemporaryDirectory(prefix="branchyard-html-render-") as temporary:
+        work = Path(temporary)
+        staged = work / "page.html"
+        shutil.copyfile(path, staged)
+        shot = work / "shot.png"
+        try:
+            subprocess.run(
+                [
+                    chromium,
+                    "--no-sandbox",  # the enclosing namespace is the sandbox; Chromium cannot nest its own
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--hide-scrollbars",
+                    "--host-resolver-rules=MAP * ~NOTFOUND",
+                    "--user-data-dir=" + str(work / "profile"),
+                    "--window-size=" + str(HTML_VIEWPORT[0]) + "," + str(HTML_VIEWPORT[1]),
+                    "--virtual-time-budget=" + str(HTML_VIRTUAL_TIME_MS),
+                    "--screenshot=" + str(shot),
+                    staged.as_uri(),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ArtifactError("Chromium page rendering timed out") from error
+        except subprocess.CalledProcessError as error:
+            detail = " (exit " + str(error.returncode) + ")" + converter_note(error.stderr)
+            raise ArtifactError("Chromium failed to render the HTML page" + detail) from error
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ArtifactError("Chromium failed to render the HTML page") from error
+        if not shot.is_file() or shot.stat().st_size == 0:
+            raise ArtifactError("Chromium completed without producing a screenshot")
+        raw_png = shot.read_bytes()
+        if len(raw_png) > max_output_bytes:
+            raise ArtifactError("Rendered page image exceeds the output byte limit")
+        try:
+            with pil_image.open(io.BytesIO(raw_png)) as verified:
+                if verified.width <= 0 or verified.height <= 0 or verified.width * verified.height > MAX_RENDER_PIXELS:
+                    raise ArtifactError("Rendered page dimensions exceed preview pixel bounds")
+                verified.verify()
+            with pil_image.open(io.BytesIO(raw_png)) as decoded:
+                width, height = decoded.width, decoded.height
+        except Exception as error:
+            if isinstance(error, (ArtifactError, Unavailable)):
+                raise
+            raise ArtifactError("Rendered PNG failed image verification") from error
+        out_image.parent.mkdir(parents=True, exist_ok=True)
+        with output_file(out_image) as target:
+            target.write_bytes(raw_png)
+    return {"pages": 1, "width": width, "height": height, "warnings": []}
+
+
 def render(path: Path, out: Path) -> dict[str, Any]:
     """Render every page into a new preview directory, exposing conversion failures."""
     raster = shutil.which("pdftoppm")

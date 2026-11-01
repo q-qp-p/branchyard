@@ -181,6 +181,7 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         "WORKSPACE",
         "SOURCES",
         "SESSIONS",
+        "HTML",
         "OUTPUTS",
         "DOCUMENTS",
         "ACCEPTED",
