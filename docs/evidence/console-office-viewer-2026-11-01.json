@@ -240,7 +240,7 @@
     "default_console_browser": "passed; renderer explicitly unavailable, original downloads and viewer acceptance checked",
     "real_console_browser": {
       "result": "passed",
-      "command": "BRANCHYARD_PREVIEW_BWRAP=/usr/bin/bwrap BRANCHYARD_PREVIEW_PYTHON=/home/user/wt/knowledge-run-venv/bin/python3 cargo test -p branchyard-server --test console_workspace_browser --locked --offline -- --nocapture",
+      "command": "BRANCHYARD_PREVIEW_BWRAP=/usr/bin/bwrap BRANCHYARD_PREVIEW_PYTHON=<artifact-runtime venv>/bin/python3 cargo test -p branchyard-server --test console_workspace_browser --locked --offline -- --nocapture",
       "viewports": [
         1440,
         390
@@ -263,7 +263,7 @@
     "At 390 px, a preceding page fragment kept the page counter behind; the viewer now selects the page with the largest visible overlap."
   ],
   "build_friction": [
-    "Shared Cargo lock waits; all builds used /home/user/wt/target-fan.",
+    "Shared Cargo lock waits; all builds used one shared target directory.",
     "Touch branchyard-provision/src/skills.rs as well as branchyard-setup/build.rs to refresh the embedded toolkit.",
     "Set GIT_CEILING_DIRECTORIES=$TMPDIR for fast gates because the branch-private scratch directory is under a Git worktree.",
     "Shared mypy/ruff caches and Chromium required execution outside the managed filesystem sandbox."
