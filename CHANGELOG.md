@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-01
+
 The console's second pass gives it depth and density. Surfaces have three
 elevations (the page, raised panels and cards, and the overlay for the one
 object a page asks about), each a background, a border and a shadow in light
