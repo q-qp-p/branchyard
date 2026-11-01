@@ -134,6 +134,8 @@ Kept for the record; not current guidance.
 | Read | What it answers |
 |---|---|
 | [Implementation plan (history)](implementation-plan.md) | What did the first plan say to build, in what order? It is history; the live plan is the [roadmap](roadmap.md). |
+| [Dogfood round 6](dogfood/round6/README.md) | What happened when Branchyard had Claude Code, Codex, Antigravity and GLM through Z.ai build a Branchyard feature (HTML outputs previewed and run in a sandboxed iframe) through `by fan` and `by run`, judged, compared and landed, on 1 November 2026, with the four drivers qualified live the same day? Feature 2 of the round (Office documents in a real viewer) is recorded in `dogfood/round6/feature2-office-viewer.md` by its own agent |
+| [Dogfood round 6, feature 2](dogfood/round6/feature2-office-viewer.md) | How did five real harnesses build the Office document viewer through `by fan` and `by run`, what did the judges and the tests say of each attempt, and what did the console show while they ran? |
 | [Dogfood round 5](dogfood/round5/README.md) | How did Branchyard score as a delegation substrate on the real-harness battery after round 5 ([checks](dogfood/round5/checks.md), [progress](dogfood/round5/progress.md))? |
 | [Dogfood round 4](dogfood/round4/README.md) | How did Branchyard score on the same battery after round 4 ([checks](dogfood/round4/checks.md), [progress](dogfood/round4/progress.md))? |
 
