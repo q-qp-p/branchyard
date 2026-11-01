@@ -77,12 +77,15 @@ pub struct UndoReport {
     pub outcomes: Vec<UndoOutcome>,
 }
 
-/// `GET /v1/repos/{repo}/decisions`: what waits for a person, in the order
-/// to take it. A branch parked on an approval or a question comes first,
-/// the one that has waited longest before the rest, because it moves only
-/// when someone answers; then the branches ready to merge, oldest first,
-/// because delivery waits on them; then the stopped and the stalled, which
-/// nothing waits on. Nothing here expires.
+/// `GET /v1/repos/{repo}/decisions` and `GET /v1/projects/{project}/decisions`:
+/// what waits for a person, in the order to take it. A branch parked on an
+/// approval or a question comes first, the one that has waited longest
+/// before the rest, because it moves only when someone answers; then the
+/// branches ready to merge, oldest first, because delivery waits on them;
+/// then the stopped and the stalled, which nothing waits on. A project's
+/// list has the same order over its workspaces: an `output` waiting to be
+/// accepted is delivery, a `session` that stopped is nobody's. Nothing here
+/// expires.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DecisionList {
@@ -96,7 +99,9 @@ pub struct DecisionList {
 pub struct Decision {
     /// What shape the decision takes.
     pub kind: DecisionKind,
-    /// The branch it is about.
+    /// The branch it is about. For an `output` or a `session` decision it is
+    /// the session's branch in the workspace's source, which a stopped
+    /// session that never started names before it exists.
     pub branch: String,
     /// Who waits on the person for it.
     pub waits: Waits,
@@ -104,7 +109,9 @@ pub struct Decision {
     /// knows: when the ask opened or the question was sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_ms: Option<u64>,
-    /// The branch's status at the time.
+    /// The branch's status at the time. For a `session` that never started
+    /// it is the failure or interruption of the operation that should have
+    /// started it.
     pub status: BranchStatus,
     /// Its candidate commit, when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +122,45 @@ pub struct Decision {
     /// For a `question`: the message, as the asker's parent's inbox holds it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<Message>,
+    /// For an `output` or a `session` decision: the workspace's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// For an `output` or a `session` decision: the workspace's title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_title: Option<String>,
+    /// For an `output` or a `session` decision: the session's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// For an `output` or a `session` decision: the session's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
+    /// For a `session`: where the session stands, in the words the
+    /// workspace page uses (`Failed: the harness exited`, `Did not start`,
+    /// `Interrupted`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// For an `output`: the file waiting to be accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<DecisionOutput>,
+}
+
+/// The output an `output` decision is about: a file a workspace session
+/// published from its current turn, not yet accepted. Its bytes are at
+/// `GET /v1/workspaces/{workspace}/artifacts/{id}/content` and a preview at
+/// `…/preview`; `POST /v1/workspaces/{workspace}/finalize` accepts it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionOutput {
+    /// The artifact's id.
+    pub id: String,
+    /// The file's name.
+    pub name: String,
+    /// The file's media type.
+    pub media_type: String,
+    /// Its size in bytes.
+    pub size: u64,
+    /// The turn of the session that published it.
+    pub turn: u64,
 }
 
 /// The shapes a decision takes.
@@ -132,6 +178,11 @@ pub enum DecisionKind {
     Stop,
     /// A running turn with no harness activity for its stall window.
     Stall,
+    /// A workspace session's output waiting to be accepted: the deliverable
+    /// of a knowledge session, a document rather than a diff.
+    Output,
+    /// A workspace session that failed, was interrupted or never started.
+    Session,
 }
 
 /// Who a decision keeps waiting.

@@ -65,7 +65,7 @@
     }
   },
   "tests": {
-    "total": 3189,
+    "total": 3193,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
@@ -129,7 +129,7 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 464,
+        "tests": 468,
         "ignored": 1
       },
       "branchyard-setup": {
@@ -163,7 +163,7 @@
     }
   },
   "http": {
-    "route_count": 126,
+    "route_count": 127,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -184,6 +184,7 @@
       "/v1/operations/{id}",
       "/v1/projects",
       "/v1/projects/{project}",
+      "/v1/projects/{project}/decisions",
       "/v1/repos",
       "/v1/repos/{repo}/approvals",
       "/v1/repos/{repo}/approvals/{id}/allow",

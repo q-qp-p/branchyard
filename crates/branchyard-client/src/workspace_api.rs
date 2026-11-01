@@ -560,6 +560,21 @@ impl crate::Client {
         self.get(&format!("/v1/projects/{}", crate::http::encode(id)))
     }
 
+    /// What waits for a person in one project's workspaces, in the order to
+    /// take it: outputs waiting to be accepted, then sessions that stopped
+    /// ([`crate::effects_api::DecisionList`]).
+    pub fn project_decisions(
+        &self,
+        id: &str,
+    ) -> Result<Vec<crate::effects_api::Decision>, crate::Error> {
+        Ok(self
+            .get::<crate::effects_api::DecisionList>(&format!(
+                "/v1/projects/{}/decisions",
+                crate::http::encode(id)
+            ))?
+            .decisions)
+    }
+
     /// Create a project using a durable idempotency key.
     pub fn create_project(
         &self,

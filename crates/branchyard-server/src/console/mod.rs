@@ -1,6 +1,7 @@
 //! Durable presentation and access bindings for native tasks and attempts.
 pub(crate) mod auth;
 mod collaboration;
+mod decisions;
 mod execution;
 mod harness_input;
 mod presets;

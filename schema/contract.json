@@ -8485,7 +8485,7 @@
       "required": [
         "decisions"
       ],
-      "description": "`GET /v1/repos/{repo}/decisions`: what waits for a person, in the order\nto take it. A branch parked on an approval or a question comes first,\nthe one that has waited longest before the rest, because it moves only\nwhen someone answers; then the branches ready to merge, oldest first,\nbecause delivery waits on them; then the stopped and the stalled, which\nnothing waits on. Nothing here expires.",
+      "description": "`GET /v1/repos/{repo}/decisions` and `GET /v1/projects/{project}/decisions`:\nwhat waits for a person, in the order to take it. A branch parked on an\napproval or a question comes first, the one that has waited longest\nbefore the rest, because it moves only when someone answers; then the\nbranches ready to merge, oldest first, because delivery waits on them;\nthen the stopped and the stalled, which nothing waits on. A project's\nlist has the same order over its workspaces: an `output` waiting to be\naccepted is delivery, a `session` that stopped is nobody's. Nothing here\nexpires.",
       "title": "DecisionList",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$defs": {
@@ -8498,7 +8498,7 @@
             },
             "branch": {
               "type": "string",
-              "description": "The branch it is about."
+              "description": "The branch it is about. For an `output` or a `session` decision it is\nthe session's branch in the workspace's source, which a stopped\nsession that never started names before it exists."
             },
             "waits": {
               "$ref": "#/$defs/Waits",
@@ -8515,7 +8515,7 @@
             },
             "status": {
               "$ref": "#/$defs/BranchStatus",
-              "description": "The branch's status at the time."
+              "description": "The branch's status at the time. For a `session` that never started\nit is the failure or interruption of the operation that should have\nstarted it."
             },
             "candidate": {
               "anyOf": [
@@ -8549,6 +8549,52 @@
                 }
               ],
               "description": "For a `question`: the message, as the asker's parent's inbox holds it."
+            },
+            "workspace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's id."
+            },
+            "workspace_title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's title."
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's id."
+            },
+            "session_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's name."
+            },
+            "phase": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For a `session`: where the session stands, in the words the\nworkspace page uses (`Failed: the harness exited`, `Did not start`,\n`Interrupted`)."
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionOutput"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For an `output`: the file waiting to be accepted."
             }
           },
           "required": [
@@ -8585,6 +8631,16 @@
               "type": "string",
               "const": "stall",
               "description": "A running turn with no harness activity for its stall window."
+            },
+            {
+              "type": "string",
+              "const": "output",
+              "description": "A workspace session's output waiting to be accepted: the deliverable\nof a knowledge session, a document rather than a diff."
+            },
+            {
+              "type": "string",
+              "const": "session",
+              "description": "A workspace session that failed, was interrupted or never started."
             }
           ],
           "description": "The shapes a decision takes."
@@ -9310,6 +9366,43 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "DecisionOutput": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The artifact's id."
+            },
+            "name": {
+              "type": "string",
+              "description": "The file's name."
+            },
+            "media_type": {
+              "type": "string",
+              "description": "The file's media type."
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Its size in bytes."
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The turn of the session that published it."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "media_type",
+            "size",
+            "turn"
+          ],
+          "description": "The output an `output` decision is about: a file a workspace session\npublished from its current turn, not yet accepted. Its bytes are at\n`GET /v1/workspaces/{workspace}/artifacts/{id}/content` and a preview at\n`…/preview`; `POST /v1/workspaces/{workspace}/finalize` accepts it."
         }
       }
     },

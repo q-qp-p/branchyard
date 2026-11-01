@@ -30,6 +30,15 @@ names the files another open branch also holds.
 In the deck, Enter in a question's answer box sends the answer (Shift+Enter adds a
 line); it used to add a line, so only the Answer button sent.
 
+Knowledge work reaches the deck. `GET /v1/projects/{project}/decisions`
+(`Client::project_decisions`, `Client.project_decisions`) lists a project's
+workspace outputs waiting to be accepted (`output`) and its sessions that
+failed, were interrupted or never started (`session`) as `Decision`s, and
+Needs you shows them beside the repository's: an output card mounts the
+preview, with Download original and a held Accept, instead of a diff; the
+project page's board draws its open sessions on one clock; the tab title
+counts the cards.
+
 Reading an operation, or a fork, no longer fails with `404 unknown_branch`
 for a branch that was removed meanwhile: a fork's removed parent, or a goal
 judge's scratch branch removed between two reads of the operation that ran
