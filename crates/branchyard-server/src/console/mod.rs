@@ -6,6 +6,7 @@ mod execution;
 mod harness_input;
 mod presets;
 mod previews;
+pub(crate) use previews::frame_html;
 mod quotas;
 mod routes;
 mod runtime;

@@ -23,7 +23,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
   const scope = new URL(self.registration.scope);
-  if (!url.pathname.startsWith(scope.pathname) || url.pathname.startsWith('/v1/')) return;
+  if (!url.pathname.startsWith(scope.pathname) || url.pathname.startsWith('/v1/') || url.pathname.startsWith('/app/frame/')) return;
   event.respondWith(fetch(event.request)
     .then((response) => {
       if (response.ok) {

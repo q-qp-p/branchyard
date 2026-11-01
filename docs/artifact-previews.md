@@ -55,6 +55,23 @@ diagnostic reaches the failure message. No test needs LibreOffice. Not done: the
 hosts with restricted user namespaces (Docker backend) were not rerun, no browser
 acceptance, no model turns, and no other LibreOffice version.
 
+Status, 1 November 2026: live for the Bubblewrap backend; hermetic for the
+guards. An HTML output previews as a page image like a DOCX does. The service
+runs headless Chromium (`BRANCHYARD_PREVIEW_CHROMIUM`, else the one under
+`PLAYWRIGHT_BROWSERS_PATH` or `/opt/pw-browsers`; nothing is downloaded) inside
+the converter's namespace: no network, a private home and `/tmp`, the source
+read-only and the browser's install directory bound read-only for HTML only.
+On this machine (Linux 6.18.44, Bubblewrap 0.9.0, Chromium 153.0.8010.12, Python
+3.13) a workspace output with inline CSS and JavaScript answered `passed` with
+`pages: 1`, and the console showed its 1280 by 1024 image. Chromium crashed
+(exit -5) under the helper's 2 GiB address-space limit, so the launcher applies
+none to an HTML source and keeps the CPU, file-size, descriptor and 45-second
+limits. "Open" runs the page in a sandboxed iframe, [below](#run-an-html-output).
+Hermetic: `tests/test_artifact_previews.py` with a fake Chromium, the Rust
+namespace-argument and service tests with a fake `bwrap`. Not done: the Docker
+backend (its image has no Chromium), pages that need a network, a page taller
+than one screen, other Chromium versions.
+
 ## Open a preview
 
 An authorized client requests:
@@ -86,7 +103,7 @@ so an upload form can show the server's limits before sending a document.
 Query options apply to both requests:
 
 - `view=auto`, `table` or `pages`. Auto selects tables for CSV/XLSX and pages
-  for documents and raster images.
+  for documents, HTML and raster images.
 - `page=1` selects a document page or presentation slide, starting at one.
 - `sheet=NAME` selects an XLSX sheet.
 - `offset=0&limit=100` selects table rows. The maximum limit is 500 and maximum
@@ -101,13 +118,29 @@ trailing empty CSV fields, or workbook cells that carry only a style. An XLSX
 sheet is read row by row at each row's own width, so a stored dimension that
 understates the used range hides nothing.
 CSV and XLSX values are shown without executing formulas. XLSX print preview,
-DOCX pages and PPTX slides use the native rendering helper; PDF and raster
+DOCX pages and PPTX slides use the native rendering helper; an HTML page is one
+screenshot (1280 by 1024) from headless Chromium in the same namespace; PDF and raster
 images use the same bounded page response.
 
 Table JSON has a 2 MiB encoded response budget. A wide table can return fewer
 rows than `limit`; continue at `next_offset`. The response includes a warning,
 and cell strings remain unchanged. Plain text and Markdown use an inert text
 response. JSON-only modes need no image output directory from the helper.
+
+## Run an HTML output
+
+The page image shows what a page looks like; the page itself runs only in the
+console's sandboxed iframe. An authorized client posts
+`POST /v1/workspaces/{workspace}/artifacts/{artifact}/frame` (the artifact's
+read grant, an `.html` or `.htm` name, at most 8 MiB) and receives
+`{"path": "/app/frame/{ticket}"}`. The path needs no bearer token, since an
+iframe cannot send one; the ticket is a random capability held in memory for ten
+minutes, and each request rechecks the caller's grant and membership. It answers
+`Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src
+'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors
+'self'`, `private, no-store` and `nosniff`, and no `X-Frame-Options`; the rest
+of the console keeps `DENY`. The console frames it with `sandbox="allow-scripts"`
+and no `allow-same-origin`. See the [security model](companion.md#security-model).
 
 Missing tools produce `preview_unavailable` with setup guidance. Busy converters
 produce `preview_busy` with a retry interval. Conversion timeouts produce
