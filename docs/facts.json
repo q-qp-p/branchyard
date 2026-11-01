@@ -69,7 +69,7 @@
     }
   },
   "tests": {
-    "total": 3210,
+    "total": 3214,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
@@ -97,7 +97,7 @@
         "ignored": 0
       },
       "branchyard-harness": {
-        "tests": 159,
+        "tests": 163,
         "ignored": 0
       },
       "branchyard-herdr": {
@@ -409,8 +409,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/oh-my-pi-acp.json",
-        "date": "2026-10-25",
-        "version": "omp/18.12.6"
+        "date": "2026-11-01",
+        "version": "omp/18.15.0"
       },
       "status": "live-qualified"
     },
@@ -425,8 +425,8 @@
         "passed": 6,
         "total": 9,
         "report": "qualification/deepseek-harness-acp.json",
-        "date": "2026-10-25",
-        "version": "0.2.1-rc.2"
+        "date": "2026-11-01",
+        "version": "0.2.1-rc.5"
       },
       "status": "partial"
     },
@@ -457,8 +457,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/opencode-acp.json",
-        "date": "2026-10-25",
-        "version": "1.19.4"
+        "date": "2026-11-01",
+        "version": "1.19.5"
       },
       "status": "live-qualified"
     },
@@ -559,7 +559,7 @@
         "passed": 6,
         "total": 9,
         "report": "qualification/hermes-acp.json",
-        "date": "2026-10-25",
+        "date": "2026-11-01",
         "version": "Hermes Agent v0.19.0 (2026.7.20)"
       },
       "status": "partial"
