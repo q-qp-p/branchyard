@@ -28,6 +28,10 @@
       "branchyard-workspace"
     ]
   },
+  "artifact_preview": {
+    "page_cap": 64,
+    "row_page": 200
+  },
   "vendor": {
     "files": 259,
     "by_source": {
@@ -65,7 +69,7 @@
     }
   },
   "tests": {
-    "total": 3199,
+    "total": 3201,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
@@ -129,7 +133,7 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 471,
+        "tests": 473,
         "ignored": 1
       },
       "branchyard-setup": {

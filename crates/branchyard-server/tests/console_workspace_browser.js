@@ -473,6 +473,91 @@ let browser = null;
   }
   process.stderr.write(`previews from this server: ${rendered.join('; ')}\n`);
 
+  // Open the same originals in the full-width viewer. These answers are never
+  // intercepted: explicit converter settings must render; the default runtime
+  // without its Office dependencies must explain that it cannot make previews.
+  const viewer = page.locator('#document-viewer');
+  const documentPreview = page.locator('#document-preview .by-artifact-preview');
+  const realDocuments = process.env.BY_EXPECT_DOCUMENT_PREVIEWS === '1';
+  const openDocument = async (name, source = false) => {
+    await go(`#/w/${ws}`);
+    await titled('Backlog review').waitFor();
+    await page.locator(source ? '#tab-sources' : '#tab-outputs').click();
+    await (source ? sourceName(name) : outputName(name)).click();
+    await page.locator('#preview .preview-head').getByRole('link', { name: 'Open', exact: true }).click();
+    await viewer.waitFor(TURN);
+    const id = source ? `source:${sourceId[name]}` : artifact[name];
+    if (decodeURIComponent(hash()) !== `#/w/${ws}/doc/${id}`) throw new Error(`Open went to ${hash()}`);
+    await viewer.getByRole('heading', { level: 1, name, exact: true }).waitFor();
+    await documentPreview.locator(realDocuments ? '.by-preview-table, .by-preview-page-img' : '.by-preview-failure').first().waitFor(TURN);
+    if (!realDocuments) {
+      await documentPreview.locator('.by-preview-state-message', { hasText: 'This server cannot make previews right now' }).waitFor();
+    }
+    await noOverflow(`the ${name} viewer`);
+  };
+  const loadedPage = async (number) => {
+    const image = documentPreview.locator(`[data-page="${number}"] img.by-preview-page-img`);
+    await image.waitFor(TURN);
+    await image.evaluate((img) => img.complete && img.naturalWidth > 0 ? Promise.resolve() : new Promise((resolve, reject) => {
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', () => reject(new Error('viewer page image failed')), { once: true });
+    }));
+  };
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const name of [DOCX, PPTX, XLSX]) {
+      await openDocument(name);
+      await viewer.getByRole('button', { name: 'Accept', exact: true }).waitFor();
+      if (realDocuments && name === DOCX) {
+        await documentPreview.locator('[data-page="3"]').scrollIntoViewIfNeeded();
+        await loadedPage(3);
+        await page.waitForFunction(() => document.querySelector('#document-preview .by-preview-page-indicator').textContent.trim() === '3 / 3');
+      }
+      if (realDocuments && name === PPTX) {
+        if (width === 390 && await documentPreview.locator('.by-preview-thumbnails').getAttribute('open') !== null) throw new Error('the slide thumbnails are not folded at 390px');
+        await documentPreview.getByRole('combobox', { name: 'Zoom', exact: true }).selectOption('125');
+        await documentPreview.getByRole('combobox', { name: 'Zoom', exact: true }).selectOption('fit');
+        await documentPreview.getByRole('button', { name: 'Next page', exact: true }).click();
+        await documentPreview.locator('img.by-preview-page-img[alt*="2"]').first().waitFor(TURN);
+        await page.keyboard.press('ArrowRight');
+        await documentPreview.locator('img.by-preview-page-img[alt*="3"]').first().waitFor(TURN);
+        await page.keyboard.press('ArrowLeft');
+        await documentPreview.locator('img.by-preview-page-img[alt*="2"]').first().waitFor(TURN);
+        await documentPreview.getByRole('button', { name: 'Previous page', exact: true }).click();
+        await documentPreview.locator('img.by-preview-page-img[alt*="1"]').first().waitFor(TURN);
+        if (width === 1440) await documentPreview.getByRole('button', { name: 'Slide 3', exact: true }).click();
+      }
+      if (realDocuments && name === XLSX) {
+        await documentPreview.getByRole('tab', { name: 'Summary', exact: true }).click();
+        await documentPreview.locator('td[colspan="2"]', { hasText: 'Merged summary note' }).waitFor();
+        const calculated = documentPreview.locator('td[title="=SUM(B2:B3)"]');
+        await calculated.waitFor();
+        if ((await calculated.textContent()).trim() !== '31') throw new Error('the grid did not show the calculated formula value');
+        await documentPreview.getByRole('tab', { name: 'Backlog', exact: true }).click();
+        await documentPreview.getByRole('button', { name: /Next 200/ }).click();
+        await documentPreview.getByRole('cell', { name: 'ticket-205', exact: true }).waitFor();
+        await documentPreview.getByText(/Showing rows 20[12]–20[45]/).waitFor();
+        await documentPreview.getByRole('button', { name: 'Print View', exact: true }).click();
+        await documentPreview.locator('img.by-preview-page-img').first().waitFor(TURN);
+      }
+      sameBytes(await downloaded(() => viewer.getByRole('button', { name: 'Download original', exact: true }).click()), name, `the ${name} viewer original`);
+      if (shots) await page.screenshot({ path: `${shots}/viewer-${format(name)}-${width}.png` });
+      await page.keyboard.press('Escape');
+      await titled('Backlog review').waitFor();
+      await viewer.waitFor({ state: 'detached' });
+    }
+  }
+  await openDocument(DOCX, true);
+  if (await viewer.getByRole('button', { name: 'Accept', exact: true }).count()) throw new Error('a source offers Accept');
+  if (realDocuments) {
+    await documentPreview.locator('[data-page="3"]').scrollIntoViewIfNeeded();
+    await loadedPage(3);
+  }
+  await page.keyboard.press('Escape');
+  await titled('Backlog review').waitFor();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator('#tab-outputs').click();
+
   // Held, never answered, so each preview stays in flight until the page abandons it.
   await page.route(PREVIEW, () => {});
   const abandon = async (name, leave, what) => {
@@ -500,6 +585,7 @@ let browser = null;
   if (await focusedPreview() !== `output:${artifact[CSV]}`) throw new Error(`Tab from an output's checkbox reached ${await focusedPreview()}, not its name`);
   await expectShown(CSV, await previewed(() => page.keyboard.press('Enter'), previewPath(artifact[CSV])));
   say('OUTPUTS');
+  say('DOCUMENTS');
 
   sameBytes(await downloaded(() => page.getByRole('button', { name: 'Download original', exact: true }).click()), CSV, 'the downloaded original');
   await choose(CSV).check();
@@ -734,6 +820,22 @@ let browser = null;
   await boardRows.first().getByRole('link', { name: 'Review', exact: true }).waitFor();
   await noOverflow('the project board');
   say('DECK');
+
+  // The viewer's own acceptance uses the current revision and exact output,
+  // then removes its action. Sources and already accepted outputs offer none.
+  await go(`#/w/${ws}/doc/${latest[PPTX]}`);
+  await viewer.getByRole('heading', { level: 1, name: PPTX, exact: true }).waitFor();
+  await viewer.getByRole('button', { name: 'Accept', exact: true }).click();
+  await page.locator('#confirm-ok').click();
+  await toast(`Accepted ${PPTX}.`);
+  if (!(await viewer.getByRole('button', { name: 'Accepted', exact: true }).isDisabled())) throw new Error('the viewer can accept the output twice');
+  const viewerAccepted = (await callApi('GET', `/v1/workspaces/${ws}`)).body.accepted_deliverables;
+  if (!viewerAccepted.some((a) => a.artifact_id === latest[PPTX])) throw new Error('the viewer accepted a different output');
+  await page.reload();
+  await viewer.getByRole('heading', { level: 1, name: PPTX, exact: true }).waitFor();
+  if (await viewer.getByRole('button', { name: 'Accept', exact: true }).count()) throw new Error('an accepted output offers Accept after reload');
+  await page.keyboard.press('Escape');
+  await titled('Backlog review').waitFor();
 
   const openOutput = async (which = CSV) => {
     await page.locator('#tab-outputs').click();

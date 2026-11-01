@@ -22,7 +22,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "sdk" / "python"))
 
-from branchyard_artifacts.common import digest, output_directory  # noqa: E402
+from branchyard_artifacts.common import canonical_zip, digest, library, output_directory  # noqa: E402
 from branchyard_artifacts.docx import create as create_docx  # noqa: E402
 from branchyard_artifacts.pptx import create as create_pptx  # noqa: E402
 from branchyard_artifacts.xlsx import create as create_xlsx  # noqa: E402
@@ -79,6 +79,7 @@ def _xlsx_spec(staging: Path) -> Path:
             "sheets": [
                 {
                     "name": "Backlog",
+                    "freeze_panes": "A2",
                     "cells": {
                         "A1": "ticket_id",
                         "B1": "severity",
@@ -88,6 +89,7 @@ def _xlsx_spec(staging: Path) -> Path:
                         "B3": TICKETS[1]["severity"],
                         "A4": TICKETS[2]["ticket_id"],
                         "B4": TICKETS[2]["severity"],
+                        **{f"A{row}": f"ticket-{row}" for row in range(5, 206)},
                     },
                 },
                 {
@@ -278,7 +280,23 @@ def generate(out: Path) -> dict[str, Any]:
         specs = Path(temporary)
         _build_csv(staged / CSV_NAME)
         create_xlsx(_xlsx_spec(specs), staged / XLSX_NAME)
+        workbook = library("openpyxl").load_workbook(staged / XLSX_NAME)
+        workbook["Backlog"].column_dimensions["A"].width = 28
+        workbook["Backlog"].column_dimensions["B"].width = 18
+        summary = workbook["Summary"]
+        summary.merge_cells("A6:B6")
+        summary["A6"] = "Merged summary note"
+        workbook.save(staged / XLSX_NAME)
+        workbook.close()
+        canonical_zip(staged / XLSX_NAME)
         create_docx(_docx_spec(specs), staged / DOCX_NAME)
+        document = library("docx").Document(staged / DOCX_NAME)
+        for number in (2, 3):
+            document.add_page_break()
+            document.add_heading(f"Backlog review — page {number}", level=1)
+            document.add_paragraph("Illustrative follow-up evidence for the document viewer.")
+        document.save(staged / DOCX_NAME)
+        canonical_zip(staged / DOCX_NAME)
         create_pptx(_pptx_specs(specs), staged / PPTX_NAME)
         manifest = {
             "generator": "tools/console_fixtures.py",
@@ -310,7 +328,7 @@ def generate(out: Path) -> dict[str, Any]:
                     DOCX_NAME,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     {
-                        "paragraphs": 5,
+                        "pages": 3,
                         "key_text": ["Backlog review", "Source: branchyard console fixture generator"],
                     },
                 ),

@@ -1,0 +1,272 @@
+{
+  "date": "2026-11-01",
+  "evidence": "Real sandboxed converters on generated fixtures; no model calls.",
+  "command": "python3 $TMPDIR/check-office-renderer.py (server launcher under Bubblewrap with the supplied artifact interpreter)",
+  "versions": {
+    "bubblewrap": "bubblewrap 0.9.0",
+    "libreoffice": "LibreOffice 24.2.7.2 420(Build:2)",
+    "poppler": "pdftoppm version 24.02.0",
+    "python": "Python 3.13.18",
+    "playwright": "1.63.0",
+    "chromium": "153.0.8010.12"
+  },
+  "pages": [
+    {
+      "file": "backlog_report.docx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "docx",
+      "page": 1,
+      "pages": 3,
+      "image": "page-1.png",
+      "width": 1583,
+      "height": 2048,
+      "warnings": []
+    },
+    {
+      "file": "backlog_report.docx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "docx",
+      "page": 2,
+      "pages": 3,
+      "image": "page-2.png",
+      "width": 1583,
+      "height": 2048,
+      "warnings": []
+    },
+    {
+      "file": "backlog_report.docx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "docx",
+      "page": 3,
+      "pages": 3,
+      "image": "page-3.png",
+      "width": 1583,
+      "height": 2048,
+      "warnings": []
+    },
+    {
+      "file": "backlog_briefing.pptx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "pptx",
+      "page": 1,
+      "pages": 3,
+      "image": "page-1.png",
+      "width": 2048,
+      "height": 1152,
+      "warnings": []
+    },
+    {
+      "file": "backlog_briefing.pptx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "pptx",
+      "page": 2,
+      "pages": 3,
+      "image": "page-2.png",
+      "width": 2048,
+      "height": 1152,
+      "warnings": []
+    },
+    {
+      "file": "backlog_briefing.pptx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "pptx",
+      "page": 3,
+      "pages": 3,
+      "image": "page-3.png",
+      "width": 2048,
+      "height": 1152,
+      "warnings": []
+    },
+    {
+      "file": "backlog_metrics.xlsx",
+      "status": "passed",
+      "kind": "pages",
+      "format": "xlsx",
+      "page": 1,
+      "pages": 2,
+      "image": "page-1.png",
+      "width": 1449,
+      "height": 2048,
+      "warnings": []
+    }
+  ],
+  "not_done": [
+    "Live models, physical phones, Safari, Firefox and screen readers.",
+    "Unusual Excel custom formats use the native print view for full display fidelity."
+  ],
+  "grid": [
+    {
+      "file": "backlog_metrics.xlsx",
+      "status": "passed",
+      "kind": "table",
+      "format": "xlsx",
+      "columns": [
+        "Quarter",
+        "Tickets closed"
+      ],
+      "rows": [
+        [
+          "Q1",
+          12
+        ],
+        [
+          "Q2",
+          19
+        ],
+        [
+          "Total",
+          31
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          "Merged summary note",
+          null
+        ]
+      ],
+      "sheets": [
+        "Backlog",
+        "Summary"
+      ],
+      "sheet": "Summary",
+      "offset": 0,
+      "next_offset": null,
+      "warnings": [],
+      "header_details": [
+        {
+          "formatted": "Quarter",
+          "formula": null,
+          "number_format": "General"
+        },
+        {
+          "formatted": "Tickets closed",
+          "formula": null,
+          "number_format": "General"
+        }
+      ],
+      "cell_details": [
+        [
+          {
+            "formatted": "Q1",
+            "formula": null,
+            "number_format": "General"
+          },
+          {
+            "formatted": "12",
+            "formula": null,
+            "number_format": "0"
+          }
+        ],
+        [
+          {
+            "formatted": "Q2",
+            "formula": null,
+            "number_format": "General"
+          },
+          {
+            "formatted": "19",
+            "formula": null,
+            "number_format": "0"
+          }
+        ],
+        [
+          {
+            "formatted": "Total",
+            "formula": null,
+            "number_format": "General"
+          },
+          {
+            "formatted": "31",
+            "formula": "=SUM(B2:B3)",
+            "number_format": "0"
+          }
+        ],
+        [
+          {
+            "formatted": "",
+            "formula": null,
+            "number_format": "General"
+          },
+          {
+            "formatted": "",
+            "formula": null,
+            "number_format": "General"
+          }
+        ],
+        [
+          {
+            "formatted": "Merged summary note",
+            "formula": null,
+            "number_format": "General"
+          },
+          {
+            "formatted": "",
+            "formula": null,
+            "number_format": "General"
+          }
+        ]
+      ],
+      "column_widths": [
+        64.00999999999999,
+        64.00999999999999
+      ],
+      "merges": [
+        {
+          "min_row": 6,
+          "max_row": 6,
+          "min_col": 1,
+          "max_col": 2
+        }
+      ],
+      "frozen_rows": 0
+    }
+  ],
+  "component_browser": {
+    "command": "PLAYWRIGHT=$(npm root -g)/playwright PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node crates/branchyard-server/tests/artifact_preview_browser.js",
+    "result": "passed: all eight hermetic component tests, including largest-visible-page tracking at 390 px, actual column width, and sticky header checks"
+  },
+  "gates": {
+    "fast": "passed; GIT_CEILING_DIRECTORIES=$TMPDIR with shared mypy/ruff caches",
+    "clippy": "passed; cargo clippy -p branchyard-server --all-targets --locked --offline -- -D warnings",
+    "server": "passed; cargo test -p branchyard-server --locked --offline --no-fail-fast",
+    "default_console_browser": "passed; renderer explicitly unavailable, original downloads and viewer acceptance checked",
+    "real_console_browser": {
+      "result": "passed",
+      "command": "BRANCHYARD_PREVIEW_BWRAP=/usr/bin/bwrap BRANCHYARD_PREVIEW_PYTHON=/home/user/wt/knowledge-run-venv/bin/python3 cargo test -p branchyard-server --test console_workspace_browser --locked --offline -- --nocapture",
+      "viewports": [
+        1440,
+        390
+      ],
+      "checks": [
+        "DOCX all three pages and current page indicator",
+        "PPTX slide buttons, arrow keys, thumbnails and mobile fold",
+        "XLSX sheet tabs, merged cell, calculated value 31 and formula tooltip",
+        "200-row paging and selected-sheet native print view",
+        "original download bytes unchanged",
+        "viewer Accept and accepted state after reload",
+        "source viewer without Accept",
+        "Escape back, page disposal and CSP"
+      ]
+    }
+  },
+  "issues_resolved": [
+    "The unavailable-state test selector matched the visible message and live region; it now selects the visible state message.",
+    "Shared Cargo artifacts retained another worktree\u2019s embedded toolkit; rebuilding branchyard-provision/src/skills.rs and an exact-byte server assertion prevent stale helpers.",
+    "At 390 px, a preceding page fragment kept the page counter behind; the viewer now selects the page with the largest visible overlap."
+  ],
+  "build_friction": [
+    "Shared Cargo lock waits; all builds used /home/user/wt/target-fan.",
+    "Touch branchyard-provision/src/skills.rs as well as branchyard-setup/build.rs to refresh the embedded toolkit.",
+    "Set GIT_CEILING_DIRECTORIES=$TMPDIR for fast gates because the branch-private scratch directory is under a Git worktree.",
+    "Shared mypy/ruff caches and Chromium required execution outside the managed filesystem sandbox."
+  ],
+  "test_executable_cleanup": 33
+}

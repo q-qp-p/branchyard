@@ -24,7 +24,7 @@ def _available(name: str) -> bool:
 
 
 @unittest.skipUnless(
-    all(_available(name) for name in ["docx", "openpyxl", "pptx", "jsonschema", "blake3"]),
+    all(_available(name) for name in ["docx", "openpyxl", "pptx", "jsonschema"]),
     "Complete knowledge fixtures need the Python artifacts extra",
 )
 class ConsoleFixturesTest(unittest.TestCase):
@@ -65,6 +65,10 @@ class ConsoleFixturesTest(unittest.TestCase):
         workbook = openpyxl.load_workbook(self.out / "backlog_metrics.xlsx")
         self.assertEqual(workbook.sheetnames, ["Backlog", "Summary"])
         self.assertEqual(workbook["Backlog"]["A2"].value, "00451")
+        self.assertEqual(workbook["Backlog"].freeze_panes, "A2")
+        self.assertEqual(workbook["Backlog"].column_dimensions["A"].width, 28)
+        self.assertEqual(workbook["Backlog"]["A205"].value, "ticket-205")
+        self.assertIn("A6:B6", workbook["Summary"].merged_cells)
         summary = workbook["Summary"]
         self.assertEqual(summary["B4"].value, "=SUM(B2:B3)")
         self.assertEqual(len(summary._charts), 1)
@@ -79,6 +83,11 @@ class ConsoleFixturesTest(unittest.TestCase):
         self.assertIn("Heading 2", styles)
         texts = [paragraph.text for paragraph in document.paragraphs]
         self.assertIn("Backlog review", texts)
+        breaks = document.element.xpath('.//w:br[@w:type="page"]')
+        self.assertEqual(len(breaks), 2)
+        self.assertEqual(
+            next(f for f in self.manifest["files"] if f["filename"].endswith(".docx"))["expected"]["pages"], 3
+        )
         self.assertTrue(any(text.startswith("Source: branchyard console fixture generator") for text in texts))
 
     @unittest.skipUnless(_available("pptx"), "python-pptx is not installed")

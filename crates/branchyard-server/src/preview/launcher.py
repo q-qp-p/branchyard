@@ -34,6 +34,9 @@ def bounded_response(value):
         raise ValueError("Preview metadata exceeds the response byte limit")
     rows = value["rows"]
     result = {**value, "rows": [], "warnings": list(value.get("warnings", []))}
+    details = value.get("cell_details")
+    if details is not None:
+        result["cell_details"] = []
     sheets = result.get("sheets", [])
     if len(sheets) > 1000:
         result["sheets"] = sheets[:1000]
@@ -46,15 +49,23 @@ def bounded_response(value):
     result["next_offset"] = offset + len(rows)
     used = encoded(result)
     kept = []
-    for row in rows:
+    kept_details = []
+    for index, row in enumerate(rows):
+        detail = details[index] if details is not None else None
         addition = encoded(row) + (2 if kept else 0)
+        if details is not None:
+            addition += encoded(detail) + (2 if kept else 0)
         if used + addition > byte_limit:
             break
         kept.append(row)
+        if details is not None:
+            kept_details.append(detail)
         used += addition
     if not kept and rows:
         raise ValueError("One row or its table metadata exceeds the preview response byte limit")
     result["rows"] = kept
+    if details is not None:
+        result["cell_details"] = kept_details
     result["next_offset"] = offset + len(kept)
     return result
 

@@ -2,6 +2,25 @@
 
 `BranchyardArtifactPreview` is a framework-free drop-in DOM component for the Branchyard review pane that renders rich document previews (`csv`, `xlsx`, `docx`, `pptx`, `pdf`, images, and text).
 
+Status, 1 November 2026: hermetic component coverage passes lazy stacked pages,
+slide buttons and arrow keys, folded thumbnails at 390 px, sheet tabs, merged
+cells, column widths, frozen headers and formula tooltips. Live converter checks
+on generated fixtures used Bubblewrap 0.9.0, LibreOffice 24.2.7.2, Poppler
+24.02.0 and Python 3.13.18: every page of a three-page DOCX and every slide of a
+three-slide PPTX rendered through the server launcher; the selected XLSX Summary
+sheet produced two print pages. The [dated Office viewer record](evidence/console-office-viewer-2026-11-01.json)
+contains these responses. `python3 tools/check.py --fast` passed with the branch
+scratch directory as the Git ceiling. The complete server test suite and
+Clippy with warnings denied passed, including the default console browser's
+unavailable-renderer state, original downloads and viewer acceptance. The
+real-converter console browser also passed in Chromium 153.0.8010.12 through
+Playwright 1.63.0 at 1440 and 390 px: page/slide navigation, current page tracking,
+formatted formula values, merged cells, row paging, selected-sheet print view,
+original download bytes, viewer acceptance and Escape back. Not done: a live
+model, a real phone, Safari, Firefox or a screen reader; unusual Excel custom
+format codes rely on native print view for full display fidelity.
+
+
 ## Files
 
 - `crates/branchyard-server/src/companion/assets/artifact-preview.js`: Defines global `window.BranchyardArtifactPreview`.
@@ -22,6 +41,8 @@ const preview = window.BranchyardArtifactPreview.mount(container, {
   // Optional: shown in the toolbar; the console names the file in its own heading
   displayName: 'financial-analysis.xlsx',
   mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  // Optional full document experience (the console's Open action sets this):
+  viewer: true,
   // Parent UI provides existing credentialed fetch
   fetchAuthenticated: (path, init) => window.fetchWithAuth(path, init)
 });
@@ -36,6 +57,32 @@ const preview = window.BranchyardArtifactPreview.mount(container, {
 ## In the console
 
 The companion serves both files from `/app/` (the `ASSETS` table in `crates/branchyard-server/src/companion/mod.rs`), loads them from `index.html`, and keeps them in the service worker's offline shell. The page's policy allows `img-src 'self' blob:` for the component's page images; scripts and requests stay same-origin. A workspace's **Sources** and **Outputs** tabs mount the component under their list, with `baseUrl` `/v1/workspaces/{workspace}/sources/{source}` or `/v1/workspaces/{workspace}/artifacts/{artifact}`, and `fetchAuthenticated` adds the tab's bearer token to each request. The console names the file and offers **Download original** above the component, in every state. It keeps one live handle for sources and outputs together and disposes it when the route, the inspector tab, the file previewed or the source changes, and on sign-out; see [projects and workspaces](companion.md#projects-and-workspaces).
+
+## Full document viewer
+
+**Open** beside an inline preview goes to `#/w/<workspace>/doc/<artifact>`.
+Sources use `doc/source:<source>` in the same route. The console resolves the
+identifier from the current workspace before mounting the viewer, preserving
+workspace authorization and the original's download route.
+
+With `viewer: true`, DOCX/PDF pages are stacked in a scrollable document area.
+An intersection observer fetches a page's metadata and authenticated PNG when
+its placeholder approaches the viewport; the toolbar shows the current page.
+PPTX displays one slide with a thumbnail strip, previous/next buttons and arrow
+keys. The strip folds at phone widths, including 390 px. Fit-to-width zoom keeps
+pages readable inside the available width. Page navigation stops at the server's
+<!-- fact:artifact_preview.page_cap -->64<!-- /fact -->-page cap and shows its warning for a longer original.
+
+XLSX has sheet tabs and requests <!-- fact:artifact_preview.row_page -->200<!-- /fact --> data rows at a time, with the displayed row
+range and previous/next controls. Column widths, merged cells, formatted values
+and the frozen header are carried by the table metadata. Formulas remain inert
+and appear as cell tooltips, with stored calculation results as the displayed
+value; missing caches get a bounded native recalculation when available. **Print View** requests the selected sheet through the pages path.
+
+The console supplies **Download original**, **Accept** for an unaccepted output
+(with current-result eligibility and server revision checks), and Escape back
+to the workspace. Leaving the viewer disposes its observer, requests and Blob
+URLs. These controls remain available when conversion is unavailable.
 
 ## Security & Architecture Contract
 

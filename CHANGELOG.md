@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Office files open in a full-width console viewer: DOCX pages load as you scroll,
+PPTX slides have thumbnails and keyboard navigation, and XLSX workbooks have
+sheet tabs, column widths, merged cells, formatted cached values with formula
+tooltips, frozen headers and <!-- fact:artifact_preview.row_page -->200<!-- /fact -->-row pagination. Print view renders the selected
+sheet through LibreOffice and Poppler. Page previews are cached individually
+and bounded to <!-- fact:artifact_preview.page_cap -->64<!-- /fact --> pages, with download guidance for longer originals.
+
+
 The console becomes a dispatcher's desk. Needs you is a deck: one decision
 at a time, shaped for what it is (an approval, a question, a merge, a stop,
 a stall), the question at the top, the evidence in the middle and the
