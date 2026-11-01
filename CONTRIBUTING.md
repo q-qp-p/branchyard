@@ -190,6 +190,8 @@ The remedy is one `CARGO_TARGET_DIR` per worktree when the disk allows it. When 
 
 `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0` keep the cache small, which matters when several worktrees share one directory.
 
+A fan of real harnesses over this repository multiplies the problem: every attempt builds and tests the workspace, and eight agents on four cores (dogfood round 6, 1 November 2026: load averages of 8.8 to 16) slowed every attempt enough that seven of eight hit their 45-minute cap with no commit, which no judge scores. Keep the attempts at or below the core count; give each one the build rules in its environment, not its prompt (`CARGO_TARGET_DIR` on one shared, pre-built directory taken with `flock -o`, `CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`), since a harness's own sandbox can make the shared directory read-only and send the build into `/tmp`; ask the task to commit after each unit passes; and remove the test executables a run built when it ends, since a shared directory grows by gigabytes per attempt. The record is `docs/dogfood/round6/README.md`.
+
 ## Use a vetted crate for a codec
 
 Do not write a percent, hex, base64, shell-quoting, URL or tar codec by hand. Five copies of `percent_decode` once disagreed about `+` and all dropped a trailing `%41`. Call the crate, or the one shared helper built on it:
