@@ -1086,7 +1086,7 @@ fn harnesses_lists_every_profile_with_availability_and_qualification() {
         .qualification
         .as_deref()
         .unwrap()
-        .starts_with("9/9 on 2.1.310"));
+        .starts_with("9/9 on 2.1.316"));
     let acp = harnesses
         .iter()
         .find(|h| h.profile == "claude-code-acp")
@@ -1099,7 +1099,7 @@ fn harnesses_lists_every_profile_with_availability_and_qualification() {
     assert!(codex.default);
     assert_eq!(
         codex.qualification.as_deref(),
-        Some("9/9 on codex-cli 0.164.0")
+        Some("9/9 on codex-cli 0.166.0")
     );
     let codex_acp = harnesses.iter().find(|h| h.profile == "codex-acp").unwrap();
     assert!(!codex_acp.default && codex_acp.qualification.is_none());

@@ -316,8 +316,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/claude-code-stream-json.json",
-        "date": "2026-10-25",
-        "version": "2.1.310 (Claude Code)"
+        "date": "2026-11-01",
+        "version": "2.1.316 (Claude Code)"
       },
       "status": "live-qualified"
     },
@@ -348,8 +348,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/codex-app-server.json",
-        "date": "2026-10-25",
-        "version": "codex-cli 0.164.0"
+        "date": "2026-11-01",
+        "version": "codex-cli 0.166.0"
       },
       "status": "live-qualified"
     },
@@ -389,8 +389,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/antigravity-stream-json.json",
-        "date": "2026-10-25",
-        "version": "1.4.7"
+        "date": "2026-11-01",
+        "version": "1.4.12"
       },
       "status": "live-qualified"
     },
@@ -437,8 +437,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/gemini-cli-acp.json",
-        "date": "2026-10-25",
-        "version": "0.65.0"
+        "date": "2026-11-01",
+        "version": "0.66.0"
       },
       "status": "live-qualified"
     },

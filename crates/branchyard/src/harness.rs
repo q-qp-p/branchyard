@@ -473,14 +473,14 @@ mod tests {
         }
         assert_eq!(qualification("claude-code-acp").unwrap(), "9/9 on 0.81.2");
         assert_eq!(qualification("antigravity-acp").unwrap(), "9/9 on 1.4.12");
-        assert_eq!(qualification("gemini-cli-acp").unwrap(), "9/9 on 0.65.0");
+        assert_eq!(qualification("gemini-cli-acp").unwrap(), "9/9 on 0.66.0");
         assert_eq!(
             qualification("antigravity-stream-json").unwrap(),
-            "9/9 on 1.4.7"
+            "9/9 on 1.4.12"
         );
         assert_eq!(
             qualification("codex-app-server").unwrap(),
-            "9/9 on codex-cli 0.164.0"
+            "9/9 on codex-cli 0.166.0"
         );
         assert_eq!(qualification("oh-my-pi-acp").unwrap(), "9/9 on omp/18.12.6");
         // 25 October 2026, GLM-4.6 through Z.ai: the three permission
