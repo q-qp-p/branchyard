@@ -43,6 +43,9 @@ pub enum Edit {
     /// Set Branchyard's instructions block, keeping everything outside it;
     /// `None` removes the block, and the file if nothing else is left.
     Block(Option<String>),
+    /// The same block between `#` comment markers, for a YAML or similar
+    /// file ([`instructions::merge_comment_block`]).
+    CommentBlock(Option<String>),
     /// Set `NAME=value` lines of a dotenv file, keeping other lines.
     Dotenv(Vec<(String, String)>),
     /// Remove the lines of a dotenv file that define these names, and the
@@ -129,6 +132,7 @@ impl Edit {
                 .map(|text| (current.is_some() || text != "{}\n").then_some(text)),
             Edit::Toml(edits) => Ok(Some(toml_document(current.unwrap_or(""), edits))),
             Edit::Block(text) => instructions::merge_block(current, text.as_deref()),
+            Edit::CommentBlock(text) => instructions::merge_comment_block(current, text.as_deref()),
             Edit::Dotenv(pairs) => dotenv(current.unwrap_or(""), pairs).map(Some),
             Edit::DotenvUnset(names) => Ok(current.and_then(|text| dotenv_unset(text, names))),
         }

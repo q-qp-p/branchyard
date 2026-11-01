@@ -802,11 +802,13 @@ pub trait Driver {
     fn capabilities(&self) -> Capabilities;
 
     /// Why each unsupported or partial capability in [`Driver::capabilities`]
-    /// is the way it is (see [`CapabilityReason`]). A profile whose
-    /// capabilities need no caveat returns `&[]`; the default does so for
-    /// every driver that grants everything unconditionally.
-    fn capability_reasons(&self) -> &'static [CapabilityReason] {
-        &[]
+    /// is the way it is (see [`CapabilityReason`]). A capability offered
+    /// with a caveat (approvals a harness routes for some tools and not
+    /// others) names the caveat under the capability's name too. A profile
+    /// whose capabilities need no caveat returns nothing; the default does
+    /// so for every driver that grants everything unconditionally.
+    fn capability_reasons(&self) -> Vec<CapabilityReason> {
+        Vec::new()
     }
 
     /// The protocol boundary [`Driver::steer`] delivers input at, named as
