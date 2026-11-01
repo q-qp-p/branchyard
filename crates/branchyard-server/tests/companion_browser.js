@@ -394,7 +394,12 @@ const shots = process.env.BY_SCREENSHOTS;
   await page.getByRole('tab', { name: /^Ground/ }).click();
   await page.locator('#ground li[data-path="a.txt"]', { hasText: 'also in first' }).waitFor({ timeout: 30000 });
   await go('#/attention');
-  await page.locator('#main .bay-item[data-decision^="merge:first:"]').click({ timeout: 60000 });
+  // first is the front card unless a parked agent or an older ready branch
+  // precedes it; then the bay brings it forward.
+  await page.locator('#main .deck-card').waitFor({ timeout: 60000 });
+  if (!(await page.locator('#main .deck-card.deck-merge', { hasText: 'first is ready to merge' }).count())) {
+    await page.locator('#main .bay-item[data-decision^="merge:first:"]').click({ timeout: 60000 });
+  }
   await page.locator('#main .deck-card.deck-merge .deck-ground', { hasText: 'a.txt also in rival' }).waitFor({ timeout: 60000 });
   if (await page.locator('#main .deck-card .deck-ground', { hasText: 'b.txt' }).count()) throw new Error('a file only first holds is named as in two hands');
   await page.locator('#main .bay-item[data-decision^="merge:asker:"]').click();
