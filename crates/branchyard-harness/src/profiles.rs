@@ -175,7 +175,12 @@ pub const PROFILES: &[Profile] = &[
         acp_models: false,
         acp_usage: false,
     },
-    acp("oh-my-pi-acp", "oh-my-pi", &["omp", "acp"]),
+    // The probe (1 November 2026, Oh My Pi 18.15.0) saw per-turn usage on
+    // each prompt response; no `models` in `session/new`.
+    Profile {
+        acp_usage: true,
+        ..acp("oh-my-pi-acp", "oh-my-pi", &["omp", "acp"])
+    },
     acp(
         "deepseek-harness-acp",
         "deepseek-harness",
@@ -191,7 +196,12 @@ pub const PROFILES: &[Profile] = &[
         // release from before `--acp`).
         ..acp("gemini-cli-acp", "gemini-cli", &["gemini", "--acp"])
     },
-    acp("opencode-acp", "opencode", &["opencode", "acp"]),
+    // The probe (1 November 2026, OpenCode 1.19.5) saw per-turn usage on
+    // each prompt response; no `models` in `session/new`.
+    Profile {
+        acp_usage: true,
+        ..acp("opencode-acp", "opencode", &["opencode", "acp"])
+    },
     Profile {
         id: "pi-rpc",
         harness: "pi",
@@ -223,7 +233,14 @@ pub const PROFILES: &[Profile] = &[
     },
     acp("qwen-code-acp", "qwen-code", &["qwen", "--acp"]),
     acp("kimi-cli-acp", "kimi-cli", &["kimi", "acp"]),
-    acp("hermes-acp", "hermes", &["hermes", "acp"]),
+    // The probe (1 November 2026, Hermes 0.19.0) listed `models` in
+    // `session/new`, took `session/set_model` (answered `{}`), and saw
+    // per-turn usage on each prompt response.
+    Profile {
+        acp_models: true,
+        acp_usage: true,
+        ..acp("hermes-acp", "hermes", &["hermes", "acp"])
+    },
 ];
 
 /// Integration targets without a driver yet, and why.
@@ -350,7 +367,15 @@ mod tests {
         assert!(capabilities.model && capabilities.usage);
         let stream = by_id("antigravity-stream-json").unwrap();
         assert_eq!(stream.protocol, Protocol::AntigravityStreamJson);
-        for profile in PROFILES.iter().filter(|p| p.id != "antigravity-acp") {
+        // Only the profiles a probe verified turn these on; see the
+        // comments on each profile.
+        let verified = [
+            "antigravity-acp",
+            "oh-my-pi-acp",
+            "opencode-acp",
+            "hermes-acp",
+        ];
+        for profile in PROFILES.iter().filter(|p| !verified.contains(&p.id)) {
             assert!(!profile.acp_models && !profile.acp_usage, "{}", profile.id);
         }
     }

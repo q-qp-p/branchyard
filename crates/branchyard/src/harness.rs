@@ -482,20 +482,20 @@ mod tests {
             qualification("codex-app-server").unwrap(),
             "9/9 on codex-cli 0.166.0"
         );
-        assert_eq!(qualification("oh-my-pi-acp").unwrap(), "9/9 on omp/18.12.6");
+        assert_eq!(qualification("oh-my-pi-acp").unwrap(), "9/9 on omp/18.15.0");
         // 25 October 2026, GLM-4.6 through Z.ai: the three permission
         // scenarios fail on both, since neither asks before a shell command
         // that writes inside its workspace.
         assert_eq!(
             qualification("deepseek-harness-acp").unwrap(),
-            "6/9 on 0.2.1-rc.2"
+            "6/9 on 0.2.1-rc.5"
         );
         assert_eq!(
             qualification("hermes-acp").unwrap(),
             "6/9 on Hermes Agent v0.19.0 (2026.7.20)"
         );
         assert_eq!(qualification("qwen-code-acp").unwrap(), "9/9 on 0.26.0");
-        assert_eq!(qualification("opencode-acp").unwrap(), "9/9 on 1.19.4");
+        assert_eq!(qualification("opencode-acp").unwrap(), "9/9 on 1.19.5");
         assert_eq!(qualification("pi-rpc").unwrap(), "9/9 on 1.4.0");
     }
 

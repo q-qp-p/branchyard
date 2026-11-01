@@ -2,26 +2,27 @@
   "profile": "opencode-acp",
   "harness": "opencode",
   "command": "opencode acp",
-  "harness_version": "1.19.4",
-  "driver_version": "0.0.1",
-  "host": "Linux 6.18.44-fc-v153 x86_64",
-  "date": "2026-10-25",
-  "installed_from": "npm opencode-ai@1.19.4, permission bash/edit/webfetch: ask in opencode.json",
+  "harness_version": "1.19.5",
+  "driver_version": "0.4.0",
+  "host": "Linux 6.18.44-fc-v185 x86_64",
+  "date": "2026-11-01",
+  "installed_from": "npm opencode-ai 1.19.5 (/tmp/qual/npm)",
+  "model": null,
   "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
-  "seconds": 26.0,
+  "seconds": 23.0,
   "harness_estimated_cost_usd": "not reported by the harness; the cost cap did not apply",
   "scenarios": [
     {
       "name": "fresh_turn",
       "passed": true,
-      "detail": "session ses_e8d5bba5affe7FzkXXX0wj48k7; replied \"OK\"",
-      "seconds": 4.9
+      "detail": "session ses_e66faa71bffer3aACkRzXhh7xF; replied \"OK\"",
+      "seconds": 5.5
     },
     {
       "name": "permission_denied",
       "passed": true,
       "detail": "1 request(s) denied; marker absent; turn Completed",
-      "seconds": 1.0
+      "seconds": 1.2
     },
     {
       "name": "permission_allowed",
@@ -32,14 +33,14 @@
     {
       "name": "interrupt_during_permission",
       "passed": true,
-      "detail": "stopped 1.1s after interrupt; acknowledged: false; pending request withdrawn by harness: false",
-      "seconds": 2.8
+      "detail": "stopped 0.3s after interrupt; acknowledged: false; pending request withdrawn by harness: false",
+      "seconds": 1.1
     },
     {
       "name": "interrupt_during_tool",
       "passed": true,
-      "detail": "stopped 0.1s after interrupt; acknowledged: false",
-      "seconds": 5.0
+      "detail": "stopped 0.0s after interrupt; acknowledged: false",
+      "seconds": 5.8
     },
     {
       "name": "clean_close",
@@ -50,7 +51,7 @@
     {
       "name": "resume",
       "passed": true,
-      "detail": "session ses_e8d5bba5affe7FzkXXX0wj48k7; remembered PELICAN-7; cost $0.0000",
+      "detail": "session ses_e66faa71bffer3aACkRzXhh7xF; remembered PELICAN-7; cost $0.0000",
       "seconds": 4.3
     },
     {
@@ -63,7 +64,7 @@
       "name": "connection_lost",
       "passed": true,
       "detail": "killed mid-turn; outcome reported unknown",
-      "seconds": 6.1
+      "seconds": 3.3
     }
   ]
 }

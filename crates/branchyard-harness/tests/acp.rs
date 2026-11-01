@@ -1452,3 +1452,126 @@ fn usage_and_model_are_reported_only_where_the_profile_verified_them() {
     let plain_reasons: Vec<&str> = plain.capability_reasons().iter().map(|(c, _)| *c).collect();
     assert!(plain_reasons.contains(&"usage") && plain_reasons.contains(&"model"));
 }
+
+/// A recording from `crates/branchyard-harness/tests/fixtures/<file>`, made
+/// with the live probe on 1 November 2026.
+fn probe_fixture(file: &str) -> Transcript {
+    Transcript::load(format!(
+        "{}/tests/fixtures/{file}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The named profile's ACP driver, opened fresh with `model`.
+fn profile_acp(profile: &str, model: Option<&str>) -> (Box<dyn Driver>, Opened) {
+    let mut driver = branchyard_harness::profiles::by_id(profile)
+        .unwrap()
+        .driver();
+    let opened = driver
+        .open(Open {
+            model: model.map(str::to_owned),
+            ..fresh()
+        })
+        .unwrap();
+    (driver, opened)
+}
+
+/// Replays two prompts and returns the usage each turn reported, in order,
+/// as `(turn, usage)`. Each expected row is `(input, output, cached)`.
+fn replay_two_turns(
+    profile: &str,
+    file: &str,
+    expected: &[(u64, u64, Option<u64>)],
+) -> Vec<(Option<u64>, branchyard_harness::Usage)> {
+    let recorded = probe_fixture(file);
+    let (mut driver, opened) = profile_acp(profile, None);
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .prompt("Reply with exactly the word PELICAN-7 and nothing else.")
+        .prompt("Reply with exactly the word PELICAN-8 and nothing else.")
+        .run(driver.as_mut(), &opened);
+    let usage: Vec<(Option<u64>, branchyard_harness::Usage)> = replayed
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::UsageObserved { turn, usage } => Some((*turn, usage.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(usage.len(), expected.len(), "{file}: one usage per turn");
+    for (index, ((turn, got), (input, output, cached))) in usage.iter().zip(expected).enumerate() {
+        assert_eq!(*turn, Some(index as u64 + 1), "{file}: turn number");
+        assert!(!got.cumulative, "{file}: each turn's usage is its own");
+        assert_eq!(got.input_tokens, Some(*input), "{file}: turn {index} input");
+        assert_eq!(
+            got.output_tokens,
+            Some(*output),
+            "{file}: turn {index} output"
+        );
+        assert_eq!(
+            got.cached_input_tokens, *cached,
+            "{file}: turn {index} cached"
+        );
+    }
+    usage
+}
+
+/// Recorded against Hermes 0.19.0's `hermes acp` on `zai:glm-5.3`: the
+/// agent lists its models in `session/new`, the driver takes the pinned one
+/// with `session/set_model` (answered `{}`) before the session is ready.
+#[test]
+fn hermes_acp_chooses_the_model_before_ready() {
+    let recorded = probe_fixture("hermes-0.19.0-acp-models.jsonl");
+    let (mut driver, opened) = profile_acp("hermes-acp", Some("zai:glm-5.2"));
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .run(driver.as_mut(), &opened);
+    assert_eq!(
+        replayed.sent, 3,
+        "initialize, session/new, session/set_model"
+    );
+    let set_model = recorded
+        .rows
+        .iter()
+        .find(|r| r.frame["method"] == "session/set_model")
+        .unwrap();
+    assert_eq!(set_model.frame["params"]["modelId"], "zai:glm-5.2");
+    let events = replayed.events;
+    let ready = events.iter().position(|e| *e == Event::Ready).unwrap();
+    assert!(matches!(&events[ready + 1], Event::SessionStarted { .. }));
+}
+
+/// Recorded against Hermes 0.19.0 on `zai:glm-5.3`: each prompt response's
+/// usage is that turn's own; thought tokens are counted as output.
+#[test]
+fn hermes_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "hermes-acp",
+        "hermes-0.19.0-acp-usage.jsonl",
+        // 38 + 30 and 109 + 93 output, thought tokens included.
+        &[(11523, 68, Some(11264)), (23071, 202, Some(22784))],
+    );
+}
+
+/// Recorded against Oh My Pi 18.15.0 on `zai/glm-5.3`: per-turn usage.
+#[test]
+fn oh_my_pi_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "oh-my-pi-acp",
+        "oh-my-pi-18.15.0-acp-usage.jsonl",
+        &[(33, 8, Some(7680)), (58, 20, Some(7680))],
+    );
+}
+
+/// Recorded against OpenCode 1.19.5 on `google/gemini-flash-lite-latest`:
+/// per-turn usage. The first turn reports no cached tokens.
+#[test]
+fn opencode_acp_reports_each_turns_usage() {
+    replay_two_turns(
+        "opencode-acp",
+        "opencode-1.19.5-acp-usage.jsonl",
+        &[(8388, 4, None), (2325, 4, Some(6082))],
+    );
+}
