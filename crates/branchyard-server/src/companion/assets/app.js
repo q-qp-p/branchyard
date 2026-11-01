@@ -57,6 +57,9 @@
     effects: [],
     // What waits for a person, as the server orders it (`GET …/decisions`).
     decisions: [],
+    // Which files are in whose hands (`GET …/ground`), with the repository
+    // it was read for; null until read.
+    ground: null,
     // The deck: cards sent to the back, the one brought to the front, the
     // answers held for their undo window, and the evidence fetched for a
     // card (a branch's last turn and its diff).
@@ -1928,7 +1931,7 @@
     const v = {
       name, events: [], first: 0, next: null, chain: null, queued: false,
       forking: false, tab: 'changes', file: null, files: null, diffFor: undefined, truncated: 0,
-      open: new Set(), signature: null, operations: null,
+      open: new Set(), signature: null, operations: null, groundFor: null,
     };
     view = v;
     main(h('div', { class: 'branch' },
@@ -1939,6 +1942,8 @@
       h('aside', { class: 'inspector', id: 'inspector', 'aria-label': 'Inspector' },
         tablist(BRANCH_TABS, () => v.tab, (k) => selectTab(v, k)),
         h('div', { class: 'panel', role: 'tabpanel', id: 'panel-changes', 'aria-labelledby': 'tab-changes' }, h('div', { id: 'changes' })),
+        h('div', { class: 'panel', role: 'tabpanel', id: 'panel-ground', 'aria-labelledby': 'tab-ground', hidden: true },
+          h('div', { id: 'ground' }, h('p', { class: 'muted', text: 'Loading…' }))),
         h('div', { class: 'panel', role: 'tabpanel', id: 'panel-details', 'aria-labelledby': 'tab-details', hidden: true },
           h('dl', { class: 'facts', id: 'facts' }),
           h('h2', { text: 'Checkpoints' }), h('div', { id: 'checkpoints' }, h('p', { class: 'muted', text: 'Loading…' })),
@@ -1952,9 +1957,10 @@
       fill($('events'), h('li', { class: 'error', text: e.message }));
     });
     loadOperations(v);
+    loadGround().then(() => drawGround(v));
   }
 
-  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['details', 'Details'], ['activity', 'Activity']];
+  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['ground', 'Ground', 'ground-count'], ['details', 'Details'], ['activity', 'Activity']];
 
   // The inspector's tabs: [key, label, id of a count beside it]. Arrow keys
   // move between them.
@@ -2224,6 +2230,40 @@
     $('changes-count').textContent = info.candidate ? String(info.candidate.files_changed) : '';
     const commit = info.candidate ? info.candidate.commit : null;
     if (commit !== v.diffFor) loadDiff(v, info);
+    drawGround(v);
+  }
+
+  // The branch's files as the ground plan has them: each with the other
+  // open branches that changed it too, or "only here". The tab counts the
+  // files in two hands.
+  function drawGround(v) {
+    const slot = $('ground');
+    if (view !== v || !slot) return;
+    const held = groundOf(v.name);
+    const info = state.branches.get(v.name);
+    const closed = info && ['merged', 'discarded'].includes(info.status.state) ? info.status.state : null;
+    const skipped = state.ground && state.ground.repo === state.repo ? state.ground.skipped.filter((n) => n !== v.name) : [];
+    const signature = JSON.stringify([held, skipped, closed]);
+    if (signature === v.groundFor) return;
+    v.groundFor = signature;
+    const shared = held && !closed ? held.filter((f) => f.others.length).length : 0;
+    $('ground-count').textContent = shared ? String(shared) : '';
+    // A merged or discarded branch holds nothing, whatever an older read says.
+    if (closed) { fill(slot, h('p', { class: 'hint ground-lede', text: `${cap(closed)}, this branch holds no files.` })); return; }
+    if (!held) { fill(slot, h('p', { class: 'muted', text: 'Loading…' })); return; }
+    const link = (name) => h('a', { href: branchHref(name), text: name });
+    fill(slot,
+      h('p', { class: 'hint ground-lede', text: held.length
+        ? `Which of this branch's files another open branch has changed too.${shared ? ` ${plural(shared, 'file')} in two hands.` : ''}`
+        : 'This branch has changed no file, so it holds none.' }),
+      held.length ? h('ul', { class: 'ground', 'aria-label': 'Who else holds these files' }, held.map((f) => {
+        const at = f.path.lastIndexOf('/');
+        return h('li', { class: f.others.length ? 'ground-shared' : '', 'data-path': f.path },
+          h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
+          f.others.length ? h('span', { class: 'ground-others' }, 'also in ', f.others.map((n, i) => [i ? ', ' : '', link(n)]))
+            : h('span', { class: 'ground-others muted', text: 'only here' }));
+      })) : null,
+      skipped.length ? h('p', { class: 'hint', text: `Not counted: the diff of ${skipped.join(', ')} could not be read.` }) : null);
   }
 
   async function loadDiff(v, info) {
@@ -3872,9 +3912,31 @@
   async function loadDecisions() {
     let decisions;
     try { ({ decisions } = await api('GET', `${repoPath()}/decisions`)); } catch (_) { return; }
+    // The ground costs the server a diff per open branch: read it only for
+    // a page that shows it, a merge card or a branch.
+    if (decisions.some((d) => d.kind === 'merge') || state.route.name === 'branch') await loadGround();
     state.decisions = decisions;
     state.inbox = decisions.filter((d) => d.kind === 'question').map((d) => d.question);
     branchesChanged();
+  }
+
+  // Which files are in whose hands: every path an open branch changed,
+  // with the branches that changed it. A failed read keeps the last one.
+  async function loadGround() {
+    const repo = state.repo;
+    if (!repo) return;
+    let ground;
+    try { ground = await api('GET', `${repoPath()}/ground`); } catch (_) { return; }
+    if (repo === state.repo) state.ground = { repo, files: ground.files || [], skipped: ground.skipped || [] };
+  }
+
+  // `name`'s changed files with the other open branches holding each:
+  // [{ path, others }], or null before the ground is read.
+  function groundOf(name) {
+    const g = state.ground;
+    if (!g || g.repo !== state.repo) return null;
+    return g.files.filter((f) => f.branches.some((b) => b.name === name))
+      .map((f) => ({ path: f.path, others: f.branches.map((b) => b.name).filter((n) => n !== name) }));
   }
 
   let approvalsTimer = null;
@@ -3965,7 +4027,8 @@
     return JSON.stringify([state.decisions.map(decisionKey), d.later, d.front, d.holding.map((x) => x.key),
       Array.from(d.evidence.entries()).map(([k, e]) => [k, e.loading, e.said && e.said.length, e.files && e.files.length]),
       state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
-      state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled])]);
+      state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled]),
+      state.ground && state.ground.files]);
   }
 
   // How long an allow or a deny waits before it is sent, for a second
@@ -4130,8 +4193,11 @@
       const meta = [c ? `${c.commit.slice(0, 7)} · ${plural(c.files_changed, 'file')} ` : null, c ? counts(c.insertions, c.deletions) : null,
         b.turns != null ? ` · ${plural(b.turns, 'turn')}` : null, b.cost_usd != null ? ` · ${money(b.cost_usd)}` : null, b.harness ? ` · ${b.harness}` : null];
       const did = evidence.tools.length ? toolCounts(evidence.tools) : null;
+      const shared = (groundOf(d.branch) || []).filter((f) => f.others.length);
       body = [
         h('p', { class: 'deck-line mono' }, meta),
+        shared.length ? h('p', { class: 'deck-line deck-ground' }, h('b', { text: 'In two hands: ' }),
+          shared.map((f, i) => [i ? '; ' : '', h('code', { text: f.path }), ` also in ${f.others.join(', ')}`])) : null,
         b.prompt ? h('p', { class: 'deck-asked' }, h('span', { class: 'muted', text: 'Asked: ' }), b.prompt) : null,
         h('div', { class: 'deck-grid' },
           h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it says' }),

@@ -65,7 +65,7 @@
     }
   },
   "tests": {
-    "total": 3187,
+    "total": 3189,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
@@ -129,7 +129,7 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 462,
+        "tests": 464,
         "ignored": 1
       },
       "branchyard-setup": {
@@ -163,7 +163,7 @@
     }
   },
   "http": {
-    "route_count": 125,
+    "route_count": 126,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -235,6 +235,7 @@
       "/v1/repos/{repo}/effects/{id}",
       "/v1/repos/{repo}/effects/{id}/promote",
       "/v1/repos/{repo}/events/stream",
+      "/v1/repos/{repo}/ground",
       "/v1/repos/{repo}/knowledge",
       "/v1/repos/{repo}/knowledge/export",
       "/v1/repos/{repo}/knowledge/{id}",

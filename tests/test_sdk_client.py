@@ -1896,6 +1896,24 @@ class Approvals(ServerCase):
         self.assertEqual(decisions[0].approval["id"], "ap1")
         self.assertEqual(decisions[1].candidate["commit"], "abc")
 
+    def test_the_ground_names_the_branches_that_share_a_file(self):
+        ready = {"state": "ready"}
+        ground = {
+            "files": [
+                {"path": "only.txt", "branches": [{"name": "c", "status": ready}]},
+                {"path": "shared.txt", "branches": [{"name": "a", "status": ready}, {"name": "b", "status": ready}]},
+            ],
+            "skipped": ["gone"],
+        }
+        self.fake.answer("GET", f"{REPO}/ground", (200, ground))
+        got = self.app.ground()
+        self.assertEqual([f.path for f in got.shared], ["shared.txt"])
+        self.assertEqual(got.holders("shared.txt"), ["a", "b"])
+        self.assertEqual(got.holders("only.txt"), ["c"])
+        self.assertEqual(got.holders("absent.txt"), [])
+        self.assertEqual(got.skipped, ["gone"])
+        self.assertEqual(got.files[1]["branches"][0]["status"], ready)
+
     def test_approvals_are_listed_and_answered_as_the_caller(self):
         ask = {
             "id": "ap1",
@@ -3270,6 +3288,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/operations/{id}": [lambda c, _r: c.operation("op1")],
     "/v1/repos": [lambda c, _r: c.repos()],
     "/v1/repos/{repo}/decisions": [lambda _c, r: r.decisions()],
+    "/v1/repos/{repo}/ground": [lambda _c, r: r.ground()],
     "/v1/repos/{repo}/approvals": [lambda _c, r: r.approvals()],
     "/v1/repos/{repo}/approvals/{id}/allow": [lambda _c, r: r.allow("ap1")],
     "/v1/repos/{repo}/approvals/{id}/deny": [lambda _c, r: r.deny("ap1")],

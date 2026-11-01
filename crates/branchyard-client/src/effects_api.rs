@@ -1,6 +1,7 @@
 //! Wire types and calls for approvals and the effect ledger: the server's
-//! `/approvals` and `/effects` routes and a branch's `/undo` route. Kept in
-//! its own module, like [`crate::knowledge_api`]. See `docs/effects.md`.
+//! `/approvals`, `/effects`, `/decisions` and `/ground` routes and a
+//! branch's `/undo` route. Kept in its own module, like
+//! [`crate::knowledge_api`]. See `docs/effects.md`.
 
 use branchyard::effects::reconcile::Reconciled;
 use branchyard::effects::undo::{UndoOutcome, UndoPlan};
@@ -146,6 +147,47 @@ pub enum Waits {
     Nobody,
 }
 
+/// `GET /v1/repos/{repo}/ground`: the ground plan, which files are in
+/// whose hands. Every path an open branch's candidate changed, with the
+/// open branches that changed it; a path held by two or more is one a
+/// person merging wants to know about first. Open means not merged and
+/// not discarded; the goal judge's `judge-…` scratch branches are left
+/// out. The server computes it when asked, by reading every open
+/// branch's diff, so a call costs what reading those diffs costs; nothing
+/// is stored for it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ground {
+    /// Every path an open branch changed, sorted by path.
+    pub files: Vec<GroundFile>,
+    /// Open branches whose diff could not be read, sorted by name: their
+    /// files are missing from `files`, and the request still succeeds.
+    #[serde(default)]
+    pub skipped: Vec<String>,
+}
+
+/// One path in the [`Ground`] and the open branches that changed it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GroundFile {
+    /// The path, relative to the repository's root, as the diff names it
+    /// (a renamed file under its old path).
+    pub path: String,
+    /// The open branches whose candidate changes it, sorted by name; two
+    /// or more means the file is in two hands.
+    pub branches: Vec<GroundBranch>,
+}
+
+/// An open branch holding a [`GroundFile`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GroundBranch {
+    /// The branch's name.
+    pub name: String,
+    /// Its status when the ground was read.
+    pub status: BranchStatus,
+}
+
 impl Repo {
     fn repo_path(&self, rest: &str) -> String {
         format!("/v1/repos/{}{rest}", encode(self.name()))
@@ -158,6 +200,13 @@ impl Repo {
             .client()
             .get::<DecisionList>(&self.repo_path("/decisions"))?
             .decisions)
+    }
+
+    /// Which files are in whose hands: every path an open branch changed,
+    /// with the open branches that changed it; see [`Ground`]. The server
+    /// reads every open branch's diff to answer.
+    pub fn ground(&self) -> Result<Ground, Error> {
+        self.client().get(&self.repo_path("/ground"))
     }
 
     /// The approvals waiting, or every one with `all`; like `by approvals`.

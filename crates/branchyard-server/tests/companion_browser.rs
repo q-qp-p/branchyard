@@ -1,6 +1,7 @@
 //! The companion page in headless Chromium against a real server: it pairs
-//! from a link, sees a branch appear and settle over the event stream, and
-//! sends a follow-up from the branch page. Driven by Playwright
+//! from a link, sees a branch appear and settle over the event stream,
+//! sends a follow-up from the branch page, decides from the deck, and shows
+//! which files two open branches hold. Driven by Playwright
 //! (`companion_browser.js`); skipped, saying so, when Node or Playwright's
 //! module is not installed. `BY_TEST_PLAYWRIGHT` names the module's
 //! directory; otherwise `$(npm root -g)/playwright` is tried, with
@@ -164,6 +165,12 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     expect("DECIDED");
     let done = await_operation(&server.client(), &asker.id);
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    // Another open branch writes one of first's files: the page's ground
+    // plan names it on first's page and on first's merge card.
+    let op = run(&server.client(), &task("WRITE a.txt=rival", "rival"));
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    writeln!(stdin, "ground").unwrap();
+    expect("GROUND");
     expect("DONE");
     assert!(child.wait().unwrap().success());
 

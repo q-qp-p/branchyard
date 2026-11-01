@@ -13,6 +13,9 @@
 //   script: RENDERED          the reply's markdown and JSON are elements
 //   test:   (starts a branch whose policy asks before a write), then "asker"
 //   script: DECIDED           the deck showed the ask and Enter allowed it
+//   test:   (starts "rival", which writes first's a.txt too), then "ground"
+//   script: GROUND            first's Ground names rival, its merge card too
+//                             (and, merged, first's Ground holds nothing)
 //   script: DONE              and the page shows its second turn
 //
 // PLAYWRIGHT names the playwright module; BY_URL the server; BY_CODE a
@@ -320,7 +323,31 @@ const shots = process.env.BY_SCREENSHOTS;
     await page.emulateMedia({ colorScheme: 'light' });
   }
 
+  // The ground plan: another open branch writes one of first's files. The
+  // branch page's Ground names it beside that file and says "only here"
+  // beside the other; first's merge card says which file is in two hands,
+  // and a card whose files nobody else holds says nothing.
+  await nextLine();
   await page.setViewportSize({ width: 1280, height: 900 });
+  await go('#/b/app/first');
+  await page.getByRole('tab', { name: /^Ground/ }).click();
+  await page.locator('#ground li[data-path="a.txt"]', { hasText: 'also in rival' }).waitFor({ timeout: 60000 });
+  await page.locator('#ground li[data-path="b.txt"]', { hasText: 'only here' }).waitFor();
+  await page.locator('#ground-count', { hasText: '1' }).waitFor();
+  await page.locator('#ground a', { hasText: 'rival' }).click();
+  await page.locator('#strip h1', { hasText: 'rival' }).waitFor();
+  await page.getByRole('tab', { name: /^Ground/ }).click();
+  await page.locator('#ground li[data-path="a.txt"]', { hasText: 'also in first' }).waitFor({ timeout: 30000 });
+  await go('#/attention');
+  await page.locator('#main .bay-item[data-decision^="merge:first:"]').click({ timeout: 60000 });
+  await page.locator('#main .deck-card.deck-merge .deck-ground', { hasText: 'a.txt also in rival' }).waitFor({ timeout: 60000 });
+  if (await page.locator('#main .deck-card .deck-ground', { hasText: 'b.txt' }).count()) throw new Error('a file only first holds is named as in two hands');
+  await page.locator('#main .bay-item[data-decision^="merge:asker:"]').click();
+  await page.locator('#main .deck-card .deck-files li', { hasText: 'd.txt' }).waitFor({ timeout: 60000 });
+  if (await page.locator('#main .deck-card .deck-ground').count()) throw new Error('a card whose files nobody else holds names some');
+  await noOverflow('the deck with the ground line');
+  say('GROUND');
+
   await go('#/b/app/first');
   await page.locator('#strip').getByRole('button', { name: 'Merge', exact: true }).click();
   await page.locator('#confirm-ok').click();
@@ -328,6 +355,8 @@ const shots = process.env.BY_SCREENSHOTS;
   await page.locator('#strip .state-merged svg.check').waitFor();
   await page.locator('#lane-done').waitFor({ state: 'attached' });
   if (await page.locator('#lane-ready a', { hasText: /^first/ }).count()) throw new Error('a merged branch stayed in Ready');
+  await page.getByRole('tab', { name: /^Ground/ }).click();
+  await page.locator('#ground', { hasText: 'Merged, this branch holds no files.' }).waitFor();
 
   // A token can expire between a failed list request and its retry.
   let listAttempts = 0;

@@ -20,6 +20,13 @@ shows `waiting for approval: …`. The server adds `GET …/decisions`
 (`DecisionList`, `Repo::decisions`): what waits for a person in the order to
 take it, parked agents first, oldest wait first. Nothing in it expires.
 
+The ground plan says which files are in two hands: `GET …/ground`
+(`Ground`, `Repo::ground`, `app.ground()`) lists every path an open branch
+changed with the open branches that changed it, read from their diffs when
+asked; a branch whose diff cannot be read is named in `skipped`. A branch
+page gains a Ground tab ("also in app-2" or "only here") and a merge card
+names the files another open branch also holds.
+
 Reading an operation, or a fork, no longer fails with `404 unknown_branch`
 for a branch that was removed meanwhile: a fork's removed parent, or a goal
 judge's scratch branch removed between two reads of the operation that ran
