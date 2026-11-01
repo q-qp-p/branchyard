@@ -221,6 +221,9 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         acp_approvals_caveat: Some(DSH_APPROVALS),
+        // The probe (1 November 2026, DeepSeek Harness 0.2.1-rc.5) got a
+        // result to `session/set_config_option` on its `model` option.
+        acp_config_model: true,
         ..acp(
             "deepseek-harness-acp",
             "deepseek-harness",
@@ -424,9 +427,12 @@ mod tests {
         for profile in PROFILES.iter().filter(|p| !verified.contains(&p.id)) {
             assert!(!profile.acp_models && !profile.acp_usage, "{}", profile.id);
         }
-        // No agent's `model` config option has been probed with
-        // `session/set_config_option` yet; the flag waits for that record.
-        assert!(PROFILES.iter().all(|p| !p.acp_config_model));
+        // Only DeepSeek Harness's `model` option has been probed with
+        // `session/set_config_option`, and it answered with a result.
+        assert!(PROFILES
+            .iter()
+            .filter(|p| p.id != "deepseek-harness-acp")
+            .all(|p| !p.acp_config_model));
     }
 
     /// The two agents a live run saw execute a shell command without asking
