@@ -242,6 +242,11 @@ pub(super) fn remove_internal_paths(value: &mut Value) {
         "height",
         "text",
         "truncated",
+        "column_widths",
+        "merges",
+        "frozen_rows",
+        "header_details",
+        "cell_details",
     ];
     if let Some(object) = value.as_object_mut() {
         object.retain(|key, _| FIELDS.contains(&key.as_str()));
@@ -490,6 +495,22 @@ pub(super) fn unavailable(message: &str) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spreadsheet_layout_survives_response_sanitization_without_internal_paths() {
+        let layout = serde_json::json!({
+            "status": "passed", "kind": "table", "format": "xlsx",
+            "columns": ["Total"], "rows": [[12.5]],
+            "column_widths": [201], "merges": [], "frozen_rows": 1,
+            "header_details": [{"formatted": "Total", "formula": null, "number_format": "General"}],
+            "cell_details": [[{"formatted": "$12.50", "formula": "=SUM(A1:A2)", "number_format": "$0.00"}]],
+        });
+        let mut answer = layout.clone();
+        answer["preview_dir"] = serde_json::json!("/private/output");
+        answer["source"] = serde_json::json!("/private/input.xlsx");
+        remove_internal_paths(&mut answer);
+        assert_eq!(answer, layout);
+    }
 
     #[test]
     fn namespace_arguments_bind_only_explicit_runtime_and_document_paths() {

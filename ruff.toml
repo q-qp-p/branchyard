@@ -10,3 +10,6 @@ select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
 "sdk/python/*.py" = "py39"
 "sdk/python/branchyard_artifacts/**/*.py" = "py39"
 "examples/python/*.py" = "py39"
+# Run by the artifacts workflow's Python matrix, 3.9 included.
+"tools/console_fixtures.py" = "py39"
+"tests/test_console_fixtures.py" = "py39"

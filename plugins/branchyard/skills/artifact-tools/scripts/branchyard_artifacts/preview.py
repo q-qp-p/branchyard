@@ -7,20 +7,24 @@ import datetime
 import io
 import json
 import os
+import re
 import stat
+import tempfile
 import zipfile
 from collections.abc import Sequence
 from decimal import Decimal
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any
 
-from .common import ArtifactError, finite, library, output_file
+from .common import ArtifactError, Unavailable, finite, library, output_file
 from .native import (
     MAX_RENDER_DIMENSION,
     MAX_RENDER_IMAGE_BYTES,
     MAX_RENDER_PAGES,
     MAX_RENDER_PIXELS,
     RENDER_TIMEOUT_SECONDS,
+    recalculate_workbook,
     render_html,
     render_page,
 )
@@ -35,11 +39,13 @@ MAX_PREVIEW_DIMENSION = MAX_RENDER_DIMENSION
 MAX_IMAGE_PIXELS = MAX_RENDER_PIXELS
 MAX_COLUMNS = 100
 MAX_LIMIT = 500
+MAX_LAYOUT_MERGES = MAX_COLUMNS * (MAX_LIMIT + 1)
 MAX_SCAN_ROWS = 100_000
 MAX_CELL_CHARS = 1_000
 MAX_TEXT_BYTES = 256 * 1024
 MAX_TEXT_CHARS = 65_536
 PROCESS_TIMEOUT_SECONDS = RENDER_TIMEOUT_SECONDS
+MISSING_FORMULA_CACHE_WARNING = "Some formulas have no cached value; recalculate the original workbook to show them"
 
 MACRO_SUFFIXES = {
     ".docm",
@@ -292,87 +298,284 @@ def _trimmed_xlsx_row(raw_row: Sequence[Any], warnings: list[str]) -> list[Any]:
     return [_xlsx_cell(cell, warnings) for cell in cells]
 
 
+def _xlsx_layout(workbook: Any, worksheet: Any, offset: int, limit: int) -> dict[str, Any]:
+    """Read bounded layout metadata while keeping worksheet values in streaming mode."""
+    xml = library("openpyxl.xml.functions")
+    bounds = library("openpyxl.utils.cell").range_boundaries
+    widths = [64.0] * MAX_COLUMNS
+    merges: list[dict[str, int]] = []
+    frozen_rows = 0
+    with workbook._archive.open(worksheet._worksheet_path) as source:
+        for _, element in xml.iterparse(source, events=("end",)):
+            tag = element.tag.rsplit("}", 1)[-1]
+            if tag == "sheetFormatPr":
+                default = float(element.get("defaultColWidth", "8.43"))
+                widths = [min(1000.0, max(8.0, default * 7 + 5))] * MAX_COLUMNS
+            elif tag == "col":
+                first = max(1, int(element.get("min", "1")))
+                last = min(MAX_COLUMNS, int(element.get("max", "1")))
+                width = float(element.get("width", "8.43")) * 7 + 5
+                width = min(1000.0, max(8.0, width)) if element.get("hidden") != "1" else 0.0
+                for index in range(first - 1, last):
+                    widths[index] = width
+            elif tag == "pane" and element.get("state") in {"frozen", "frozenSplit"}:
+                frozen_rows = min(MAX_SCAN_ROWS, max(0, int(float(element.get("ySplit", "0")))))
+            elif tag == "mergeCell":
+                min_col, min_row, max_col, max_row = bounds(element.get("ref", "A1"))
+                visible = min_row <= offset + limit + 1 and max_row >= offset + 2
+                if min_col <= MAX_COLUMNS and (visible or min_row == 1):
+                    if len(merges) >= MAX_LAYOUT_MERGES:
+                        raise ArtifactError("Worksheet merged-cell metadata exceeds preview bounds")
+                    merges.append(
+                        {
+                            "min_row": min_row,
+                            "max_row": min(max_row, MAX_SCAN_ROWS + 1),
+                            "min_col": min_col,
+                            "max_col": min(max_col, MAX_COLUMNS),
+                        }
+                    )
+            element.clear()
+    return {"column_widths": widths, "merges": merges, "frozen_rows": frozen_rows}
+
+
+def _xlsx_formatted(value: Any, number_format: str) -> str:
+    """Apply common Excel display formats without evaluating a workbook formula."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    code = number_format[:MAX_CELL_CHARS]
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        # Excel uses m for both months and minutes; a neighbouring h or s denotes time.
+        tokens = re.findall(r'"[^"\n]*"|\\.|AM/PM|[ymdhs]+|.', code, flags=re.IGNORECASE)
+        result: list[str] = []
+        has_ampm = "am/pm" in code.lower()
+        for index, token in enumerate(tokens):
+            lower = token.lower()
+            if token.startswith('"'):
+                result.append(token[1:-1])
+            elif token.startswith("\\"):
+                result.append(token[1:])
+            elif lower == "am/pm":
+                result.append("AM" if getattr(value, "hour", 0) < 12 else "PM")
+            elif lower.startswith("y"):
+                year = getattr(value, "year", 1900)
+                result.append(str(year) if len(token) > 2 else f"{year % 100:02d}")
+            elif lower.startswith("m"):
+                before = "".join(tokens[:index]).lower()
+                after = "".join(tokens[index + 1 :]).lower()
+                minute = "h" in before.rsplit(" ", 1)[-1] or after.startswith(":s")
+                month = getattr(value, "month", 1)
+                component = getattr(value, "minute", 0) if minute else month
+                if not minute and len(token) >= 3:
+                    result.append(datetime.date(2000, month, 1).strftime("%B" if len(token) >= 4 else "%b"))
+                else:
+                    result.append(str(component).zfill(2) if len(token) == 2 else str(component))
+            elif lower.startswith("d"):
+                day = getattr(value, "day", 1)
+                if len(token) >= 3 and isinstance(value, datetime.date):
+                    result.append(value.strftime("%A" if len(token) >= 4 else "%a"))
+                else:
+                    result.append(str(day).zfill(2) if len(token) == 2 else str(day))
+            elif lower.startswith("h"):
+                hour = getattr(value, "hour", 0)
+                hour = (hour % 12 or 12) if has_ampm else hour
+                result.append(str(hour).zfill(2) if len(token) == 2 else str(hour))
+            elif lower.startswith("s"):
+                second = getattr(value, "second", 0)
+                result.append(str(second).zfill(2) if len(token) == 2 else str(second))
+            else:
+                result.append(token)
+        return (
+            "".join(result)
+            if any(t.lower().startswith(("y", "m", "d", "h", "s")) for t in tokens)
+            else value.isoformat()
+        )
+    if not isinstance(value, (int, float, Decimal)) or code.lower() in {"general", "@", ""}:
+        return str(value)
+    sections = code.split(";")
+    section = (
+        sections[1]
+        if value < 0 and len(sections) > 1
+        else sections[2]
+        if value == 0 and len(sections) > 2
+        else sections[0]
+    )
+    section = re.sub(r"\[(?!\$)[^]]*\]", "", section)
+    section = re.sub(r"\[\$([^]-]*)[^]]*\]", r"\1", section)
+    section = re.sub(r"_.|\*.", "", section)
+    section = re.sub(r'"([^"\n]*)"|\\(.)', lambda match: match[1] if match[1] is not None else match[2], section)
+    match = re.search(r"[0#?][0#?,]*(?:\.[0#?]+)?(?:[Ee][+-]0+)?", section)
+    if not match:
+        return section
+    pattern = match[0]
+    number = abs(value) if value < 0 and len(sections) > 1 else value
+    number *= 100 ** section.count("%")
+    decimals = min(20, len(pattern.split(".", 1)[1].split("E")[0].split("e")[0])) if "." in pattern else 0
+    if "e" in pattern.lower():
+        rendered = f"{number:.{decimals}E}"
+    else:
+        rendered = format(number, ("," if "," in pattern else "") + "." + str(decimals) + "f")
+        if "." not in pattern and "," not in pattern:
+            sign = "-" if rendered.startswith("-") else ""
+            rendered = sign + rendered.lstrip("-").zfill(pattern.count("0"))
+    return section[: match.start()] + rendered + section[match.end() :]
+
+
+def _xlsx_detail(cell: Any, cached: Any, warnings: list[str]) -> tuple[Any, dict[str, Any]]:
+    """Keep formula source separate from its cached, inert display value."""
+    formula = None
+    raw = getattr(cell, "value", None)
+    if getattr(cell, "data_type", None) == "f":
+        formula = _truncate_text(str(getattr(raw, "text", raw)), warnings)
+        value = getattr(cached, "value", None)
+        if value is None:
+            _warn_once(warnings, MISSING_FORMULA_CACHE_WARNING)
+    else:
+        value = raw
+    number_format = _truncate_text(getattr(cell, "number_format", None) or "General", warnings)
+    return _xlsx_cell(value, warnings), {
+        "formatted": _truncate_text(_xlsx_formatted(value, number_format), warnings),
+        "formula": formula,
+        "number_format": number_format,
+    }
+
+
+def _recalculated_xlsx_values(
+    path: Path, sheet: str, missing: list[tuple[int, int]], warnings: list[str]
+) -> dict[tuple[int, int], Any]:
+    """Obtain only missing requested values from a bounded private native calculation."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="branchyard-formula-cache-") as temporary:
+            calculated = Path(temporary) / "calculated.xlsx"
+            recalculate_workbook(
+                path, calculated, max_output_bytes=MAX_INPUT_BYTES, timeout=min(20, PROCESS_TIMEOUT_SECONDS)
+            )
+            payload = _read_regular(calculated, MAX_INPUT_BYTES)
+            _check_office_archive(payload, "xlsx")
+            workbook = library("openpyxl").load_workbook(
+                io.BytesIO(payload), read_only=True, data_only=True, keep_links=False
+            )
+            try:
+                if sheet not in workbook.sheetnames:
+                    raise ArtifactError("Calculated workbook did not preserve the selected worksheet")
+                worksheet = workbook[sheet]
+                worksheet.reset_dimensions()
+                coordinates = set(missing)
+                first = min(row for row, _ in missing)
+                last = max(row for row, _ in missing)
+                max_col = max(column for _, column in missing)
+                values: dict[tuple[int, int], Any] = {}
+                for row_number, row in enumerate(
+                    worksheet.iter_rows(min_row=first, max_row=last, max_col=max_col, values_only=True), first
+                ):
+                    for column, value in enumerate(row, 1):
+                        if (row_number, column) in coordinates and value is not None:
+                            _xlsx_cell(value, warnings)  # Validate native cache values before publishing any of them.
+                            values[(row_number, column)] = value
+                return values
+            finally:
+                workbook.close()
+    except Exception as error:
+        _warn_once(warnings, "Formula values could not be recalculated: " + _truncate_text(str(error), warnings))
+        return {}
+
+
 def _preview_xlsx_table(path: Path, sheet: str | None, offset: int, limit: int) -> dict[str, Any]:
     payload = _read_regular(path, MAX_INPUT_BYTES)
     _check_office_archive(payload, "xlsx")
     openpyxl = library("openpyxl")
     column_letter = library("openpyxl.utils.cell").get_column_letter
     warnings: list[str] = []
+    workbook = cached_workbook = None
     try:
-        workbook = openpyxl.load_workbook(
-            io.BytesIO(payload),
-            read_only=True,
-            data_only=False,
-            keep_links=False,
-        )
-    except Exception as error:
-        if isinstance(error, ArtifactError):
-            raise
-        raise ArtifactError("Unable to open XLSX workbook: " + str(error)) from error
-    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(payload), read_only=True, data_only=False, keep_links=False)
+        cached_workbook = openpyxl.load_workbook(io.BytesIO(payload), read_only=True, data_only=True, keep_links=False)
         sheets = list(workbook.sheetnames)
         if not sheets:
             raise ArtifactError("Workbook contains no worksheets")
         selected = sheets[0] if sheet is None else sheet
         if selected not in sheets:
             raise ArtifactError("Worksheet does not exist: " + str(selected))
-        worksheet = workbook[selected]
-        # The stored <dimension> counts styled empty cells and can understate the data; read-only rows are
-        # padded to it, or to any max_col, so each row is read at its own width instead.
+        worksheet, cached_worksheet = workbook[selected], cached_workbook[selected]
+        layout = _xlsx_layout(workbook, worksheet, offset, limit)
+        # Ignore the stored dimension: styled empty cells can inflate it and careless writers understate it.
         worksheet.reset_dimensions()
-        row_iter = worksheet.iter_rows(values_only=True)
-        first_row = next(row_iter, None)
-        if first_row is None:
-            return {
-                "status": "passed",
-                "kind": "table",
-                "format": "xlsx",
-                "columns": [],
-                "rows": [],
-                "sheets": sheets,
-                "sheet": selected,
-                "offset": offset,
-                "next_offset": None,
-                "warnings": warnings,
-            }
-        header_cells = _trimmed_xlsx_row(first_row, warnings)
-        columns = [
-            _truncate_text(str(cell), warnings)
-            if cell is not None and str(cell) != ""
-            else str(column_letter(index + 1))
-            for index, cell in enumerate(header_cells)
-        ]
+        cached_worksheet.reset_dimensions()
+        row_iter = zip_longest(worksheet.iter_rows(), cached_worksheet.iter_rows(), fillvalue=())
+        columns: list[str] = []
+        header_details: list[dict[str, Any]] = []
         rows: list[list[Any]] = []
-        next_offset: int | None = None
-        row_index = 0
-        for raw_row in row_iter:
-            if row_index >= MAX_SCAN_ROWS:
+        cell_details: list[list[dict[str, Any]]] = []
+        next_offset = None
+        missing_formulas: list[tuple[int, int]] = []
+        for row_number, (raw_row, cached_row) in enumerate(row_iter):
+            if row_number > MAX_SCAN_ROWS:
                 _warn_once(warnings, "Row preview stops at " + str(MAX_SCAN_ROWS) + " rows")
-                next_offset = None
                 break
-            converted = _trimmed_xlsx_row(raw_row, warnings)
-            if len(converted) > len(columns):
-                for extra in range(len(columns), len(converted)):
-                    columns.append(str(column_letter(extra + 1)))
-            if row_index < offset:
-                row_index += 1
-                continue
-            if len(rows) < limit:
-                padded = [*converted, *([None] * max(0, len(columns) - len(converted)))]
-                rows.append(padded[: len(columns)])
-                row_index += 1
-                continue
-            if offset + len(rows) < MAX_SCAN_ROWS:
-                next_offset = offset + len(rows)
-            else:
-                _warn_once(warnings, "Row preview stops at " + str(MAX_SCAN_ROWS) + " rows")
-                next_offset = None
-            break
-        for row in rows:
-            if len(row) < len(columns):
-                row.extend([None] * (len(columns) - len(row)))
+            raw_values = [getattr(cell, "value", None) for cell in raw_row]
+            if any(value is not None for value in raw_values[MAX_COLUMNS:]):
+                _warn_once(warnings, "Truncated columns to " + str(MAX_COLUMNS))
+            raw_values = raw_values[:MAX_COLUMNS]
+            while raw_values and raw_values[-1] is None:
+                raw_values.pop()
+            width = min(MAX_COLUMNS, len(raw_values))
+            if row_number == 0 or offset < row_number <= offset + limit:
+                converted = [
+                    _xlsx_detail(raw_row[index], cached_row[index] if index < len(cached_row) else None, warnings)
+                    for index in range(width)
+                ]
+                missing_formulas.extend(
+                    (row_number + 1, index + 1)
+                    for index, (value, detail) in enumerate(converted)
+                    if value is None and detail["formula"] is not None
+                )
+                if row_number == 0:
+                    columns = [
+                        detail["formatted"] or str(column_letter(index + 1))
+                        for index, (_, detail) in enumerate(converted)
+                    ]
+                    header_details = [detail for _, detail in converted]
+                else:
+                    rows.append([value for value, _ in converted])
+                    cell_details.append([detail for _, detail in converted])
+            while len(columns) < width:
+                columns.append(str(column_letter(len(columns) + 1)))
+            if row_number > offset + limit:
+                next_offset = offset + len(rows) if offset + len(rows) < MAX_SCAN_ROWS else None
+                break
+        if missing_formulas:
+            calculated_values = _recalculated_xlsx_values(path, selected, missing_formulas, warnings)
+            for (row_number, column), value in calculated_values.items():
+                if row_number == 1:
+                    detail = header_details[column - 1]
+                else:
+                    index = row_number - offset - 2
+                    rows[index][column - 1] = _xlsx_cell(value, warnings)
+                    detail = cell_details[index][column - 1]
+                detail["formatted"] = _truncate_text(_xlsx_formatted(value, detail["number_format"]), warnings)
+                if row_number == 1:
+                    columns[column - 1] = detail["formatted"] or str(column_letter(column))
+            if len(calculated_values) == len(missing_formulas):
+                warnings.remove(MISSING_FORMULA_CACHE_WARNING)
+        merged_width = max((item["max_col"] for item in layout["merges"]), default=0)
+        while len(columns) < merged_width:
+            columns.append(str(column_letter(len(columns) + 1)))
+        empty_detail = {"formatted": "", "formula": None, "number_format": "General"}
+        for row, details in zip(rows, cell_details):
+            row.extend([None] * (len(columns) - len(row)))
+            details.extend([empty_detail.copy() for _ in range(len(columns) - len(details))])
+        header_details.extend([empty_detail.copy() for _ in range(len(columns) - len(header_details))])
+        layout["column_widths"] = layout["column_widths"][: len(columns)]
+    except Exception as error:
+        if isinstance(error, (ArtifactError, Unavailable)):
+            raise
+        raise ArtifactError("Unable to open XLSX workbook: " + str(error)) from error
     finally:
-        workbook.close()
+        if cached_workbook is not None:
+            cached_workbook.close()
+        if workbook is not None:
+            workbook.close()
     return {
         "status": "passed",
         "kind": "table",
@@ -384,10 +587,13 @@ def _preview_xlsx_table(path: Path, sheet: str | None, offset: int, limit: int) 
         "offset": offset,
         "next_offset": next_offset,
         "warnings": warnings,
+        "header_details": header_details,
+        "cell_details": cell_details,
+        **layout,
     }
 
 
-def _preview_document_page(path: Path, out: Path, fmt: str, page: int) -> dict[str, Any]:
+def _preview_document_page(path: Path, out: Path, fmt: str, page: int, sheet: str | None = None) -> dict[str, Any]:
     payload = _read_regular(path, MAX_INPUT_BYTES)
     if fmt in REQUIRED_OFFICE_PARTS:
         _check_office_archive(payload, fmt)
@@ -405,6 +611,7 @@ def _preview_document_page(path: Path, out: Path, fmt: str, page: int) -> dict[s
         max_dimension=MAX_PREVIEW_DIMENSION,
         max_output_bytes=MAX_OUTPUT_IMAGE_BYTES,
         timeout=PROCESS_TIMEOUT_SECONDS,
+        **({"sheet": sheet} if sheet is not None else {}),
     )
     return {
         "status": "passed",
@@ -593,11 +800,9 @@ def preview(
                 raise ArtifactError("Table preview uses --offset and --limit rather than --page")
             return _preview_xlsx_table(source, sheet, offset, limit)
         if resolved_view == "pages":
-            if sheet is not None:
-                raise ArtifactError("XLSX page preview does not support --sheet; use --view table for sheet selection")
             if offset != 0:
                 raise ArtifactError("Page preview uses --page rather than --offset")
-            return _preview_document_page(source, out_dir, "xlsx", page)
+            return _preview_document_page(source, out_dir, "xlsx", page, sheet)
         raise ArtifactError("XLSX files support table or pages preview")
 
     if suffix in {".docx", ".pptx", ".pdf"}:

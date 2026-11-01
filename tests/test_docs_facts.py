@@ -37,6 +37,9 @@ def copy_tree(root):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(source, target)
 
+    asset = Path("crates/branchyard-server/src/companion/assets/artifact-preview.js")
+    shutil.copy(REPO / asset, root / asset)
+
 
 class Tree(unittest.TestCase):
     def setUp(self):
@@ -63,6 +66,23 @@ class Tree(unittest.TestCase):
 
 
 class DocsFacts(Tree):
+    def test_preview_bounds_follow_the_service_and_component(self):
+        self.edit("crates/branchyard-server/src/preview/mod.rs", "1..=64", "1..=32")
+        self.edit(
+            "crates/branchyard-server/src/companion/assets/artifact-preview.js",
+            "var limit = viewer ? 200 : 100",
+            "var limit = viewer ? 150 : 100",
+        )
+        self.assertNotEqual(self.facts("--check").returncode, 0)
+        self.assertEqual(self.facts("--write").returncode, 0)
+        data = json.loads((self.root / "docs/facts.json").read_text())
+        self.assertEqual(data["artifact_preview"], {"page_cap": 32, "row_page": 150})
+        self.assertIn(
+            "<!-- fact:artifact_preview.page_cap -->32<!-- /fact -->",
+            (self.root / "docs/artifact-previews.md").read_text(),
+        )
+        self.assertEqual(self.facts("--check").returncode, 0)
+
     def test_document_skill_metadata_is_generated_from_the_catalog(self):
         path = self.root / "plugins/branchyard/capabilities.json"
         catalog = json.loads(path.read_text())
