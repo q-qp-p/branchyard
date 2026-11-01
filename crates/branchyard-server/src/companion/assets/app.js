@@ -49,6 +49,7 @@
     branchError: null,
     filter: '',
     doneOpen: false,
+    boardDoneOpen: false,
     seen: new Set(),
     statusSeen: new Map(),
     permissions: [],
@@ -74,6 +75,11 @@
     route: { name: 'home' },
     // The branch whose board row has its steer box open.
     steering: null,
+    // Each branch's turns on the board's clock, read from its latest
+    // events: { at, turns: [{ start, end, tools: [ms] }], merged }.
+    tracks: new Map(),
+    // Approvals already answered, newest first: the deck's record of the day.
+    answered: [],
     pushInfo: null,
     pushOn: false,
   };
@@ -173,6 +179,9 @@
     pencil: 'M11.5 2.5l2 2L5 13H3v-2zM9.5 4.5l2 2',
     globe: 'M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13',
     bolt: 'M9 1.5L3 9h4l-1 5.5L13 7H9z',
+    check: 'M3 8.5l3.2 3L13 4.5',
+    cross: 'M4 4l8 8M12 4l-8 8',
+    merge: 'M2.5 8h7.5M7 5l3 3-3 3M13 2.5v11',
     wrench: 'M9.6 2.4a3.3 3.3 0 0 0 4 4.2l-5.8 5.8a1.5 1.5 0 0 1-2.2-2.2l5.8-5.8a3.3 3.3 0 0 0-1.8-2z',
   };
   function icon(name, small) {
@@ -448,6 +457,8 @@
   function money(v) {
     return v == null ? '—' : `$${Number(v).toFixed(v < 1 ? 4 : 2)}`;
   }
+  // Dollars to the cent, for a column of them.
+  const cents = (v) => (v == null ? '—' : v > 0 && v < 0.005 ? '<$0.01' : `$${Number(v).toFixed(2)}`);
 
   function since(ms) {
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -541,7 +552,7 @@
       repos: [], repo: null, source: { kind: 'none' }, projects: null,
       workspaces: { project: null, list: [], loaded: false, error: null },
       branches: new Map(), lastActive: new Map(), loaded: false, branchError: null,
-      permissions: [], inbox: [], approvals: [], effects: [], decisions: [],
+      permissions: [], inbox: [], approvals: [], answered: [], effects: [], decisions: [], tracks: new Map(),
       projectDecisions: { project: null, list: [] }, projectSessions: { project: null, list: [] },
     });
     $('sidebar').hidden = true;
@@ -798,6 +809,8 @@
     save(REPO_KEY, repo);
     state.branches = new Map();
     state.lastActive = new Map();
+    state.tracks = new Map();
+    state.answered = [];
     state.cursor = null;
     state.loaded = false;
     state.branchError = null;
@@ -1168,35 +1181,116 @@
       groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering]);
   }
 
-  // The window the board draws: the last hour, now at the right edge.
-  const BOARD_WINDOW = 60 * 60 * 1000;
-  const boardX = (ms, now) => Math.max(0, Math.min(100, ((ms - (now - BOARD_WINDOW)) / BOARD_WINDOW) * 100));
+  // The board's clock: the smallest of these windows that holds the
+  // oldest thing it draws, now at the right edge. A yard whose work began
+  // minutes ago is drawn over minutes, not lost in an hour. Each window's
+  // quarters are round numbers.
+  const MINUTE = 60 * 1000;
+  const BOARD_WINDOWS = [4, 8, 20, 40, 60, 120, 240, 480, 720, 1440].map((m) => m * MINUTE);
+  function boardScale(oldest, now) {
+    const span = Math.max(0, now - oldest) * 1.06;
+    const win = BOARD_WINDOWS.find((w) => w >= span) || BOARD_WINDOWS[BOARD_WINDOWS.length - 1];
+    const x = (ms) => Math.max(0, Math.min(100, ((ms - (now - win)) / win) * 100));
+    const minus = (ms) => {
+      const m = Math.round(ms / MINUTE);
+      return m < 60 ? `−${m}m` : `−${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ''}`;
+    };
+    const label = win < 60 * MINUTE ? `last ${win / MINUTE} min` : win < 1440 * MINUTE ? `last ${plural(win / 60 / MINUTE, 'hour')}` : 'last day';
+    return { window: win, now, x, label, ticks: [1, 0.75, 0.5, 0.25].map((f) => minus(win * f)) };
+  }
+  const place = (el, scale, from, to) => {
+    const left = scale.x(from);
+    el.style.left = `${left}%`;
+    el.style.width = `${Math.max(0.4, scale.x(to) - left)}%`;
+    return el;
+  };
+  const at = (el, scale, ms) => { el.style.left = `${scale.x(ms)}%`; return el; };
 
-  // One branch on the clock: its name and state, its time on the rail,
-  // what it cost and the one thing to do with it.
-  function boardRow(b, lane, now) {
+  // A branch's turns from its latest events: when each began and ended,
+  // when each tool call started, and when the branch merged.
+  function trackOf(events) {
+    const turns = [];
+    let turn = null;
+    let merged = null;
+    for (const { activity: a, at_ms: ms } of events) {
+      const ev = a.harness || {};
+      if (a.prompt != null || a.steered) {
+        if (turn && turn.end == null && a.steered) continue;
+        turn = { start: ms, end: null, tools: [] };
+        turns.push(turn);
+      } else if (ev.type === 'tool_started') {
+        if (!turn) { turn = { start: ms, end: null, tools: [] }; turns.push(turn); }
+        turn.tools.push(ms);
+      } else if (a.status) {
+        if (a.status.state === 'merged') merged = ms;
+        if (turn && turn.end == null && !['running', 'waiting'].includes(a.status.state)) turn.end = ms;
+      }
+    }
+    return { turns, merged };
+  }
+
+  // Read the tracks the board draws, each once per change of its branch:
+  // a branch's activity marks its track stale, and the next home redraw
+  // reads it again.
+  const trackKey = (b) => JSON.stringify([b.status, b.turns, activeAt(b)]);
+  function trackFor(b) {
+    const key = trackKey(b);
+    const found = state.tracks.get(b.name);
+    if (found && (found.key === key || found.loading)) return found.track;
+    const entry = { key, loading: true, track: found ? found.track : null };
+    state.tracks.set(b.name, entry);
+    const repo = state.repo;
+    api('GET', `${branchPath(b.name)}/event-page?limit=200`)
+      .then((page) => { entry.track = trackOf(page.events); })
+      .catch(() => {})
+      .finally(() => {
+        entry.loading = false;
+        if (repo === state.repo) branchesChanged();
+      });
+    return entry.track;
+  }
+
+  function homeSignature() {
+    const groups = lanes(Array.from(state.branches.values()));
+    return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 15000),
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering,
+      Array.from(state.tracks.entries()).map(([k, t]) => [k, t.loading, t.track && t.track.turns.length]), state.answered.length]);
+  }
+
+  // One branch on the clock: its name and what it is doing, its turns on
+  // the rail (a turn a bar, each tool call a tick on it, a wait on you
+  // filled amber from when it parked, a merge a green tick), what it cost
+  // and the one thing to do with it. The row opens the branch.
+  function boardRow(b, lane, scale) {
     const s = statusOf(b);
-    const active = activeAt(b);
-    const started = b.created_at * 1000;
+    const now = scale.now;
+    const track = trackFor(b) || { turns: [{ start: b.created_at * 1000, end: lane.key === 'running' ? null : activeAt(b), tools: [] }], merged: null };
     const open = !['merged', 'no_changes', 'discarded'].includes(b.status.state);
     const rail = h('span', { class: 'rail' });
-    const place = (el, from, to) => {
-      const left = boardX(from, now);
-      const right = boardX(to, now);
-      el.style.left = `${left}%`;
-      el.style.width = `${Math.max(0.5, right - left)}%`;
-      return el;
-    };
-    if (started < now - BOARD_WINDOW) rail.append(h('i', { class: 'rail-before', title: `started ${ago(started)}` }));
-    rail.append(place(h('i', { class: `turnbar turnbar-${lane.key}`, title: `${s.text}, since ${clock(started)}` }), started, open && lane.key !== 'ready' ? now : active));
-    if (b.awaiting) rail.append(place(h('i', { class: 'wait', title: `waiting for you since ${clock(b.awaiting.since_ms)}` }), b.awaiting.since_ms, now));
-    if (lane.key === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'ready, waiting to be merged' }), active, now));
-    if (open) rail.append(h('i', { class: `head head-${lane.key}` }));
+    const first = track.turns.length ? track.turns[0].start : b.created_at * 1000;
+    if (first < now - scale.window) rail.append(h('i', { class: 'rail-before', title: `started ${clock(first)}` }));
+    const calls = track.turns.reduce((n, t) => n + t.tools.length, 0);
+    track.turns.forEach((t, i) => {
+      const last = i === track.turns.length - 1;
+      const end = t.end != null ? t.end : (open && last ? now : activeAt(b));
+      rail.append(place(h('i', { class: `seg seg-${lane.key}${t.end == null && open && last ? ' seg-live' : ''}`, title: `turn ${i + 1}: ${clock(t.start)}${t.end != null ? `–${clock(t.end)}` : ', running'} · ${plural(t.tools.length, 'call')}` }), scale, t.start, end));
+      for (const ms of t.tools) rail.append(at(h('i', { class: 'call' }), scale, ms));
+    });
+    for (const a of state.answered.filter((x) => x.branch === b.name && x.answer)) {
+      rail.append(place(h('i', { class: 'wait wait-past', title: `waited on you ${clock(a.created_ms)}–${clock(a.answer.at_ms)}, ${a.answer.allow ? 'allowed' : 'denied'}` }), scale, a.created_ms, a.answer.at_ms));
+    }
+    if (b.awaiting) rail.append(place(h('i', { class: 'wait', title: `waiting for you since ${clock(b.awaiting.since_ms)}` }), scale, b.awaiting.since_ms, now));
+    const lastTurn = track.turns[track.turns.length - 1];
+    if (lane.key === 'ready' && lastTurn && lastTurn.end) rail.append(place(h('i', { class: 'rail-ready', title: 'ready, waiting to be merged' }), scale, lastTurn.end, now));
+    if (track.merged) rail.append(at(h('i', { class: 'tick-merge', title: `merged ${clock(track.merged)}` }), scale, track.merged));
+    if (lane.key === 'needs' && !b.awaiting && lastTurn && lastTurn.end) rail.append(at(h('i', { class: 'stop', title: `${s.text} ${clock(lastTurn.end)}` }), scale, lastTurn.end));
+    else if (open) rail.append(h('i', { class: `head head-${lane.key}` }));
     let meta;
-    if (b.awaiting) meta = `waiting for you · ${since(b.awaiting.since_ms)}`;
-    else if (lane.key === 'running') meta = b.status.state === 'running' ? `${s.text} · turn ${b.turns + 1}` : s.text;
-    else if (lane.key === 'ready') meta = ['ready · ', b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : null];
-    else meta = s.text;
+    if (b.awaiting) meta = [h('b', { text: 'waiting for you' }), ` · ${since(b.awaiting.since_ms)}`];
+    else if (lane.key === 'running') meta = b.status.state === 'running' ? `${b.stalled ? 'silent' : 'working'} · turn ${b.turns + 1} · ${plural(calls, 'call')}` : s.text;
+    else if (lane.key === 'ready') meta = ['ready · ', b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : null, ` · ${plural(b.turns, 'turn')}`];
+    else if (lane.key === 'done') meta = [s.text, track.merged ? ` · ${clock(track.merged).slice(0, 5)}` : ''];
+    else meta = [s.text, calls ? ` after ${plural(calls, 'call')}` : ''];
     let action = null;
     if (b.awaiting || attention().has(b.name)) action = h('a', { class: 'button small needs', href: '#/attention', text: 'Answer' });
     else if (lane.key === 'ready' && applies(ACTIONS.merge, b)) action = h('button', { type: 'button', class: 'small primary', text: 'Merge', onclick: () => runAction(ACTIONS.merge, b.name) });
@@ -1204,9 +1298,15 @@
     else if (lane.key === 'needs' && applies(ACTIONS.resume, b)) action = h('button', { type: 'button', class: 'small', text: 'Resume', onclick: () => runAction(ACTIONS.resume, b.name) });
     else action = h('a', { class: 'button small', href: branchHref(b.name), text: 'Open' });
     const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name },
-      h('span', { class: 'board-name' }, dot(lane.key), h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta)),
+      h('span', { class: 'board-name' }, dot(lane.key),
+        h('span', { class: 'board-id' }, h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta))),
       rail,
-      h('span', { class: 'board-act' }, b.cost_usd != null ? h('span', { class: 'mono', text: money(b.cost_usd) }) : null, action));
+      h('span', { class: `board-cost mono${b.cost_usd == null ? ' muted' : ''}`, title: b.cost_usd == null ? 'its harness reports no cost' : `what ${b.harness} reported spending` }, cents(b.cost_usd)),
+      h('span', { class: 'board-act' }, action));
+    row.addEventListener('click', (ev) => {
+      if (ev.target.closest('a, button, input')) return;
+      location.hash = branchHref(b.name);
+    });
     if (state.steering === b.name) return [row, steerRow(b)];
     return row;
   }
@@ -1230,46 +1330,124 @@
     return row;
   }
 
+  // The axis over the rails: where the window starts, its quarters, and
+  // now, with the time.
+  function boardAxis(scale, name) {
+    return h('div', { class: 'board-axis', 'aria-hidden': 'true' },
+      h('span', { class: 'board-name' }, name, h('span', { class: 'board-window', text: scale.label })),
+      h('span', { class: 'rail-axis' }, scale.ticks.map((t) => h('span', { text: t })),
+        h('span', { class: 'axis-now' }, 'now ', h('b', { text: clock(scale.now).slice(0, 5) }))),
+      h('span', { class: 'board-cost', text: 'Cost' }),
+      h('span', { class: 'board-act' }));
+  }
+
+  // A number with its meaning: the yard's summary tiles.
+  function tile(key, label, value, meaning, href) {
+    const body = [h('span', { class: 'tile-label' }, dot(key), label), h('b', { class: 'tile-value', text: value }), h('span', { class: 'tile-meaning', title: typeof meaning === 'string' ? meaning : null }, meaning)];
+    return h('li', { class: `tile tile-${key}` }, href ? h('a', { class: 'tile-link', href }, body) : h('div', { class: 'tile-body' }, body));
+  }
+
+  // Under the board: what was decided today, and where the money went,
+  // each branch's reported cost as a bar against the largest.
+  function homeLower(all, groups) {
+    const recent = recentDecisions();
+    const spent = all.filter((b) => b.cost_usd != null).sort((x, y) => y.cost_usd - x.cost_usd);
+    const top = spent.length ? spent[0].cost_usd : 0;
+    const laneKey = (b) => groups.find((g) => g.branches.includes(b)).lane.key;
+    return h('div', { class: 'home-lower' },
+      h('section', { class: 'recent-box', 'aria-labelledby': 'home-recent-h' },
+        h('h2', { id: 'home-recent-h' }, 'Decided today', recent.length ? h('span', { class: 'lane-count', text: String(recent.length) }) : null),
+        recent.length ? recentList(recent) : h('p', { class: 'muted recent-none', text: 'Nothing allowed, denied or merged yet today.' })),
+      h('section', { class: 'recent-box', 'aria-labelledby': 'home-spend-h' },
+        h('h2', { id: 'home-spend-h', text: 'Where the money went' }),
+        spent.length ? h('ul', { class: 'spend' }, spent.slice(0, 6).map((b) => {
+          const bar = h('i');
+          bar.style.width = `${top ? Math.max(2, (b.cost_usd / top) * 100) : 0}%`;
+          return h('li', { class: `spend-${laneKey(b)}` },
+            h('a', { class: 'spend-name', href: branchHref(b.name), text: b.name }),
+            h('span', { class: 'spend-track', title: `${b.name}: ${money(b.cost_usd)}` }, bar),
+            h('span', { class: 'spend-cost', text: cents(b.cost_usd) }));
+        }), h('li', { class: 'spend-total' }, h('span', { text: spent.length > 6 ? `${spent.length - 6} more` : 'In all' }), h('span'),
+          h('span', { class: 'spend-cost', text: cents(spent.reduce((n, b) => n + b.cost_usd, 0)) })))
+          : h('p', { class: 'muted recent-none', text: 'No branch here reports what it spends. A harness that reports cost, such as Claude Code, shows it here.' })));
+  }
+
   function renderHome() {
     if (state.source.kind === 'project') return renderProject();
     if (state.source.kind === 'none') return renderNoSource();
     const all = Array.from(state.branches.values());
     const groups = lanes(all);
     const needs = groups[0].branches;
+    const ready = groups[2].branches;
+    const done = groups[3].branches;
+    const waiting = attention();
+    const now = Date.now();
+    const midnight = new Date(now).setHours(0, 0, 0, 0);
+    const reporting = all.filter((b) => b.cost_usd != null);
+    const cost = reporting.reduce((sum, b) => sum + b.cost_usd, 0);
+    const inflight = groups[1].branches;
+    const parked = needs.filter((b) => b.awaiting || waiting.has(b.name)).length;
+    const mergedToday = done.filter((b) => b.status.state === 'merged' && activeAt(b) >= midnight);
+    const added = ready.reduce((n, b) => n + (b.candidate ? b.candidate.insertions : 0), 0);
+    const removed = ready.reduce((n, b) => n + (b.candidate ? b.candidate.deletions : 0), 0);
     const lede = !state.loaded
       ? state.branchError ? 'The branch list did not load.' : 'Loading…'
       : !all.length ? 'Nothing has run here yet.'
-        : needs.length ? `${plural(needs.length, 'branch', 'branches')} ${needs.length === 1 ? 'needs' : 'need'} you.` : 'Nothing needs you right now.';
-    const now = Date.now();
-    const cost = all.reduce((sum, b) => sum + (b.cost_usd || 0), 0);
-    const spent = all.some((b) => b.cost_usd != null) ? ` · ${money(cost)} so far` : '';
-    const inflight = groups[1].branches.length;
-    const summary = state.loaded && all.length
-      ? `${plural(inflight, 'branch', 'branches')} in flight · ${needs.length} need${needs.length === 1 ? 's' : ''} you · ${groups[2].branches.length} ready · ${groups[3].branches.length} done${spent}`
-      : null;
-    const axis = h('div', { class: 'board-axis', 'aria-hidden': 'true' },
-      h('span', { class: 'board-name', text: 'Branch' }),
-      h('span', { class: 'rail-axis' }, ['‹ earlier', '−45m', '−30m', '−15m', 'now'].map((t) => h('span', { text: t }))),
-      h('span', { class: 'board-act', text: 'cost · act' }));
-    const done = groups[3].branches;
-    main(h('div', { class: 'page wide' },
+        : [needs.length ? `${plural(needs.length, 'branch', 'branches')} ${needs.length === 1 ? 'needs' : 'need'} you` : 'Nothing needs you right now',
+          `${inflight.length} in flight`, `${ready.length} ready`, reporting.length ? `${cents(cost)} spent so far` : null].filter(Boolean).join(' · ');
+    const open = groups.slice(0, 3).flatMap((g) => g.branches);
+    const starts = all.filter((b) => open.includes(b) || activeAt(b) >= now - 1440 * MINUTE).map((b) => {
+      const t = trackFor(b);
+      return t && t.turns.length ? t.turns[0].start : b.created_at * 1000;
+    });
+    const scale = boardScale(starts.length ? Math.min(...starts) : now, now);
+    const tiles = state.loaded && all.length ? h('ul', { class: 'tiles', 'aria-label': 'The yard at a glance' },
+      tile('running', 'In flight', String(inflight.length), inflight.length ? `${plural(inflight.filter((b) => b.status.state === 'running').length, 'agent')} working now` : 'no agent is working'),
+      tile('needs', 'Need you', String(needs.length), needs.length ? [parked ? `${parked} parked on you` : null, parked && needs.length > parked ? ', ' : null, needs.length > parked ? `${needs.length - parked} stopped` : null] : 'nothing waits on you', needs.length ? '#/attention' : null),
+      tile('ready', 'Ready', String(ready.length), ready.length ? ['to merge · ', counts(added, removed)] : 'nothing to merge'),
+      tile('done', 'Merged today', String(mergedToday.length), mergedToday.length ? mergedToday.slice(0, 2).map((b) => b.name).join(', ') + (mergedToday.length > 2 ? ` +${mergedToday.length - 2}` : '') : `${plural(done.length, 'branch', 'branches')} done in all`),
+      tile('cost', 'Spent', reporting.length ? cents(cost) : '—', reporting.length ? `by ${plural(reporting.length, 'branch', 'branches')} that report it` : 'no harness here reports cost')) : null;
+    const doneCost = done.reduce((sum, b) => sum + (b.cost_usd || 0), 0);
+    const doneGroup = done.length ? (() => {
+      const ticks = h('span', { class: 'rail rail-done' }, done.map((b) => {
+        const t = trackFor(b);
+        const ms = (t && t.merged) || activeAt(b);
+        return at(h('i', { class: b.status.state === 'merged' ? 'tick-merge' : 'tick-done', title: `${b.name}: ${statusOf(b).text}, ${clock(ms)}` }), scale, ms);
+      }));
+      const box = h('details', { class: 'board-done', open: state.boardDoneOpen },
+        h('summary', { class: 'board-row board-done-head' },
+          h('span', { class: 'board-name' }, h('span', { class: 'fold', 'aria-hidden': 'true' }),
+            h('span', { class: 'board-id' }, h('span', { class: 'board-done-title', text: `Done · ${done.length}` }),
+              h('span', { class: 'board-meta', text: done.map((b) => b.name).slice(0, 3).join(', ') + (done.length > 3 ? ` +${done.length - 3}` : '') }))),
+          ticks,
+          h('span', { class: 'board-cost mono muted', text: doneCost ? cents(doneCost) : '' }),
+          h('span', { class: 'board-act' })),
+        done.map((b) => boardRow(b, groups[3].lane, scale)));
+      box.addEventListener('toggle', () => { state.boardDoneOpen = box.open; });
+      return box;
+    })() : null;
+    main(h('div', { class: 'page full home' },
       h('header', { class: 'page-head' },
-        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: summary || lede }))),
+        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede })),
+        state.loaded && all.length && can('run') ? h('a', { class: 'button primary', href: '#/new' }, icon('plus', true), 'New task') : null),
+      tiles,
       state.loaded && all.length ? h('section', { class: 'board', 'aria-label': 'Every branch on one clock' },
-        axis,
-        groups.slice(0, 3).map(({ lane, branches }) => branches.map((b) => boardRow(b, lane, now))),
-        done.length ? h('div', { class: 'board-row board-done' },
-          h('span', { class: 'board-name muted', text: `${plural(done.length, 'branch', 'branches')} done` }),
-          h('span', { class: 'rail rail-done' }, done.map((b) => {
-            const tick = h('i', { class: 'tick-done', title: `${b.name}: ${statusOf(b).text}` });
-            tick.style.left = `${boardX(activeAt(b), now)}%`;
-            return tick;
-          })),
-          h('span', { class: 'board-act muted', text: done.map((b) => b.name).slice(0, 3).join(', ') + (done.length > 3 ? '…' : '') })) : null) : null,
-      needs.length ? h('p', { class: 'board-note' }, 'The amber fill is a wait on you. ', h('a', { href: '#/attention', text: 'Decide' }), ' takes those one at a time.') : null,
-      state.loaded && !all.length && can('run') ? h('div', { class: 'welcome' },
-        h('p', { text: 'Start a task and it gets a branch of its own, with its conversation, its changes and a merge button.' }),
-        h('a', { class: 'button primary', href: '#/new', text: 'Start a task' })) : null));
+        boardAxis(scale, 'Branch'),
+        open.length ? groups.slice(0, 3).map(({ lane, branches }) => branches.map((b) => boardRow(b, lane, scale)))
+          : h('p', { class: 'board-calm' }, checkMark(false), 'Nothing is open. Every branch here is done.'),
+        doneGroup) : null,
+      state.loaded && all.length ? h('p', { class: 'board-legend', 'aria-label': 'How to read the board' },
+        h('span', { class: 'key' }, h('i', { class: 'key-seg' }), 'a turn'),
+        h('span', { class: 'key' }, h('i', { class: 'key-call' }), 'a tool call'),
+        h('span', { class: 'key' }, h('i', { class: 'key-wait' }), 'waiting on you'),
+        h('span', { class: 'key' }, h('i', { class: 'key-merge' }), 'merged'),
+        needs.length ? h('span', { class: 'key-note' }, h('a', { href: '#/attention', text: 'Decide' }), ' takes what waits on you one at a time.') : null) : null,
+      state.loaded && all.length ? homeLower(all, groups) : null,
+      state.loaded && !all.length ? h('section', { class: 'empty' },
+        h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('bolt')),
+        h('h2', { text: 'An empty yard' }),
+        h('p', { text: can('run') ? 'Start a task and it gets a branch of its own: its conversation, its changes and a merge button. Every branch then shows here on one clock.' : 'Branches started from the CLI or another browser show here on one clock. This token can read, not start.' }),
+        can('run') ? h('div', { class: 'row' }, h('a', { class: 'button primary', href: '#/new', text: 'Start a task' }), h('span', { class: 'hint' }, 'or ', h('code', { text: 'by run "…"' }), ' from a terminal')) : null) : null));
   }
 
   // A token that reaches no repository, before its first project.
@@ -1436,12 +1614,8 @@
     ];
     board.hidden = !rows.length;
     if (!rows.length) { fill(board); return; }
-    const place = (el, from, to) => {
-      const left = boardX(from, now);
-      el.style.left = `${left}%`;
-      el.style.width = `${Math.max(0.5, boardX(to, now) - left)}%`;
-      return el;
-    };
+    const startOf = ({ d, s }) => (s ? s.created_at_ms : d.kind === 'output' ? d.since_ms : now);
+    const scale = boardScale(Math.min(...rows.map(startOf)), now);
     const row = ({ lane, d, s }) => {
       const started = s ? s.created_at_ms : d.kind === 'output' ? d.since_ms : now;
       const name = s ? s.name : d.session_name;
@@ -1449,23 +1623,19 @@
       const href = s ? workspaceHref(s.workspace.id, s.id) : workspaceHref(d.workspace, d.session);
       const meta = s ? `${where} · ${sessionPhase(s).label.toLowerCase()}` : d.kind === 'output' ? `${where} · delivered ${d.output.name}` : `${where} · ${d.phase.toLowerCase()}`;
       const rail = h('span', { class: 'rail' });
-      if (started < now - BOARD_WINDOW) rail.append(h('i', { class: 'rail-before', title: `started ${ago(started)}` }));
-      rail.append(place(h('i', { class: `turnbar turnbar-${lane}`, title: `since ${clock(started)}` }), started, now));
-      if (lane === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'delivered, waiting to be accepted' }), started, now));
+      if (started < now - scale.window) rail.append(h('i', { class: 'rail-before', title: `started ${clock(started)}` }));
+      if (lane === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'delivered, waiting to be accepted' }), scale, started, now));
+      else rail.append(place(h('i', { class: `seg seg-${lane}${lane === 'running' ? ' seg-live' : ''}`, title: `since ${clock(started)}` }), scale, started, now));
       if (lane !== 'needs') rail.append(h('i', { class: `head head-${lane}` }));
       const action = lane === 'running' ? h('a', { class: 'button small', href, text: 'Open' })
         : h('a', { class: 'button small needs', href: '#/attention', text: lane === 'ready' ? 'Review' : 'Decide' });
       return h('div', { class: `board-row board-${lane}`, 'data-session': s ? s.id : d.session, 'data-lane': lane },
-        h('span', { class: 'board-name' }, dot(lane), h('a', { href, text: name }), h('span', { class: 'board-meta', text: meta })),
+        h('span', { class: 'board-name' }, dot(lane), h('span', { class: 'board-id' }, h('a', { href, text: name }), h('span', { class: 'board-meta', text: meta }))),
         rail,
+        h('span', { class: 'board-cost' }),
         h('span', { class: 'board-act' }, action));
     };
-    fill(board,
-      h('div', { class: 'board-axis', 'aria-hidden': 'true' },
-        h('span', { class: 'board-name', text: 'Session' }),
-        h('span', { class: 'rail-axis' }, ['‹ earlier', '−45m', '−30m', '−15m', 'now'].map((t) => h('span', { text: t }))),
-        h('span', { class: 'board-act', text: 'act' })),
-      rows.map(row));
+    fill(board, boardAxis(scale, 'Session'), rows.map(row));
   }
 
   // A workspace is reserved at once and set up by a queued operation; it
@@ -2048,7 +2218,7 @@
     loadGround().then(() => drawGround(v));
   }
 
-  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['ground', 'Ground', 'ground-count'], ['details', 'Details'], ['activity', 'Activity']];
+  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['ground', 'Ground', 'ground-count'], ['details', 'Details'], ['activity', 'Activity', 'activity-count']];
 
   // The inspector's tabs: [key, label, id of a count beside it]. Arrow keys
   // move between them.
@@ -2114,14 +2284,22 @@
     const box = $('convo');
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
     const turns = conversation(v.events);
+    // A turn's number counts the prompts before it, not the steers.
+    v.turnsBefore = (i) => turns.slice(0, i).filter((t) => !t.steer && t.text != null).length;
     const info = state.branches.get(v.name);
     const working = info && ['running', 'waiting'].includes(info.status.state);
     fill(box,
       v.first > 0 ? h('p', { class: 'convo-note', text: `Earlier turns are not shown here: this is the latest of ${plural(v.first + v.events.length, 'event')}.` }) : null,
-      turns.length ? turns.map((t, i) => turnItem(t, i, v, working && i === turns.length - 1)) : h('p', { class: 'muted', text: 'No turns yet.' }),
+      turns.length ? turns.map((t, i) => turnItem(t, i, v, working && i === turns.length - 1))
+        : working ? null : h('section', { class: 'empty convo-empty' },
+          h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('terminal')),
+          h('h2', { text: 'No turns yet' }),
+          h('p', { text: 'A turn starts when the agent gets a prompt. What it says reads here as a report, its tool calls in the margin beside the paragraph they led to, and each turn ends with a receipt. Write the first prompt below.' })),
       working && !turns.length ? workingLine(info) : null);
     if (atEnd || !v.scrolled) box.scrollTop = box.scrollHeight;
     v.scrolled = true;
+    const calls = v.events.filter((e) => e.activity.harness && e.activity.harness.type === 'tool_started').length;
+    if ($('activity-count')) $('activity-count').textContent = calls ? String(calls) : '';
     if (v.tab === 'activity') {
       const events = coalesce(v.events);
       fill($('events'), ...(events.length ? events.slice().reverse().map(eventItem) : [h('li', { class: 'muted', text: 'No events yet.' })]));
@@ -2157,21 +2335,28 @@
     if (!t.status && !c) return null;
     const took = t.started_ms && t.ended_ms && t.ended_ms - t.started_ms >= 1000 ? spanText(t.ended_ms - t.started_ms) : null;
     const did = t.tools.length ? countsText(toolCounts(t.tools)) : null;
-    return h('p', { class: `outcome outcome-${lane || 'done'}` },
-      lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
-      t.status ? cap(statusOf({ status: t.status }).text) : null,
-      took ? [' · ', took] : null,
-      t.cost != null ? [' · ', money(t.cost)] : null,
-      did ? [' · ', did] : null,
-      c ? [' · ', h('span', { class: 'mono', text: c.commit.slice(0, 7) }), ` · ${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null);
+    const figure = (label, ...value) => h('span', { class: 'figure' }, h('span', { class: 'figure-label', text: label }), h('span', { class: 'figure-value' }, value));
+    return h('div', { class: `outcome receipt outcome-${lane || 'done'}` },
+      h('span', { class: 'receipt-state' },
+        lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
+        t.status ? cap(statusOf({ status: t.status }).text) : 'Checkpoint'),
+      h('span', { class: 'receipt-figures' },
+        took ? figure('took', took) : null,
+        did ? figure('calls', did) : null,
+        c ? figure('commit', h('span', { class: 'mono', text: c.commit.slice(0, 7) })) : null,
+        c ? figure('changed', `${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)) : null,
+        t.cost != null ? figure('cost', money(t.cost)) : null));
   }
 
   function turnItem(t, i, v, last) {
     const info = state.branches.get(v.name);
+    const number = v.first > 0 ? null : 1 + v.turnsBefore(i);
     const outcome = receipt(t);
     return h('article', { class: 'turn' },
-      t.text != null ? h('div', { class: t.steer ? 'you steer' : 'you' },
-        t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text })) : null,
+      t.text != null ? h('div', { class: 'turn-row turn-ask' },
+        h('span', { class: 'turn-when' }, h('b', { text: t.steer ? 'Steered' : number ? `Turn ${number}` : 'Turn' }), t.started_ms ? ` · ${clock(t.started_ms).slice(0, 5)}` : null),
+        h('div', { class: t.steer ? 'you steer' : 'you' },
+          t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text }))) : null,
       t.parts.length ? reportBlock(t.parts, info && info.harness, v) : null,
       outcome,
       last && !outcome && info ? workingLine(info) : null);
@@ -2180,7 +2365,7 @@
   // What the agent said as a report: each paragraph beside the calls that
   // came before it, in the margin.
   function reportBlock(parts, harness, v) {
-    return h('div', { class: 'agent' },
+    return h('div', { class: 'agent report' },
       h('div', { class: 'agent-head' },
         h('img', { class: 'agent-mark', src: 'icon.svg', alt: '', width: '18', height: '18' }),
         h('span', { class: 'agent-name', text: harness || 'Agent' }),
@@ -2266,8 +2451,7 @@
       s.key === 'merged'
         ? h('p', { class: 'state state-merged' }, checkMark(state.merged.has(info.name)), cap(s.text))
         : h('p', { class: `state state-${lane}` }, dot(lane), cap(s.text)),
-      action,
-      menu.length ? menuOf(menu, info) : null,
+      action || menu.length ? h('div', { class: 'strip-actions' }, action, menu.length ? menuOf(menu, info) : null) : null,
     ];
   }
 
@@ -2390,9 +2574,15 @@
     }));
     const pre = h('pre', { class: 'diff', tabindex: '0', 'aria-label': `Diff of ${file.path}` },
       file.lines.map((l) => h('span', { class: l.kind }, l.text)));
+    const cut = file.path.lastIndexOf('/');
+    // The file's header stays in view while its diff scrolls under it.
+    const head = h('div', { class: 'diff-head' },
+      h('span', { class: 'path' }, h('span', { class: 'dir', text: file.path.slice(0, cut + 1) }), h('b', { text: file.path.slice(cut + 1) })),
+      h('span', { class: 'file-counts' }, counts(file.add, file.del)),
+      v.files.length > 1 ? h('span', { class: 'diff-of muted', text: `${v.files.indexOf(file) + 1} of ${v.files.length}` }) : null);
     fill(slot,
       v.truncated ? h('p', { class: 'hint pad', text: `Showing the first ${DIFF_LIMIT} characters of ${v.truncated}.` }) : null,
-      list, pre);
+      list, h('div', { class: 'diff-box' }, head, pre));
     if (focus) list.querySelector('[aria-pressed="true"]').focus();
   }
 
@@ -3259,7 +3449,12 @@
     v.drawn.convo = signature;
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
     if (!s) {
-      fill(box, h('p', { class: 'muted', text: workspaceCanRun(v) || workspaceCanComment(v) ? 'No sessions yet. Start one with + Session.' : 'No sessions yet.' }));
+      fill(box, h('section', { class: 'empty convo-empty' },
+        h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('plus')),
+        h('h2', { text: 'No sessions yet' }),
+        h('p', { text: workspaceCanRun(v) || workspaceCanComment(v)
+          ? 'A session is one agent working on this workspace\'s sources. Start one with + Session; what it says reads here, and the files it delivers wait under Outputs.'
+          : 'Sessions that members start appear here, with what each agent said and delivered.' })));
       return;
     }
     const working = sessionActive(s);
@@ -4089,11 +4284,14 @@
 
   async function loadApprovals() {
     try {
+      // Every approval, so the deck can say what was answered today; the
+      // ones still open are what the lanes and the deck count.
       const [{ approvals }, { effects }] = await Promise.all([
-        api('GET', `${repoPath()}/approvals`),
+        api('GET', `${repoPath()}/approvals?all=true`),
         api('GET', `${repoPath()}/effects`),
       ]);
-      state.approvals = approvals;
+      state.approvals = approvals.filter((x) => !x.answer);
+      state.answered = approvals.filter((x) => x.answer).sort((x, y) => y.answer.at_ms - x.answer.at_ms).slice(0, 50);
       state.effects = effects.slice(-50).reverse();
     } catch (_) { return; }
     await loadDecisions();
@@ -4180,7 +4378,8 @@
       projectCards().map(decisionKey), state.workspaces.list.map((w) => w.title),
       state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
       state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled]),
-      state.ground && state.ground.files]);
+      state.ground && state.ground.files, state.answered.map((a) => a.id),
+      Array.from(state.tracks.values()).map((t) => t.track && t.track.merged), Math.floor(Date.now() / 30000)]);
   }
 
   // How long an allow or a deny waits before it is sent, for a second
@@ -4426,10 +4625,18 @@
       const reason = h('textarea', { rows: '1', 'data-draft': draftKey, placeholder: 'A reason, if you want one' });
       const evidence = evidenceFor(d);
       title = [d.branch, ' wants to ', h('code', { text: aboutText(a.about) })];
+      const input = a.request && typeof a.request === 'object' && !Array.isArray(a.request) ? Object.entries(a.request).slice(0, 4) : [];
       body = [
-        h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · turn ${a.turn} · ${layerText(a.resolved) || 'the policy asks before this'}` })),
-        evidence.said.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it was doing' }), h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1]))) : null,
-        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The call' }), h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
+        h('div', { class: 'deck-grid' },
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it was doing' }),
+            evidence.loading ? skeleton() : evidence.said.length ? h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1])) : h('p', { class: 'muted', text: 'It said nothing before it asked.' })),
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it asks' }),
+            h('dl', { class: 'deck-facts' },
+              h('dt', { text: a.about.kind === 'tool' ? 'Tool' : 'Call' }), h('dd', {}, h('code', { text: a.about.kind === 'tool' ? a.about.tool : aboutText(a.about) })),
+              input.map(([k, v]) => [h('dt', { text: k }), h('dd', {}, h('code', { text: (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 160) }))]),
+              h('dt', { text: 'Who asks' }), h('dd', { text: layerText(a.resolved) ? cap(layerText(a.resolved)) : 'The policy asks before this' }),
+              h('dt', { text: 'Parked' }), h('dd', { text: `${d.since_ms ? `at ${clock(d.since_ms).slice(0, 5)}` : 'now'} · turn ${a.turn}` })))),
+        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The whole call' }), h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
         h('label', { class: 'block deck-reason' }, h('span', { class: 'visually-hidden', text: 'Reason' }), reason),
       ];
       primary = () => holdAnswer(d, true, reason.value.trim());
@@ -4445,12 +4652,12 @@
       const c = d.candidate;
       const evidence = evidenceFor(d);
       title = [d.branch, ' is ready to merge'];
-      const meta = [c ? `${c.commit.slice(0, 7)} · ${plural(c.files_changed, 'file')} ` : null, c ? counts(c.insertions, c.deletions) : null,
-        b.turns != null ? ` · ${plural(b.turns, 'turn')}` : null, b.cost_usd != null ? ` · ${money(b.cost_usd)}` : null, b.harness ? ` · ${b.harness}` : null];
+      const stats = [c ? h('span', { class: 'mono', text: c.commit.slice(0, 7) }) : null, c ? [`${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null,
+        b.turns != null ? plural(b.turns, 'turn') : null, b.cost_usd != null ? money(b.cost_usd) : null, b.harness || null].filter(Boolean);
       const did = evidence.tools.length ? toolCounts(evidence.tools) : null;
       const shared = (groundOf(d.branch) || []).filter((f) => f.others.length);
       body = [
-        h('p', { class: 'deck-line mono' }, meta),
+        h('p', { class: 'deck-line deck-stats' }, stats.map((x) => h('span', { class: 'stat-chip' }, x))),
         shared.length ? h('p', { class: 'deck-line deck-ground' }, h('b', { text: 'In two hands: ' }),
           shared.map((f, i) => [i ? '; ' : '', h('code', { text: f.path }), ` also in ${f.others.join(', ')}`])) : null,
         b.prompt ? h('p', { class: 'deck-asked' }, h('span', { class: 'muted', text: 'Asked: ' }), b.prompt) : null,
@@ -4525,14 +4732,16 @@
     }
     const card = h('article', { class: `deck-card deck-${d.kind}`, tabindex: '0', 'aria-label': `${KIND_LABEL[d.kind]}: ${subjectOf(d)}` },
       h('div', { class: 'deck-head' },
-        h('span', { class: `deck-kind deck-kind-${d.waits}` }, dot(d.waits === 'agent' ? 'needs' : d.kind === 'merge' ? 'ready' : 'done'), `${KIND_LABEL[d.kind]} · ${WAITS[d.waits]}`),
+        h('span', { class: 'deck-head-row' },
+          h('span', { class: `deck-kind deck-kind-${d.waits}` }, dot(d.waits === 'agent' ? 'needs' : d.kind === 'merge' || d.kind === 'output' ? 'ready' : 'done'),
+            h('span', {}, h('b', { text: KIND_LABEL[d.kind] }), ` · ${WAITS[d.waits]}`)),
+          d.since_ms ? h('span', { class: 'deck-clock', title: `since ${clock(d.since_ms)}` }, ago(d.since_ms, d.kind === 'output' ? ' ago' : ' waiting')) : null),
         h('h2', {}, title)),
       h('div', { class: 'deck-body' }, body),
       h('div', { class: 'deck-actions' }, actions,
         h('button', { type: 'button', class: 'ghost', text: 'Open', onclick: open }, h('kbd', { text: 'o' })),
         h('span', { class: 'spacer' }),
-        h('button', { type: 'button', class: 'ghost', text: 'Later', onclick: () => later(d) }, h('kbd', { text: 's' }))),
-      h('p', { class: 'deck-then muted' }, rest.length ? ['Then: ', rest.slice(0, 3).map((x, i) => [i ? ' · ' : '', `${subjectOf(x)} (${KIND_VERB[x.kind]})`]), rest.length > 3 ? ` · ${rest.length - 3} more` : ''] : 'Then: nothing. This is the last one.'));
+        h('button', { type: 'button', class: 'ghost', text: 'Later', onclick: () => later(d) }, h('kbd', { text: 's' }))));
     card.addEventListener('keydown', (ev) => {
       if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (ev.target.closest('input, textarea, select, button, a')) return;
@@ -4567,8 +4776,47 @@
       h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? (d.kind === 'output' ? `delivered ${since_(d.since_ms)} ago` : `parked ${since_(d.since_ms)}`) : WAITS[d.waits]}` })),
     h('span', { class: 'bay-verb mono', text: KIND_VERB[d.kind] })));
     return h('aside', { class: 'deck-bay', 'aria-label': 'Up next' },
-      held.length || next.length ? h('p', { class: 'deck-label' }, 'Up next', h('span', { class: 'muted', text: ' · parked agents first, oldest wait first' })) : null,
-      held, next);
+      held.length || next.length ? h('p', { class: 'deck-label bay-title' }, h('span', { text: 'Up next' }), next.length ? h('span', { class: 'lane-count', text: String(next.length) }) : null) : null,
+      held, next,
+      next.length ? h('p', { class: 'bay-why muted', text: 'Parked agents first, the longest wait first; then what delivery waits on; then the rest. Later sends a card to the back.' }) : null);
+  }
+
+  // What was decided today, newest first: approvals answered (here, in a
+  // terminal or by the API), branches merged and effects the ledger
+  // recorded. Each says when, and links to its branch.
+  function recentDecisions() {
+    const midnight = new Date().setHours(0, 0, 0, 0);
+    const items = [];
+    for (const a of state.answered) {
+      if (a.answer.at_ms < midnight) continue;
+      items.push({ at: a.answer.at_ms, kind: a.answer.allow ? 'allowed' : 'denied', branch: a.branch,
+        text: [h('a', { href: branchHref(a.branch), text: a.branch }), ` may${a.answer.allow ? '' : ' not'} ${aboutText(a.about)}`],
+        note: [`${a.answer.by} · ${a.answer.surface}`, a.answer.reason ? ` · “${a.answer.reason}”` : ''] });
+    }
+    for (const b of state.branches.values()) {
+      if (b.status.state !== 'merged') continue;
+      const t = trackFor(b);
+      const ms = (t && t.merged) || activeAt(b);
+      if (ms < midnight) continue;
+      items.push({ at: ms, kind: 'merged', branch: b.name,
+        text: [h('a', { href: branchHref(b.name), text: b.name }), ` merged into ${b.status.target}`],
+        note: [b.candidate ? [`${plural(b.candidate.files_changed, 'file')} `, counts(b.candidate.insertions, b.candidate.deletions)] : null, b.cost_usd != null ? ` · ${cents(b.cost_usd)}` : null] });
+    }
+    for (const e of state.effects) {
+      if (e.updated_ms < midnight) continue;
+      items.push({ at: e.updated_ms, kind: 'effect', branch: e.branch,
+        text: [h('a', { href: branchHref(e.branch), text: e.branch }), ` ${e.connector} ${e.operation}: ${e.state}`], note: e.class });
+    }
+    return items.sort((x, y) => y.at - x.at);
+  }
+  const RECENT_ICON = { allowed: 'check', denied: 'cross', merged: 'merge', effect: 'bolt' };
+
+  function recentList(items) {
+    return h('ol', { class: 'recent' }, items.slice(0, 8).map((x) => h('li', { class: `recent-${x.kind}` },
+      h('span', { class: 'recent-mark', 'aria-hidden': 'true' }, icon(RECENT_ICON[x.kind], true)),
+      h('span', { class: 'recent-text' }, h('span', { class: 'recent-what' }, h('b', { text: cap(x.kind) }), ' · ', x.text), h('span', { class: 'recent-note' }, x.note)),
+      h('time', { class: 'recent-at', datetime: new Date(x.at).toISOString(), title: new Date(x.at).toLocaleString(), text: clock(x.at).slice(0, 5) }))),
+    items.length > 8 ? h('li', { class: 'recent-more muted', text: `${items.length - 8} more earlier today` }) : null);
   }
 
   function renderAttention() {
@@ -4583,7 +4831,9 @@
     if (!deck.length || deck[0].kind !== 'output' || decisionKey(deck[0]) !== (deckPreview && deckPreview.key)) closeDeckPreview();
     const held = state.deck.holding.length;
     const count = deck.length;
-    main(h('div', { class: 'page wide' },
+    const recent = state.source.kind === 'repo' || state.repo ? recentDecisions() : [];
+    const peeks = deck.slice(1, 3);
+    main(h('div', { class: 'page wide decide' },
       h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
       h('header', { class: 'page-head' }, h('div', {}, h('h1', { text: 'Needs you' }),
         h('p', { class: 'lede', text: !scope ? 'This token reaches no repository and no project is listed. Choose one in the sidebar.'
@@ -4591,11 +4841,23 @@
       count || held ? h('div', { class: 'deck' },
         count ? h('div', { class: 'deck-main' },
           h('p', { class: 'deck-count muted' }, h('b', { text: `1 of ${count}` }), count > 1 ? ` · then ${subjectOf(deck[1])}` : ' · the last one'),
-          deckCard(deck[0], 1, count, deck.slice(1)),
+          h('div', { class: `deck-pile deck-pile-${peeks.length}` },
+            deckCard(deck[0], 1, count, deck.slice(1)),
+            peeks.map((x, i) => h('div', { class: `deck-peek deck-peek-${i + 1} peek-${x.kind}`, 'aria-hidden': 'true' },
+              i === 0 ? [h('span', { class: 'peek-label', text: 'Next' }), h('span', { class: 'peek-text', text: summaryOf(x) })] : null))),
           h('p', { class: 'deck-keys muted' }, h('kbd', { text: '↵' }), ' the first action (held, for a merge) · ', h('kbd', { text: 'n' }), ' deny · ', h('kbd', { text: 's' }), ' later · ', h('kbd', { text: 'o' }), ' open · ', h('kbd', { text: 'f' }), ' follow up · an allow or a deny waits ', String(UNDO_MS / 1000), ' s for an undo'))
           : null,
         deckBay(deck.slice(1))) : null,
-      count || held ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions, ready branches, branches that stop, outputs to accept and sessions that stop appear here, one at a time.'),
+      count || held ? null : h('section', { class: 'empty' },
+        h('span', { class: 'empty-mark ok', 'aria-hidden': 'true' }, checkMark(false)),
+        h('h2', { text: 'Nothing to decide' }),
+        h('p', { text: 'An approval, a question, a branch ready to merge, one that stopped, an output to accept: each comes here as one card, the parked agent first. Agents keep working meanwhile.' }),
+        h('div', { class: 'row' }, h('a', { class: 'button', href: '#/', text: 'Watch the board' }))),
+      h('section', { class: 'recent-box', 'aria-labelledby': 'recent-h' },
+        h('h2', { id: 'recent-h' }, 'Decided today', recent.length ? h('span', { class: 'lane-count', text: String(recent.length) }) : null),
+        recent.length ? recentList(recent) : h('p', { class: 'muted recent-none', text: 'Nothing yet today. What you allow, deny or merge is listed here with the time.' })),
+      h('details', { class: 'more' },
+        h('summary', {}, 'More', h('span', { class: 'muted', text: ` · ${plural(perms.length, 'permission request')} seen, ${plural(state.effects.length, 'effect')} on the ledger` })),
       h('details', { class: 'attention-group ledger' },
         h('summary', {}, h('h2', { text: `Permission requests (${perms.length})` })),
         h('p', { class: 'hint', text: 'A server decides each tool request at once by the policy its task or send was given; there is nothing to approve afterwards. Send again with "Allow every tool" to let a branch use what was denied.' }),
@@ -4610,7 +4872,7 @@
           ? h('ul', { class: 'events' }, state.effects.map((e) => h('li', {}, h('time', { text: clock(e.updated_ms) }),
             h('a', { href: branchHref(e.branch), text: e.branch }),
             ` ${e.connector} ${e.operation}: ${e.state} (${e.class})${e.undo ? ` · undo ${e.undo.operation}` : (e.undo_unavailable ? ` · no undo: ${e.undo_unavailable}` : '')}`)))
-          : h('p', { class: 'muted', text: 'No effects recorded.' }))));
+          : h('p', { class: 'muted', text: 'No effects recorded.' })))));
     for (const el of document.querySelectorAll('#main [data-draft]')) {
       if (drafts.has(el.dataset.draft)) el.value = drafts.get(el.dataset.draft);
       if (focused && el.dataset.draft === focused[0]) { el.focus({ preventScroll: true }); el.setSelectionRange(focused[1], focused[2]); }

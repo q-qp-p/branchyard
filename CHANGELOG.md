@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+The console's second pass gives it depth and density. Surfaces have three
+elevations (the page, raised panels and cards, and the overlay for the one
+object a page asks about), each a background, a border and a shadow in light
+and dark, with tinted neutrals and a darker sidebar. Home leads with five
+tiles (in flight, need you, ready, merged today, spent) and draws each branch's
+turns on a clock that fits the work: a bar per turn from its own events, a tick
+per tool call, the amber wait, the merge tick, each row's cost, the done
+branches folded, and under the board the day's decisions and each branch's
+spend. The deck's card has a tinted header band, its evidence as labelled
+sections and its answers as a footer, the next card peeking under it, and the
+day's decisions (from `GET …/approvals?all=true`, the merges and the ledger)
+where the empty folds were. A branch reads as a report with the prompt as its
+headline, legible margin notes joined to their paragraphs, a receipt of
+labelled figures, a diff header that stays in view and counts on every tab.
+Empty yards, decks, branches and workspaces say what to do. The README
+screenshots add dark variants of the board and the deck, from a demo whose
+branches run Claude Code's stream-json profile through a script that reports
+cost.
+
 Office files open in a full-width console viewer: DOCX pages load as you scroll,
 PPTX slides have thumbnails and keyboard navigation, and XLSX workbooks have
 sheet tabs, column widths, merged cells, formatted cached values with formula

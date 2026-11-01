@@ -3,7 +3,11 @@ knowledge project whose sessions turn two customer exports into tables.
 
 Everything here is demo data. The scripted agent (scripted_agent.py) plays each turn: it writes
 the turn's files, reports its tool calls and answers with its reply. A turn without a reply keeps
-running; its branch's `fate` says what generate.py does with it after that.
+running; its branch's `fate` says what generate.py does with it after that. The branches run as
+Claude Code's stream-json protocol, which reports what each turn spends (`cost`, and the usage of
+each call as the turn runs), and start STAGGER seconds apart with STEP seconds between their calls,
+so the board has a real hour's shape in a few minutes: turns of different lengths, started at
+different times, with their calls spread along them.
 """
 
 from __future__ import annotations
@@ -16,7 +20,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Fate = Literal["merged", "interrupted", "running", "ready", "parked"]
+Fate = Literal["merged", "interrupted", "running", "ready", "parked", "allowed"]
+"""What generate.py does with a branch once it starts: `allowed` parks on its ask, which the demo
+then allows; the turn finishes and the branch is merged."""
+
+STAGGER = 3.0
+"""Seconds between one branch's start and the next one's."""
+STEP = 4.0
+"""Seconds between a branch's calls."""
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,9 @@ class Turn:
     """CSV files the turn publishes, by name under outputs/."""
     asks: str | None = None
     """`PATH=CONTENT` the agent asks permission to write: the turn parks on that approval."""
+    cost: float | None = None
+    """What the finished turn reports it spent, in dollars; a turn that never finishes reports
+    only the usage of its calls, which the engine prices."""
 
 
 @dataclass(frozen=True)
@@ -293,6 +307,7 @@ BRANCHES = (
             "and prints the record back.",
             tools=(("read", "Read src/lib.rs"), ("edit", "Edit README.md")),
             files={"README.md": README + USAGE},
+            cost=0.08,
         ),
     ),
     Branch(
@@ -307,6 +322,19 @@ BRANCHES = (
                 "Cargo.toml": CARGO_TOML.replace('edition = "2021"\n', 'edition = "2021"\nrust-version = "1.74"\n'),
                 ".github/workflows/ci.yml": CI_YML,
             },
+            cost=0.14,
+        ),
+    ),
+    Branch(
+        "version-file",
+        "allowed",
+        Turn(
+            "Write the crate's version to a VERSION file for the release script.",
+            "VERSION now reads 0.4.2, the version Cargo.toml declares. The release script reads it from there.",
+            say="Reading the version from Cargo.toml, then writing VERSION.",
+            tools=(("read", "Read Cargo.toml"),),
+            asks="VERSION=0.4.2",
+            cost=0.05,
         ),
     ),
     Branch(
@@ -379,6 +407,7 @@ BRANCHES = (
                     '#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]\n',
                 ),
             },
+            cost=0.21,
         ),
     ),
     Branch(
@@ -405,6 +434,7 @@ BRANCHES = (
                 "src/record.rs": RECORD_FIXED_HEAD + RECORD_TAIL,
                 "tests/parser.rs": TESTS_HEAD + TESTS_ADDED + TESTS_TAIL,
             },
+            cost=0.42,
         ),
     ),
 )

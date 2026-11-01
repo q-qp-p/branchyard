@@ -2,8 +2,10 @@
 """tools/readme_screenshots/, which makes the README screenshots: the filter that plays the demo
 in front of the fake agent (which prompt picks which scene, the directive the agent gets instead,
 what the client hears first, the files a scene writes, both directions of the stdio relay and its
-exit), and the script generate.py writes from story.py, whose every turn must find its own scene.
-No server, no browser."""
+exit), the same scenes played as Claude Code's stream-json protocol for the branches (the
+handshake, each call's usage, the cost a finished turn reports, an interrupt, an ask and its
+answer), and the script generate.py writes from story.py, whose every turn must find its own
+scene. No server, no browser."""
 
 import json
 import subprocess
@@ -214,6 +216,135 @@ class Relay(unittest.TestCase):
             self.assertEqual(done.returncode, 3)
 
 
+def stream(scenes, sent, cwd, step=0):
+    """Run the stream-json player over `sent`, one JSON line each, and return what it printed."""
+    script = Path(cwd) / "script.json"
+    script.write_text(json.dumps({"scenes": scenes, "step": step}))
+    done = subprocess.run(
+        [sys.executable, "-I", str(FILTER), str(script), "--stream-json", "--output-format", "stream-json"],
+        input="".join(json.dumps(m) + "\n" for m in sent),
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        timeout=60,
+        check=True,
+    )
+    return [json.loads(line) for line in done.stdout.splitlines()]
+
+
+def control(request_id, subtype):
+    return {"type": "control_request", "request_id": request_id, "request": {"subtype": subtype}}
+
+
+def user(text):
+    return {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}, "uuid": "u-1"}
+
+
+class StreamJson(unittest.TestCase):
+    def test_a_finished_turn_says_its_text_and_calls_with_their_usage_then_reports_its_cost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reply = Path(tmp) / "reply.txt"
+            reply.write_text("Fixed it.")
+            fix = {
+                "prompt": "Fix the flaky test.",
+                "say": "Looking first.",
+                "tools": [{"kind": "read", "title": "Read src/lib.rs"}, {"kind": "execute", "title": "Run cargo test"}],
+                "files": {"src/lib.rs": "// fixed\n"},
+                "reply": str(reply),
+                "cost": 0.42,
+            }
+            heard = stream([fix], [control("init-1", "initialize"), user(PREAMBLE + "Fix the flaky test.")], tmp)
+            self.assertEqual(
+                heard[0],
+                {
+                    "type": "control_response",
+                    "response": {"subtype": "success", "request_id": "init-1", "response": {}},
+                },
+            )
+            self.assertEqual((heard[1]["type"], heard[1]["subtype"]), ("system", "init"))
+            frames = [m for m in heard if m["type"] == "assistant"]
+            blocks = [m["message"]["content"][0] for m in frames]
+            self.assertEqual(
+                [(b["type"], b.get("text") or b.get("name")) for b in blocks],
+                [
+                    ("text", "Looking first."),
+                    ("tool_use", "Read src/lib.rs"),
+                    ("tool_use", "Run cargo test"),
+                    ("text", "Fixed it."),
+                ],
+            )
+            self.assertEqual(len({m["message"]["id"] for m in frames}), 4, "each frame is a model call of its own")
+            for m in frames:
+                self.assertEqual(m["message"]["model"], agent.MODEL)
+                self.assertGreater(m["message"]["usage"]["output_tokens"], 0)
+            result = heard[-1]
+            self.assertEqual((result["type"], result["subtype"], result["is_error"]), ("result", "success", False))
+            self.assertEqual((result["result"], result["total_cost_usd"]), ("Fixed it.", 0.42))
+            self.assertEqual((Path(tmp) / "src" / "lib.rs").read_text(), "// fixed\n")
+
+    def test_a_hanging_turn_ends_only_when_interrupted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hang = {"prompt": "Benchmark it.", "tools": [{"kind": "edit", "title": "Edit Cargo.toml"}]}
+            heard = stream(
+                [hang], [control("i-1", "initialize"), user("Benchmark it."), control("i-2", "interrupt")], tmp
+            )
+            answered = [m["response"]["request_id"] for m in heard if m["type"] == "control_response"]
+            self.assertEqual(answered, ["i-1", "i-2"])
+            results = [m for m in heard if m["type"] == "result"]
+            self.assertEqual(len(results), 1, "one turn, one result")
+            self.assertEqual(
+                (results[0]["subtype"], results[0]["terminal_reason"]), ("error_during_execution", "aborted_streaming")
+            )
+
+    def test_a_turn_that_asks_waits_for_the_answer_and_an_allow_writes_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ask = {"prompt": "Write the version.", "asks": "VERSION=0.4.2"}
+            allow = {
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": "scripted-ask-1", "response": {"behavior": "allow"}},
+            }
+            heard = stream([ask], [control("i-1", "initialize"), user("Write the version."), allow], tmp)
+            asked = [m for m in heard if m["type"] == "control_request"]
+            self.assertEqual(len(asked), 1)
+            self.assertEqual(
+                asked[0]["request"],
+                {
+                    "subtype": "can_use_tool",
+                    "tool_name": "Write",
+                    "input": {"file_path": "VERSION", "content": "0.4.2"},
+                },
+            )
+            self.assertEqual(heard[-1]["type"], "result")
+            self.assertEqual((Path(tmp) / "VERSION").read_text(), "0.4.2")
+
+    def test_a_denied_ask_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ask = {"prompt": "Write the version.", "asks": "VERSION=0.4.2"}
+            deny = {
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": "scripted-ask-1", "response": {"behavior": "deny"}},
+            }
+            heard = stream([ask], [control("i-1", "initialize"), user("Write the version."), deny], tmp)
+            self.assertEqual(heard[-1]["result"], "Not allowed to write VERSION.")
+            self.assertFalse((Path(tmp) / "VERSION").exists())
+
+    def test_end_session_is_answered_and_ends_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            heard = stream([], [control("i-1", "initialize"), control("e-1", "end_session"), user("never read")], tmp)
+            self.assertEqual([m["type"] for m in heard], ["control_response", "control_response"])
+
+    def test_a_cost_and_a_step_must_be_numbers_that_are_not_negative(self):
+        for cost in (-1, "0.4", True):
+            with self.assertRaises(ValueError, msg=cost):
+                scene(cost=cost)
+        self.assertEqual(scene(cost=0.25).cost, 0.25)
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "script.json"
+            script.write_text(json.dumps({"scenes": [], "step": -2}))
+            with self.assertRaises(ValueError):
+                agent.step(script)
+
+
 class Story(unittest.TestCase):
     def test_every_turn_of_the_story_finds_its_own_scene(self):
         turns = [b.turn for b in story.BRANCHES] + [t for s in story.SESSIONS for t in s.turns]
@@ -239,12 +370,19 @@ class Story(unittest.TestCase):
         self.assertEqual([f["path"] for f in manifest["files"]], list(turn.outputs))
         self.assertTrue(all(f"outputs/{name}" in files for name in turn.outputs))
 
-    def test_one_branch_is_parked_on_an_approval_and_only_it_asks(self):
-        asking = [b.name for b in story.BRANCHES if b.turn.asks]
-        self.assertEqual(asking, [story.PARKED_BRANCH])
-        self.assertEqual(next(b for b in story.BRANCHES if b.name == story.PARKED_BRANCH).fate, "parked")
+    def test_only_the_parked_branch_and_the_allowed_one_ask(self):
+        asking = {b.name: b.fate for b in story.BRANCHES if b.turn.asks}
+        self.assertEqual(asking.pop(story.PARKED_BRANCH), "parked")
+        self.assertEqual(list(asking.values()), ["allowed"])
         self.assertFalse([t for s in story.SESSIONS for t in s.turns if t.asks], "a session turn would park too")
-        self.assertEqual(set(generate.FATES), {"merged", "interrupted", "running", "ready", "parked"})
+        self.assertEqual(set(generate.FATES), {"merged", "interrupted", "running", "ready", "parked", "allowed"})
+
+    def test_every_finished_branch_turn_reports_a_cost_and_the_script_paces_them(self):
+        for b in story.BRANCHES:
+            if b.turn.reply is not None:
+                self.assertIsNotNone(b.turn.cost, b.name)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(agent.step(generate.write_script(Path(tmp))), story.STEP)
 
     def test_what_the_screenshots_open_exists(self):
         self.assertIn(story.OPEN_BRANCH, [b.name for b in story.BRANCHES])
