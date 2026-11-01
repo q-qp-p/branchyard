@@ -259,6 +259,49 @@ async fn derivation_is_cached_and_failed_conversion_is_never_published() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn namespace_command_gives_libreoffice_a_display_less_backend_and_no_network() {
+    let scratch = Scratch::new("preview-bwrap-record");
+    let record = scratch.join("bwrap-arguments");
+    let python = scratch.join("python");
+    script(&python, "#!/bin/sh\nprintf '%s\\n' '{\"executable\":\"/usr/bin/python3\",\"prefix\":\"/usr\",\"base_prefix\":\"/usr\",\"version\":\"fixture\"}'\n");
+    let bwrap = scratch.join("bwrap");
+    script(
+        &bwrap,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s\\n' '{}'\n",
+            record.display(),
+            table()
+        ),
+    );
+    let service = PreviewService::with_settings(
+        scratch.join("cache"),
+        sandbox::Settings::Bubblewrap { python, bwrap },
+    )
+    .unwrap();
+    let mut input = original();
+    input.name = "brief.docx".into();
+    service
+        .preview(input, PreviewOptions::default())
+        .await
+        .unwrap();
+    let recorded = fs::read_to_string(&record).unwrap();
+    let args: Vec<&str> = recorded.lines().collect();
+    let has = |wanted: &[&str]| args.windows(wanted.len()).any(|a| a == wanted);
+    // `gen` is LibreOffice's X11 backend: it overrides --headless, finds no
+    // display in the empty namespace and exits 0 without a PDF.
+    assert!(has(&["--setenv", "SAL_USE_VCLPLUGIN", "svp"]), "{args:?}");
+    assert!(!args.contains(&"gen"), "{args:?}");
+    for isolation in ["--unshare-all", "--clearenv", "--die-with-parent"] {
+        assert!(args.contains(&isolation), "{isolation} missing: {args:?}");
+    }
+    assert!(!args.contains(&"--share-net"), "{args:?}");
+    assert!(has(&["--setenv", "HOME", "/home/preview"]), "{args:?}");
+    assert!(has(&["--tmpfs", "/tmp"]), "{args:?}");
+    assert!(has(&["--chdir", "/tmp"]), "{args:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn images_are_addressed_only_through_the_matching_authorized_options() {
     let scratch = Scratch::new("preview-image");
     let body = "mkdir \"$output/derived\"\nprintf '\\211PNG\\r\\n\\032\\n' > \"$output/derived/page-1.png\"\nprintf '%s\\n' '{\"status\":\"passed\",\"kind\":\"pages\",\"format\":\"pdf\",\"page\":1,\"pages\":1,\"image\":\"page-1.png\",\"width\":1,\"height\":1,\"warnings\":[],\"path\":\"/private/converter/path\"}'";

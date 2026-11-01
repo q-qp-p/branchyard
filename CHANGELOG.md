@@ -70,6 +70,15 @@ Text in the sidebar, strip and conversation is larger on a phone.
 The README's console screenshots are regenerated for this console: the branch page
 with margin notes and a receipt, and the workspace with its table preview.
 
+DOCX and PPTX previews work under the default Bubblewrap backend. The namespace
+set `SAL_USE_VCLPLUGIN=gen`, LibreOffice's X11 backend, which overrides
+`--headless`, finds no display and exits 0 without a PDF, so every Office page
+preview failed with "LibreOffice completed without producing the requested
+PDF" while CSV and XLSX tables rendered. The namespace now sets `svp`, the
+display-less backend the Docker backend already used; isolation is unchanged.
+When a converter exits cleanly without a PDF, the failure message quotes its
+first diagnostic line.
+
 ## 0.3.1 - 2026-10-31
 
 Operators can name the environments console sessions run in.

@@ -33,6 +33,28 @@ with empty fields. With Python 3.12.3 and openpyxl 3.1.5 it failed 5 tests on
 the module before the change and passed 19, with 1 skipped, after it. Not done:
 other spreadsheet writers, and a live renderer on GCE or GKE.
 
+Status, 1 November 2026: live for the default Bubblewrap backend; hermetic for
+the guards. A console tester saw every DOCX and PPTX preview fail with "LibreOffice
+completed without producing the requested PDF" while CSV and XLSX tables
+rendered. The cause: the namespace set `SAL_USE_VCLPLUGIN=gen`, LibreOffice's X11
+backend, which overrides `--headless`, found no display and exited 0 without a
+PDF (`X11 error: Can't open display`); the same command with `svp` converts.
+The namespace now sets `svp`. Run on this machine (Linux 6.18.44) with
+Bubblewrap 0.9.0, LibreOffice 24.2.7.2, Poppler `pdftoppm` 24.02.0, Python 3.13.18,
+pypdf 6.21.4 and Pillow 13.0.0, a locally built `by serve --app --knowledge` with
+`BRANCHYARD_PREVIEW_BWRAP` and `BRANCHYARD_PREVIEW_PYTHON` set returned, for
+workspace outputs a fake ACP agent wrote, `passed` for a CSV and an XLSX table, for a
+DOCX one 1583 by 2048 page and for a PPTX three slides (first slide 2048 by 1536), and
+both page images fetched as PNG. The
+[Bubblewrap record](evidence/console-document-bubblewrap-2026-11-01.json) holds the
+failing command, LibreOffice's stderr and these responses. Hermetic: the unit test
+on the namespace arguments and a service test with a recording fake `bwrap` assert
+`SAL_USE_VCLPLUGIN svp`, the cleared environment, the unshared network and the
+private `/tmp` and home; a Python test with a fake converter asserts that its
+diagnostic reaches the failure message. No test needs LibreOffice. Not done: the
+hosts with restricted user namespaces (Docker backend) were not rerun, no browser
+acceptance, no model turns, and no other LibreOffice version.
+
 ## Open a preview
 
 An authorized client requests:
@@ -118,6 +140,17 @@ loader configuration, `/etc/libreoffice` when installed, and the selected Python
 installation are available.
 The helper disables Office macros and external updates; OS network isolation
 holds even if document content attempts an external fetch.
+
+The cleared environment holds only `HOME`, `TMPDIR`, `PATH`, `LANG`, `LC_ALL`,
+`PYTHONDONTWRITEBYTECODE` and `SAL_USE_VCLPLUGIN=svp`. `svp` is LibreOffice's
+display-less drawing backend, the one headless conversion needs. The `gen`
+backend is its X11 backend: it overrides `--headless`, finds no display in the
+empty namespace and exits 0 without writing a PDF, which a preview reports as
+"LibreOffice completed without producing the requested PDF". Selecting `svp`
+adds no binding, no socket and no capability: it only chooses a code path inside
+the already isolated process, and no `DISPLAY` or X11 socket is ever provided.
+When a converter exits cleanly without a PDF, the failure message now quotes
+its first diagnostic line.
 
 ## Container rendering on hosts with restricted user namespaces
 
