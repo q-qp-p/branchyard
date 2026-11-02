@@ -34,6 +34,7 @@ CONFIG_LABEL = "branchyard-config"
 RUNTIME_LABEL = "branchyard-runtime"
 NETWORK_POLICY_LABEL = "branchyard-network-policy"
 RUNTIMES = ("gvisor", "microvm")
+RUNTIME_HANDLERS = {"gvisor": "gvisor", "microvm": "kata-clh"}
 NODE_SCOPES = (
     "https://www.googleapis.com/auth/devstorage.read_only",
     "https://www.googleapis.com/auth/logging.write",
@@ -385,7 +386,16 @@ def preflight(config: Config, run: Runner) -> dict[str, Any] | None:
         raise SetupError("private nodes require existing regional all-subnet Cloud NAT; no router was changed")
     clusters = run.json(gcloud(config, "container", "clusters", "list", "--format=json"))
     routes = run.json(gcloud(config, "compute", "routes", "list", "--format=json"))
-    ranges = [s.get("ipCidrRange") for s in matching]
+    ranges = [
+        s.get("ipCidrRange")
+        for s in matching
+        if not (
+            cluster
+            and s.get("ipCidrRange") == config.master_cidr
+            and s.get("region", "").rsplit("/", 1)[-1] == config.region
+            and re.fullmatch(rf"gke-{re.escape(config.cluster)}-[a-f0-9]{{8}}-pe-subnet", s.get("name", ""))
+        )
+    ]
     ranges += [r.get("ipCidrRange") for s in matching for r in s.get("secondaryIpRanges", [])]
     ranges += [
         r.get("destRange")
@@ -580,14 +590,36 @@ def controller_asset(config: Config, run: Runner) -> Path:
     return asset
 
 
+def controller_objects(rendered: str) -> list[dict[str, Any]]:
+    """Decode kubectl's JSON object stream, including a single Kubernetes List."""
+    decoder = json.JSONDecoder()
+    items: list[dict[str, Any]] = []
+    remaining = rendered.lstrip()
+    try:
+        while remaining:
+            value, end = decoder.raw_decode(remaining)
+            if not isinstance(value, dict):
+                raise ValueError("expected object")
+            objects = value.get("items") if value.get("kind") == "List" else [value]
+            if not isinstance(objects, list) or not all(isinstance(item, dict) for item in objects):
+                raise ValueError("expected object list")
+            items.extend(objects)
+            remaining = remaining[end:].lstrip()
+    except ValueError:
+        raise SetupError("kubectl did not render valid controller JSON objects; no setup object was changed") from None
+    if not items:
+        raise SetupError("kubectl rendered no controller objects; no setup object was changed")
+    return items
+
+
 def install(config: Config, run: Runner, asset: Path) -> None:
     """Install verified controller objects and ownership-fenced runtime policies."""
-    rendered = run.json(
-        kubectl(config, "create", "--dry-run=client", "--validate=false", "-f", str(asset), "-o", "json")
+    items = controller_objects(
+        run.call(
+            kubectl(config, "create", "--dry-run=client", "--validate=false", "-f", str(asset), "-o", "json")
+        )
+        or ""
     )
-    items = rendered.get("items", []) if isinstance(rendered, dict) and rendered.get("kind") == "List" else []
-    if not items or not all(isinstance(item, dict) for item in items):
-        raise SetupError("kubectl did not render the pinned controller as a JSON List")
     for item in items:
         metadata = item.setdefault("metadata", {})
         metadata.setdefault("labels", {}).update(config.labels)
@@ -631,7 +663,7 @@ def install(config: Config, run: Runner, asset: Path) -> None:
     )
     for runtime in RUNTIMES:
         value = run.json(kubectl(config, "get", "runtimeclass", runtime, "-o", "json"))
-        if value.get("handler") != runtime:
+        if value.get("handler") != RUNTIME_HANDLERS[runtime]:
             raise SetupError(f"RuntimeClass/{runtime} does not select its expected handler")
 
 

@@ -76,10 +76,15 @@ alone is not a successful controller or workload verification.
 
 The helper downloads a release-specific controller manifest and verifies its
 committed SHA-256 before creating cloud resources. The controller image is also
-pinned by digest. It renders YAML through `kubectl`, labels the resulting
+pinned by digest. It accepts `kubectl`'s JSON object stream or a Kubernetes
+`List`, labels the resulting
 objects, checks existing object ownership, then uses server-side apply without
 forcing field conflicts. It refuses a foreign controller namespace, CRD, role,
 binding or policy.
+
+The managed `gvisor` RuntimeClass must use handler `gvisor`; the managed
+`microvm` RuntimeClass must use Kata's Cloud Hypervisor handler `kata-clh`.
+An unexpected handler refuses setup.
 
 Each runtime namespace has its own admission policies for both `Sandbox`
 resources and their resulting Pods. A namespace accepts only its selected

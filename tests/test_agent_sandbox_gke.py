@@ -74,10 +74,15 @@ if tool=='curl':
  done()
 if tool=='kubectl':
  args=[arg for arg in args if not arg.startswith(('--context=','--kubeconfig='))]
- if args[0]=='create' and '--dry-run=client' in args:done(state['controller'])
+ if args[0]=='create' and '--dry-run=client' in args:
+  if state.get('controller_json_stream'):
+   done('\n'.join(json.dumps(item) for item in state['controller']['items'])+state.get('controller_stream_suffix',''))
+  done(state['controller'])
  if args[0]=='get':
   kind,name=args[1:3]
-  if kind=='runtimeclass':done({'handler':state.get('runtime_handler',name)})
+  if kind=='runtimeclass':
+   default=state.get('runtime_handler',{'gvisor':'gvisor','microvm':'kata-clh'}[name])
+   done({'handler':state.get('runtime_handlers',{}).get(name,default)})
   ns=args[args.index('--namespace')+1] if '--namespace' in args else ''
   done(state['kube'].get(kind+'|'+ns+'|'+name,''))
  if args[0]=='apply':
@@ -290,6 +295,26 @@ class AgentSandboxGke(unittest.TestCase):
         self.assertEqual(sum(call["tool"] == "curl" for call in self.calls()), 1)
         self.assertTrue(any("daemonset/anetd" in call["args"] for call in self.calls()))
 
+    def test_controller_render_accepts_the_real_kubectl_json_stream(self):
+        self.state["controller_json_stream"] = True
+        self.save()
+        self.assertEqual(self.apply()["mode"], "applied")
+        controller = self.read_state()["kube"]["Deployment|agent-sandbox-system|agent-sandbox-controller"]
+        self.assertEqual(controller["spec"]["template"]["spec"]["containers"][0]["image"], gke.CONTROLLER_IMAGE)
+
+    def test_a_malformed_controller_stream_never_applies_kubernetes_objects(self):
+        self.state["controller_json_stream"] = True
+        self.state["controller_stream_suffix"] = "\nnot-json"
+        self.save()
+        with self.assertRaises(gke.SetupError):
+            self.apply()
+        self.assertNotIn("kube-apply", self.read_state()["mutations"])
+
+    def test_managed_microvm_runtime_selects_the_kata_cloud_hypervisor_handler(self):
+        self.state["runtime_handlers"] = {"microvm": "kata-clh"}
+        self.save()
+        self.assertEqual(self.apply()["mode"], "applied")
+
     def test_policies_bind_each_runtime_and_cover_all_containers(self):
         self.apply()
         kube = self.read_state()["kube"]
@@ -438,6 +463,20 @@ class AgentSandboxGke(unittest.TestCase):
         self.existing_cluster()
         self.state["routes"].append({"network": "default", "destRange": self.config.master_cidr})
         self.state["routes"].append({"network": "default", "destRange": "::/0"})
+        self.save()
+        self.apply()
+        self.assertEqual(self.read_state()["mutations"], ["kube-apply"])
+
+    def test_the_verified_clusters_managed_control_plane_subnet_is_reused(self):
+        self.existing_cluster()
+        self.state["subnets"].append(
+            {
+                "name": f"gke-{self.config.cluster}-5ef17c73-pe-subnet",
+                "network": "default",
+                "region": self.config.region,
+                "ipCidrRange": self.config.master_cidr,
+            }
+        )
         self.save()
         self.apply()
         self.assertEqual(self.read_state()["mutations"], ["kube-apply"])
