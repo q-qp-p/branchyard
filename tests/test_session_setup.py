@@ -16,6 +16,11 @@ class SessionSetup(unittest.TestCase):
         result = subprocess.run(["sh", "-n", str(SCRIPT)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_native_runtime_build_dependencies_are_installed(self):
+        packages = SCRIPT.read_text()
+        self.assertIn("pkg-config", packages)
+        self.assertIn("libcap-ng-dev", packages)
+
     def test_an_unknown_argument_is_refused_before_anything_runs(self):
         result = subprocess.run(["sh", str(SCRIPT), "--nope"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)

@@ -87,7 +87,9 @@ executable. This uses Docker for artifact delivery; a local-process task on the
 worker has the worker user's permissions and makes no container isolation claim.
 
 Add `--gvisor` to install the pinned complete runsc bundle and register it with
-Docker through a reload. The flag is part of the deployment fingerprint and can
+Docker through a reload. It also adds the dedicated SSH worker to Docker's
+group; the following configuration step uses a fresh SSH login. The reviewed
+plan names this permission change. The flag is part of the deployment fingerprint and can
 coexist with `--backend=microsandbox`. It installs prerequisites and leaves task
 provider selection unchanged. See [the runtime installer](container-runtime.md)
 for the pin, ownership checks, image contract and hermetic evidence.

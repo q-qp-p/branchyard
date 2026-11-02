@@ -137,7 +137,8 @@ def plan(config: Config) -> dict[str, Any]:
             "Create a dedicated Ubuntu 24.04 VM; refuse foreign or differently configured machines",
             "Install the pinned released Branchyard binaries and extract agy from the published worker image",
             "For microsandbox: enable nested virtualization, install the pinned runtime and import the worker image",
-            "For --gvisor: install the pinned runsc bundle and reload Docker, preserving its default runtime",
+            "For --gvisor: install pinned runsc, reload Docker without changing its default, "
+            "and grant the SSH worker Docker group access",
             "Transfer only a clean committed HEAD, or initialize an empty remote repository",
             "Write an owned SSH Host entry and one Include line, preserving existing SSH configuration",
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
@@ -491,12 +492,13 @@ sudo docker save {image} | "$MSB_PATH" image load --tag {image}
         installer = installer_source("install_container_runtime.py", "BRANCHYARD_CONTAINER_RUNTIME_INSTALLER")
         script += "sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'\n"
         script += installer + "\nBRANCHYARD_GVISOR_INSTALLER\n"
+        script += 'sudo usermod -aG docker "$(id -un)"\n'
     script += "/usr/local/bin/by --version\n/usr/local/bin/agy --version\n"
     return script
 
 
 def configure_worker(config: Config) -> str:
-    """Configure through a new SSH login after installation updates the user's KVM groups."""
+    """Configure through a new SSH login after installation updates runtime groups."""
     return (
         "set -eu\numask 077\nstage=$(mktemp -d)\ntrap 'rm -rf \"$stage\"' EXIT\n"
         f"cd {shlex.quote(config.remote_path)}\n" + worker_configuration(config)

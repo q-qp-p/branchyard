@@ -615,9 +615,7 @@ def controller_objects(rendered: str) -> list[dict[str, Any]]:
 def install(config: Config, run: Runner, asset: Path) -> None:
     """Install verified controller objects and ownership-fenced runtime policies."""
     items = controller_objects(
-        run.call(
-            kubectl(config, "create", "--dry-run=client", "--validate=false", "-f", str(asset), "-o", "json")
-        )
+        run.call(kubectl(config, "create", "--dry-run=client", "--validate=false", "-f", str(asset), "-o", "json"))
         or ""
     )
     for item in items:

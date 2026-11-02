@@ -633,6 +633,7 @@ class ComputeGceTests(unittest.TestCase):
                 )
                 self.assertIn(runtime.ARCHIVE_SHA512[:80], script)
                 self.assertIn("sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'", script)
+                self.assertIn('sudo usermod -aG docker "$(id -un)"', script)
                 syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
                 self.assertEqual(syntax.returncode, 0, syntax.stderr)
                 self.assertNotIn("restart docker", script)

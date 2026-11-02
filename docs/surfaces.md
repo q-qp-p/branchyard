@@ -1020,6 +1020,8 @@ and report seven readiness checks, each `verified`, `unverified`, `unknown`,
 selects the repository. Cloud creation is reviewed before resources change.
 `by compute gce --project PROJECT --zone ZONE --name NAME --tunnel-through-iap`
 prints an offline JSON plan using the packaged helper; `--apply` provisions it.
+`--gvisor` installs the pinned gVisor Docker runtime while retaining the worker's
+selected provider. Container execution requires permission to use the local Docker socket.
 This operator-only command uses `--directory PATH` for a clean source repository.
 IAP allows TCP 22 from `35.235.240.0/20` only to the dedicated VM tag.
 `--internal-ip` can be combined with IAP to omit an external address.

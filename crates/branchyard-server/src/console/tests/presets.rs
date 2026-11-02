@@ -320,6 +320,7 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
     let case = Case::build(
         |config| {
             config.allow_delegation = true;
+            config.by_path = Some("/bin/true".into());
             config
                 .allow_providers
                 .extend(["container".into(), "agent_sandbox".into()]);
@@ -345,12 +346,8 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
         )
         .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{operation}");
-    assert_eq!(
-        case.fixture
-            .finished(operation["id"].as_str().unwrap())
-            .state,
-        OperationState::Succeeded
-    );
+    let finished = case.fixture.finished(operation["id"].as_str().unwrap());
+    assert_eq!(finished.state, OperationState::Succeeded, "{finished:?}");
     let yard = &case.fixture.app.repos["code"].yard;
     let db = rusqlite::Connection::open(yard.root().join(".branchyard/state.db")).unwrap();
     for provider in [

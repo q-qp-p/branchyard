@@ -4,6 +4,20 @@
 
 ## 0.4.0 - 2026-11-02
 
+Native container and GKE Agent Sandbox providers copy each turn's worktree and
+private home into an owned allocation, enforce immutable image/runtime and
+resource settings, and return files before whole-allocation cleanup. Container
+defaults to gVisor; managed GKE also supports Kata Cloud Hypervisor MicroVMs.
+The CLI exposes explicit runtime, network and Kubernetes target options. Server
+and console access requires operator execution presets for the new providers.
+
+GCE setup can install a pinned complete gVisor runtime. Microsandbox uses a
+patched runtime that corrects the low-memory guest RAM layout; release delivery
+verifies its archive, executable, firmware and provenance. Checkpoints bind to
+their runtime identity and refuse incompatible or legacy references without
+deleting them. Copied worktree return failures now fail ordinary coding turns,
+and failed native cleanup remains registered for retry.
+
 The Rust client resumes a response read interrupted by an operating-system
 signal, keeping the same connection and request. Waiting for the first byte
 previously returned a transport error. Timeouts and closed connections still
