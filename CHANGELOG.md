@@ -7,7 +7,9 @@
 Cloud KMS as that account, within its IAM roles. Workers previously got no
 scopes, and their metadata server gave no usable token. `--scopes` takes a
 comma-separated list or `none`. A worker made with an account by 0.4.0 or
-earlier is reused only with `--scopes none`.
+earlier, which has no scopes, is reused as it is, and the result's
+`access_scopes_note` says that its account cannot reach those services and how
+to get a worker that can.
 
 ## 0.4.0 - 2026-11-02
 

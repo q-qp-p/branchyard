@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -351,6 +351,14 @@ def wait_for_ssh(
     raise SetupError(f"SSH was not ready within 180 seconds. {failure}")
 
 
+def unscoped_reuse(config: Config, instance: dict[str, Any] | None) -> bool:
+    """Whether a worker made without access scopes (0.4.0 and earlier) is reused under the default."""
+    if instance is None or config.scopes is not None or not config.service_account:
+        return False
+    metadata = {item.get("key"): item.get("value") for item in instance.get("metadata", {}).get("items", [])}
+    return metadata.get("branchyard-configuration-sha256") == replace(config, scopes="none").fingerprint
+
+
 def inspect_instance(config: Config, run: Runner) -> dict[str, Any] | None:
     """Read the named VM; permission failures are never treated as absence."""
     instance = run.json(
@@ -365,7 +373,7 @@ def inspect_instance(config: Config, run: Runner) -> dict[str, Any] | None:
     checks = (
         instance.get("name") == config.name,
         instance.get("labels", {}).get(OWNER_LABEL) == config.name,
-        metadata.get("branchyard-configuration-sha256") == config.fingerprint,
+        metadata.get("branchyard-configuration-sha256") == config.fingerprint or unscoped_reuse(config, instance),
         instance.get("machineType", "").rsplit("/", 1)[-1] == config.machine_type,
         instance.get("zone", "").rsplit("/", 1)[-1] == config.zone,
         bool(instance.get("advancedMachineFeatures", {}).get("enableNestedVirtualization"))
@@ -636,6 +644,7 @@ def apply(config: Config) -> dict[str, Any]:
         if not account or account.get("email") != config.service_account:
             raise SetupError("could not verify the selected existing service account")
     instance = inspect_instance(config, run)
+    unscoped = unscoped_reuse(config, instance)
     firewall = inspect_iap_firewall(config, run)
     if instance is None:
         args = gcloud(
@@ -736,6 +745,7 @@ def apply(config: Config) -> dict[str, Any]:
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": {**(firewall_plan(config) or {}), "id": firewall.get("id")} if firewall else None,
         "qualification": {"model": "not_checked", "microsandbox_hard_memory_ceiling": "not_qualified"},
+        "access_scopes": [] if unscoped else list(config.access_scopes),
         "credential_source": config.forward_secret,
         "credential_destination": "native by keystore; GEMINI_API_KEY",
         "project_dependencies": "not_run",
@@ -750,6 +760,12 @@ def apply(config: Config) -> dict[str, Any]:
             "server_config": f"~/.local/state/branchyard/gce/{config.name}/server.json",
         },
     }
+    if unscoped:
+        result["access_scopes_note"] = (
+            "this worker was made without access scopes, so its service account cannot reach Vertex AI, "
+            "gs:// stores or Cloud KMS; it is reused as it is. For a worker with cloud-platform, run again "
+            "with another --name, or delete this one and run again; --scopes none keeps it without this note"
+        )
     destination = config.state_dir / "deployment.json"
     staged = destination.with_suffix(".json.new")
     staged.write_text(json.dumps(result, indent=2) + "\n")
