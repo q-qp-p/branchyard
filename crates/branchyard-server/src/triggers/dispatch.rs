@@ -17,7 +17,7 @@ use super::lifecycle::{self, Action, Stage, Standing};
 use super::store::TriggerStore;
 use super::{Settings, StoredTrigger};
 use crate::api::{App, Caller, RepoState};
-use crate::store::Idempotency;
+use crate::store::{Idempotency, Lane};
 
 /// What the routes and the dispatcher share.
 pub struct Hub {
@@ -270,7 +270,7 @@ impl Sink for AppSink {
         };
         let admitted = self.runtime.block_on(async move {
             let repo = app.authorized_repo(&caller, &repo, "run")?.clone();
-            crate::api::admit_send(&app, &repo, &caller, Some(idem), to, None).await
+            crate::api::admit_send(&app, &repo, &caller, Some(idem), to, None, Lane::Normal).await
         });
         // The server admits one operation on a branch at a time: taken
         // meanwhile (a turn started since the look above, or another

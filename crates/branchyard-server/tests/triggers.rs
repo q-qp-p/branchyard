@@ -397,6 +397,74 @@ fn a_trigger_that_delivers_to_a_branch_continues_it_run_after_run() {
 }
 
 /// The recorded lifecycle events of a branch: state and reason.
+/// A trigger's send to a branch that exists is normal work: with the
+/// process's one normal slot held, it stays queued while a request's send
+/// to another branch runs on the slot kept for follow-ups.
+#[test]
+fn a_triggers_send_waits_for_a_slot_while_a_requests_send_goes_ahead() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.max_running = 1;
+    let clock = with_clock(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let app = client.repo("app");
+    for name in ["assistant", "other"] {
+        let op = run(&client, &task("WRITE a.txt=1", name));
+        assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    }
+    let held = app.submit_task(&task("HANG", "held"), &new_key()).unwrap();
+    wait::until("the held turn to start", || {
+        common::started(&client, "app", "held")
+    });
+    let mut s = spec(
+        "heartbeat",
+        When::Interval { seconds: 60 },
+        "WRITE beat.txt=1",
+    );
+    s.deliver = Some(Deliver {
+        branch: "assistant".into(),
+        busy: Busy::Skip,
+        lifecycle: None,
+    });
+    client.create_trigger(&s, &new_key()).unwrap();
+    clock.store(T0 + 60_000 + 5_000, Ordering::SeqCst);
+    let runs = runs_when(&client, "heartbeat", "the run to fire", |runs| {
+        runs.iter().any(|r| r.state == RunState::Fired)
+    });
+    let fired = runs[0].operation.clone().unwrap();
+    let op = client.operation(&fired).unwrap();
+    assert_eq!(
+        (op.kind, op.state),
+        (OperationKind::Send, OperationState::Queued),
+        "{op:?}"
+    );
+    let sent = app
+        .send(
+            "other",
+            &SendRequest {
+                prompt: "WRITE b.txt=2".into(),
+                policy: PolicySpec::allow_all(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let sent = await_operation(&client, &sent.id);
+    assert_eq!(sent.state, OperationState::Succeeded, "{sent:?}");
+    assert_eq!(
+        client.operation(&fired).unwrap().state,
+        OperationState::Queued
+    );
+    assert_eq!(app.cancel("held").unwrap(), ["held"]);
+    assert_eq!(
+        await_operation(&client, &held.id).state,
+        OperationState::Succeeded
+    );
+    let op = await_operation(&client, &fired);
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+}
+
 fn lifecycle_events(events: &[branchyard::RecordedEvent]) -> Vec<(LifecycleState, String)> {
     events
         .iter()

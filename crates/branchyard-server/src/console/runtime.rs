@@ -4,7 +4,7 @@ use crate::api::{App, Caller, RepoState};
 use crate::console_store::{Collection, Mutation, Record};
 use crate::error::ApiError;
 use crate::ops::NewOperation;
-use crate::store::Idempotency;
+use crate::store::{Idempotency, Lane};
 use axum::http::{HeaderMap, StatusCode};
 use branchyard_client::api::{Operation, OperationKind, SendRequest, TaskRequest};
 use serde::{Deserialize, Serialize};
@@ -412,8 +412,12 @@ pub(super) fn admit(
             vec![session_id.clone()],
             super::quotas::session_admission(app, caller, &mut mutations)?,
         ),
-        ConsoleWork::Control { .. } => (Vec::new(), super::quotas::control_admission(&policy)),
         _ => (Vec::new(), app.admission_quota(caller, &policy)),
+    };
+    let lane = match &command {
+        ConsoleWork::Control { .. } => Lane::Control,
+        ConsoleWork::Send { .. } => Lane::FollowUp,
+        _ => Lane::Normal,
     };
     let requires = super::scheduling::requirements(app, caller, repo, &command)?;
     let new = NewOperation {
@@ -429,6 +433,7 @@ pub(super) fn admit(
         requires,
         priority: crate::api::admitted_priority(&policy, None, 0)?,
         trace: crate::api::incoming_trace(headers),
+        lane,
     };
     let value = crate::work::Work::Console {
         command,

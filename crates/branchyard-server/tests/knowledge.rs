@@ -17,6 +17,7 @@ use branchyard_client::knowledge_api::{
     KnowledgeAddRequest, KnowledgeEditRequest, PlanApproveRequest, PlanRejectRequest,
 };
 use branchyard_client::new_key;
+use branchyard_server::store::Lane;
 use common::{await_operation, run, task, Fixture, Server};
 
 #[test]
@@ -229,6 +230,7 @@ fn a_planned_task_waits_and_its_approval_is_an_operation() {
         )
         .unwrap();
     assert_eq!(approved.kind, OperationKind::ApprovePlan);
+    assert_eq!(common::lane(&f.data, &approved.id), Lane::FollowUp);
     let done = await_operation(&client, &approved.id);
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
     let info = repo.branch("planned").unwrap();
@@ -247,6 +249,30 @@ fn a_planned_task_waits_and_its_approval_is_an_operation() {
         )
         .unwrap_err();
     assert_eq!(refused.code(), Some("no_plan"));
+
+    // A rejection continues the branch too: a follow-up.
+    let op = run(
+        &client,
+        &TaskRequest {
+            plan: true,
+            ..task("Mark it PERMISSION WRITE marker.txt=x", "declined")
+        },
+    );
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    let rejected = repo
+        .reject_plan(
+            "declined",
+            &PlanRejectRequest {
+                reason: Some("not this way".into()),
+                ..PlanRejectRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    assert_eq!(rejected.kind, OperationKind::RejectPlan);
+    assert_eq!(common::lane(&f.data, &rejected.id), Lane::FollowUp);
+    let done = await_operation(&client, &rejected.id);
+    assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
 }
 
 #[test]

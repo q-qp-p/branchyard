@@ -32,6 +32,7 @@ use branchyard_client::knowledge_api::{
 use crate::api::{blocking, Caller, JsonBody, Shared};
 use crate::error::{self, ApiError};
 use crate::ops::NewOperation;
+use crate::store::Lane;
 use crate::work::Work;
 
 pub(crate) fn router() -> Router<Shared> {
@@ -283,6 +284,7 @@ async fn admit_plan(
         requires: crate::api::required_labels(&send.require_labels)?,
         priority: crate::api::admitted_priority(&policy, send.priority, 0)?,
         trace: crate::api::incoming_trace(&headers),
+        lane: Lane::FollowUp,
     };
     crate::api::admit(&app, new, work).await
 }

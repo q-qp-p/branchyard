@@ -44,7 +44,7 @@ schema 1; this binary reads 3 and upgrades the store in place the first time any
 
 and the `To do:` list under the report adds `back up .branchyard/state.db if you may go back to an older by, then run any by command`. Once it has happened the row reads `schema 3, the version this binary reads`. The other direction fails: a store written by a newer `by` gives `schema N was written by a newer by; this binary reads M`, and the fix is the newer `by` (or the backup).
 
-A server (`by serve`, `by worker`) migrates its own store the same way when the new binary starts, on SQLite or PostgreSQL. Back the database up first (`pg_dump` for PostgreSQL), stop every old server and worker on it, and start the new ones. Servers and workers sharing one database should run the same build.
+A server (`by serve`, `by worker`) migrates its own store the same way when the new binary starts, on SQLite or PostgreSQL. Back the database up first (`pg_dump` for PostgreSQL), stop every old server and worker on it, and start the new ones. Servers and workers sharing one database should run the same build. An older server or worker still claiming from a database a newer one has migrated ignores lanes: it claims [follow-ups](server.md#scheduling) as ordinary work, in priority order, on its `--max-running` slots.
 
 ## Plugins and hooks
 

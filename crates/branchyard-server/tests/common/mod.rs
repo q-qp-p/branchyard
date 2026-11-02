@@ -16,6 +16,7 @@ use std::time::Duration;
 use branchyard_client::api::{Operation, PolicySpec, TaskRequest};
 use branchyard_client::{new_key, Client};
 use branchyard_server::config::{Principal, TenantPolicy, Token};
+use branchyard_server::store::{Lane, OperationStore, SqliteStore};
 use branchyard_server::{Config, Running, Stopped};
 use branchyard_testkit::wait;
 
@@ -214,6 +215,17 @@ pub fn started(client: &Client, repo: &str, branch: &str) -> bool {
             .iter()
             .any(|e| matches!(e.activity, branchyard::Activity::Prompt(_)))
     })
+}
+
+/// The lane operation `id` was admitted on, read from the operation store
+/// of the server whose data directory is `data`: the wire leaves it out.
+pub fn lane(data: &Path, id: &str) -> Lane {
+    SqliteStore::open(data.join("state.db"), None)
+        .unwrap()
+        .get(id)
+        .unwrap()
+        .expect("the operation is stored")
+        .lane
 }
 
 /// A task for the fake agent, allowed every permission.

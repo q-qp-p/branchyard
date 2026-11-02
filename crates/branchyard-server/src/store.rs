@@ -97,6 +97,48 @@ pub struct StoredOperation {
     /// traced: the worker that runs it, on any server, continues its trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<String>,
+    /// The capacity a worker claims it from. Absent on a record from
+    /// before lanes existed, which reads as [`Lane::Normal`].
+    #[serde(default, skip_serializing_if = "Lane::is_normal")]
+    pub lane: Lane,
+}
+
+/// Which of a worker's capacities a queued operation is claimed from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lane {
+    /// New work, claimed on a process's `max_running` slots.
+    #[default]
+    Normal,
+    /// Continues existing work: claimed ahead of normal operations, and on
+    /// one slot per process beyond `max_running`.
+    FollowUp,
+    /// A short console cancel or steer, claimed only on one slot per
+    /// process of its own.
+    Control,
+}
+
+impl Lane {
+    /// The lane as the queue's `lane` column stores it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lane::Normal => "normal",
+            Lane::FollowUp => "follow_up",
+            Lane::Control => "control",
+        }
+    }
+
+    fn is_normal(&self) -> bool {
+        *self == Lane::Normal
+    }
+
+    /// The lanes of the queued rows a claim from this capacity takes.
+    fn claims(self) -> Vec<&'static str> {
+        match self {
+            Lane::Normal => vec![Lane::Normal.as_str(), Lane::FollowUp.as_str()],
+            Lane::FollowUp | Lane::Control => vec![self.as_str()],
+        }
+    }
 }
 
 impl StoredOperation {
@@ -137,14 +179,18 @@ impl AdmissionQuota {
     }
 
     /// The refusal, if admitting `operation` next to the tenant's
-    /// `unfinished` operations would exceed a ceiling.
+    /// `unfinished` operations would exceed a ceiling. At `max_running`,
+    /// each lane other than [`Lane::Normal`] still admits one operation
+    /// while the tenant has no unfinished one of that lane.
     fn check(
         &self,
         operation: &StoredOperation,
         unfinished: &[StoredOperation],
     ) -> io::Result<Option<Admission>> {
         if let Some(max) = self.max_running {
-            if unfinished.len() >= max {
+            let headroom =
+                !operation.lane.is_normal() && unfinished.iter().all(|o| o.lane != operation.lane);
+            if unfinished.len() >= max && !headroom {
                 return Ok(Some(Admission::Quota {
                     limit: "max_running",
                     max,
@@ -237,8 +283,9 @@ pub const DEFAULT_AGING: Duration = Duration::from_secs(60);
 /// ([`Scheduling::window`]): each with weight `exp(-age / window)`.
 pub const DEFAULT_FAIR_SHARE_WINDOW: Duration = Duration::from_secs(300);
 
-/// How [`OperationStore::claim_next`] chooses among the queued operations a
-/// worker may claim (see `docs/server.md#scheduling`):
+/// How [`OperationStore::claim_from`] chooses among the queued operations a
+/// worker may claim (see `docs/server.md#scheduling`), after the
+/// follow-ups (see [`Lane`]):
 ///
 /// 1. the highest *effective priority* first: the operation's priority,
 ///    plus one for every [`Scheduling::aging`] it has waited, so
@@ -249,9 +296,9 @@ pub const DEFAULT_FAIR_SHARE_WINDOW: Duration = Duration::from_secs(300);
 ///    [`Scheduling::weights`] entry (1 when absent);
 /// 3. then the oldest, which also breaks a tie between tenants.
 ///
-/// Worker labels and repositories still filter first. The order is one
-/// statement on PostgreSQL and one immediate transaction on SQLite, so two
-/// workers racing never claim one operation.
+/// Worker labels, repositories and the claim's lane still filter first.
+/// The order is one statement on PostgreSQL and one immediate transaction
+/// on SQLite, so two workers racing never claim one operation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scheduling {
     /// Each tenant's weight; a tenant not named weighs 1.
@@ -574,13 +621,7 @@ pub trait OperationStore: Send + Sync {
     ) -> io::Result<Option<Claim>> {
         self.claim_next(worker, repos, labels, lease, &Scheduling::default())
     }
-    /// Claim, for `lease`, the queued operation of one of `repos` that no
-    /// live claim holds, whose required labels are all among `labels`, and
-    /// that `scheduling` puts first: the highest effective priority, then
-    /// the tenant with the lowest usage per unit of weight, then the
-    /// oldest. A claim whose lease expired, or whose process is gone from
-    /// this host, is claimed again under a new fence. Records the claim
-    /// toward its tenant's usage in the same transaction.
+    /// [`OperationStore::claim_from`] the normal capacity.
     fn claim_next(
         &self,
         worker: &Worker,
@@ -588,15 +629,27 @@ pub trait OperationStore: Send + Sync {
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
-    ) -> io::Result<Option<Claim>>;
-    /// Claim only a short console cancel/steer command from the same fenced queue.
-    fn claim_control(
+    ) -> io::Result<Option<Claim>> {
+        self.claim_from(worker, repos, labels, lease, scheduling, Lane::Normal)
+    }
+    /// Claim, for `lease`, the queued operation of one of `repos` that no
+    /// live claim holds, whose required labels are all among `labels`,
+    /// that a claim from `lane`'s capacity may take, and that `scheduling`
+    /// puts first: a follow-up before any other, then the highest
+    /// effective priority, then the tenant with the lowest usage per unit
+    /// of weight, then the oldest. The normal capacity takes normal
+    /// operations and follow-ups; the others take only their own lane. A
+    /// claim whose lease expired, or whose process is gone from this host,
+    /// is claimed again under a new fence. Records the claim toward its
+    /// tenant's usage in the same transaction.
+    fn claim_from(
         &self,
         worker: &Worker,
         repos: &[String],
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
+        lane: Lane,
     ) -> io::Result<Option<Claim>>;
     /// Every queued operation, claimed or not, oldest first.
     fn queue(&self) -> io::Result<Vec<Queued>>;
@@ -912,7 +965,8 @@ const SQLITE_SCHEMA: &str = "
 
 /// Columns added to the queue since it was first created, and how: a row
 /// from before one existed requires nothing, has priority 0, belongs to the
-/// default tenant and counts as admitted at the epoch (so it ages first).
+/// default tenant, counts as admitted at the epoch (so it ages first) and
+/// is normal work.
 const SQLITE_QUEUE_COLUMNS: &[(&str, &str)] = &[
     (
         "requires",
@@ -929,6 +983,10 @@ const SQLITE_QUEUE_COLUMNS: &[(&str, &str)] = &[
     (
         "enqueued_ms",
         "ALTER TABLE operation_queue ADD COLUMN enqueued_ms INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "lane",
+        "ALTER TABLE operation_queue ADD COLUMN lane TEXT NOT NULL DEFAULT 'normal'",
     ),
 ];
 
@@ -1394,8 +1452,9 @@ impl OperationStore for SqliteStore {
             sqlite_insert(tx, operation, false)?;
             tx.execute(
                 "INSERT INTO operation_queue \
-                     (id, seq, repo, work, requires, priority, tenant, enqueued_ms) \
-                 VALUES (?1, (SELECT seq FROM operations WHERE id = ?1), ?2, ?3, ?4, ?5, ?6, ?7)",
+                     (id, seq, repo, work, requires, priority, tenant, enqueued_ms, lane) \
+                 VALUES (?1, (SELECT seq FROM operations WHERE id = ?1), \
+                     ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
                     op.id,
                     op.repo,
@@ -1403,7 +1462,8 @@ impl OperationStore for SqliteStore {
                     serde_json::to_string(&op.requires)?,
                     op.priority,
                     operation.tenant(),
-                    to_db("created_at_ms", op.created_at_ms)?
+                    to_db("created_at_ms", op.created_at_ms)?,
+                    operation.lane.as_str()
                 ],
             )
             .map_err(sql)?;
@@ -1415,25 +1475,16 @@ impl OperationStore for SqliteStore {
         sqlite_unfinished(&self.conn(), tenant)
     }
 
-    fn claim_next(
+    fn claim_from(
         &self,
         worker: &Worker,
         repos: &[String],
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
+        lane: Lane,
     ) -> io::Result<Option<Claim>> {
-        self.claim_filtered(worker, repos, labels, lease, scheduling, false)
-    }
-    fn claim_control(
-        &self,
-        worker: &Worker,
-        repos: &[String],
-        labels: &[String],
-        lease: Duration,
-        scheduling: &Scheduling,
-    ) -> io::Result<Option<Claim>> {
-        self.claim_filtered(worker, repos, labels, lease, scheduling, true)
+        self.claim_filtered(worker, repos, labels, lease, scheduling, lane)
     }
 
     fn queue(&self) -> io::Result<Vec<Queued>> {
@@ -1861,8 +1912,8 @@ const PG_SCHEMA: &[(&str, &str)] = &[
         )",
     ),
     // Scheduling (docs/server.md#scheduling). A queue row from before
-    // these has priority 0, belongs to the default tenant and counts as
-    // admitted at the epoch, so it ages first.
+    // these has priority 0, belongs to the default tenant, counts as
+    // admitted at the epoch, so it ages first, and is normal work.
     (
         "by_operation_queue.priority",
         "ALTER TABLE by_operation_queue \
@@ -1877,6 +1928,11 @@ const PG_SCHEMA: &[(&str, &str)] = &[
         "by_operation_queue.enqueued_ms",
         "ALTER TABLE by_operation_queue \
          ADD COLUMN IF NOT EXISTS enqueued_ms BIGINT NOT NULL DEFAULT 0",
+    ),
+    (
+        "by_operation_queue.lane",
+        "ALTER TABLE by_operation_queue \
+         ADD COLUMN IF NOT EXISTS lane TEXT NOT NULL DEFAULT 'normal'",
     ),
     (
         "by_tenant_usage",
@@ -1902,8 +1958,9 @@ const PG_SCHEMA: &[(&str, &str)] = &[
 ///
 /// `share` is each tenant's usage per unit of weight: its recorded claims
 /// decayed to now (`$9`) with time constant `$10` ms (0: none count), plus
-/// its live claims, over its weight (`$11`/`$12`, else 1). `next` orders the
-/// claimable rows by effective priority (priority plus one per `$8` ms
+/// its live claims, over its weight (`$11`/`$12`, else 1). `next` takes
+/// the claimable rows whose lane is one of `$13` and orders them follow-ups
+/// first, then by effective priority (priority plus one per `$8` ms
 /// waited; 0: no aging), then share, then age, and locks the first one no
 /// other worker has locked (`FOR UPDATE OF q SKIP LOCKED`): a row another
 /// claim took meanwhile fails the lease condition when it is rechecked on
@@ -1930,9 +1987,9 @@ const PG_CLAIM: &str = "
         WHERE q.repo = ANY($1)
           AND (q.lease_until IS NULL OR q.lease_until <= clock_timestamp())
           AND q.requires <@ $7::text[]
-          AND COALESCE((q.work::jsonb ->> 'kind') = 'console'
-              AND (q.work::jsonb #>> '{command,action}') = 'control', false) = $13::boolean
-        ORDER BY q.priority
+          AND q.lane = ANY($13::text[])
+        ORDER BY (q.lane = 'follow_up') DESC,
+            q.priority
                  + COALESCE(GREATEST($9::bigint - q.enqueued_ms, 0) / NULLIF($8::bigint, 0), 0) DESC,
             s.share, q.seq
         LIMIT 1
@@ -2237,6 +2294,7 @@ impl OperationStore for PostgresStore {
         let tenant = operation.tenant().to_owned();
         let requires = op.requires.clone();
         let (priority, enqueued_ms) = (op.priority, to_db("created_at_ms", op.created_at_ms)?);
+        let lane = operation.lane.as_str();
         let admitted = self.with(move |c| {
             let mut tx = c.transaction()?;
             if !quota.is_empty() {
@@ -2302,8 +2360,8 @@ impl OperationStore for PostgresStore {
             }
             tx.execute(
                 "INSERT INTO by_operation_queue \
-                     (id, repo, work, requires, priority, tenant, enqueued_ms) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                     (id, repo, work, requires, priority, tenant, enqueued_ms, lane) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 &[
                     &id,
                     &repo,
@@ -2312,6 +2370,7 @@ impl OperationStore for PostgresStore {
                     &priority,
                     &tenant,
                     &enqueued_ms,
+                    &lane,
                 ],
             )?;
             tx.commit()?;
@@ -2355,25 +2414,16 @@ impl OperationStore for PostgresStore {
         pg_ops(&rows)
     }
 
-    fn claim_next(
+    fn claim_from(
         &self,
         worker: &Worker,
         repos: &[String],
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
+        lane: Lane,
     ) -> io::Result<Option<Claim>> {
-        self.claim_filtered(worker, repos, labels, lease, scheduling, false)
-    }
-    fn claim_control(
-        &self,
-        worker: &Worker,
-        repos: &[String],
-        labels: &[String],
-        lease: Duration,
-        scheduling: &Scheduling,
-    ) -> io::Result<Option<Claim>> {
-        self.claim_filtered(worker, repos, labels, lease, scheduling, true)
+        self.claim_filtered(worker, repos, labels, lease, scheduling, lane)
     }
 
     fn queue(&self) -> io::Result<Vec<Queued>> {
@@ -2702,6 +2752,7 @@ pub fn check_labels(store: &dyn OperationStore, repo: &str) {
         principal: None,
         creates: Vec::new(),
         trace: None,
+        lane: Lane::Normal,
     };
     let admit = |id: &str, requires: &[&str]| {
         let admitted = store
@@ -2947,6 +2998,7 @@ fn scheduled(
         principal: None,
         creates: Vec::new(),
         trace: None,
+        lane: Lane::Normal,
     }
 }
 
@@ -2990,6 +3042,67 @@ impl Model {
         }
         best.map(|b| b.0)
     }
+}
+
+/// The lane conformance every [`OperationStore`] passes (see [`Lane`]): a
+/// normal claim takes a follow-up before older normal operations of higher
+/// priority, and never a control; a follow-up claim takes only follow-ups,
+/// and a control claim only controls. `repo` names a repository (and
+/// tenant) no other test of the store uses. Panics on a violation. Run on
+/// SQLite here and on PostgreSQL by `tests/postgres.rs`.
+#[doc(hidden)]
+pub fn check_lanes(store: &dyn OperationStore, repo: &str) {
+    use branchyard_client::api::OperationState;
+    const LEASE: Duration = Duration::from_secs(300);
+    let repos = vec![repo.to_owned()];
+    let worker = Worker {
+        id: format!("{repo}-lanes"),
+        ..Worker::current()
+    };
+    let scheduling = Scheduling {
+        aging: None,
+        ..Scheduling::default()
+    };
+    let admit = |id: &str, priority: i32, created_at_ms: u64, lane: Lane| {
+        let id = format!("{repo}-{id}");
+        let op = StoredOperation {
+            lane,
+            ..scheduled(repo, &id, repo, priority, created_at_ms, &[])
+        };
+        let admitted = store
+            .admit(&op, &serde_json::json!({}), &AdmissionQuota::default())
+            .unwrap();
+        assert_eq!(admitted, Admission::Admitted);
+    };
+    // Finished at once, so a `None` below means no free row of a lane the
+    // capacity takes, never one held by an earlier claim.
+    let take = |lane: Lane| {
+        let claim = store
+            .claim_from(&worker, &repos, &[], LEASE, &scheduling, lane)
+            .unwrap()?;
+        let mut done = claim.operation.clone();
+        done.operation.state = OperationState::Succeeded;
+        assert!(store.finish(&worker, claim.fence, &done).unwrap());
+        let id = done.operation.id;
+        Some(id.trim_start_matches(&format!("{repo}-")).to_owned())
+    };
+
+    admit("old", 10, 1, Lane::Normal);
+    admit("control", 0, 2, Lane::Control);
+    assert_eq!(take(Lane::FollowUp), None);
+    admit("follow-up", -10, 3, Lane::FollowUp);
+    assert_eq!(take(Lane::Control).as_deref(), Some("control"));
+    assert_eq!(take(Lane::Control), None);
+    assert_eq!(take(Lane::Normal).as_deref(), Some("follow-up"));
+    assert_eq!(take(Lane::Normal).as_deref(), Some("old"));
+
+    admit("control-2", 0, 4, Lane::Control);
+    admit("follow-up-2", 0, 5, Lane::FollowUp);
+    assert_eq!(take(Lane::FollowUp).as_deref(), Some("follow-up-2"));
+    assert_eq!(take(Lane::FollowUp), None);
+    assert_eq!(take(Lane::Normal), None);
+    assert_eq!(take(Lane::Control).as_deref(), Some("control-2"));
+    assert_eq!(store.pending(&repos).unwrap(), 0);
 }
 
 /// The scheduling conformance every [`OperationStore`] passes (see
@@ -3310,10 +3423,8 @@ impl OperationStore for MemoryStore {
         admit(operation: &StoredOperation, work: &Value, quota: &AdmissionQuota)
             -> io::Result<Admission>;
         unfinished(tenant: &str) -> io::Result<Vec<StoredOperation>>;
-        claim_control(worker: &Worker, repos: &[String], labels: &[String], lease: Duration,
-            scheduling: &Scheduling) -> io::Result<Option<Claim>>;
-        claim_next(worker: &Worker, repos: &[String], labels: &[String], lease: Duration,
-            scheduling: &Scheduling) -> io::Result<Option<Claim>>;
+        claim_from(worker: &Worker, repos: &[String], labels: &[String], lease: Duration,
+            scheduling: &Scheduling, lane: Lane) -> io::Result<Option<Claim>>;
         queue() -> io::Result<Vec<Queued>>;
         branch_priority(repo: &str, branch: &str) -> io::Result<Option<i32>>;
         beat(worker: &Worker, labels: &[String], repos: &[String],
@@ -3344,10 +3455,11 @@ impl SqliteStore {
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
-        control: bool,
+        lane: Lane,
     ) -> io::Result<Option<Claim>> {
         let repos = serde_json::to_string(repos)?;
         let labels = serde_json::to_string(labels)?;
+        let lanes = serde_json::to_string(&lane.claims())?;
         self.immediate(|tx| {
             let clock = sqlite_now();
             let now = scheduling.at_ms();
@@ -3363,9 +3475,9 @@ impl SqliteStore {
                        AND (lease_until IS NULL OR lease_until <= ?2) \
                        AND NOT EXISTS (SELECT 1 FROM json_each(requires) r \
                            WHERE r.value NOT IN (SELECT value FROM json_each(?3))) \
-                       AND COALESCE(json_extract(work, '$.kind') = 'console' AND \
-                           json_extract(work, '$.command.action') = 'control', 0) = ?7 \
-                     ORDER BY priority \
+                       AND lane IN (SELECT value FROM json_each(?7)) \
+                     ORDER BY lane = 'follow_up' DESC, \
+                       priority \
                          + COALESCE(MAX(?4 - enqueued_ms, 0) / NULLIF(?5, 0), 0) DESC, \
                        COALESCE((SELECT s.value FROM json_each(?6) s WHERE s.key = tenant), \
                            json_extract(?6, '$.\"\"')), \
@@ -3378,7 +3490,7 @@ impl SqliteStore {
                         now,
                         scheduling.aging_ms(),
                         serde_json::to_string(&shares)?,
-                        control
+                        lanes
                     ],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
@@ -3428,8 +3540,9 @@ impl PostgresStore {
         labels: &[String],
         lease: Duration,
         scheduling: &Scheduling,
-        control: bool,
+        lane: Lane,
     ) -> io::Result<Option<Claim>> {
+        let lanes = lane.claims();
         let worker = worker.clone();
         let repos = repos.to_vec();
         let labels = labels.to_vec();
@@ -3482,7 +3595,7 @@ impl PostgresStore {
                     &window,
                     &tenants,
                     &weights,
-                    &control,
+                    &lanes,
                 ],
             )?;
             Ok(rows.first().map(|row| {
@@ -3501,16 +3614,6 @@ impl PostgresStore {
             took_over,
         }))
     }
-}
-
-/// Whether queued work only delivers a short cancellation or steering request.
-pub(crate) fn control_work(work: &Value) -> bool {
-    work.get("kind").and_then(Value::as_str) == Some("console")
-        && work
-            .get("command")
-            .and_then(|command| command.get("action"))
-            .and_then(Value::as_str)
-            == Some("control")
 }
 
 #[cfg(test)]
@@ -3542,6 +3645,7 @@ mod tests {
             principal: None,
             creates: Vec::new(),
             trace: None,
+            lane: Lane::Normal,
         }
     }
 
@@ -3752,6 +3856,11 @@ mod tests {
     }
 
     #[test]
+    fn claims_take_follow_ups_first_and_keep_lanes_apart_on_sqlite() {
+        check_lanes(&MemoryStore::default(), "mem");
+    }
+
+    #[test]
     fn claims_follow_priority_fair_share_and_aging_on_sqlite() {
         check_scheduling(&MemoryStore::default(), "mem");
         let temp = temp("scheduling");
@@ -3812,8 +3921,8 @@ mod tests {
         let temp = temp("labels");
         let path = temp.path().join("state.db");
         check_labels(&SqliteStore::open(&path, None).unwrap(), "file");
-        // An older queue without the column gains it, its rows requiring
-        // nothing.
+        // An older queue without the columns gains them, its rows requiring
+        // nothing and normal work.
         let old = temp.path().join("old.db");
         let conn = rusqlite::Connection::open(&old).unwrap();
         conn.execute_batch(
@@ -3825,11 +3934,13 @@ mod tests {
         .unwrap();
         drop(conn);
         let store = SqliteStore::open(&old, None).unwrap();
-        let requires: String = store
+        let (requires, lane): (String, String) = store
             .conn()
-            .query_row("SELECT requires FROM operation_queue", [], |r| r.get(0))
+            .query_row("SELECT requires, lane FROM operation_queue", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
-        assert_eq!(requires, "[]");
+        assert_eq!((requires.as_str(), lane.as_str()), ("[]", "normal"));
         // An older workers table gains the inventory column; its rows
         // advertise none.
         let workers = temp.path().join("old-workers.db");

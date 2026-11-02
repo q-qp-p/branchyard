@@ -218,7 +218,8 @@ use branchyard_client::Client;
 use branchyard_server::config::{Principal, TenantPolicy};
 use branchyard_server::ops::{NewOperation, Options, Registry, WORKER_LOST};
 use branchyard_server::store::{
-    Admission, AdmissionQuota, Idempotency, OperationStore, PostgresStore, StoredOperation, Worker,
+    Admission, AdmissionQuota, Idempotency, Lane, OperationStore, PostgresStore, StoredOperation,
+    Worker,
 };
 use branchyard_server::work::Work;
 use branchyard_testkit::wait;
@@ -277,6 +278,7 @@ fn admit_only(url: &str, request: TaskRequest, key: &str) -> Operation {
                 requires: Vec::new(),
                 priority: 0,
                 trace: None,
+                lane: Lane::Normal,
             },
             Work::Task {
                 request,
@@ -666,6 +668,7 @@ fn stored(id: &str, tenant: &str, lock: &str, creates: &[&str]) -> StoredOperati
         principal: Some(principal),
         creates: creates.iter().map(|s| s.to_string()).collect(),
         trace: None,
+        lane: Lane::Normal,
     }
 }
 
@@ -776,6 +779,7 @@ fn a_worker_runs_another_tenants_operation_as_its_principal_without_leaking_it()
                 requires: Vec::new(),
                 priority: 0,
                 trace: None,
+                lane: Lane::Normal,
             },
             Work::Task {
                 request: task("WRITE w.txt=acme", "acme-work"),
@@ -878,6 +882,7 @@ fn admit(url: &str, work: Work, branches: &[&str], locks: &[&str]) -> Operation 
                 requires: Vec::new(),
                 priority: 0,
                 trace: None,
+                lane: Lane::Normal,
             },
             work.to_value().unwrap(),
         )
@@ -1161,13 +1166,13 @@ fn open_together(url: &str, n: usize) {
 }
 
 /// The old queue's row, migrated: it requires nothing, has priority 0,
-/// belongs to the default tenant and was admitted at the epoch; and the
-/// tenants' usage table exists.
+/// belongs to the default tenant, was admitted at the epoch and is normal
+/// work; and the tenants' usage table exists.
 fn requires_of_old(url: &str) -> Vec<String> {
     let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
     let row = client
         .query_one(
-            "SELECT requires, priority, tenant, enqueued_ms FROM by_operation_queue \
+            "SELECT requires, priority, tenant, enqueued_ms, lane FROM by_operation_queue \
              WHERE id = 'op-old'",
             &[],
         )
@@ -1175,6 +1180,7 @@ fn requires_of_old(url: &str) -> Vec<String> {
     assert_eq!(row.get::<_, i32>(1), 0);
     assert_eq!(row.get::<_, String>(2), "default");
     assert_eq!(row.get::<_, i64>(3), 0);
+    assert_eq!(row.get::<_, String>(4), "normal");
     let usage: i64 = client
         .query_one("SELECT COUNT(*) FROM by_tenant_usage", &[])
         .unwrap()
@@ -1184,16 +1190,16 @@ fn requires_of_old(url: &str) -> Vec<String> {
 }
 
 /// A schema as the release before scheduling made it: every table, the
-/// `requires` column and the workers table, but no priority, tenant or
-/// enqueue time on the queue and no tenants' usage; with one operation
-/// queued.
+/// `requires` column and the workers table, but no priority, tenant,
+/// enqueue time or lane on the queue and no tenants' usage; with one
+/// operation queued.
 fn previous_release(url: &str) {
     PostgresStore::open(url).unwrap();
     let mut client = postgres::Client::connect(url, postgres::NoTls).unwrap();
     client
         .batch_execute(
             "ALTER TABLE by_operation_queue DROP COLUMN priority, DROP COLUMN tenant, \
-                 DROP COLUMN enqueued_ms; \
+                 DROP COLUMN enqueued_ms, DROP COLUMN lane; \
              DROP TABLE by_tenant_usage; \
              INSERT INTO by_operations (id, body) VALUES ('op-old', '{}'); \
              INSERT INTO by_operation_queue (id, repo, work) VALUES ('op-old', 'app', '{}')",
@@ -1540,7 +1546,10 @@ fn console_control_lane_keeps_postgres_queue_fences_and_routing() {
     let control = json!({"kind":"console","command":{"action":"control","control":"cancel","workspace_id":"w"}});
     store
         .admit(
-            &stored("control", "a", "control-lock", &[]),
+            &StoredOperation {
+                lane: Lane::Control,
+                ..stored("control", "a", "control-lock", &[])
+            },
             &control,
             &AdmissionQuota::default(),
         )
@@ -1556,7 +1565,14 @@ fn console_control_lane_keeps_postgres_queue_fences_and_routing() {
     let lease = Duration::from_secs(30);
     let scheduling = Scheduling::default();
     assert!(store
-        .claim_control(&worker, &["other-repo".into()], &[], lease, &scheduling)
+        .claim_from(
+            &worker,
+            &["other-repo".into()],
+            &[],
+            lease,
+            &scheduling,
+            Lane::Control,
+        )
         .unwrap()
         .is_none());
     let ordinary = store
@@ -1565,19 +1581,49 @@ fn console_control_lane_keeps_postgres_queue_fences_and_routing() {
         .unwrap();
     assert_eq!(ordinary.operation.operation.id, "ordinary");
     let first = store
-        .claim_control(&worker, &["app".into()], &[], lease, &scheduling)
+        .claim_from(
+            &worker,
+            &["app".into()],
+            &[],
+            lease,
+            &scheduling,
+            Lane::Control,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(first.operation.operation.id, "control");
     assert!(store
-        .claim_control(&worker, &["app".into()], &[], lease, &scheduling)
+        .claim_from(
+            &worker,
+            &["app".into()],
+            &[],
+            lease,
+            &scheduling,
+            Lane::Control,
+        )
         .unwrap()
         .is_none());
     store.release(&worker, "control", first.fence).unwrap();
     let second = store
-        .claim_control(&worker, &["app".into()], &[], lease, &scheduling)
+        .claim_from(
+            &worker,
+            &["app".into()],
+            &[],
+            lease,
+            &scheduling,
+            Lane::Control,
+        )
         .unwrap()
         .unwrap();
     assert!(second.fence > first.fence);
     assert!(!store.renew(&worker, "control", first.fence, lease).unwrap());
+}
+
+/// The lane conformance on PostgreSQL: follow-ups claimed first by a
+/// normal claim, and each reserved capacity taking only its own lane.
+#[test]
+fn lanes_conform_on_postgres() {
+    let Some(url) = database() else { return };
+    let store = PostgresStore::open(&url).unwrap();
+    branchyard_server::store::check_lanes(&store, "pg-lanes");
 }

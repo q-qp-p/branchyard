@@ -40,7 +40,7 @@ use crate::console::Projection;
 use crate::error::{self, ApiError};
 use crate::feed::Feed;
 use crate::ops::{NewOperation, Registry};
-use crate::store::{AdmissionQuota, ExistingBranches, Idempotency};
+use crate::store::{AdmissionQuota, ExistingBranches, Idempotency, Lane};
 use crate::work::{self, Work};
 
 /// Requests handled at once; more wait.
@@ -1752,6 +1752,7 @@ pub(crate) async fn admit_task(
         requires,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace,
+        lane: Lane::Normal,
     };
     let value = Work::Task { request, trigger }.to_value()?;
     let registry = app.registry.clone();
@@ -1795,8 +1796,16 @@ async fn post_send(
         request,
         reincarnate: None,
     };
-    let (op, replayed) =
-        admit_send(&app, &repo, &caller, idem, to, incoming_trace(&headers)).await?;
+    let (op, replayed) = admit_send(
+        &app,
+        &repo,
+        &caller,
+        idem,
+        to,
+        incoming_trace(&headers),
+        Lane::FollowUp,
+    )
+    .await?;
     operation_response(&app, op, replayed)
 }
 
@@ -1817,7 +1826,9 @@ pub(crate) struct SendTo {
 /// operation `idem` already names (`true`): what `POST .../send` does,
 /// and what a trigger that delivers to a branch does as the principal
 /// that created it. The operation takes the branch's lock, so a send to a
-/// branch running a turn runs after that turn.
+/// branch running a turn runs after that turn. `POST .../send` admits it
+/// on [`Lane::FollowUp`], ahead of new launches; a trigger admits it on
+/// [`Lane::Normal`], in scheduling order with the rest of its work.
 pub(crate) async fn admit_send(
     app: &Shared,
     repo: &RepoState,
@@ -1825,6 +1836,7 @@ pub(crate) async fn admit_send(
     idem: Option<Idempotency>,
     to: SendTo,
     trace: Option<String>,
+    lane: Lane,
 ) -> Result<(Operation, bool), ApiError> {
     let SendTo {
         branch,
@@ -1863,6 +1875,7 @@ pub(crate) async fn admit_send(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace,
+        lane,
     };
     let work = match reincarnate {
         Some(reason) => Work::Resume {
@@ -1925,6 +1938,7 @@ async fn post_fork(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Fork { branch, request }).await
 }
@@ -1967,6 +1981,7 @@ async fn post_reincarnate(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Reincarnate { branch, request }).await
 }
@@ -2023,6 +2038,7 @@ async fn post_merge(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Merge { branch, target }).await
 }
@@ -2065,6 +2081,7 @@ async fn post_check(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Check { branch }).await
 }
@@ -2271,6 +2288,7 @@ async fn post_spawn(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, inherited)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(
         &app,
@@ -2336,6 +2354,7 @@ async fn post_integrate(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(
         &app,

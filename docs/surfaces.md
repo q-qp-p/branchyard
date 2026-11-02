@@ -404,7 +404,7 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 |---|---|---|
 | `priority` on task, send, fork, reincarnate and spawn requests; `Operation::priority` | none | -10 to 10, default 0 (a spawn: its parent's); capped at the tenant's `max_priority`; in `schema/contract.json` |
 | `--priority N` on `by run`, `fan`, `send`, `fork`, `reincarnate`, `spawn` | none | with `--remote`; refused locally |
-| Claim order | oldest first | highest effective priority (aged), then lowest tenant usage per weight, then oldest; one statement on PostgreSQL |
+| Claim order | oldest first | follow-ups (a request's send to an existing branch, a plan decision, a console session send), then highest effective priority (aged), then lowest tenant usage per weight, then oldest; one statement on PostgreSQL |
 | `tenants.<name>.weight`, `max_priority`; `aging_seconds`, `fair_share_window_seconds` in the configuration | none | the tenant's fair share and priority ceiling; aging step and usage decay |
 | `GET /metrics`; `--metrics`, `--metrics-addr`, `--metrics-token-file`; `metrics` in the configuration | none | Prometheus text, for `admin` or the metrics token; off by default |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP/HTTP traces (protobuf or JSON) of admission, claim, operation, turns, tool and connector calls |

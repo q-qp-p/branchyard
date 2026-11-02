@@ -35,6 +35,18 @@ server on a shared database first. `Client::trigger_runs` takes a state.
 
 The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
 
+A server runs a request that continues existing work ahead of new work. A
+send to an existing branch (`POST .../branches/{b}/send`), a plan's approval
+or rejection, and a console session send are follow-ups: they are claimed
+before every queued launch whatever its priority, and each process keeps one
+slot beyond `--max-running` for them. A tenant at its `max_running` still
+admits one follow-up while it has none unfinished. Previously such a send
+waited behind every queued trigger-fired task, then for a running turn to
+end, and a tenant that triggers had filled refused it with `429
+quota_exceeded`. A trigger's send, a merge, an integration and a check stay
+normal work, and a process now runs up to `max_running + 2` operations: one
+follow-up and one console cancel or steer beyond the limit.
+
 A branch nobody delegated (a root started with delegation, or a fork of one) can now `ask` and `escalate`, and its message goes to the person, `@person`. Its question keeps it in Needs you, with stage `question`, until someone answers it, also after its turn ends. `Yard::inbox` lists the person's messages and `Yard::answer` answers one. An answer to a branch whose turn ended does not start a turn; the branch gets it at the start of its next turn.
 
 A root's `report-status blocked` or `failure` is now escalated to the person. Before, it was only recorded.
