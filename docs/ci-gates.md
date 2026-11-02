@@ -42,6 +42,12 @@ A process per test shares no memory with another test: a `static`, a `OnceLock` 
 
 ### What runs where, and how to run it
 
+The remote CLI parity test exhausts a turn limit before comparing budget output.
+A wall-clock limit can expire during startup on one runner and during a turn on
+another, producing different valid histories. The engine's
+`a_duration_budget_interrupts_a_hanging_turn` test checks duration interruption
+separately.
+
 | Job | Fails when | Run it locally |
 |---|---|---|
 | `fast` | any step of `tools/check.py --fast` fails (ruff and mypy over `tools/`, `tests/`, the shipped client and `examples/python/`; vendor, catalog, docs, wire, hygiene, silent-failure and lint ratchets; schema validation; the plugin packaging; the tests of these checks; `test_sdk_examples`, which skips here because nothing is built and runs for real inside `cargo test -p branchyard-cli --test sdk_client` in `test-cli`), or `cargo fmt` would change a file | `python3 tools/check.py --fast && cargo fmt --all -- --check` (`pip install ruff==0.15.8 mypy==2.4.0` first) |
