@@ -224,6 +224,27 @@ fn uid_delete_race_is_refused_and_receipt_survives() {
 }
 
 #[test]
+fn replaced_allocation_policy_blocks_foreground_cascade() {
+    let fixture = Fixture::new(Network::Unrestricted);
+    fixture.provider.ensure(&spec()).unwrap();
+    fixture.edit(|state| {
+        state["objects"][format!("networkpolicy/{}", fixture.name())]["metadata"]["uid"] =
+            "replacement-policy".into()
+    });
+    assert!(fixture
+        .provider
+        .destroy("allocation")
+        .unwrap_err()
+        .to_string()
+        .contains("UID was replaced"));
+    assert!(fixture.receipt().exists());
+    assert!(!fixture
+        .calls()
+        .iter()
+        .any(|call| call["operation"] == "delete"));
+}
+
+#[test]
 fn effective_pod_runtime_image_security_and_network_drift_are_refused() {
     for mutation in [
         "image",
