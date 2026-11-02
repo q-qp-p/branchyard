@@ -1,0 +1,76 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "node.k8s.io/v1",
+            "handler": "gvisor",
+            "kind": "RuntimeClass",
+            "metadata": {
+                "creationTimestamp": "2026-11-02T08:09:16Z",
+                "labels": {
+                    "addonmanager.kubernetes.io/mode": "Reconcile",
+                    "kubernetes.io/cluster-service": "true"
+                },
+                "name": "gvisor",
+                "resourceVersion": "1793606956564287003",
+                "uid": "a6246d00-15e3-44c5-8533-2709569555ca"
+            },
+            "scheduling": {
+                "nodeSelector": {
+                    "sandbox.gke.io/runtime": "gvisor"
+                },
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "sandbox.gke.io/runtime",
+                        "operator": "Equal",
+                        "value": "gvisor"
+                    }
+                ]
+            }
+        },
+        {
+            "apiVersion": "node.k8s.io/v1",
+            "handler": "kata-clh",
+            "kind": "RuntimeClass",
+            "metadata": {
+                "annotations": {
+                    "components.gke.io/component-name": "sandbox-runtime-class",
+                    "components.gke.io/component-version": "1.37.0",
+                    "components.gke.io/layer": "addon"
+                },
+                "creationTimestamp": "2026-11-02T08:11:23Z",
+                "labels": {
+                    "addonmanager.kubernetes.io/mode": "Reconcile",
+                    "kubernetes.io/cluster-service": "true"
+                },
+                "name": "microvm",
+                "resourceVersion": "1793607083162463001",
+                "uid": "d8ababfb-4061-4d01-8152-3f29e96806af"
+            },
+            "overhead": {
+                "podFixed": {
+                    "cpu": "250m",
+                    "memory": "130Mi"
+                }
+            },
+            "scheduling": {
+                "nodeSelector": {
+                    "sandbox.gke.io/runtime": "microvm"
+                },
+                "tolerations": [
+                    {
+                        "effect": "NoSchedule",
+                        "key": "sandbox.gke.io/runtime",
+                        "operator": "Equal",
+                        "value": "microvm"
+                    }
+                ]
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

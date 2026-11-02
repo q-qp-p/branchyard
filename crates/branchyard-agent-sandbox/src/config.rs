@@ -1,0 +1,133 @@
+use branchyard_sandbox::{ProviderError, SandboxSpec};
+use serde::{Deserialize, Serialize};
+
+/// Managed GKE runtime required for the Sandbox and its backing node.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum Runtime {
+    /// GKE's gVisor user-space kernel.
+    #[default]
+    Gvisor,
+    /// GKE's managed Kata Containers and Cloud Hypervisor microVM.
+    Microvm,
+}
+
+impl Runtime {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Gvisor => "gvisor",
+            Self::Microvm => "microvm",
+        }
+    }
+
+    pub(crate) fn handler(self) -> &'static str {
+        match self {
+            Self::Gvisor => "gvisor",
+            Self::Microvm => "kata-clh",
+        }
+    }
+}
+
+/// Network boundary applied by the setup-verified GKE Dataplane V2.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum Network {
+    /// Deny workload ingress and egress, including DNS and metadata.
+    #[default]
+    Deny,
+    /// Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.
+    /// Ingress and IPv6 Internet egress remain denied.
+    Unrestricted,
+}
+
+/// Operator-selected target, authenticated by the host's kubeconfig.
+/// No workload-supplied PodSpec, command, kubeconfig or credential is accepted.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Config {
+    /// Explicit kubeconfig context; the current context is never implicit.
+    pub context: String,
+    /// Namespace prepared by `tools/agent_sandbox_gke.py`.
+    pub namespace: String,
+    /// Required managed runtime; defaults to gVisor.
+    #[serde(default)]
+    pub runtime: Runtime,
+    /// Enforced workload network boundary; defaults to deny.
+    #[serde(default)]
+    pub network: Network,
+}
+
+impl Config {
+    /// Validate the target without invoking kubectl or touching local state.
+    pub fn validate(&self) -> Result<(), ProviderError> {
+        if self.context.is_empty()
+            || self.context.len() > 1024
+            || self.context.bytes().any(|b| b.is_ascii_control())
+        {
+            return Err(invalid("an explicit kubeconfig context is required"));
+        }
+        if !dns_label(&self.namespace) {
+            return Err(invalid("the namespace must be a DNS label"));
+        }
+        Ok(())
+    }
+
+    /// Refuse an unsupported allocation before creating runtime resources.
+    /// The image must be an immutable OCI `repository@sha256:digest` reference.
+    /// Unset limits select one CPU and 1024 MiB, with requests equal to limits.
+    pub fn validate_spec(&self, spec: &SandboxSpec) -> Result<(), ProviderError> {
+        self.validate()?;
+        spec.validate()?;
+        if !spec.mounts.is_empty() {
+            return Err(invalid(
+                "Agent Sandbox does not accept host mounts; use copied placement",
+            ));
+        }
+        let image = spec
+            .image
+            .as_deref()
+            .ok_or_else(|| invalid("a digest-pinned image is required"))?;
+        let Some((repository, digest)) = image.rsplit_once("@sha256:") else {
+            return Err(invalid(
+                "the image must use repository@sha256:<64 hex digits>",
+            ));
+        };
+        if repository.is_empty()
+            || repository.starts_with('-')
+            || repository
+                .bytes()
+                .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+            || digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(invalid("invalid digest-pinned image reference"));
+        }
+        if spec.resources.cpus == Some(0) || spec.resources.memory_mib == Some(0) {
+            return Err(invalid("CPU and memory limits must be positive"));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn dns_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 63
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value.as_bytes()[value.len() - 1].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+pub(crate) fn invalid(reason: &str) -> ProviderError {
+    ProviderError::Invalid(reason.into())
+}
+
+pub(crate) fn runtime_error(reason: impl Into<String>) -> ProviderError {
+    ProviderError::Runtime(reason.into())
+}
