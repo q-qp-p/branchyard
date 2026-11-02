@@ -2,9 +2,8 @@
 //! `ProviderKind` in `crates/branchyard/src/providers/`, never by a match
 //! on the enum somewhere else.
 //!
-//! This reads every crate's `src/` and counts the places the four variants
-//! are named (`Provider::Local`, `::Microsandbox`, `::Substrate`,
-//! `::Recipe`) outside `crates/branchyard/src/providers/`. In the engine
+//! This reads every crate's `src/` and counts the places provider variants
+//! are named outside `crates/branchyard/src/providers/`. In the engine
 //! crate the allowed count is zero. A few surfaces still match on the enum
 //! to announce or admit a provider; they are a ratchet: each file's count
 //! is listed below and may only fall. Adding a variant's name anywhere not
@@ -18,11 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The variants, as the enum spells them.
-const VARIANTS: [&str; 4] = [
+const VARIANTS: [&str; 6] = [
     "Provider::Local",
     "Provider::Microsandbox",
     "Provider::Substrate",
     "Provider::Recipe",
+    "Provider::Container",
+    "Provider::AgentSandbox",
 ];
 
 /// The one directory where a variant may be named freely.

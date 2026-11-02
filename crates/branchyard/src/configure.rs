@@ -507,6 +507,44 @@ pub fn substrate_options(section: &config::Substrate) -> SubstrateOptions {
     }
 }
 
+/// Convert saved native container settings without contacting the worker daemon.
+pub fn container_options(section: &config::Container) -> crate::ContainerOptions {
+    crate::ContainerOptions {
+        image: section.image.clone(),
+        cpus: section.cpus,
+        memory_mib: section.memory_mib,
+        pass_env: section.pass_env.clone(),
+        runtime: match section.runtime.unwrap_or_default() {
+            config::ContainerRuntime::Gvisor => crate::ContainerRuntime::Gvisor,
+            config::ContainerRuntime::Runc => crate::ContainerRuntime::Runc,
+        },
+        network: match section.network.unwrap_or_default() {
+            config::SandboxNetwork::Deny => crate::ContainerNetwork::Deny,
+            config::SandboxNetwork::Unrestricted => crate::ContainerNetwork::Unrestricted,
+        },
+    }
+}
+
+/// Convert saved GKE Agent Sandbox settings without reading operator credentials.
+pub fn agent_sandbox_options(section: &config::AgentSandbox) -> crate::AgentSandboxOptions {
+    crate::AgentSandboxOptions {
+        context: section.context.clone(),
+        namespace: section.namespace.clone(),
+        image: section.image.clone(),
+        cpus: section.cpus,
+        memory_mib: section.memory_mib,
+        pass_env: section.pass_env.clone(),
+        runtime: match section.runtime.unwrap_or_default() {
+            config::AgentSandboxRuntime::Gvisor => crate::AgentSandboxRuntime::Gvisor,
+            config::AgentSandboxRuntime::Microvm => crate::AgentSandboxRuntime::Microvm,
+        },
+        network: match section.network.unwrap_or_default() {
+            config::SandboxNetwork::Deny => crate::AgentSandboxNetwork::Deny,
+            config::SandboxNetwork::Unrestricted => crate::AgentSandboxNetwork::Unrestricted,
+        },
+    }
+}
+
 /// The options a new task of a yard configured with `config` starts from
 /// ([`Yard::task`]), before the caller's own: `[defaults]` (harness,
 /// check, budget, isolation, a permission preset) and `[microsandbox]`
@@ -531,6 +569,28 @@ pub fn task_options(config: &ProjectConfig) -> Result<TaskOptions, Error> {
             .substrate
             .as_ref()
             .map(|section| Provider::substrate(substrate_options(section))),
+        (Some(ProviderKind::Container), _) => {
+            let section = config.container.as_ref().ok_or_else(|| {
+                section(
+                    "container",
+                    "native provider requires a [container] section",
+                )
+            })?;
+            let options = container_options(section);
+            options.validate()?;
+            Some(Provider::container(options))
+        }
+        (Some(ProviderKind::AgentSandbox), _) => {
+            let section = config.agent_sandbox.as_ref().ok_or_else(|| {
+                section(
+                    "agent_sandbox",
+                    "native provider requires an [agent_sandbox] section",
+                )
+            })?;
+            let options = agent_sandbox_options(section);
+            options.validate()?;
+            Some(Provider::agent_sandbox(options))
+        }
         _ => None,
     };
     let policy = match d.permissions {
@@ -724,6 +784,30 @@ mod tests {
 
     fn parsed(text: &str) -> ProjectConfig {
         config::parse(text).unwrap()
+    }
+
+    #[test]
+    fn native_defaults_map_to_owned_destroy_only_options() {
+        let image = format!("example.test/runtime@sha256:{}", "a".repeat(64));
+        let container=parsed(&format!("[defaults]\nprovider='container'\n[container]\nimage='{image}'\nruntime='runc'\nnetwork='unrestricted'\ncpus=2\nmemory=2048\n"));
+        let expected = container_options(container.container.as_ref().unwrap());
+        assert_eq!(expected.runtime, crate::ContainerRuntime::Runc);
+        assert_eq!(expected.network, crate::ContainerNetwork::Unrestricted);
+        assert_eq!(
+            task_options(&container).unwrap().provider,
+            Some(Provider::container(expected))
+        );
+        let kube=parsed(&format!("[defaults]\nprovider='agent_sandbox'\n[agent_sandbox]\ncontext='test'\nnamespace='branchyard-microvm'\nimage='{image}'\nruntime='microvm'\n"));
+        let expected = agent_sandbox_options(kube.agent_sandbox.as_ref().unwrap());
+        assert_eq!(expected.runtime, crate::AgentSandboxRuntime::Microvm);
+        assert_eq!(expected.network, crate::AgentSandboxNetwork::Deny);
+        assert_eq!(
+            task_options(&kube).unwrap().provider,
+            Some(Provider::agent_sandbox(expected))
+        );
+        let mut missing = kube;
+        missing.agent_sandbox = None;
+        assert!(task_options(&missing).is_err());
     }
 
     #[test]
