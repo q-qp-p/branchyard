@@ -62,6 +62,28 @@ is `/var/tmp/branchyard-cloud-qual-20261102/optimized-release/runtime.env`.
 Only test-owned compiled executables were removed after verification; existing
 services and runtime installations were left in place.
 
+## Runtime approval before allocation and execution
+
+Live on 2 November 2026: with the SDK explicitly pointed at the real stock
+Microsandbox 0.7.3 runner, the native adapter refused creation, execution and
+resume before accessing the sandbox database or allocating a guest. The
+approved optimized artifact then passed all 20 integration tests with the new
+gate enabled, zero ignored, in 238.78 seconds. The strict RAM test was unchanged.
+Final sandbox and snapshot queries both returned empty lists. See
+`runtime-gate-gce.log` in the evidence directory. Not done: no published-release
+download, model call, host RSS ceiling, egress confinement or legacy migration.
+
+Hermetic on 2 November 2026: all 27 feature-enabled unit tests passed. Isolated
+fake runtime cases refused missing, stock, changed-executable, changed-firmware
+and changed-layout identities before SDK invocation or database creation; the
+approved identity passed the verifier without KVM. Removing the creation gate
+made the new regression fail, and restoring it passed. The verifier compares
+the embedded reviewed source, patch, lock and layout pins and both actual
+payload hashes. Feature-enabled all-target Clippy with warnings denied, lint
+and documentation checks passed. See `runtime-gate-regression-before.log` and
+`runtime-gate-unit-after.log`. Not done: these hermetic cases do not allocate a
+VM or contact a registry.
+
 ## The RAM failure and fix
 
 For a requested 512 MiB, the official runtime reported `MemTotal: 529224 kB`,

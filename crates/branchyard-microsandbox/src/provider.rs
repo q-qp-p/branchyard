@@ -43,7 +43,7 @@ use microsandbox::sandbox::{DestroyOptions, SandboxStatus};
 use microsandbox::{ExecControl, ExecEvent, ExecHandle, MicrosandboxError, Sandbox, Snapshot};
 use tokio::runtime::{Handle, Runtime};
 
-use crate::bridge::{self, BridgedProcess, GuestControl, GuestEvent, GuestEvents, GROUP_TEARDOWN};
+use crate::bridge::{self, BridgedProcess, GROUP_TEARDOWN, GuestControl, GuestEvent, GuestEvents};
 use crate::checkpoint::{self, Reference};
 use crate::plan::{self, CreatePlan, PlannedMount};
 
@@ -288,11 +288,7 @@ fn mount_with(
 ) -> impl FnOnce(microsandbox::sandbox::MountBuilder) -> microsandbox::sandbox::MountBuilder {
     move |m| {
         let m = m.bind(mount.host);
-        if mount.readonly {
-            m.readonly()
-        } else {
-            m
-        }
+        if mount.readonly { m.readonly() } else { m }
     }
 }
 
@@ -365,6 +361,7 @@ impl SandboxProvider for MicrosandboxProvider {
 
     #[allow(clippy::expect_used)] // ratchet: branchyard-microsandbox
     fn ensure(&self, spec: &SandboxSpec) -> Result<SandboxInfo, ProviderError> {
+        checkpoint::current()?;
         let CreatePlan {
             name,
             image,
@@ -423,6 +420,7 @@ impl SandboxProvider for MicrosandboxProvider {
     }
 
     fn exec(&self, name: &str, spec: &ExecSpec) -> Result<Box<dyn Process>, ProviderError> {
+        checkpoint::current()?;
         let sandbox = self.adopt(name)?;
         let plan = plan::exec(spec)?;
         let start = sandbox.exec_stream_with(plan.program, |e| {
@@ -589,6 +587,7 @@ impl SandboxProvider for MicrosandboxProvider {
     /// connect to it for exec.
     fn resume(&self, name: &str) -> Result<SandboxInfo, ProviderError> {
         self.live(Operation::Resume)?;
+        checkpoint::current()?;
         let resumed = self.handle().block_on(async {
             let handle = Sandbox::get(name).await?;
             match handle.status_snapshot() {
@@ -675,6 +674,122 @@ impl SandboxProvider for MicrosandboxProvider {
 mod tests {
     use super::*;
     use crate::plan::DISK_SNAPSHOT;
+
+    #[test]
+    fn runtime_gate_isolated_case() {
+        let Ok(case) = std::env::var("BRANCHYARD_TEST_MSB_GATE") else {
+            return;
+        };
+        if case == "approved" {
+            assert!(checkpoint::current().is_ok());
+            return;
+        }
+        let provider = MicrosandboxProvider::new().unwrap().with_live_branch(true);
+        // A zero CPU request traps any regression before an OCI pull could contact a registry.
+        let spec = SandboxSpec::new("gate-case")
+            .image("alpine:3.20")
+            .resources(branchyard_sandbox::Resources {
+                cpus: Some(0),
+                memory_mib: None,
+            });
+        let exec = match provider.exec("gate-case", &ExecSpec::default()) {
+            Ok(_) => panic!("an unreviewed runtime was allowed to execute"),
+            Err(error) => error,
+        };
+        for error in [
+            provider.ensure(&spec).unwrap_err(),
+            exec,
+            provider.resume("gate-case").unwrap_err(),
+        ] {
+            let text = error.to_string();
+            assert!(
+                text.contains("install the reviewed Branchyard runtime"),
+                "{case}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn runtime_is_verified_before_allocation_or_adoption_without_touching_a_database() {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = branchyard_testkit::Scratch::new("msb-runtime-gate");
+        for case in [
+            "missing", "stock", "binary", "firmware", "layout", "approved",
+        ] {
+            let root = scratch.join(case);
+            std::fs::create_dir(&root).unwrap();
+            let home = root.join("home");
+            std::fs::create_dir(&home).unwrap();
+            let binary = root.join("msb");
+            let firmware = root.join("firmware");
+            let probe = root.join("runtime-invocations");
+            let program =
+                b"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BRANCHYARD_MSB_PROBE_LOG\"\nexit 79\n";
+            std::fs::write(&binary, program).unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(&firmware, b"firmware").unwrap();
+            let mut provenance: serde_json::Value =
+                serde_json::from_str(checkpoint::REVIEWED_RUNTIME).unwrap();
+            provenance["runtime_sha256"] = hex::encode(Sha256::digest(program)).into();
+            provenance["firmware_sha256"] = hex::encode(Sha256::digest(b"firmware")).into();
+            if case == "stock" {
+                provenance = serde_json::json!({"runtime_version": "0.7.3"});
+            }
+            if case == "layout" {
+                provenance["architecture_tree_sha256"] = "b".repeat(64).into();
+            }
+            if case != "missing" {
+                std::fs::write(root.join("runtime-provenance.json"), provenance.to_string())
+                    .unwrap();
+            }
+            if case == "binary" {
+                std::fs::write(&binary, b"changed runtime").unwrap();
+            }
+            if case == "firmware" {
+                std::fs::write(&firmware, b"changed firmware").unwrap();
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "provider::tests::runtime_gate_isolated_case",
+                    "--nocapture",
+                ])
+                .env("BRANCHYARD_TEST_MSB_GATE", case)
+                .env("MSB_HOME", &home)
+                .env("MSB_PATH", &binary)
+                .env("MSB_LIBKRUNFW_PATH", &firmware)
+                .env("BRANCHYARD_MSB_PROBE_LOG", &probe)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !probe.exists(),
+                "{case}: SDK executed a runtime before approval"
+            );
+            let mut pending = vec![home];
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(directory).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        pending.push(path);
+                    } else {
+                        let extension = path.extension().and_then(|value| value.to_str());
+                        assert!(
+                            !matches!(extension, Some("db" | "sqlite" | "sqlite3")),
+                            "{case}: SDK touched {path:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn legacy_absolute_checkpoints_refuse_before_runtime_access_or_removal() {

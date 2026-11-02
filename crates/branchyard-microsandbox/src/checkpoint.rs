@@ -1,5 +1,6 @@
-//! Bind opaque checkpoint references to the actual runtime and memory layout.
+//! Verify the reviewed runtime and bind opaque references to its memory layout.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -10,6 +11,29 @@ use sha2::{Digest, Sha256};
 
 const RECOVERY: &str = "use the original runtime to read or export the old checkpoint, or create a fresh checkpoint with the installed runtime; the saved checkpoint is unchanged";
 
+/// The same reviewed source, patch, payload and layout pins used by the runtime builder.
+pub(crate) const REVIEWED_RUNTIME: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tools/microsandbox-runtime-build.json"
+));
+
+#[derive(Deserialize, Eq, PartialEq)]
+struct ReviewedRuntime {
+    format: u32,
+    runtime_version: String,
+    revision: String,
+    platform: String,
+    upstream_repository: String,
+    upstream_revision: String,
+    architecture_revision: String,
+    architecture_tree_sha256: String,
+    firmware_member: String,
+    upstream_archive_sha256: String,
+    agentd_sha256: String,
+    inputs: BTreeMap<String, String>,
+    zstd_tree_sha256: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Identity {
     runtime_sha256: String,
@@ -19,9 +43,10 @@ pub(crate) struct Identity {
 
 #[derive(Deserialize)]
 struct Provenance {
-    runtime_version: String,
+    #[serde(flatten)]
+    reviewed: ReviewedRuntime,
     runtime_sha256: String,
-    architecture_tree_sha256: String,
+    firmware_sha256: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -34,6 +59,12 @@ pub(crate) struct Reference {
 
 fn invalid(reason: &str) -> ProviderError {
     ProviderError::Invalid(format!("Microsandbox checkpoint {reason}; {RECOVERY}"))
+}
+
+fn runtime_invalid(reason: &str) -> ProviderError {
+    ProviderError::Invalid(format!(
+        "Microsandbox runtime {reason}; install the reviewed Branchyard runtime with matching provenance; see docs/microsandbox-runtime.md"
+    ))
 }
 
 fn digest(path: &Path) -> Result<String, ProviderError> {
@@ -53,32 +84,38 @@ fn identify(binary: &Path, firmware: &Path) -> Result<Identity, ProviderError> {
     let binary = binary.canonicalize()?;
     let parent = binary
         .parent()
-        .ok_or_else(|| invalid("runtime has no parent directory"))?;
-    let provenance = std::fs::read(parent.join("runtime-provenance.json"))
-        .map_err(|_| invalid("requires runtime-provenance.json beside the resolved msb binary"))?;
+        .ok_or_else(|| runtime_invalid("has no parent directory"))?;
+    let provenance = std::fs::read(parent.join("runtime-provenance.json")).map_err(|_| {
+        runtime_invalid("requires runtime-provenance.json beside the resolved msb binary")
+    })?;
     let provenance: Provenance = serde_json::from_slice(&provenance)
-        .map_err(|_| invalid("runtime provenance is malformed"))?;
+        .map_err(|_| runtime_invalid("provenance is malformed"))?;
+    let reviewed: ReviewedRuntime = serde_json::from_str(REVIEWED_RUNTIME)
+        .map_err(|_| runtime_invalid("reviewed build plan is malformed"))?;
+    if provenance.reviewed != reviewed || reviewed.runtime_version != crate::SDK_VERSION {
+        return Err(runtime_invalid(
+            "does not match the reviewed patched layout and source pins",
+        ));
+    }
     let runtime_sha256 = digest(&binary)?;
-    if provenance.runtime_version != crate::SDK_VERSION
-        || provenance.runtime_sha256 != runtime_sha256
-        || provenance.architecture_tree_sha256.len() != 64
-        || !provenance
-            .architecture_tree_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
+    let firmware_sha256 = digest(firmware)?;
+    if provenance.runtime_sha256 != runtime_sha256 || provenance.firmware_sha256 != firmware_sha256
     {
-        return Err(invalid(
-            "runtime provenance does not match the installed runtime",
+        return Err(runtime_invalid(
+            "binary or firmware differs from its provenance",
         ));
     }
     Ok(Identity {
         runtime_sha256,
-        firmware_sha256: digest(firmware)?,
-        architecture_tree_sha256: provenance.architecture_tree_sha256,
+        firmware_sha256,
+        architecture_tree_sha256: reviewed.architecture_tree_sha256,
     })
 }
 
 pub(crate) fn current() -> Result<Identity, ProviderError> {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return Err(runtime_invalid("is reviewed for Linux x86_64 only"));
+    }
     let config = microsandbox::config::config().map_err(crate::provider::error)?;
     let runtime = microsandbox::setup::resolve_runtime(&config).map_err(crate::provider::error)?;
     identify(&runtime.msb_path, &runtime.libkrunfw_path)
@@ -133,11 +170,9 @@ mod tests {
         let scratch = Scratch::new("msb-checkpoint-runtime");
         std::fs::write(scratch.join("msb"), b"runtime executable").unwrap();
         std::fs::write(scratch.join("firmware"), b"firmware").unwrap();
-        let provenance = serde_json::json!({
-            "runtime_version": crate::SDK_VERSION,
-            "runtime_sha256": digest(&scratch.join("msb")).unwrap(),
-            "architecture_tree_sha256": "a".repeat(64)
-        });
+        let mut provenance: serde_json::Value = serde_json::from_str(REVIEWED_RUNTIME).unwrap();
+        provenance["runtime_sha256"] = digest(&scratch.join("msb")).unwrap().into();
+        provenance["firmware_sha256"] = digest(&scratch.join("firmware")).unwrap().into();
         std::fs::write(
             scratch.join("runtime-provenance.json"),
             provenance.to_string(),
@@ -208,5 +243,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("runtime-provenance.json"), "{error}");
+    }
+
+    #[test]
+    fn unreviewed_layout_or_changed_firmware_is_not_an_approved_runtime() {
+        let (scratch, _) = fixture();
+        let path = scratch.join("runtime-provenance.json");
+        let original = std::fs::read(&path).unwrap();
+        let mut provenance: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        provenance["architecture_tree_sha256"] = "b".repeat(64).into();
+        std::fs::write(&path, provenance.to_string()).unwrap();
+        let error = identify(&scratch.join("msb"), &scratch.join("firmware")).unwrap_err();
+        assert!(
+            error.to_string().contains("reviewed patched layout"),
+            "{error}"
+        );
+        std::fs::write(&path, original).unwrap();
+        std::fs::write(scratch.join("firmware"), b"changed firmware").unwrap();
+        let error = identify(&scratch.join("msb"), &scratch.join("firmware")).unwrap_err();
+        assert!(error.to_string().contains("firmware differs"), "{error}");
     }
 }

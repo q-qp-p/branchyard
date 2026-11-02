@@ -14,6 +14,10 @@
 //!   provides it: the guest sees only its image, the bound directories and
 //!   the variables an exec passes. Nothing from this process's environment
 //!   is forwarded.
+//! - Creation, execution and resume verify the SDK-selected runtime pair
+//!   before allocation or adoption. The source, patch and memory-layout pins
+//!   must match the reviewed runtime plan, and both installed payloads must
+//!   match their provenance hashes. A stock or unidentified runtime refuses.
 //! - Every exec is a session leader in the guest, so `Process::kill` (the
 //!   agent signals the process group) and `Process::teardown` (an in-guest
 //!   `sh` listing and killing the group) reach its descendants; `stop` and
@@ -62,7 +66,7 @@ mod provider;
 mod checkpoint;
 
 #[cfg(feature = "microsandbox")]
-pub use provider::{error, event, failure_kind, state, MicrosandboxProvider};
+pub use provider::{MicrosandboxProvider, error, event, failure_kind, state};
 
 /// The pinned SDK version, which must match the installed `msb` runtime.
 pub const SDK_VERSION: &str = "0.7.3";
