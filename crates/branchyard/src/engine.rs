@@ -361,6 +361,8 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         ),
     };
     let result = (|| {
+        turn.yard
+            .admit_provider(record.provider.as_ref(), turn.options)?;
         recorder.record(Activity::Status(record.info.status.clone()))?;
         if let Some(note) = &turn.note {
             recorder.record(Activity::Warning(note.clone()))?;

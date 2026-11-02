@@ -51,10 +51,11 @@ pub(crate) fn launch(
     id: Option<&str>,
     command: Option<&[String]>,
     provider: Option<&Provider>,
-    unapproved_tools: bool,
+    options: &TaskOptions,
 ) -> Result<Launch, Error> {
+    yard.admit_provider(provider, options)?;
     let profile = harness::select(id)?;
-    harness::check_approvals(profile, unapproved_tools)?;
+    harness::check_approvals(profile, options.unapproved_tools)?;
     let command = harness::command(profile, command);
     placement::check(yard, provider)?;
     if !placement::sandboxed(provider) {
@@ -448,7 +449,7 @@ pub(crate) fn run(yard: &Yard, prompt: &str, options: &TaskOptions) -> Result<Br
         options.harness.as_deref(),
         options.command.as_deref(),
         options.provider.as_ref(),
-        options.unapproved_tools,
+        options,
     )?;
     check_plan_and_goal(launch.profile, options)?;
     let grant = root_grant(options, new_home_private(options))?;
@@ -523,7 +524,7 @@ pub(crate) fn run_on(
                 Some(id),
                 options.command.as_deref(),
                 options.provider.as_ref(),
-                options.unapproved_tools,
+                options,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -673,7 +674,7 @@ pub(crate) fn run_attempts(
                 o.harness.as_deref(),
                 o.command.as_deref(),
                 o.provider.as_ref(),
-                o.unapproved_tools,
+                o,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1207,9 +1208,12 @@ fn prepare(
     if options.command.is_some() {
         record.command = options.command.clone();
     }
-    if options.provider.is_some() {
+    // Wakes use the stored allocation target. Their options retain the
+    // caller's provider only as evidence for the admission callback.
+    if !wake && options.provider.is_some() {
         record.provider = options.provider.clone();
     }
+    yard.admit_provider(record.provider.as_ref(), options)?;
     harness::check_approvals(profile, options.unapproved_tools)?;
     let command = harness::command(profile, record.command.as_deref());
     placement::check(yard, record.provider.as_ref())?;
@@ -1506,6 +1510,7 @@ pub(crate) fn fork(
     harness::check_approvals(profile, options.unapproved_tools)?;
     let launch_command = harness::command(profile, command.as_deref());
     let provider = options.provider.clone().or(parent.provider.clone());
+    yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
     if !placement::sandboxed(provider.as_ref()) {
         harness::check_available(
@@ -1668,6 +1673,7 @@ pub(crate) fn reincarnate_with(
     harness::check_approvals(profile, options.unapproved_tools)?;
     let launch_command = harness::command(profile, command.as_deref());
     let provider = options.provider.clone().or(parent.provider.clone());
+    yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
     if !placement::sandboxed(provider.as_ref()) {
         harness::check_available(

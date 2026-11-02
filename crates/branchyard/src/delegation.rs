@@ -3371,6 +3371,8 @@ impl Local {
             false => None,
         };
         let launch = harness::command(profile, command.as_deref());
+        self.yard
+            .admit_provider(caller.provider.as_ref(), &self.options)?;
         harness::check_approvals(profile, self.options.unapproved_tools)?;
         harness::check_available(profile.harness, &launch)?;
         let seated_provision = seat.and_then(|s| s.provision.as_ref());

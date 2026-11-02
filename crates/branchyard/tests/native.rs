@@ -3,18 +3,18 @@
 //! and cleanup wiring, not container or GKE isolation. No model is called.
 
 #![cfg(unix)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a panic is the failure report
 mod common;
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use branchyard::services::{self, Outcome, ServiceState, ServiceStore as _};
 use branchyard::{
-    Activity, AgentSandboxOptions, AgentSandboxRuntime, BranchStatus, ContainerOptions, Error,
-    Event, Network, NetworkEnforce, Policy, Provider, Provisioning, SandboxEvent, SandboxOrigin,
-    TaskOptions,
+    Activity, After, AgentSandboxOptions, AgentSandboxRuntime, BranchStatus, ContainerOptions,
+    Envelope, Error, Event, GraphEdit, Network, NetworkEnforce, Policy, Provider, Provisioning,
+    SandboxEvent, SandboxOrigin, SpawnSpec, TaskOptions, Yard,
 };
 use branchyard_support::LockExt as _;
 use branchyard_testkit::wait;
@@ -83,11 +83,226 @@ fn fixture(kind: Native) -> (MutexGuard<'static, ()>, Fixture, PathBuf, TaskOpti
 }
 
 fn calls(bin: &std::path::Path) -> Vec<Value> {
-    fs::read_to_string(bin.join("calls.jsonl"))
-        .unwrap_or_default()
-        .lines()
+    let text = match fs::read_to_string(bin.join("calls.jsonl")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => panic!("read fake native CLI calls: {error}"),
+    };
+    text.lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn server_admission(yard: &Yard) {
+    yard.use_provider_admission(Arc::new(|actual, options| {
+        if matches!(
+            actual,
+            Some(Provider::Container(_) | Provider::AgentSandbox(_))
+        ) && actual != options.provider.as_ref()
+        {
+            return Err(Error::Denied(
+                "native provider needs approved options".into(),
+            ));
+        }
+        Ok(())
+    }));
+}
+
+fn denied<T: std::fmt::Debug>(result: Result<T, Error>) {
+    assert!(
+        matches!(&result, Err(Error::Denied(why)) if why == "native provider needs approved options"),
+        "expected provider admission denial, got {result:?}"
+    );
+}
+
+fn delegating(options: TaskOptions) -> TaskOptions {
+    TaskOptions {
+        delegation: Some(Envelope::default()),
+        delegation_server: Some(vec![common::fake_agent().display().to_string()]),
+        ..options
+    }
+}
+
+#[test]
+fn native_admission_is_shared_by_clones_and_guards_inherited_turns_before_allocation() {
+    let (_serial, f, bin, options) = fixture(Native::Container);
+    let root = f
+        .yard
+        .task("WRITE root.txt=first")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap();
+    // The SDK has no embedding restriction until one is installed.
+    let root = root.send("WRITE sdk.txt=allowed", f.options()).unwrap();
+    assert_eq!(allocations(&root).len(), 2);
+    let Some(Provider::Container(container)) = options.provider.as_ref() else {
+        panic!("container test provider");
+    };
+    f.yard
+        .configure(
+            &serde_json::from_value(json!({
+                "defaults": {"provider": "container"},
+                "container": {"image": container.image}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let clone = f.yard.clone();
+    server_admission(&clone);
+    let before = calls(&bin);
+    let branches = f.yard.branches().unwrap().len();
+    denied(root.send("WRITE denied.txt=default", TaskOptions::default()));
+    denied(root.send("WRITE denied.txt=send", f.options()));
+    denied(root.fork("WRITE denied.txt=fork", true, f.options()));
+    denied(root.reincarnate(f.options()));
+    assert_eq!(f.yard.branches().unwrap().len(), branches);
+    assert_eq!(calls(&bin), before, "denial precedes native CLI calls");
+    assert_eq!(f.yard.branch("root").unwrap().info().turns, 2);
+    // Server-supplied options replace configured defaults. Completing the task
+    // must not repopulate their provider and manufacture admission evidence.
+    let local = f
+        .yard
+        .task("WRITE local.txt=local")
+        .options(f.options())
+        .name("local")
+        .run()
+        .unwrap();
+    assert_eq!(local.provider().unwrap(), None);
+    assert_eq!(
+        calls(&bin),
+        before,
+        "config did not restore a native provider"
+    );
+    let approved = root.send("WRITE approved.txt=yes", options).unwrap();
+    assert_eq!(approved.info().status, BranchStatus::Ready);
+    assert_eq!(allocations(&approved).len(), 3);
+    assert_deleted(&bin, Native::Container);
+}
+
+#[test]
+fn native_graph_recovery_requires_approved_options_and_preserves_cached_admission() {
+    let (_serial, f, bin, options) = fixture(Native::Container);
+    let options = delegating(options);
+    server_admission(&f.yard);
+    let root = f
+        .yard
+        .task("WRITE root.txt=root")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap();
+    root.delegate(options.clone())
+        .unwrap()
+        .apply_graph(
+            [
+                ("first", Vec::new(), After::Settled),
+                ("cached", vec!["first".into()], After::Integrated),
+                ("recovered", vec!["first".into()], After::Integrated),
+            ]
+            .into_iter()
+            .map(|(name, depends_on, after)| {
+                GraphEdit::Spawn(SpawnSpec {
+                    prompt: format!("WRITE {name}.txt=done"),
+                    name: Some(name.into()),
+                    depends_on,
+                    after,
+                    ..SpawnSpec::default()
+                })
+            })
+            .collect(),
+            0,
+        )
+        .unwrap();
+    root.wait_subtree().unwrap();
+    let db = rusqlite::Connection::open(f.root.join(".branchyard/state.db")).unwrap();
+    db.execute(
+        "UPDATE graph_edges SET after = 'settled' WHERE dependent = 'cached'",
+        [],
+    )
+    .unwrap();
+    let waiting = f.yard.branch("cached").unwrap().info().clone();
+    assert_eq!(waiting.status, BranchStatus::Waiting);
+    assert!(!waiting.worktree.exists());
+    let before = calls(&bin);
+    // A fresh hub has no cached trusted options. Opening alone starts nothing.
+    let recovered = Yard::open(&f.root).unwrap();
+    server_admission(&recovered);
+    denied(recovered.resume_graph(&TaskOptions::default()));
+    assert_eq!(
+        recovered.branch("cached").unwrap().info().status,
+        BranchStatus::Waiting
+    );
+    assert!(
+        !waiting.worktree.exists(),
+        "denial precedes materialization"
+    );
+    assert_eq!(calls(&bin), before, "denial precedes native CLI calls");
+    // The original hub retained the approved graph proposal's exact provider.
+    assert_eq!(
+        f.yard.resume_graph(&TaskOptions::default()).unwrap(),
+        ["cached"]
+    );
+    root.wait_subtree().unwrap();
+    assert_eq!(
+        f.yard.branch("cached").unwrap().info().status,
+        BranchStatus::Ready
+    );
+    db.execute(
+        "UPDATE graph_edges SET after = 'settled' WHERE dependent = 'recovered'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(recovered.resume_graph(&options).unwrap(), ["recovered"]);
+    recovered.branch("root").unwrap().wait_subtree().unwrap();
+    assert_eq!(
+        recovered.branch("recovered").unwrap().info().status,
+        BranchStatus::Ready
+    );
+    assert_deleted(&bin, Native::Container);
+}
+
+#[test]
+fn native_parked_recovery_denial_keeps_the_turn_for_an_approved_wake() {
+    let kind = Native::Gke(AgentSandboxRuntime::Microvm);
+    let (_serial, f, bin, options) = fixture(kind);
+    let options = delegating(options);
+    f.yard
+        .task("WRITE root.txt=before-wake")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap();
+    // A stopped engine's parked turn after its last child was removed.
+    common::edit_record(&f.root, "root", |record| {
+        record["info"]["status"] = json!({"state": "waiting_on_children"});
+        record["parked"] = json!({
+            "since_ms": 0, "ended": {"state": "ready"}, "on": [], "budget": {}
+        });
+    });
+    let before_record = common::stored_record(&f.root, "root");
+    let before = calls(&bin);
+    let yard = Yard::open(&f.root).unwrap();
+    server_admission(&yard);
+    denied(yard.resume_graph(&TaskOptions::default()));
+    let mut wrong = options.clone();
+    let Some(Provider::AgentSandbox(provider)) = wrong.provider.as_mut() else {
+        panic!("GKE test provider");
+    };
+    provider.context = "another-context".into();
+    denied(yard.resume_graph(&wrong));
+    let parked = common::stored_record(&f.root, "root");
+    assert_eq!(parked["info"]["status"]["state"], "waiting_on_children");
+    assert_eq!(parked["info"]["turns"], 1);
+    assert_eq!(parked, before_record, "denial preserves the parked turn");
+    assert_eq!(calls(&bin), before, "denial precedes native CLI calls");
+    assert_eq!(yard.resume_graph(&options).unwrap(), ["root"]);
+    yard.branch("root").unwrap().wait_subtree().unwrap();
+    let root = yard.branch("root").unwrap();
+    assert_eq!(root.info().turns, 2);
+    assert_eq!(root.info().status, BranchStatus::Ready);
+    assert_eq!(root.provider().unwrap(), options.provider);
+    assert_deleted(&bin, kind);
 }
 
 fn assert_deleted(bin: &std::path::Path, kind: Native) {
