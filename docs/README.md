@@ -78,6 +78,7 @@ Detailed specifications, command references, and validation records.
 | [Microsandbox runtime](microsandbox-runtime.md) | Build, verify and install the patched MicroVM runtime |
 | [GCE validation, 2 November 2026](remote-validation-2026-11-02-gce.md) | Read the patched MicroVM runtime and adapter evidence |
 | [GCE container evidence, 2 November 2026](evidence/gce-container-2026-11-02/README.md) | Read the actual gVisor isolation and resource-limit observations |
+| [GKE native evidence, 2 November 2026](evidence/gke-native-2026-11-02/README.md) | Read the real gVisor and Kata provider checks and qualification limits |
 | [Substrate setup](substrate-setup.md) | Save an Agent Substrate connection, prepare an actor template, and verify bridge execution with a disposable actor. |
 | [Remote validation, 28 October 2026](remote-validation-2026-10-28.md) | Validation record for remote compute backends and developer setup workflows. |
 | [Console validation, 29 October 2026](console-validation-2026-10-29.md) | Validation record for web console and remote execution checks. |

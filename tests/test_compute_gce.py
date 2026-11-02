@@ -707,7 +707,7 @@ class ComputeGceTests(unittest.TestCase):
         self.assertEqual(gce.plan(account)["access_scopes"], [gce.DEFAULT_SCOPE])
         self.assertEqual(gce.plan(self.config)["access_scopes"], [])
         legacy = asdict(replace(account, scopes="none"))
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor"):
             legacy.pop(key)
         self.assertEqual(
             replace(account, scopes="none").fingerprint,
