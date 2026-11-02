@@ -14,7 +14,7 @@ workspace = true
 # The Microsandbox SDK. Off by default: it compiles several hundred more
 # crates and links against libcap-ng (the workspace's Rust 1.94 builds it). See
 # docs/providers.md.
-microsandbox = ["dep:microsandbox", "dep:tempfile", "dep:tokio"]
+microsandbox = ["dep:microsandbox", "dep:tempfile", "dep:tokio", "dep:serde", "dep:serde_json", "dep:sha2", "dep:hex"]
 
 [dependencies]
 branchyard-support = { path = "../branchyard-support" }
@@ -24,6 +24,10 @@ branchyard-sandbox = { path = "../branchyard-sandbox" }
 microsandbox = { version = "=0.7.3", default-features = false, features = ["local", "net"], optional = true }
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 [dev-dependencies]
 branchyard-testkit = { path = "../branchyard-testkit" }
