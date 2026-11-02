@@ -86,6 +86,8 @@ requires an operator-controlled `context` and `namespace`. Both default to
 `gvisor` and `network = "deny"`; `unrestricted` must be selected explicitly.
 These tables reject retained allocations, lifecycle scripts and daemon or
 kubeconfig executable overrides. User and project tables merge key by key.
+Guided project setup preserves and can select existing native sections, includes
+their private-home credential choices, and leaves workload readiness unverified.
 
 | Option | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
