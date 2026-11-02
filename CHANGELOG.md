@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
+
 ## 0.4.0 - 2026-11-02
 
 The Rust client resumes a response read interrupted by an operating-system
