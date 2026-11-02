@@ -2246,7 +2246,10 @@ mod tests {
         assert!(nothing
             .login
             .detail
-            .ends_with("a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json"));
+            .contains("a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json"));
+        assert!(nothing.login.detail.ends_with(
+            "on Google Cloud, AGY_ADC_AUTH=true signs in with Application Default Credentials instead"
+        ));
         // GOOGLE_API_KEY has no effect on agy, so the script does not test it.
         let text = script(&DetectOptions {
             only: Some(vec!["antigravity".into()]),
@@ -2738,7 +2741,8 @@ mod tests {
             out.login.detail,
             "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex \
              AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and \
-             GOOGLE_CLOUD_LOCATION"
+             GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes \
+             first)"
         );
         let text = script(&DetectOptions {
             only: Some(vec!["gemini-cli".into()]),

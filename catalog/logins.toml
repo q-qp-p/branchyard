@@ -40,7 +40,10 @@
 #                              harness loads (the name, never the value)
 #                   sqlite     provider names from a login database
 #                 A grep or flag fact can be a login (`login`) or add a note
-#                 to a logged-in detail (`note_found`, `note_missing`).
+#                 to a logged-in detail (`note_found`, `note_missing`);
+#                 `unless` names another probe's fact that, when found,
+#                 keeps it from being a login (settings that chose before
+#                 an environment switch).
 #   [[gate]]      a key variable that counts only beside a fact (`used`),
 #                 is still a key but unused without it (`unused`), and adds
 #                 `absent` to the detail of a likely logout.
@@ -131,7 +134,15 @@ status_covers = "the OpenAI login"
 # `true` is compute-default-credentials, the metadata server's account.
 [gemini-cli]
 files = [{ path = "$HOME/.gemini/oauth_creds.json", shown = "~/.gemini/oauth_creds.json" }]
-logged_out = "no ~/.gemini/oauth_creds.json and no {vars_or}; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION"
+logged_out = "no ~/.gemini/oauth_creds.json and no {vars_or}; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes first)"
+
+# Any auth type the settings choose, but the legacy `cloud-shell`, beside
+# which CLOUD_SHELL still counts: the environment switches below then do not.
+[[gemini-cli.probe]]
+kind = "grep"
+file = "$HOME/.gemini/settings.json"
+pattern = '"selectedType"[[:space:]]*:[[:space:]]*"(oauth-personal|gemini-api-key|vertex-ai|compute-default-credentials|gateway)"'
+fact = "auth-selected"
 
 [[gemini-cli.probe]]
 kind = "grep"
@@ -152,6 +163,7 @@ kind = "flag"
 var = "GOOGLE_GENAI_USE_VERTEXAI"
 value = "true"
 fact = "vertex-ai-env"
+unless = "auth-selected"
 login = "GOOGLE_GENAI_USE_VERTEXAI=true selects Vertex AI, which reads GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
 
 [[gemini-cli.probe]]
@@ -159,6 +171,7 @@ kind = "flag"
 var = "GEMINI_CLI_USE_COMPUTE_ADC"
 value = "true"
 fact = "compute-adc-env"
+unless = "auth-selected"
 login = "GEMINI_CLI_USE_COMPUTE_ADC=true selects compute-default-credentials, the service account of the Google VM it runs on (not checked)"
 
 [[gemini-cli.probe]]
@@ -166,6 +179,7 @@ kind = "flag"
 var = "CLOUD_SHELL"
 value = "true"
 fact = "cloud-shell"
+unless = "auth-selected"
 login = "CLOUD_SHELL=true selects compute-default-credentials, Cloud Shell's own sign-in (not checked)"
 
 [[gemini-cli.probe]]
@@ -210,6 +224,18 @@ login = "GCLOUD_PROJECT is set, which turns on OpenCode's google-vertex provider
 [antigravity]
 env = ["AGY_TOKEN"]
 files = [{ path = "$HOME/.gemini/antigravity-cli/antigravity-oauth-token", shown = "~/.gemini/antigravity-cli/antigravity-oauth-token" }]
+logged_out = "no ~/.gemini/antigravity-cli/antigravity-oauth-token and no {vars_or}; a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json; on Google Cloud, AGY_ADC_AUTH=true signs in with Application Default Credentials instead"
+
+# agy 1.4.10 signs in with Application Default Credentials when
+# AGY_ADC_AUTH is set ("You are logged in using Application Default
+# Credentials (ADC)", "To log out, please run `unset AGY_ADC_AUTH`", from
+# its binary, 2 November 2026); Scion sets it to `true`.
+[[antigravity.probe]]
+kind = "flag"
+var = "AGY_ADC_AUTH"
+value = "true"
+fact = "adc-auth"
+login = "AGY_ADC_AUTH=true signs Antigravity in with Application Default Credentials (not checked; `by doctor` says where they come from)"
 
 [[antigravity.probe]]
 kind = "grep"
@@ -281,12 +307,29 @@ files = [{ path = "$HOME/.grok/auth.json", shown = "~/.grok/auth.json" }]
 # for nothing.
 [hermes]
 env = ["GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
-unknown_also = "and so would a NAME_API_KEY= line in ~/.hermes/.env; `hermes status` shows what Hermes itself sees"
+unknown_also = "and so would a NAME_API_KEY= line in ~/.hermes/.env, or VERTEX_PROJECT_ID for Vertex AI; `hermes status` shows what Hermes itself sees"
 
 [[hermes.probe]]
 kind = "env-file"
 files = ["${HERMES_HOME:-$HOME/.hermes}/.env"]
 login = "{var} is set in {file}, which Hermes loads (an API key; not checked)"
+
+# Hermes's Vertex AI provider reads VERTEX_PROJECT_ID (and VERTEX_REGION)
+# from its environment or its .env, signed in with Application Default
+# Credentials: Scion's Hermes configuration (vendor/scion/harnesses/hermes/
+# provision.py), which the provisioner follows; no Hermes was run for it.
+[[hermes.probe]]
+kind = "flag"
+var = "VERTEX_PROJECT_ID"
+fact = "vertex-project-env"
+login = "VERTEX_PROJECT_ID is set, which Hermes's Vertex AI provider reads, signed in with Application Default Credentials (as Scion's Hermes configuration sets it up; not checked)"
+
+[[hermes.probe]]
+kind = "grep"
+file = "${HERMES_HOME:-$HOME/.hermes}/.env"
+pattern = '^[[:space:]]*(export[[:space:]]+)?VERTEX_PROJECT_ID[[:space:]]*=[[:space:]]*[^[:space:]#]'
+fact = "vertex-project-file"
+login = "VERTEX_PROJECT_ID is set in ~/.hermes/.env, which Hermes loads for its Vertex AI provider, signed in with Application Default Credentials (as Scion's Hermes configuration sets it up; not checked)"
 
 [muse-code]
 env = ["META_API_KEY"]

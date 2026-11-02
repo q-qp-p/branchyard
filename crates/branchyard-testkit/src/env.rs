@@ -6,6 +6,7 @@ use std::process::Command;
 /// projects and regions the login tables and `by doctor` read, and where
 /// Application Default Credentials are.
 const GOOGLE_CLOUD: &[&str] = &[
+    "AGY_ADC_AUTH",
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "CLAUDE_CODE_USE_VERTEX",
     "CLOUDSDK_CONFIG",
@@ -18,6 +19,8 @@ const GOOGLE_CLOUD: &[&str] = &[
     "GOOGLE_CLOUD_LOCATION",
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_GENAI_USE_VERTEXAI",
+    "VERTEX_PROJECT_ID",
+    "VERTEX_REGION",
 ];
 
 /// `command` without the environment of a Branchyard turn the tests may be

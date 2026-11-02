@@ -17,7 +17,8 @@
 //! 4. its status command said logged out (verified), saying which provider
 //!    the configuration selects and what it lacks;
 //! 5. a credential file exists;
-//! 6. a probe's fact is a login (`grep`/`flag` with `login`, `providers`,
+//! 6. a probe's fact is a login (`grep`/`flag` with `login`, unless the
+//!    fact its `unless` names was found; `providers`,
 //!    `env-file`, `sqlite`), in table order; then a gated key that is unused;
 //! 7. a login store nothing on the machine can read (`sqlite`): unknown;
 //! 8. nothing: the table's `logged_out`, else a likely logout when it has
@@ -139,16 +140,31 @@ fn unsafe_probe(probe: &Probe) -> Option<String> {
             file,
             pattern,
             fact,
+            unless,
             ..
         } => vec![
             (sh_word(file), "file", file),
             (single_quoted(pattern), "pattern", pattern),
             (word(fact), "fact", fact),
+            (
+                unless.as_deref().is_none_or(word),
+                "unless",
+                unless.as_deref().unwrap_or_default(),
+            ),
         ],
         Probe::Flag {
-            var, value, fact, ..
+            var,
+            value,
+            fact,
+            unless,
+            ..
         } => vec![
             (identifier(var), "variable", var),
+            (
+                unless.as_deref().is_none_or(word),
+                "unless",
+                unless.as_deref().unwrap_or_default(),
+            ),
             (
                 value.as_deref().is_none_or(plain),
                 "value",
@@ -533,8 +549,22 @@ fn json_string(line: &str, field: &str) -> Option<String> {
 /// The login a probe's facts are, at step 6.
 fn probe_login(probe: &Probe, found: &Found) -> Option<Login> {
     match probe {
-        Probe::Grep { fact, login, .. } | Probe::Flag { fact, login, .. } => {
-            let login = login.as_ref().filter(|_| found.has_fact(fact))?;
+        Probe::Grep {
+            fact,
+            login,
+            unless,
+            ..
+        }
+        | Probe::Flag {
+            fact,
+            login,
+            unless,
+            ..
+        } => {
+            let overruled = unless.as_deref().is_some_and(|other| found.has_fact(other));
+            let login = login
+                .as_ref()
+                .filter(|_| found.has_fact(fact) && !overruled)?;
             Some(likely(LoginState::LoggedIn, login.clone()))
         }
         Probe::Providers {
@@ -779,6 +809,10 @@ fact = "f""#,
 var = "A;B"
 value = "true"
 fact = "f""#,
+            r#"kind = "flag"
+var = "A"
+fact = "f"
+unless = "g h""#,
             r#"kind = "sqlite"
 file = "f"
 query = "select 'x'"

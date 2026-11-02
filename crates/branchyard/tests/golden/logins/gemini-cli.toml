@@ -30,12 +30,12 @@ lines = []
 cell = "login not verified"
 state = "logged_out"
 evidence = "likely"
-detail = "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION"
+detail = "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes first)"
 
 [[case]]
 name = "Vertex AI selected in its settings"
 home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "vertex-ai"}}}' }
-lines = ["fact vertex-ai-selected"]
+lines = ["fact auth-selected", "fact vertex-ai-selected"]
 cell = "credentials found"
 state = "logged_in"
 evidence = "likely"
@@ -57,13 +57,13 @@ lines = []
 cell = "login not verified"
 state = "logged_out"
 evidence = "likely"
-detail = "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION"
+detail = "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes first)"
 
 [[case]]
 name = "the VM's service account, selected in its settings"
 home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "compute-default-credentials"}}}' }
 env = { GEMINI_CLI_TRUST_WORKSPACE = "true" }
-lines = ["fact compute-adc-selected", "fact trust-workspace"]
+lines = ["fact auth-selected", "fact compute-adc-selected", "fact trust-workspace"]
 cell = "credentials found"
 state = "logged_in"
 evidence = "likely"
@@ -91,8 +91,28 @@ detail = "CLOUD_SHELL=true selects compute-default-credentials, Cloud Shell's ow
 name = "its settings' choice is named before the environment's, as Gemini CLI uses it"
 home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "compute-default-credentials"}}}' }
 env = { GOOGLE_GENAI_USE_VERTEXAI = "true", GEMINI_CLI_TRUST_WORKSPACE = "true" }
-lines = ["fact compute-adc-selected", "fact vertex-ai-env", "fact trust-workspace"]
+lines = ["fact auth-selected", "fact compute-adc-selected", "fact vertex-ai-env", "fact trust-workspace"]
 cell = "credentials found"
 state = "logged_in"
 evidence = "likely"
 detail = "~/.gemini/settings.json selects compute-default-credentials, the service account of the Google VM it runs on (not checked); GEMINI_CLI_TRUST_WORKSPACE=true is set, so headless runs trust the workspace"
+
+[[case]]
+name = "settings that chose another type keep an environment switch from counting"
+home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "gemini-api-key"}}}' }
+env = { GOOGLE_GENAI_USE_VERTEXAI = "true", GOOGLE_CLOUD_PROJECT = "fake-project", GOOGLE_CLOUD_LOCATION = "us-central1" }
+lines = ["fact auth-selected", "fact vertex-ai-env"]
+cell = "login not verified"
+state = "logged_out"
+evidence = "likely"
+detail = "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes first)"
+
+[[case]]
+name = "the legacy cloud-shell type still lets CLOUD_SHELL count"
+home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "cloud-shell"}}}' }
+env = { CLOUD_SHELL = "true", GEMINI_CLI_TRUST_WORKSPACE = "true" }
+lines = ["fact cloud-shell", "fact trust-workspace"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "CLOUD_SHELL=true selects compute-default-credentials, Cloud Shell's own sign-in (not checked); GEMINI_CLI_TRUST_WORKSPACE=true is set, so headless runs trust the workspace"

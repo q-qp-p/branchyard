@@ -751,7 +751,8 @@ fn provider_logins(config: &branchyard_setup::config::ProjectConfig) -> (Vec<Str
 }
 
 /// The variables that point harnesses at Vertex AI or name its project and
-/// region: Claude Code's, Gemini CLI's, and the projects OpenCode reads.
+/// region: Claude Code's, Gemini CLI's, Antigravity's ADC switch, Hermes's,
+/// and the projects OpenCode reads.
 const VERTEX_VARIABLES: &[&str] = &[
     "CLAUDE_CODE_USE_VERTEX",
     "ANTHROPIC_VERTEX_PROJECT_ID",
@@ -761,6 +762,9 @@ const VERTEX_VARIABLES: &[&str] = &[
     "GOOGLE_CLOUD_LOCATION",
     "GCP_PROJECT",
     "GCLOUD_PROJECT",
+    "AGY_ADC_AUTH",
+    "VERTEX_PROJECT_ID",
+    "VERTEX_REGION",
 ];
 
 /// Where Application Default Credentials come from on this machine, in the
@@ -826,19 +830,24 @@ impl GoogleCloud<'_> {
         }
     }
 
-    /// Whether a harness is switched to Vertex AI: Claude Code's switch is
-    /// true, Gemini CLI's is exactly `true`, or a project is set, which
-    /// turns OpenCode's Vertex AI on and which Gemini CLI's Vertex AI needs
-    /// (however its settings select it).
+    /// Whether a harness is switched to Vertex AI or ADC: Claude Code's
+    /// switch is true, Gemini CLI's or Antigravity's is exactly `true`, or a
+    /// project is set, which turns OpenCode's and Hermes's Vertex AI on and
+    /// which Gemini CLI's Vertex AI needs (however its settings select it).
     fn vertex_in_use(&self) -> bool {
         let claude = self.set("CLAUDE_CODE_USE_VERTEX").is_some_and(|v| {
             ["1", "true", "yes", "on"].contains(&v.trim().to_lowercase().as_str())
         });
         let gemini = self.set("GOOGLE_GENAI_USE_VERTEXAI").as_deref() == Some("true");
-        let opencode = ["GOOGLE_CLOUD_PROJECT", "GCP_PROJECT", "GCLOUD_PROJECT"]
-            .iter()
-            .any(|name| self.set(name).is_some());
-        claude || gemini || opencode
+        let antigravity = self.set("AGY_ADC_AUTH").as_deref() == Some("true");
+        let projects = [
+            "GOOGLE_CLOUD_PROJECT",
+            "GCP_PROJECT",
+            "GCLOUD_PROJECT",
+            "VERTEX_PROJECT_ID",
+        ];
+        let project = projects.iter().any(|name| self.set(name).is_some());
+        claude || gemini || antigravity || project
     }
 
     /// The row, or none when no Vertex AI variable, key file or gcloud file
@@ -1734,6 +1743,13 @@ mod tests {
         assert_eq!(gemini.status, Status::Ok);
         let opencode = google_cloud(&[("GCLOUD_PROJECT", "p")], &[], None).unwrap();
         assert_eq!(opencode.status, Status::Todo);
+        // Antigravity's ADC switch and Hermes's project are Vertex AI too.
+        for vars in [[("AGY_ADC_AUTH", "true")], [("VERTEX_PROJECT_ID", "p")]] {
+            let row = google_cloud(&vars, &[], None).unwrap();
+            assert_eq!(row.status, Status::Todo, "{vars:?}");
+        }
+        let off = google_cloud(&[("AGY_ADC_AUTH", "false")], &[], None).unwrap();
+        assert_eq!(off.status, Status::Ok);
     }
     use branchyard::services::ServiceOwner;
     use branchyard_testkit::{MockHttp, Response};
