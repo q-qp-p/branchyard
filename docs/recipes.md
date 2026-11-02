@@ -65,6 +65,13 @@ A repository's recipe is code you have not read, so none of its commands runs un
 
 ## The recipe sandbox provider
 
+Recipe execs use `branchyard_sandbox::exec`, the shared piped transport for
+authenticated allocations. Startup must be acknowledged within 30 seconds;
+missing executables and startup failures are returned before a process is
+admitted. Cancellation and teardown signal the recorded process group. They
+do not confine a workload or reach a process that escapes that group; a
+sandbox provider's whole-allocation stop/destroy remains the stronger boundary.
+
 `branchyard_recipe::RecipeProvider` implements `SandboxProvider` ([providers](providers.md)) over one recipe:
 
 | Operation | What it does |
