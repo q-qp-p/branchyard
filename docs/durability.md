@@ -4,6 +4,8 @@ Branchyard's engine keeps its state in one durable store and runs every branch o
 
 > **Status.** Implemented in local mode and the server, and tested hermetically against a fake ACP agent: a real engine process killed with SIGKILL mid-turn and recovered, two yards on one repository, a superseded lease, replayed steps, cancellation through the SDK, `by`, HTTP and `by --remote`, steered input from another process, cursor reads, and the import of earlier state. The PostgreSQL store passes the same conformance suite as SQLite, and the engine and server tests that run on it, against PostgreSQL 16. Not yet run with a real harness, on macOS, across hosts, or under load.
 
+The rules this page implements, shared with other durable agent runtimes, are listed with their tests in the [durability contract](durability-contract.md).
+
 ## The model
 
 The approach follows Temporal and DBOS, with one deliberate difference.
