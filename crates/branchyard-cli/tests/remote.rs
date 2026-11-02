@@ -21,26 +21,18 @@ const BY: &str = env!("CARGO_BIN_EXE_by");
 const ANSWER_SCHEMA: &str = r#"{"type":"object","required":["answer"],"additionalProperties":false,"properties":{"answer":{"type":"string"}}}"#;
 
 /// A temporary directory holding repositories. Removed on drop.
-struct Dir(PathBuf);
+struct Dir(PathBuf, branchyard_testkit::Scratch);
 
 impl Dir {
     fn new() -> Dir {
         fake_agent!();
-        let dir = std::env::temp_dir().join(format!(
-            "branchyard-remote-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).unwrap();
-        }
-        fs::create_dir_all(&dir).unwrap();
-        Dir(fs::canonicalize(dir).unwrap())
+        let scratch = branchyard_testkit::Scratch::new("remote-test");
+        Dir(scratch.path().to_path_buf(), scratch)
     }
 
     /// A repository at `<dir>/<name>` with one commit on `main`.
     fn repo(&self, name: &str) -> PathBuf {
-        let root = self.0.join(name);
+        let root = self.1.join(name);
         fs::create_dir_all(&root).unwrap();
         for args in [
             &["init", "-q", "-b", "main"][..],
@@ -61,12 +53,6 @@ impl Dir {
             .unwrap()
             .success());
         root
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        branchyard_support::cleanup_dir(&self.0);
     }
 }
 
@@ -830,7 +816,15 @@ fn remote_commands_print_what_local_ones_do() {
         "hello-alt",
         "--yes",
     ]);
-    same(&["run", "HANG", "--name", "slow", "--max-minutes", "0.005"]);
+    // A turn limit reaches the same state on both sides. A short duration
+    // can expire before one harness opens and after the other starts a turn.
+    same(&["run", "say hi", "--name", "slow", "--max-turns", "1"]);
+    let (_, r) = same(&["send", "slow", "this turn must not start"]);
+    assert!(
+        text(&r.stdout).contains("over budget: max_turns"),
+        "{}",
+        text(&r.stdout)
+    );
     same(&["run", "EXIT", "--name", "exits"]);
 
     // Two branches interleave in either order; compare line sets.

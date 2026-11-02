@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-02
+
+The Rust client resumes a response read interrupted by an operating-system
+signal, keeping the same connection and request. Waiting for the first byte
+previously returned a transport error. Timeouts and closed connections still
+follow their existing error and retry rules.
+
 The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; no other request is sent again because of a closed connection (a `POST` is still resent with its idempotency key, as before).
 
 Four corrections from the 1 November qualification of the ACP harnesses.
@@ -24,8 +31,6 @@ Each qualification report records the model the harness named in its usage
 (`model_reported`) beside the one asked for.
 
 The Python SDK's `Client` keeps one HTTP connection per thread and reuses it for ordinary calls (`http.client`), where it opened a new TCP and TLS connection for every call. A kept connection that has idled more than 5 seconds, was made before a `fork`, or has been closed by the server is replaced before the next request is sent, so an unkeyed `POST` or `DELETE` is not sent on a connection the client can already see is closed (a close still in flight, or a proxy with a very short idle timeout, can still race). A proxy from the environment and the event stream are unchanged. A `GET`, a `HEAD` or a keyed request answered with a redirect is sent again through `urllib`, which follows it as it always did (a `POST` answered 301, 302 or 303 becomes a `GET`; a 307 or 308 is raised as an error); any other request answered with a redirect is not sent again (the server may already have acted on it) and raises the status as an error.
-
-## 0.4.0 - 2026-11-01
 
 The console's second pass gives it depth and density. Surfaces have three
 elevations (the page, raised panels and cards, and the overlay for the one
