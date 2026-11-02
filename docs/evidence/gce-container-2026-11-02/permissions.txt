@@ -1,0 +1,4 @@
+700 0:0 /var/lib/branchyard/container-runtime
+600 0:0 /var/lib/branchyard/container-runtime/owner.json
+600 0:0 /var/lib/branchyard/container-runtime/deployment.json
+600 0:0 /etc/docker/daemon.json

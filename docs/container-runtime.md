@@ -80,3 +80,14 @@ for both worker backends and validates the generated Bash. The official archive
 was downloaded and its SHA-512 matched the pinned checksum on this date.
 Not done: no live host installation, container execution, resource ceiling or
 model call was performed by these checks.
+
+Live on 2 November 2026: the pinned installer applied and replayed successfully
+on the owned GCE validation VM with Docker `29.1.3` and gVisor
+`release-20261026.0`. Direct Docker/runsc checks passed UID/filesystem isolation,
+binary exec and file transfer, one-CPU throttling, a hard 512 MiB memory ceiling,
+default network denial and owned container/volume cleanup. Explicit bridge
+networking reached GCE project-id metadata with HTTP `200`. Docker's default
+remained `runc` and its daemon was reloaded without restart. See the
+[dated evidence](evidence/gce-container-2026-11-02/README.md). Not done: this
+record does not qualify native Container adapter/engine execution, a fresh GCE
+bootstrap, release binary installation or a model call.
