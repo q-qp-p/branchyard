@@ -771,6 +771,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "branchyard-container"
+version = "0.4.0"
+dependencies = [
+ "blake3",
+ "branchyard-sandbox",
+ "branchyard-support",
+ "branchyard-testkit",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "branchyard-controls"
 version = "0.4.0"
 dependencies = [
