@@ -14,6 +14,8 @@
 //! | [`Provider::Microsandbox`] | `microsandbox.rs` |
 //! | [`Provider::Substrate`] | `substrate.rs` |
 //! | [`Provider::Recipe`] | `recipe.rs` |
+//! | [`Provider::Container`] | `container.rs` |
+//! | [`Provider::AgentSandbox`] | `agent_sandbox.rs` |
 //!
 //! [`Provider::kind`] is the only place a variant is mapped to its
 //! implementation. Nothing else in the crate matches on [`Provider`]: call
@@ -34,8 +36,11 @@ use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
 use crate::{Error, Provider, Yard};
 
+mod agent_sandbox;
+mod container;
 pub(crate) mod local;
 pub(crate) mod microsandbox;
+mod native;
 pub(crate) mod recipe;
 pub(crate) mod substrate;
 
@@ -158,6 +163,8 @@ impl Provider {
             Provider::Microsandbox(options) => options,
             Provider::Substrate(options) => options,
             Provider::Recipe(options) => options,
+            Provider::Container(options) => options,
+            Provider::AgentSandbox(options) => options,
         }
     }
 
@@ -196,6 +203,16 @@ impl Provider {
     /// Construction stays with the provider implementations, as for Microsandbox.
     pub fn substrate(options: crate::SubstrateOptions) -> Provider {
         Provider::Substrate(options)
+    }
+
+    /// An owned per-turn container using the operator's configured worker.
+    pub fn container(options: crate::ContainerOptions) -> Provider {
+        Provider::Container(options)
+    }
+
+    /// An owned per-turn Kubernetes SIGs Agent Sandbox on managed GKE.
+    pub fn agent_sandbox(options: crate::AgentSandboxOptions) -> Provider {
+        Provider::AgentSandbox(options)
     }
 }
 

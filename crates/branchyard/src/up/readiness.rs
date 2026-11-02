@@ -526,6 +526,8 @@ fn configuration(
         ProviderKind::Local => false,
         ProviderKind::Substrate => config.substrate.is_none(),
         ProviderKind::Microsandbox => config.microsandbox.is_none(),
+        ProviderKind::Container => config.container.is_none(),
+        ProviderKind::AgentSandbox => config.agent_sandbox.is_none(),
         // Both ways a recipe step blocks are configuration: none named, or none by that name.
         ProviderKind::Recipe => provider_step.is_some_and(|s| s.state == State::Blocked),
     };
@@ -566,6 +568,28 @@ fn on_this_machine(
             .next("by up --plan")
     };
     match (provider, provider_step) {
+        (ProviderKind::Container | ProviderKind::AgentSandbox, step) => [
+            ReadinessCheck::unverified(
+                OperatorCredentialsAvailable,
+                "operator transport authentication has not been checked",
+            ),
+            ReadinessCheck::unverified(
+                RemoteControlPlaneReachable,
+                "the native provider's daemon or Kubernetes API has not been contacted",
+            ),
+            ReadinessCheck::unverified(WorkerCapacityAvailable, "no native allocation was created"),
+            match step {
+                Some(step) if step.state == State::Ready => {
+                    ReadinessCheck::unverified(ExecutionCapabilitiesSupported, &step.detail)
+                }
+                Some(step) => ReadinessCheck::failed(
+                    ExecutionCapabilitiesSupported,
+                    &step.detail,
+                    step.todo.clone().unwrap_or_default(),
+                ),
+                None => not_checked(ExecutionCapabilitiesSupported),
+            },
+        ],
         (ProviderKind::Microsandbox, Some(step)) if step.state == State::Ready => [
             credentials,
             control,

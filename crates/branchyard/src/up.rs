@@ -911,7 +911,37 @@ fn provider_step(
                 ),
             },
         }),
+        Some(ProviderKind::Container)=>Some(match &config.container {
+            Some(section)=>native_provider_step(machine,"docker",configure::container_options(section).validate()),
+            None=>Step::blocked(NAME,"native container defaults have no [container] section","add [container] with a digest-pinned image"),
+        }),
+        Some(ProviderKind::AgentSandbox)=>Some(match &config.agent_sandbox {
+            Some(section)=>native_provider_step(machine,"kubectl",configure::agent_sandbox_options(section).validate()),
+            None=>Step::blocked(NAME,"Agent Sandbox defaults have no [agent_sandbox] section","add [agent_sandbox] with context, namespace and digest-pinned image"),
+        }),
     }
+}
+
+fn native_provider_step(
+    machine: &dyn Machine,
+    client: &str,
+    validation: Result<(), Error>,
+) -> Step {
+    if let Err(error) = validation {
+        return Step::blocked(
+            "provider",
+            error.to_string(),
+            "fix the native provider configuration and rerun `by up`",
+        );
+    }
+    if machine.which(client).is_none() {
+        return Step::blocked(
+            "provider",
+            format!("{client} is not installed on this worker"),
+            format!("install {client} and configure operator access before running the provider"),
+        );
+    }
+    Step::ready("provider",format!("native provider configuration and {client} client checked; allocation, runtime and network enforcement remain unverified"))
 }
 
 /// `workspace`: the `[workspace]` scripts' trust, when there are any.
@@ -1967,6 +1997,28 @@ setup = "npm ci"
             .up_plan(&without, &Options::default(), &mut machine)
             .unwrap();
         assert_eq!(step(&plan, "provider").state, State::Blocked);
+    }
+
+    #[test]
+    fn native_readiness_checks_configuration_and_clients_without_claiming_live_execution() {
+        let image = format!("example.test/runtime@sha256:{}", "a".repeat(64));
+        let dir = repository();
+        let yard = Yard::open(dir.path()).unwrap();
+        for (kind,client,section) in [
+            ("container","docker",format!("[container]\nimage='{image}'")),
+            ("agent_sandbox","kubectl",format!("[agent_sandbox]\ncontext='test'\nnamespace='branchyard-gvisor'\nimage='{image}'")),
+        ] {
+            let config=parsed(&format!("[defaults]\nprovider='{kind}'\n{section}\n"));
+            let mut machine=Fake::new();
+            assert_eq!(provider_step(&yard,&config,&machine,None).unwrap().state,State::Blocked);
+            machine.programs.insert(client.into());
+            let step=provider_step(&yard,&config,&machine,None).unwrap();
+            assert_eq!(step.state,State::Ready);assert!(step.detail.contains("unverified"));
+            assert!(machine.runs.is_empty());
+            let plan=yard.up_plan(&config,&Options::default(),&mut machine).unwrap();
+            let capabilities=plan.checks.iter().find(|check|check.id==ReadinessCheckId::ExecutionCapabilitiesSupported).unwrap();
+            assert_eq!(capabilities.status,CheckStatus::Unverified);
+        }
     }
 
     #[test]
