@@ -1108,7 +1108,8 @@ pub fn keep_known_versions(inventory: &mut Inventory, last: &Inventory) {
 
 /// An inventory kept in a file for a while, so commands that run often do
 /// not run every version command each time. Keyed by what detection
-/// depends on: `PATH`, `HOME` and the install directories.
+/// depends on: `PATH`, `HOME`, the install directories, and the key
+/// variables and login-table flags that are set.
 #[derive(Clone, Debug)]
 pub struct InventoryCache {
     pub path: PathBuf,
@@ -1152,6 +1153,8 @@ impl InventoryCache {
             // The key variables that are set, by name: exporting one is a
             // login, so the cache from before it does not answer for after.
             set_key_variables().join(":"),
+            // So is a flag a login table reads, such as a Vertex AI switch.
+            logins::holding_flags().join(":"),
         ] {
             hasher.update(part.as_bytes());
             hasher.update(b"\0");

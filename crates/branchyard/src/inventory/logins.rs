@@ -61,6 +61,30 @@ pub(super) fn quiet_variables(id: &str) -> &'static [String] {
     &entry(id).quiet_env
 }
 
+/// The variables of every table's `flag` probes that hold in this process,
+/// by name, sorted, each once: exporting one (CLAUDE_CODE_USE_VERTEX) can
+/// change a login as a key variable does.
+pub(super) fn holding_flags() -> Vec<String> {
+    let mut names: Vec<String> = catalog::logins()
+        .values()
+        .flat_map(|e| &e.probes)
+        .filter_map(|probe| match probe {
+            Probe::Flag { var, value, .. } => {
+                let set = std::env::var(var).ok().filter(|v| !v.is_empty());
+                let holds = match value {
+                    Some(value) => set.as_deref() == Some(value.as_str()),
+                    None => set.is_some(),
+                };
+                holds.then(|| var.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Credential files, as `(sh word, shown)`.
 pub(super) fn credential_files(id: &str) -> impl Iterator<Item = (&'static str, &'static str)> {
     entry(id)
