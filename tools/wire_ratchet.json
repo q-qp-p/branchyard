@@ -12,7 +12,6 @@
     "crates/branchyard/src/models/gateway.rs": 4
   },
   "hand_written_heads": {
-    "crates/branchyard-bridge/src/ws.rs": 1,
-    "crates/branchyard-runtime/src/egress.rs": 1
+    "crates/branchyard-bridge/src/ws.rs": 1
   }
 }
