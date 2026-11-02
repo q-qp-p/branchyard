@@ -6,5 +6,13 @@
 #![warn(missing_docs)]
 
 mod config;
+mod docker;
+mod provider;
+mod receipt;
+mod verify;
 
 pub use config::{Config, Network, Runtime};
+pub use provider::{validate_spec, ContainerProvider};
+
+#[cfg(test)]
+mod tests;
