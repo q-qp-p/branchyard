@@ -90,6 +90,9 @@ elif args[:2] == ["container", "exec"]:
     assert "c" * 64 in args
     if "--interactive" not in args:
         sys.exit(1 if mode == "ready-fail" else 0)
+    if mode == "exec-credentials":
+        print("registry password=private-credential-must-not-escape", file=sys.stderr)
+        sys.exit(1)
     command = args[args.index("c" * 64) + 1:]
     home = root / "home"
     home.mkdir(exist_ok=True)

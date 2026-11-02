@@ -23,6 +23,9 @@ limits use one CPU and 1024 MiB. Explicit limits must be positive. The provider
 checks Docker's actual runtime, image identity, memory and CPU settings before
 starting the workload and before every new exec.
 
+Docker transport diagnostics before the guest startup acknowledgement are
+omitted from errors. Guest stderr after acknowledgement remains byte-exact.
+
 Containers run as UID/GID `1000:1000`, with a read-only root filesystem, all Linux
 capabilities dropped, no-new-privileges, private PID/IPC/cgroup namespaces and a
 process-count limit. There are no host binds or Docker socket mounts. `/tmp` is

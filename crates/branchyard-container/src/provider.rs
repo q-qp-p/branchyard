@@ -446,6 +446,18 @@ impl ExecTransport for Target {
     fn describe(&self) -> String {
         "owned container".into()
     }
+    fn diagnostic(&self, bytes: &[u8]) -> Vec<u8> {
+        if bytes.is_empty()
+            || matches!(
+                bytes,
+                b"guest program was not found" | b"guest exec directory could not be entered"
+            )
+        {
+            bytes.to_vec()
+        } else {
+            b"Docker transport diagnostic omitted\n".to_vec()
+        }
+    }
     fn start_timeout(&self) -> std::time::Duration {
         TIMEOUT
     }

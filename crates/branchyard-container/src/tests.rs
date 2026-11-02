@@ -20,8 +20,10 @@ impl Fixture {
     fn new() -> Result<Self, ProviderError> {
         let scratch = Scratch::new("container");
         let binary = scratch.path().join("docker");
-        fs::write(&binary, include_str!("fake_docker.py"))?;
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
+        std::os::unix::fs::symlink(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/fake_docker.py"),
+            &binary,
+        )?;
         let provider = ContainerProvider::new(Config::default(), scratch.path().join("receipts"))?
             .with_binary(binary);
         Ok(Self { scratch, provider })
@@ -75,6 +77,31 @@ fn only_pinned_copied_ephemeral_positive_specs_are_admitted() {
     ] {
         assert!(validate_spec(&invalid).is_err());
     }
+}
+
+#[test]
+fn transport_credentials_are_omitted_before_guest_ack() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new()?;
+    fixture.provider.ensure(&spec())?;
+    fixture.mode("exec-credentials")?;
+    let exec = ExecSpec {
+        argv: vec!["true".into()],
+        cwd: "/workspace".into(),
+        env: Default::default(),
+        writable: None,
+    };
+    let failure = match fixture.provider.exec("test", &exec) {
+        Ok(_) => return Err("credential-bearing transport unexpectedly started".into()),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        failure.contains("Docker transport diagnostic omitted"),
+        "{failure}"
+    );
+    assert!(!failure.contains("private-credential"), "{failure}");
+    fixture.mode("")?;
+    fixture.provider.destroy("test")?;
+    Ok(())
 }
 
 #[test]
