@@ -1,0 +1,271 @@
+{
+  "boundary": {
+    "host_config": {
+      "Binds": null,
+      "CapAdd": null,
+      "CapDrop": [
+        "ALL"
+      ],
+      "CgroupnsMode": "private",
+      "Devices": [],
+      "IpcMode": "private",
+      "Memory": 536870912,
+      "MemorySwap": 536870912,
+      "NanoCpus": 1000000000,
+      "NetworkMode": "none",
+      "PidMode": "",
+      "PidsLimit": 256,
+      "Privileged": false,
+      "ReadonlyRootfs": true,
+      "Runtime": "runsc",
+      "SecurityOpt": [
+        "no-new-privileges:true"
+      ],
+      "Tmpfs": {
+        "/tmp": "rw,nosuid,nodev,noexec,size=67108864,mode=1777"
+      }
+    },
+    "id": "dacd4d440df3ec66a9612659f48d7ec83f99f28a511c0e280e54ceaa69a5261d",
+    "image": "localhost:32769/branchyard-qualification/container@sha256:23780f5c249ea8be5532d08fc3296c7785ac022c714ea445da68940d86405f0e",
+    "image_id": "sha256:23780f5c249ea8be5532d08fc3296c7785ac022c714ea445da68940d86405f0e",
+    "mounts": [
+      {
+        "Destination": "/workspace",
+        "Name": "b38d093e23e7024823549edbcab316ae6b44a5010f7fad0dd5c07e27e346a641",
+        "RW": true,
+        "Type": "volume"
+      },
+      {
+        "Destination": "/branchyard/home",
+        "Name": "1bfbb56dc4e1006b6280ef87a3cf34de7034326996fbf5d74a25081eaa650764",
+        "RW": true,
+        "Type": "volume"
+      }
+    ],
+    "name": "/by-v040-gvisor-deny-20261102",
+    "user": "1000:1000",
+    "working_dir": "/workspace"
+  },
+  "cgroup_before_load": {
+    "cpu.max": "100000 100000",
+    "cpu.stat": "usage_usec 894067\nuser_usec 619126\nsystem_usec 274941\nnice_usec 408000\ncore_sched.force_idle_usec 0\nnr_periods 12\nnr_throttled 5\nthrottled_usec 259441\nnr_bursts 0\nburst_usec 0",
+    "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 0",
+    "memory.max": "536870912",
+    "memory.swap.max": "0",
+    "path": "/sys/fs/cgroup/system.slice/docker-dacd4d440df3ec66a9612659f48d7ec83f99f28a511c0e280e54ceaa69a5261d.scope",
+    "pids.max": "256"
+  },
+  "checks": {
+    "binary_exec": {
+      "exit_code": 7,
+      "stderr_sha256": "80c8a1d141048e40ea45f18899bd91e7e1d7206d3e6b5b36588136fe1da696d6",
+      "stdin_sha256": "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9",
+      "stdout_sha256": "3af6dbef8362452d2b45ad97deb9e43180fb90aac309860e26e123860cce62a7"
+    },
+    "cpu_ceiling": {
+      "cgroup_cpu_seconds": 4.126739,
+      "throttled_periods": 41,
+      "wall_seconds": 4.166584450285882,
+      "workers": 4
+    },
+    "memory_ceiling": {
+      "cgroup_after": {
+        "memory.events": "low 0\nhigh 0\nmax 23\noom 1\noom_kill 1\noom_group_kill 0\nsock_throttled 0",
+        "memory.max": "536870912",
+        "memory.peak": "536870912"
+      },
+      "container_oom_killed": true,
+      "container_running": true,
+      "exec_exit_code": 128,
+      "stderr": "waiting on pid 18: waiting on PID 18 in sandbox \"dacd4d440df3ec66a9612659f48d7ec83f99f28a511c0e280e54ceaa69a5261d\": urpc method \"containerManager.WaitPID\" failed: EOF\n",
+      "stdout": ""
+    },
+    "tar_transfer": {
+      "bytes": 1024,
+      "round_trip": true,
+      "sha256": "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+    }
+  },
+  "cleanup": [
+    {
+      "container_absent": true,
+      "id": "d0a6cc126510d9e18814586eb539bcb71d75c8b5cc4836d1fe4bd9aa528cf9d6",
+      "volumes": [
+        "fea625c88e17d9405c06296ce893aed3fc17677aab468e4f1428990665bc64ba",
+        "c3a6cfef59a328cf763f710eaa231642a18d75a05b4a42b308c2c057721151d1"
+      ],
+      "volumes_absent": true
+    },
+    {
+      "container_absent": true,
+      "id": "dacd4d440df3ec66a9612659f48d7ec83f99f28a511c0e280e54ceaa69a5261d",
+      "volumes": [
+        "b38d093e23e7024823549edbcab316ae6b44a5010f7fad0dd5c07e27e346a641",
+        "1bfbb56dc4e1006b6280ef87a3cf34de7034326996fbf5d74a25081eaa650764"
+      ],
+      "volumes_absent": true
+    },
+    {
+      "container_absent": true,
+      "id": "ea2fa0dbedfa804032facb6bd001b5749a4897f6cd9fc32a2d32e3d31957d7d3",
+      "volumes": [
+        "cd2a9b5e7eb6be7b6c7e45b939ce4eb19c8a3053de2846dbb245be8d81b795e1"
+      ],
+      "volumes_absent": true
+    }
+  ],
+  "date": "2026-11-02T09:31:40.553808+00:00",
+  "default_runtime_after": "runc",
+  "default_runtime_before": "runc",
+  "docker_version": {
+    "ApiVersion": "1.52",
+    "Arch": "amd64",
+    "BuildTime": "2026-04-29T16:41:06.000000000+00:00",
+    "Components": [
+      {
+        "Details": {
+          "ApiVersion": "1.52",
+          "Arch": "amd64",
+          "BuildTime": "Wed Apr 29 16:41:06 2026",
+          "Experimental": "false",
+          "GitCommit": "29.1.3-0ubuntu3~24.04.2",
+          "GoVersion": "go1.24.4",
+          "KernelVersion": "7.0.0-1011-gcp",
+          "MinAPIVersion": "1.44",
+          "Os": "linux"
+        },
+        "Name": "Engine",
+        "Version": "29.1.3"
+      },
+      {
+        "Details": {
+          "GitCommit": ""
+        },
+        "Name": "containerd",
+        "Version": "2.2.1"
+      },
+      {
+        "Details": {
+          "GitCommit": ""
+        },
+        "Name": "runc",
+        "Version": "1.3.4-0ubuntu1~24.04.1"
+      },
+      {
+        "Details": {
+          "GitCommit": ""
+        },
+        "Name": "docker-init",
+        "Version": "0.19.0"
+      }
+    ],
+    "GitCommit": "29.1.3-0ubuntu3~24.04.2",
+    "GoVersion": "go1.24.4",
+    "KernelVersion": "7.0.0-1011-gcp",
+    "MinAPIVersion": "1.44",
+    "Os": "linux",
+    "Platform": {
+      "Name": ""
+    },
+    "Version": "29.1.3"
+  },
+  "guest_deny": {
+    "cwd": "/workspace",
+    "docker_socket_visible": false,
+    "external_tcp_error": "OSError",
+    "external_tcp_reachable": false,
+    "gid": 1000,
+    "home": "/branchyard/home",
+    "host_marker_visible": false,
+    "kernel": "4.19.0-gvisor",
+    "kvm_visible": false,
+    "metadata": {
+      "169.254.169.252": {
+        "error": "URLError",
+        "reachable": false
+      },
+      "169.254.169.254": {
+        "error": "URLError",
+        "reachable": false
+      }
+    },
+    "network_interfaces": [
+      "lo"
+    ],
+    "process_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "root_readonly": true,
+    "tmp_noexec": true,
+    "tools": {
+      "agy": "/usr/local/bin/agy",
+      "python3": "/usr/bin/python3",
+      "setsid": "/usr/bin/setsid",
+      "sh": "/usr/bin/sh",
+      "tail": "/usr/bin/tail",
+      "tar": "/usr/bin/tar"
+    },
+    "uid": 1000,
+    "writable": {
+      "/branchyard/home": true,
+      "/tmp": true,
+      "/workspace": true
+    }
+  },
+  "guest_unrestricted": {
+    "cwd": "/workspace",
+    "docker_socket_visible": false,
+    "external_tcp_reachable": true,
+    "gid": 1000,
+    "home": "/branchyard/home",
+    "host_marker_visible": false,
+    "kernel": "4.19.0-gvisor",
+    "kvm_visible": false,
+    "metadata": {
+      "169.254.169.252": {
+        "error": "URLError",
+        "reachable": false
+      },
+      "169.254.169.254": {
+        "reachable": true,
+        "status": 200
+      }
+    },
+    "network_interfaces": [
+      "eth0",
+      "lo"
+    ],
+    "process_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1"
+    },
+    "root_readonly": true,
+    "tmp_noexec": true,
+    "tools": {
+      "agy": "/usr/local/bin/agy",
+      "python3": "/usr/bin/python3",
+      "setsid": "/usr/bin/setsid",
+      "sh": "/usr/bin/sh",
+      "tail": "/usr/bin/tail",
+      "tar": "/usr/bin/tar"
+    },
+    "uid": 1000,
+    "writable": {
+      "/branchyard/home": true,
+      "/tmp": true,
+      "/workspace": true
+    }
+  },
+  "harness_version": "1.4.9",
+  "image": {
+    "base": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+    "dockerfile_sha256": "1015bc7a0a08996a16849a37e5ec5023e644c50622db6bb229cdee55bb8e53b5",
+    "id": "sha256:23780f5c249ea8be5532d08fc3296c7785ac022c714ea445da68940d86405f0e",
+    "pin": "localhost:32769/branchyard-qualification/container@sha256:23780f5c249ea8be5532d08fc3296c7785ac022c714ea445da68940d86405f0e"
+  },
+  "owner": "gce-container-2026-11-02",
+  "result": "passed",
+  "runsc_version": "runsc version release-20261026.0\nspec: 1.2.1",
+  "runtime": "/opt/branchyard/gvisor/release-20261026.0/x86_64/runsc"
+}
