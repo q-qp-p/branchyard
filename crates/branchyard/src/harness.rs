@@ -492,7 +492,7 @@ mod tests {
         );
         assert_eq!(
             qualification("hermes-acp").unwrap(),
-            "5/9 on Hermes Agent v0.19.0 (2026.7.20)"
+            "9/9 on Hermes Agent v0.19.0 (2026.7.20)"
         );
         assert_eq!(qualification("qwen-code-acp").unwrap(), "9/9 on 0.26.0");
         assert_eq!(qualification("opencode-acp").unwrap(), "9/9 on 1.19.5");

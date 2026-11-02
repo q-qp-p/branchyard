@@ -5,19 +5,19 @@
   "harness_version": "Hermes Agent v0.19.0 (2026.7.20)",
   "driver_version": "0.4.0",
   "host": "Linux 6.18.44-fc-v185 x86_64",
-  "date": "2026-11-01",
-  "installed_from": "pip hermes-agent 0.19.0 and agent-client-protocol==0.9.0 (PYTHONPATH=/tmp/qual/pylib), re-run on the corrected runner",
+  "date": "2026-11-02",
+  "installed_from": "pip hermes-agent 0.19.0 and agent-client-protocol==0.9.0 (PYTHONPATH=/tmp/qual/pylib), second run on the same seeds",
   "model": null,
-  "model_reported": null,
+  "model_reported": "zai:glm-5.3",
   "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
-  "seconds": 568.0,
+  "seconds": 66.0,
   "harness_estimated_cost_usd": "not reported by the harness; the cost cap did not apply",
   "scenarios": [
     {
       "name": "fresh_turn",
-      "passed": false,
-      "detail": "no usage reported",
-      "seconds": 34.8
+      "passed": true,
+      "detail": "session 18e657e9-13eb-4975-93cc-d1642200ba93; replied \"OK\"",
+      "seconds": 16.4
     },
     {
       "name": "permission_denied",
@@ -29,7 +29,7 @@
       "name": "permission_allowed",
       "passed": true,
       "detail": "command ran; no request, as the profile declares",
-      "seconds": 22.2
+      "seconds": 15.4
     },
     {
       "name": "interrupt_during_permission",
@@ -39,21 +39,21 @@
     },
     {
       "name": "interrupt_during_tool",
-      "passed": false,
-      "detail": "timed out after 240s",
-      "seconds": 240.0
+      "passed": true,
+      "detail": "stopped 2.2s after interrupt; acknowledged: false",
+      "seconds": 11.5
     },
     {
       "name": "clean_close",
       "passed": true,
       "detail": "closed cleanly; no descendants outlived the harness; session cost $0.0000",
-      "seconds": 0.4
+      "seconds": 0.5
     },
     {
       "name": "resume",
-      "passed": false,
-      "detail": "context lost: replied \"API call failed after 3 retries: Connection error.\"",
-      "seconds": 27.3
+      "passed": true,
+      "detail": "session 18e657e9-13eb-4975-93cc-d1642200ba93; remembered PELICAN-7; cost $0.0000",
+      "seconds": 12.1
     },
     {
       "name": "fork",
@@ -63,9 +63,9 @@
     },
     {
       "name": "connection_lost",
-      "passed": false,
-      "detail": "timed out after 240s",
-      "seconds": 243.0
+      "passed": true,
+      "detail": "killed mid-turn; outcome reported unknown",
+      "seconds": 10.4
     }
   ]
 }
