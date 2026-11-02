@@ -31,7 +31,7 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
                     },
                     "containers":[{
                         "name":"runtime", "image":receipt.image, "imagePullPolicy":"IfNotPresent",
-                        "command":["sh","-c","exec tail -f /dev/null"],
+                        "command":["setpriv","--no-new-privs","--","sh","-c","exec tail -f /dev/null"],
                         "workingDir":"/workspace", "env":[
                             {"name":"HOME","value":"/branchyard/home"},
                             {"name":"PATH","value":"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
@@ -79,7 +79,7 @@ pub(crate) fn policy(receipt: &Receipt, sandbox_uid: &str) -> Value {
                 {"to":[{"ipBlock":{"cidr":"0.0.0.0/0","except":["169.254.169.254/32","169.254.169.252/32"]}}]},
                 {"to":[{
                     "namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}},
-                    "podSelector":{"matchLabels":{"k8s-app":"kube-dns"}}
+                    "podSelector":{"matchExpressions":[{"key":"k8s-app","operator":"In","values":["kube-dns","node-local-dns"]}]}
                 }],"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}]}
             ]
         }

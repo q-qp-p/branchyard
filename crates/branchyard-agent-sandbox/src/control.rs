@@ -13,9 +13,22 @@ pub(crate) struct Control {
     pub config: Config,
     // Only tests replace this field, never wire/config input.
     pub binary: std::path::PathBuf,
+    pub python: std::path::PathBuf,
 }
 
 impl Control {
+    pub fn check_host(&self) -> Result<(), ProviderError> {
+        let mut command = Command::new(&self.python);
+        command.args([
+            "-c",
+            "import subprocess,sys; assert sys.version_info >= (3, 8)",
+        ]);
+        run(command, None, Duration::from_secs(10)).map_err(|_| runtime_error(
+            "Python 3.8 or newer is required on the operator host before allocating an Agent Sandbox",
+        ))?;
+        Ok(())
+    }
+
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
         command.args(["--context", &self.config.context, "--request-timeout=30s"]);

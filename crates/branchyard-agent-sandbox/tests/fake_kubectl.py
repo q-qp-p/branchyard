@@ -3,8 +3,9 @@
 
 import json
 import os
-from pathlib import Path
+import subprocess
 import sys
+from pathlib import Path
 
 root = Path(__file__).parent
 state_path = root / "state.json"
@@ -129,9 +130,13 @@ if operation == "exec":
     identity = root / "pod-uid"
     identity.write_text(actual)  # Kubernetes DownwardAPI has no trailing newline.
     command = args[5:]
-    assert command[:2] == ["sh", "-c"]
-    command[2] = command[2].replace("/var/run/branchyard-identity/pod-uid", str(identity))
+    assert command[:5] == ["setpriv", "--no-new-privs", "--", "sh", "-c"]
+    command[5] = command[5].replace("/var/run/branchyard-identity/pod-uid", str(identity))
     os.environ["HOME"] = str(root / "home")
-    os.execvp(command[0], command)
+    result = subprocess.run(command, check=False)
+    code = result.returncode if result.returncode >= 0 else 128 - result.returncode
+    if code:
+        print(f"command terminated with exit code {code}", file=sys.stderr, flush=True)
+    sys.exit(code)
 
 raise AssertionError(f"unhandled fake kubectl operation: {operation}")

@@ -12,7 +12,14 @@ and [runtime architecture](https://docs.cloud.google.com/kubernetes-engine/docs/
 Prepare the cluster and namespaces with `tools/agent_sandbox_gke.py` as described
 in `agent-sandbox-gke.md`. The provider requires an explicit operator kubeconfig
 context, a prepared namespace and a private receipt directory. It invokes the
-host's `kubectl` with fixed argument vectors. Kubeconfig, credential plugins,
+host's `kubectl` with fixed argument vectors. Python 3.8 or newer must also be
+on that host's `PATH`; readiness checks refuse allocation before cloud calls if
+it is unavailable. A bounded stdio relay removes exactly the kubectl-owned
+nonzero-exit trailer while preserving binary guest stderr and exit status.
+It leaves other post-startup diagnostics intact, so transport errors can still
+appear with workload output. Relay, kubectl and ordinary credential-plugin
+children share the local transport process group for cancellation and startup
+timeout cleanup. Kubeconfig, credential plugins,
 service-account tokens and Kubernetes sockets stay outside the workload.
 
 ```rust,ignore
@@ -34,7 +41,8 @@ provider.destroy(&spec.name)?;
 
 Supply an immutable image reference, `repository@sha256:<64 lowercase hex
 digits>`, in `SandboxSpec.image`. The image must provide `sh`, `cat`, `tail`,
-`ps`, `tr`, `awk`, `kill`, `setsid`, `tar`, and the selected harness. Programs
+`ps`, `tr`, `awk`, `kill`, `setsid`, `setpriv --no-new-privs`, `tar`, and the
+selected harness. Programs
 and their libraries must be readable/executable by UID/GID 1000 without a
 root entrypoint. The root image is read-only. EmptyDir mounts provide private
 writable `/workspace`, `/branchyard/home` and `/tmp`; `HOME` is
@@ -43,13 +51,19 @@ credential volume or privileged initialization is accepted. Unset resources
 select one CPU and 1024 MiB; requests equal limits. Explicit limits must be
 positive. Mounted workspace/home data is copied out before allocation deletion.
 
+The keepalive and every exec enter through `setpriv --no-new-privs --`, so both
+PID 1 and payload/control scripts enforce the flag directly. They also retain
+the Pod's `allowPrivilegeEscalation=false` and `RuntimeDefault` settings.
+The adapter fails closed when the image lacks the required utility.
+
 `Network::Deny` denies ingress and egress, including DNS. The provider verifies
 the setup-owned namespace identity, `enforced-v2` label, exact default deny
 policy and ready GKE `anetd` DaemonSet. Because Kubernetes policies are additive,
 it also refuses other policies that could grant this allocation access.
 `Network::Unrestricted` creates an allocation-owned policy permitting IPv4
 egress except GKE metadata addresses `169.254.169.254` and `169.254.169.252`,
-plus TCP/UDP port 53 to the `kube-system` kube-dns Pods. Dataplane V2 excludes
+plus TCP/UDP port 53 to the `kube-system` kube-dns and node-local-dns Pods.
+Dataplane V2 excludes
 Pod traffic from IPBlock rules, so DNS requires that explicit selector rule.
 Ingress and IPv6 Internet egress stay denied. This choice does not implement Branchyard's
 required proxy-egress policy; the provider does not declare that capability.
