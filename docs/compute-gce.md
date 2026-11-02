@@ -168,6 +168,13 @@ it has no `init` command. These probes call no model and do not qualify a VM
 lifecycle. The pinned runtime's hard total memory ceiling remains unqualified;
 see the [real-runtime results](remote-validation-2026-10-28.md).
 
+The [2 November runtime qualification](remote-validation-2026-11-02-gce.md)
+reproduces the upstream guest RAM over-allocation and records a runtime-source
+fix with strict RAM, CPU, execution and cleanup checks on GCE. Its pinned build
+driver emits a separate patched runtime archive with checksums and provenance.
+Those results apply to that patched archive; the upstream 0.7.3 archive retains
+the reproduced failure. Use a fresh runtime home when changing the memory map.
+
 ## Remove a temporary worker
 
 Stop its Branchyard SSH server with `by remote ssh stop URL`, retain redacted

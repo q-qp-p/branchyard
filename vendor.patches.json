@@ -1,4 +1,15 @@
 {
   "format": 1,
-  "patches": []
+  "patches": [
+    {
+      "path": "vendor/msb-krun-arch/Cargo.toml",
+      "upstream_commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "reason": "Use the registry normalized manifest so the pinned runtime build resolves sibling dependencies from its lockfile instead of absent relative source paths."
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/mod.rs",
+      "upstream_commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "reason": "Keep the separately mapped kernel inside the requested guest RAM budget instead of adding another whole requested RAM region after it; retain strict layout regressions."
+    }
+  ]
 }

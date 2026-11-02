@@ -1,0 +1,25 @@
+/var/tmp/branchyard-cloud-qual-20261102/msb-patched-upload: OK
+msb 0.7.3
+   ✓ Loaded       alpine:3.20
+   ✓ Loaded       branchyard-qual-alpine:20261102
+guest 6.12.109
+cpus 1
+MemTotal:         108108 kB
+roundtrip
+host-files-hidden
+requested_mib=128 guest_memtotal_kib=108108 limit_kib=131072
+   ✓ Removed      gce-patched-128
+guest 6.12.109
+cpus 1
+MemTotal:         494600 kB
+roundtrip
+host-files-hidden
+requested_mib=512 guest_memtotal_kib=494600 limit_kib=524288
+   ✓ Removed      gce-patched-512
+guest 6.12.109
+cpus 1
+MemTotal:        1009928 kB
+roundtrip
+host-files-hidden
+requested_mib=1024 guest_memtotal_kib=1009928 limit_kib=1048576
+   ✓ Removed      gce-patched-1024
