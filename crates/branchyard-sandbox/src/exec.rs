@@ -15,6 +15,7 @@ use crate::{ExecSpec, ExitStatus, Process, ProviderError};
 
 const STARTED: &str = "by-sandbox-started";
 const MISSING: &str = "by-sandbox-missing";
+const BAD_CWD: &str = "by-sandbox-bad-cwd";
 const MAX_START_OUTPUT: u64 = 64 * 1024;
 
 // Preserve the recipe adapter's record directory across this extraction.
@@ -50,6 +51,13 @@ pub trait ExecTransport: Send + Sync {
 
     /// A human-readable transport name for diagnostics.
     fn describe(&self) -> String;
+
+    /// Filter host transport diagnostics before they reach errors or workload
+    /// stderr. Credential-bearing transports should omit these bytes. Output
+    /// after the guest startup acknowledgement is passed through unchanged.
+    fn diagnostic(&self, bytes: &[u8]) -> Vec<u8> {
+        bytes.to_vec()
+    }
 
     /// Bound startup acknowledgement and control commands, not the workload.
     fn start_timeout(&self) -> Duration {
@@ -111,7 +119,7 @@ pub fn spawn(
         "d=\"$HOME/.branchyard/recipe-exec/{dir}\"; mkdir -p \"$d\" || exit 125\n\
          p=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\n\
          if [ \"$p\" = \"$$\" ]; then echo \"-$$\" >\"$d/{id}\"; else echo \"$$\" >\"$d/{id}\"; fi\n\
-         cd {cwd} 2>/dev/null || {{ echo 'cannot enter exec directory' >&2; exit 125; }}\n",
+         cd {cwd} 2>/dev/null || {{ echo '{BAD_CWD}' >&2; exit 125; }}\n",
         dir = group.0,
         cwd = quote(&cwd)?,
     );
@@ -157,12 +165,14 @@ pub fn spawn(
             return Err(ProviderError::Io(io::Error::new(
                 error.kind(),
                 format!(
-                    "could not start {program} through {}: {error}",
-                    transport.describe()
+                    "could not start {program} through {}: {}",
+                    transport.describe(),
+                    String::from_utf8_lossy(&transport.diagnostic(error.to_string().as_bytes()))
                 ),
             )));
         }
     };
+    let before = transport.diagnostic(&before);
     let stderr: Box<dyn Read + Send> = Box::new(io::Cursor::new(before).chain(stderr));
     Ok(Box::new(RemoteProcess {
         transport,
@@ -219,7 +229,6 @@ fn startup(child: &mut Child, timeout: Duration) -> io::Result<(BufReader<ChildS
     if result.is_err() {
         branchyard_support::kill_group(child.id());
         branchyard_support::best_effort("kill unacknowledged exec", child.kill());
-        branchyard_support::best_effort("reap unacknowledged exec", child.wait());
     }
     branchyard_support::join_reporting("sandbox exec startup", reader);
     result?
@@ -242,14 +251,19 @@ fn read_start(stderr: ChildStderr) -> io::Result<(BufReader<ChildStderr>, Vec<u8
             let missing = before
                 .split(|byte| *byte == b'\n')
                 .any(|line| line == MISSING.as_bytes());
+            let bad_cwd = before
+                .split(|byte| *byte == b'\n')
+                .any(|line| line == BAD_CWD.as_bytes());
             return Err(io::Error::new(
-                if missing {
+                if missing || bad_cwd {
                     io::ErrorKind::NotFound
                 } else {
                     io::ErrorKind::Other
                 },
                 if missing {
                     "guest program was not found".to_owned()
+                } else if bad_cwd {
+                    "guest exec directory could not be entered".to_owned()
                 } else {
                     String::from_utf8_lossy(&before).trim().to_owned()
                 },
@@ -277,15 +291,18 @@ fn control(transport: &dyn ExecTransport, script: &str, args: &[&str]) -> io::Re
         .stderr(Stdio::piped())
         .spawn()?;
     let pid = child.id();
+    let guard = ChildGuard(Some(child));
     let (send, receive) = mpsc::channel();
     let waiter = branchyard_support::spawn_named(
         "sandbox-exec-control",
         |_| {},
         move || {
-            branchyard_support::best_effort(
-                "deliver sandbox control result",
-                send.send(child.wait_with_output()),
-            );
+            let mut guard = guard;
+            let result = match guard.0.take() {
+                Some(child) => child.wait_with_output(),
+                None => Err(io::Error::other("exec control child was lost")),
+            };
+            branchyard_support::best_effort("deliver sandbox control result", send.send(result));
         },
     )?;
     let output = receive
@@ -304,10 +321,21 @@ fn control(transport: &dyn ExecTransport, script: &str, args: &[&str]) -> io::Re
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "exec control failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&transport.diagnostic(&output.stderr)).trim()
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+struct ChildGuard(Option<Child>);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            branchyard_support::kill_group(child.id());
+            branchyard_support::best_effort("reap unstarted exec control waiter", child.wait());
+        }
+    }
 }
 
 struct RemoteProcess {
