@@ -150,6 +150,10 @@ Each thread keeps one connection to the server for its calls, so they reuse it i
 
 **Errors end with the fix.** An error the client knows a remedy for ends with `to fix: ...`, after what went wrong: a missing `by` (`cargo install --locked --path crates/branchyard-cli`), a connection refused (`by serve --repo app=.`, or `Client.local(".")`), an `unknown_repo` (`client.repos()` lists the names), a `BranchFailedError` (`by log NAME`, then `app.send(...)`). A message the server wrote keeps its own words; the client adds `to fix:` only where the server's text has none. A new error that has a known remedy follows the same rule.
 
+The Rust HTTP client resumes a response read interrupted by an operating-system
+signal on the same connection, without resending the request. A timeout or a
+closed connection still follows the client's existing error and retry rules.
+
 ## One API inside and outside a harness
 
 A meta-harness, code that splits work across child branches and lands what they make, can run as a harness turn (a script its harness runs) or as a service outside. `connect()` gives it the same calls in both places: inside a delegating turn (`BRANCHYARD_DELEGATION` set) it runs `branchyard.py`, acting as the turn's branch; given a `Client` or a `Repo`, or with `BRANCHYARD_REMOTE` and `BRANCHYARD_TOKEN_FILE` set (and `BRANCHYARD_REPO` when the server serves several), it speaks HTTP, acting as `branch` (default `BRANCHYARD_BRANCH`); with neither, it runs `branchyard.py` with your authority on the repository here.

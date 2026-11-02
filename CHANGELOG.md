@@ -4,6 +4,11 @@
 
 ## 0.4.0 - 2026-11-02
 
+The Rust client resumes a response read interrupted by an operating-system
+signal, keeping the same connection and request. Waiting for the first byte
+previously returned a transport error. Timeouts and closed connections still
+follow their existing error and retry rules.
+
 The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; no other request is sent again because of a closed connection (a `POST` is still resent with its idempotency key, as before).
 
 Four corrections from the 1 November qualification of the ACP harnesses.

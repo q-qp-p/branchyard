@@ -490,22 +490,23 @@ pub(crate) fn send_on(
         })?;
     // Wait for the first byte. The end of the connection before it is a
     // request that got no answer; an error here is the same as a write's.
-    match conn.reader.fill_buf() {
-        Ok([]) => {
-            return Err(SendError {
-                error: WireError::ConnectionClosed.into(),
-                before_response: true,
-            })
-        }
-        Ok(_) => {}
-        Err(error) => {
-            return Err(SendError {
-                before_response: dropped(error.kind()),
-                error,
-            })
+    wait_for_response(&mut conn.reader).map_err(|error| SendError {
+        before_response: dropped(error.kind()),
+        error,
+    })?;
+    read_response(conn, request.method == "HEAD", pool)
+}
+
+/// Wait for a response byte without consuming it, resuming interrupted reads.
+fn wait_for_response(reader: &mut impl BufRead) -> io::Result<()> {
+    loop {
+        match reader.fill_buf() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+            Ok([]) => return Err(WireError::ConnectionClosed.into()),
+            Ok(_) => return Ok(()),
         }
     }
-    read_response(conn, request.method == "HEAD", pool)
 }
 
 /// Read the head of a response on `conn`. The connection is kept only when
@@ -584,6 +585,49 @@ pub fn decode_form_bytes(value: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interrupted_response_wait_keeps_reading_the_same_response() {
+        struct Interrupted {
+            remaining: usize,
+            error: io::ErrorKind,
+            response: io::Cursor<Vec<u8>>,
+        }
+
+        impl Read for Interrupted {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if self.remaining > 0 {
+                    self.remaining -= 1;
+                    return Err(self.error.into());
+                }
+                self.response.read(bytes)
+            }
+        }
+
+        let mut reader = BufReader::new(Interrupted {
+            remaining: 2,
+            error: io::ErrorKind::Interrupted,
+            response: io::Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec()),
+        });
+        wait_for_response(&mut reader).unwrap();
+        let head = wire::read_response_head(&mut reader, MAX_HEAD).unwrap();
+        assert_eq!(head.status, 200);
+        let framing = wire::response_framing(head.status, &head.headers, false).unwrap();
+        assert_eq!(wire::read_body(&mut reader, framing, 10).unwrap(), b"ok");
+        assert_eq!(
+            wait_for_response(&mut reader).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        let mut timeout = BufReader::new(Interrupted {
+            remaining: 1,
+            error: io::ErrorKind::TimedOut,
+            response: io::Cursor::new(Vec::new()),
+        });
+        assert_eq!(
+            wait_for_response(&mut timeout).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
 
     #[test]
     fn endpoints_parse() {
