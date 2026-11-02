@@ -79,6 +79,9 @@ and network contracts are described in [the container guide](../../docs/containe
 A failed workspace copy-back fails an otherwise completed turn, even when it has no artifact capture contract.
 The allocation is still destroyed, and its transfer warning is retained in the branch events.
 Cancellation keeps its interrupted outcome when that return transport also fails.
+The engine records native cleanup ownership before allocation. Failed deletion leaves that owned intent in the
+service registry for the existing reaper to retry, including failures during acquisition or the initial file push.
+Successful deletion deregisters it; failed cleanup never creates a retained or resumable sandbox.
 
 Hermetic evidence: `cargo test -p branchyard --test native --locked --offline` drives the real engine through
 fake Docker and kubectl commands, checking private-home/workspace copy-back, fresh follow-ups, cancellation,

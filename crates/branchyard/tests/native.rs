@@ -10,6 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use branchyard::services::{self, Outcome, ServiceState, ServiceStore as _};
 use branchyard::{
     Activity, AgentSandboxOptions, AgentSandboxRuntime, BranchStatus, ContainerOptions, Error,
     Event, Network, NetworkEnforce, Policy, Provider, Provisioning, SandboxEvent, SandboxOrigin,
@@ -48,6 +49,10 @@ fn fixture(kind: Native) -> (MutexGuard<'static, ()>, Fixture, PathBuf, TaskOpti
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
     std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    std::env::set_var(
+        "BRANCHYARD_REGISTRY",
+        f.root.join(".branchyard/registry.db"),
+    );
     let image = format!("example.test/runtime@sha256:{}", "a".repeat(64));
     let provider = match kind {
         Native::Container => Provider::container(ContainerOptions {
@@ -150,6 +155,15 @@ fn native_turns_copy_back_work_and_private_home_then_use_a_fresh_allocation() {
             "first\n"
         );
         assert_deleted(&bin, kind);
+        assert!(f
+            .yard
+            .services()
+            .unwrap()
+            .all()
+            .unwrap()
+            .iter()
+            .filter(|service| service.kind == services::KIND_SANDBOX)
+            .all(|service| service.state == ServiceState::Left));
         let second = first
             .send(
                 "SH test \"$(cat \"$HOME/saved.txt\")\" = saved && printf 'second\\n' > next.txt",
@@ -169,6 +183,124 @@ fn native_turns_copy_back_work_and_private_home_then_use_a_fresh_allocation() {
         assert_eq!(names.len(), 2);
         assert_ne!(names[0], names[1]);
         assert_deleted(&bin, kind);
+    }
+}
+
+#[test]
+fn native_failed_cleanup_keeps_its_owned_reclaim_intent_through_every_setup_phase() {
+    for (phase, kind) in [
+        ("release", Native::Container),
+        ("acquire", Native::Container),
+        ("push", Native::Container),
+        ("release", Native::Gke(AgentSandboxRuntime::Gvisor)),
+    ] {
+        let (_serial, f, bin, options) = fixture(kind);
+        fs::write(bin.join("fail-destroy"), b"retry cleanup").unwrap();
+        if matches!(kind, Native::Container) {
+            fs::write(bin.join("require-registration"), b"before create").unwrap();
+        }
+        if phase != "release" {
+            fs::write(bin.join(format!("fail-{phase}")), b"setup failure").unwrap();
+        }
+        let branch = f
+            .yard
+            .task("WRITE returned.txt=work")
+            .options(options)
+            .name("cleanup")
+            .run()
+            .unwrap();
+        if phase == "release" {
+            assert_eq!(branch.info().status, BranchStatus::Ready);
+        } else {
+            assert!(matches!(branch.info().status, BranchStatus::Failed { .. }));
+        }
+        let registry = f.yard.services().unwrap();
+        let owned: Vec<_> = registry
+            .all()
+            .unwrap()
+            .into_iter()
+            .filter(|service| {
+                service.kind == services::KIND_SANDBOX
+                    && service.state == ServiceState::Live
+                    && service.owner.branch.as_deref() == Some("cleanup")
+            })
+            .collect();
+        assert_eq!(
+            owned.len(),
+            1,
+            "{phase}: failed cleanup must remain discoverable"
+        );
+        let intent = &owned[0];
+        assert!(matches!(
+            intent.reclaim,
+            Some(services::Reclaim::Sandbox { .. })
+        ));
+        registry
+            .transition(
+                &intent.id,
+                intent.seq,
+                ServiceState::Expired,
+                Some("simulate abandoned lease expiry".into()),
+                branchyard_support::time::now_ms(),
+            )
+            .unwrap()
+            .unwrap();
+        let attempted = f.yard.reclaim_services().unwrap();
+        assert!(
+            attempted
+                .iter()
+                .any(|item| item.service.id == intent.id
+                    && matches!(item.outcome, Outcome::Failed(_))),
+            "{phase}: {attempted:?}"
+        );
+        let retained = registry.get(&intent.id).unwrap().unwrap();
+        assert_eq!(retained.state, ServiceState::Expired);
+        assert_eq!(retained.reclaim, intent.reclaim);
+        fs::remove_file(bin.join("fail-destroy")).unwrap();
+        if phase != "release" {
+            fs::remove_file(bin.join(format!("fail-{phase}"))).unwrap();
+        }
+        let completed = f.yard.reclaim_services().unwrap();
+        assert!(
+            completed.iter().any(
+                |item| item.service.id == intent.id && matches!(item.outcome, Outcome::Done(_))
+            ),
+            "{phase}: {completed:?}"
+        );
+        assert_eq!(
+            registry.get(&intent.id).unwrap().unwrap().state,
+            ServiceState::Reclaimed
+        );
+        assert_deleted(&bin, kind);
+    }
+}
+
+#[test]
+fn native_setup_failure_deregisters_ownership_when_cleanup_succeeds() {
+    for phase in ["acquire", "push"] {
+        let (_serial, f, bin, options) = fixture(Native::Container);
+        fs::write(bin.join("require-registration"), b"before create").unwrap();
+        fs::write(bin.join(format!("fail-{phase}")), b"setup failure").unwrap();
+        let failed = f
+            .yard
+            .task("never starts")
+            .options(options)
+            .name("setup-failed")
+            .run()
+            .unwrap();
+        assert!(matches!(failed.info().status, BranchStatus::Failed { .. }));
+        assert_deleted(&bin, Native::Container);
+        let rows: Vec<_> = f
+            .yard
+            .services()
+            .unwrap()
+            .all()
+            .unwrap()
+            .into_iter()
+            .filter(|service| service.kind == services::KIND_SANDBOX)
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state, ServiceState::Left, "{phase}");
     }
 }
 

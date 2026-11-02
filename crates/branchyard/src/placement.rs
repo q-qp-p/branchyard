@@ -168,6 +168,14 @@ fn register_sandbox(
     record: &Record,
     name: &str,
 ) -> Option<crate::services::Registration> {
+    yard.register_service(
+        sandbox_service(yard, record, name)?,
+        crate::services::DEFAULT_TTL,
+    )
+    .ok()
+}
+
+fn sandbox_service(yard: &Yard, record: &Record, name: &str) -> Option<crate::services::Service> {
     use crate::services::{Reclaim, Service, ServiceOwner};
     let provider = record.provider.clone()?;
     let kind = provider.kind();
@@ -188,8 +196,36 @@ fn register_sandbox(
         provider: Box::new(provider),
         sandbox: name.to_owned(),
     });
-    yard.register_service(service, crate::services::DEFAULT_TTL)
-        .ok()
+    Some(service)
+}
+
+// Until a complete placement takes ownership, every exit must preserve the
+// native reclaim intent unless allocation cleanup was positively successful.
+struct NativeRegistration(Option<crate::services::Registration>);
+
+impl NativeRegistration {
+    fn new(yard: &Yard, record: &Record, name: &str) -> Result<Self, String> {
+        let service = sandbox_service(yard, record, name)
+            .ok_or("a native allocation has no sandbox provider")?;
+        yard.register_service(service, crate::services::DEFAULT_TTL)
+            .map(|registration| Self(Some(registration)))
+            .map_err(|error| format!("could not register native allocation ownership: {error}"))
+    }
+
+    fn cleaned(&mut self) {
+        self.0 = None;
+    }
+    fn take(&mut self) -> Option<crate::services::Registration> {
+        self.0.take()
+    }
+}
+
+impl Drop for NativeRegistration {
+    fn drop(&mut self) {
+        if let Some(registration) = self.0.take() {
+            registration.abandon();
+        }
+    }
 }
 
 enum Kind {
@@ -302,9 +338,16 @@ struct Actor {
     pushed: Option<Pushed>,
     /// The private home on this host, and where it is in the actor.
     home: Option<(PathBuf, PathBuf)>,
-    released: bool,
+    released: ReleaseState,
     transfer_error: Option<String>,
     capture: Option<crate::contract::capture::CopiedCapture>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReleaseState {
+    Owned,
+    Released,
+    Reclaim,
 }
 
 impl Actor {
@@ -363,12 +406,23 @@ impl Actor {
     /// Bring the worktree and home back, then delete the actor. Returns
     /// what went wrong, if anything; the actor is deleted regardless.
     fn release(&mut self) -> Vec<String> {
-        if std::mem::replace(&mut self.released, true) {
+        if self.released != ReleaseState::Owned {
             return Vec::new();
         }
+        self.released = ReleaseState::Released;
         let (mut warnings, _) = self.bring_back();
+        if let Some(error) = self.destroy() {
+            warnings.push(error);
+        }
+        warnings
+    }
+
+    fn destroy(&mut self) -> Option<String> {
         if let Err(error) = self.provider.provider().destroy(&self.name) {
-            warnings.push(match &self.provider {
+            if self.provider.destroy_only() {
+                self.released = ReleaseState::Reclaim;
+            }
+            return Some(match &self.provider {
                 Remote::Substrate(_) => format!("could not delete actor {}: {error}", self.name),
                 Remote::Exec { .. } => format!(
                     "could not destroy {} {}: {error}",
@@ -377,7 +431,7 @@ impl Actor {
                 ),
             });
         }
-        warnings
+        None
     }
 }
 
@@ -409,8 +463,15 @@ impl Placement {
         match &mut self.kind {
             Kind::Local(_) => {}
             Kind::Sandbox { released, .. } => *released = true,
-            Kind::Substrate(actor) => actor.released = true,
+            Kind::Substrate(actor) => {
+                actor.released = if actor.provider.destroy_only() {
+                    ReleaseState::Reclaim
+                } else {
+                    ReleaseState::Released
+                }
+            }
         }
+        self.finish_native_registration();
         self.service = None;
     }
 
@@ -697,6 +758,11 @@ impl Placement {
             };
         let noun = remote.noun();
         let key = providers::of(record.provider.as_ref()).key();
+        let mut native_registration = if remote.destroy_only() {
+            Some(NativeRegistration::new(yard, record, &spec.name)?)
+        } else {
+            None
+        };
         let journal = |name: &str| journal_sandbox(yard, fence, name, (how.intent)(name));
         let store = yard.store();
         let acquired = match plan {
@@ -772,12 +838,20 @@ impl Placement {
             worktree: record.info.worktree.clone(),
             pushed: None,
             home: None,
-            released: false,
+            released: ReleaseState::Owned,
             transfer_error: None,
             capture: crate::contract::capture::CopiedCapture::for_record(yard, record, fence),
         });
-        let fail = |actor: &mut Actor, why: String| -> Result<Placement, String> {
+        let fail = |actor: &mut Actor,
+                    registration: &mut Option<NativeRegistration>,
+                    why: String|
+         -> Result<Placement, String> {
             let warnings = actor.release();
+            if actor.released == ReleaseState::Released {
+                if let Some(registration) = registration.as_mut() {
+                    registration.cleaned();
+                }
+            }
             match warnings.is_empty() {
                 true => Err(why),
                 false => Err(format!("{why}; {}", warnings.join("; "))),
@@ -785,9 +859,13 @@ impl Placement {
         };
         let acquired = match acquired {
             Ok(acquired) => acquired,
-            Err(error) => return fail(&mut actor, error),
+            Err(error) => return fail(&mut actor, &mut native_registration, error),
         };
-        let service = register_sandbox(yard, record, &name);
+        let service = if actor.provider.destroy_only() {
+            None
+        } else {
+            register_sandbox(yard, record, &name)
+        };
         let workdir = PathBuf::from(&how.workdir);
         let guest_home = PathBuf::from(&how.home);
         let pushed = (|| -> Result<(Pushed, Transfer), String> {
@@ -842,7 +920,7 @@ impl Placement {
                 actor.pushed = Some(pushed);
                 sent
             }
-            Err(error) => return fail(&mut actor, error),
+            Err(error) => return fail(&mut actor, &mut native_registration, error),
         };
         let home_sent = actor
             .provider
@@ -859,7 +937,7 @@ impl Placement {
             .map_err(|e| format!("could not copy the home directory into {noun} {name}: {e}"));
         let home_push = match home_sent {
             Ok(sent) => sent,
-            Err(error) => return fail(&mut actor, error),
+            Err(error) => return fail(&mut actor, &mut native_registration, error),
         };
         actor.home = Some((home, guest_home));
         Ok(Placement {
@@ -876,7 +954,10 @@ impl Placement {
             }),
             egress: None,
             writable: None,
-            service,
+            service: native_registration
+                .as_mut()
+                .and_then(NativeRegistration::take)
+                .or(service),
             kind: Kind::Substrate(actor),
         })
     }
@@ -1028,6 +1109,7 @@ impl Placement {
     /// what to record.
     pub fn release(&mut self, yard: &Yard, record: &Record, fence: &Fence) -> Vec<Activity> {
         let said = self.release_sandbox(yard, record, fence);
+        self.finish_native_registration();
         // Destroyed, or kept for the next turn in the sandbox store: no
         // longer this turn's to reclaim.
         self.service = None;
@@ -1057,9 +1139,10 @@ impl Placement {
                 snapshots::park(yard, record, fence, provider.as_ref(), name)
             }
             Kind::Substrate(actor) => {
-                if std::mem::replace(&mut actor.released, true) {
+                if actor.released != ReleaseState::Owned {
                     return Vec::new();
                 }
+                actor.released = ReleaseState::Released;
                 let (warnings, home_pull) = actor.bring_back();
                 let mut said: Vec<Activity> = warnings.into_iter().map(Activity::Warning).collect();
                 if let Some(home_pull) = home_pull {
@@ -1069,13 +1152,19 @@ impl Placement {
                         home_pull,
                     }));
                 }
-                said.extend(snapshots::park(
-                    yard,
-                    record,
-                    fence,
-                    actor.provider.provider(),
-                    &actor.name,
-                ));
+                if actor.provider.destroy_only() {
+                    if let Some(error) = actor.destroy() {
+                        said.push(Activity::Warning(error));
+                    }
+                } else {
+                    said.extend(snapshots::park(
+                        yard,
+                        record,
+                        fence,
+                        actor.provider.provider(),
+                        &actor.name,
+                    ));
+                }
                 said
             }
         }
@@ -1084,7 +1173,7 @@ impl Placement {
     /// Destroy the sandbox without keeping it; for a Substrate actor, bring
     /// the worktree and home back first. A failure is returned as a warning.
     pub fn discard(&mut self) -> Option<String> {
-        match &mut self.kind {
+        let warning = match &mut self.kind {
             Kind::Local(_) => None,
             Kind::Sandbox {
                 provider,
@@ -1103,6 +1192,20 @@ impl Placement {
             Kind::Substrate(actor) => {
                 let warnings = actor.release();
                 (!warnings.is_empty()).then(|| warnings.join("; "))
+            }
+        };
+        self.finish_native_registration();
+        warning
+    }
+
+    fn finish_native_registration(&mut self) {
+        if let Kind::Substrate(actor) = &self.kind {
+            if actor.provider.destroy_only() {
+                if let Some(registration) = self.service.take() {
+                    if actor.released == ReleaseState::Reclaim {
+                        registration.abandon();
+                    }
+                }
             }
         }
     }
