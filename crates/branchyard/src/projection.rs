@@ -137,6 +137,8 @@ pub(crate) struct Hub {
     /// Set by [`crate::Yard::use_sandbox_provider`]: the provider every
     /// Microsandbox-provider branch runs through instead of the SDK.
     pub sandbox_provider: Mutex<Option<Arc<dyn branchyard_sandbox::SandboxProvider>>>,
+    /// An embedding policy checked against resolved providers before turn admission.
+    pub provider_admission: Mutex<Option<crate::ProviderAdmission>>,
     /// Set by [`crate::Yard::use_connectors`].
     pub connectors: Mutex<Option<Arc<crate::connectors::Gateway>>>,
     /// Set by [`crate::Yard::use_knowledge`].
@@ -173,6 +175,7 @@ impl Default for Hub {
             wake_options: Default::default(),
             scripts_denied: Default::default(),
             sandbox_provider: Default::default(),
+            provider_admission: Default::default(),
             connectors: Default::default(),
             knowledge: Default::default(),
             models: Default::default(),

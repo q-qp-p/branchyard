@@ -83,9 +83,18 @@ The engine records native cleanup ownership before allocation. Failed deletion l
 service registry for the existing reaper to retry, including failures during acquisition or the initial file push.
 Successful deletion deregisters it; failed cleanup never creates a retained or resumable sandbox.
 
+An embedding server can install `Yard::use_provider_admission` with a pure callback over the resolved provider
+and the caller's `TaskOptions`. The hook is shared by yard clones and checks inherited turns, waiting graph
+children and automatic wakes before they start. For example, requiring a native provider to equal
+`options.provider` lets the server admit its own resolved presets while refusing default recovery options.
+An approved graph proposal keeps its provider in the current process's cached options; a fresh process must
+supply approved options again. A denied recovery leaves waiting children unclaimed and parked turns parked.
+SDK and CLI callers have no additional restriction unless they install a hook.
+
 Hermetic evidence: `cargo test -p branchyard --test native --locked --offline` drives the real engine through
 fake Docker and kubectl commands, checking private-home/workspace copy-back, fresh follow-ups, cancellation,
-capture failure cleanup and refusal before allocation. Not done: live runtime isolation qualification or a model
+capture failure cleanup, admission on inherited turns and graph/wake recovery, and refusal before allocation.
+Not done: live runtime isolation qualification or a model
 run in these tests.
 
 ## Features

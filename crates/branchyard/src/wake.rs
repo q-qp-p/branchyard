@@ -400,6 +400,8 @@ pub(crate) fn look(yard: &Yard, name: &str, given: Option<&TaskOptions>) -> Resu
         },
         (None, None) => return Ok(false),
     };
+    // Admission denial leaves the parked record intact for an approved caller.
+    yard.admit_provider(record.provider.as_ref(), &options)?;
     let prepared = match crate::run::prepare_wake(yard, name, &options) {
         Ok(Some(prepared)) => prepared,
         // Another engine woke it, or something else started a turn.
