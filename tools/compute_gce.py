@@ -24,6 +24,8 @@ IMAGE_REPOSITORY = "ghcr.io/vamsiramakrishnan/branchyard-agy"
 MSB_VERSION = "0.7.3"
 MSB_ARCHIVE_SHA256 = "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea"
 IAP_SOURCE_RANGE = "35.235.240.0/20"
+DEFAULT_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+SCOPE_PATTERN = r"[a-z][a-z0-9-]*|https://www\.googleapis\.com/auth/[a-z0-9._-]+"
 
 
 class SetupError(Exception):
@@ -43,6 +45,7 @@ class Config:
     version: str = RELEASE_VERSION
     machine_type: str = "n2-standard-4"
     service_account: str | None = None
+    scopes: str | None = None
     image: str = f"{IMAGE_REPOSITORY}:{RELEASE_VERSION}"
     backend: str = "local"
     repo: Path | None = None
@@ -63,10 +66,18 @@ class Config:
         return f"branchyard-{self.name[:32]}-{hashlib.sha256(identity).hexdigest()[:8]}"
 
     @property
+    def access_scopes(self) -> tuple[str, ...]:
+        if self.scopes is None:
+            return (DEFAULT_SCOPE,) if self.service_account else ()
+        return () if self.scopes == "none" else tuple(self.scopes.split(","))
+
+    @property
     def fingerprint(self) -> str:
         target = asdict(self)
-        for key in ("state_dir", "repo", "forward_secret"):
+        for key in ("state_dir", "repo", "forward_secret", "scopes"):
             target.pop(key)
+        if self.access_scopes:
+            target["scopes"] = list(self.access_scopes)
         if self.tunnel_through_iap:
             target["iap_firewall"] = self.iap_firewall
         else:
@@ -108,6 +119,11 @@ class Config:
             rf"[a-z][a-z0-9-]+@{re.escape(self.project)}\.iam\.gserviceaccount\.com", self.service_account
         ):
             raise SetupError("--service-account must name an existing account in --project")
+        if self.scopes not in {None, "none"}:
+            if not self.service_account:
+                raise SetupError("--scopes needs --service-account; a VM without an account gets no scopes")
+            if not all(re.fullmatch(SCOPE_PATTERN, scope) and scope != "none" for scope in self.access_scopes):
+                raise SetupError("--scopes must be none, or comma-separated scope names or googleapis.com/auth URLs")
         if self.disk_size < 30:
             raise SetupError("--disk-size must be at least 30 GB")
         if not re.fullmatch(
@@ -139,6 +155,7 @@ def plan(config: Config) -> dict[str, Any]:
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
         ],
         "service_account": config.service_account or "none; no default Compute Engine account selected",
+        "access_scopes": list(config.access_scopes),
         "network": network,
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": firewall_plan(config),
@@ -637,7 +654,7 @@ def apply(config: Config) -> dict[str, Any]:
             f"--subnet={config.subnet}",
             f"--labels={OWNER_LABEL}={config.name}",
             f"--metadata=enable-oslogin=TRUE,branchyard-configuration-sha256={config.fingerprint}",
-            "--no-scopes",
+            f"--scopes={','.join(config.access_scopes)}" if config.access_scopes else "--no-scopes",
             f"--service-account={config.service_account}" if config.service_account else "--no-service-account",
         )
         if config.backend == "microsandbox":
@@ -750,6 +767,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine-type", default="n2-standard-4")
     parser.add_argument(
         "--service-account", help="existing account; omitted means no account, never the project default"
+    )
+    parser.add_argument(
+        "--scopes",
+        help="access scopes for --service-account: comma-separated names or URLs, or none; "
+        "defaults to cloud-platform, so the account's IAM roles decide API access",
     )
     parser.add_argument("--image", help="defaults to the published worker image matching --version")
     parser.add_argument("--backend", choices=("local", "microsandbox"), default="local")

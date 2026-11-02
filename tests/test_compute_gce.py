@@ -216,7 +216,7 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_iap_plan_is_offline_and_direct_fingerprints_remain_compatible(self):
         legacy = asdict(self.config)
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes"):
             legacy.pop(key)
         self.assertEqual(
             self.config.fingerprint, hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
@@ -586,6 +586,63 @@ class ComputeGceTests(unittest.TestCase):
         self.apply(config)
         self.assertTrue(any(call["args"][:3] == ["iam", "service-accounts", "describe"] for call in self.calls()))
         self.assertFalse(any("add-iam-policy-binding" in call["args"] for call in self.calls()))
+
+    def test_service_account_gets_cloud_platform_unless_scopes_choose_others(self):
+        account = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
+        self.assertEqual(gce.plan(account)["access_scopes"], [gce.DEFAULT_SCOPE])
+        self.assertEqual(gce.plan(self.config)["access_scopes"], [])
+        legacy = asdict(replace(account, scopes="none"))
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes"):
+            legacy.pop(key)
+        self.assertEqual(
+            replace(account, scopes="none").fingerprint,
+            hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest(),
+        )
+        self.assertNotEqual(account.fingerprint, replace(account, scopes="none").fingerprint)
+        self.assertEqual(account.fingerprint, replace(account, scopes=gce.DEFAULT_SCOPE).fingerprint)
+        explicit = "storage-ro,https://www.googleapis.com/auth/logging.write"
+        for scopes, expected in (
+            (None, f"--scopes={gce.DEFAULT_SCOPE}"),
+            ("none", "--no-scopes"),
+            (explicit, f"--scopes={explicit}"),
+        ):
+            config = replace(account, scopes=scopes)
+            self.state = {"instance": None, "desired": self.instance(config)}
+            self.save()
+            self.apply(config)
+            create = [call["args"] for call in self.calls() if call["args"][:3] == ["compute", "instances", "create"]]
+            with self.subTest(scopes=scopes):
+                self.assertIn(f"--service-account={config.service_account}", create[-1])
+                self.assertEqual([arg for arg in create[-1] if "scopes" in arg], [expected])
+
+    def test_scopes_need_an_account_and_named_or_googleapis_scopes(self):
+        account = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
+        self.assertEqual(gce.plan(replace(self.config, scopes="none"))["access_scopes"], [])
+        with self.assertRaisesRegex(gce.SetupError, "--scopes needs --service-account"):
+            gce.plan(replace(self.config, scopes="cloud-platform"))
+        for scopes in ("", "none,storage-ro", "Cloud Platform", "storage-ro,", "https://example.com/auth/x"):
+            with self.subTest(scopes=scopes), self.assertRaisesRegex(gce.SetupError, "--scopes must be none"):
+                gce.plan(replace(account, scopes=scopes))
+        args = [
+            sys.executable,
+            str(ROOT / "tools/compute_gce.py"),
+            "--project=test-project",
+            "--zone=us-central1-a",
+            "--name=branchyard-test",
+            f"--state-dir={self.config.state_dir}",
+        ]
+        refused = subprocess.run([*args, "--scopes=cloud-platform"], env=self.env, text=True, capture_output=True)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("--scopes needs --service-account", refused.stderr)
+        narrowed = subprocess.run(
+            [*args, f"--service-account={account.service_account}", "--scopes=storage-ro"],
+            env=self.env,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
+        self.assertEqual(json.loads(narrowed.stdout)["access_scopes"], ["storage-ro"])
+        self.assertFalse(self.log.exists())
 
     def test_repository_transfer_uses_a_clean_committed_bundle(self):
         repo = self.root / "source"

@@ -48,9 +48,12 @@ pub struct Gce {
     /// VM machine type; Microsandbox needs n2-standard or c3-standard
     #[arg(long, default_value = "n2-standard-4")]
     machine_type: String,
-    /// Existing service account in this project; omitted attaches no account
+    /// Existing service account in this project; its IAM roles decide what the worker reaches, such as roles/aiplatform.user for Vertex AI; omitted attaches no account
     #[arg(long, value_name = "EMAIL")]
     service_account: Option<String>,
+    /// Access scopes for --service-account: comma-separated names or URLs, or none; defaults to cloud-platform
+    #[arg(long, value_name = "SCOPES")]
+    scopes: Option<String>,
     /// Existing VPC network; creates no network or NAT
     #[arg(long, default_value = "default")]
     network: String,
@@ -105,6 +108,7 @@ fn gce_command(args: &Gce) -> Command {
     for (flag, value) in [
         ("--image", args.image.as_deref()),
         ("--service-account", args.service_account.as_deref()),
+        ("--scopes", args.scopes.as_deref()),
         ("--forward-secret", args.forward_secret.as_deref()),
     ] {
         if let Some(value) = value {
@@ -554,7 +558,7 @@ pub(crate) fn guided(
     )?;
     let account_prompt = match kind {
         CloudKind::Gke => "Node service account email (leave blank to create a dedicated account)",
-        CloudKind::Gce => "Worker service account email (leave blank for no cloud API access)",
+        CloudKind::Gce => "Worker service account email (its IAM roles decide API access; Vertex AI needs roles/aiplatform.user; blank for none)",
     };
     let service_account: String = cliclack::input(account_prompt)
         .required(false)
@@ -721,6 +725,10 @@ mod tests {
             "--tunnel-through-iap",
             "--forward-secret",
             "GOOGLE_API_KEY",
+            "--service-account",
+            "worker@test-project.iam.gserviceaccount.com",
+            "--scopes",
+            "storage-ro,logging-write",
             "--apply",
         ])
         .unwrap();
@@ -744,6 +752,11 @@ mod tests {
             ("--repo", "/source with spaces"),
             ("--state-dir", "/private state"),
             ("--forward-secret", "GOOGLE_API_KEY"),
+            (
+                "--service-account",
+                "worker@test-project.iam.gserviceaccount.com",
+            ),
+            ("--scopes", "storage-ro,logging-write"),
             ("--version", env!("CARGO_PKG_VERSION")),
         ] {
             assert!(argv.windows(2).any(|pair| pair == [flag, value]), "{flag}");

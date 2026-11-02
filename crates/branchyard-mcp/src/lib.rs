@@ -97,7 +97,8 @@ An operator can run by setup --guided to select a repository and compute backend
 by setup --up --json includes readiness in one report; --directory PATH selects the repository. \
 An operator can use by compute gce --project PROJECT --zone ZONE --name NAME --tunnel-through-iap \
 to review an offline JSON plan; --apply provisions the VM and its dedicated IAP TCP 22 firewall rule. \
-Add --internal-ip to omit an external address. This operator command refuses harness sessions and --remote. \
+Add --internal-ip to omit an external address. --service-account EMAIL attaches that account with the cloud-platform scope, \
+so its IAM roles decide API access; --scopes narrows it. This operator command refuses harness sessions and --remote. \
 For GKE, an operator can select tools/substrate_gke.py --atenet-dataplane=agentgateway with the target options; it pins a compatible gateway in a private source export before installation. \
 An external operator can run by mcp manager --url URL --token-file FILE, with optional --ca-file FILE, to manage authorized code and knowledge workspaces. \
 For a repository-free console, an operator runs by serve --app --knowledge; this keeps configured storage and quotas and does not expand your grant. \
