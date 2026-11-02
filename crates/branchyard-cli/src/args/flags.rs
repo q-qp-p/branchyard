@@ -157,17 +157,23 @@ pub enum ProviderArg {
     Local,
     /// A Microsandbox microVM; needs --image
     Microsandbox,
+    /// A worker-local container; needs a digest-pinned --image
+    Container,
+    /// A Kubernetes Agent Sandbox; needs a context, namespace and digest-pinned --image
+    AgentSandbox,
     /// An Agent Substrate actor; needs the --substrate-* endpoints and key
     Substrate,
     /// The machine an environment recipe makes (`recipe:NAME`)
     Recipe(String),
 }
 
-/// `local`, `microsandbox`, `substrate` or `recipe:NAME`.
+/// `local`, `microsandbox`, `container`, `agent-sandbox`, `substrate` or `recipe:NAME`.
 pub(crate) fn provider_arg(value: &str) -> Result<ProviderArg, String> {
     match value {
         "local" => Ok(ProviderArg::Local),
         "microsandbox" => Ok(ProviderArg::Microsandbox),
+        "container" => Ok(ProviderArg::Container),
+        "agent-sandbox" => Ok(ProviderArg::AgentSandbox),
         "substrate" => Ok(ProviderArg::Substrate),
         other => match other.strip_prefix("recipe:") {
             Some(name) if branchyard_setup::config::valid_recipe_name(name) => {
@@ -179,7 +185,7 @@ pub(crate) fn provider_arg(value: &str) -> Result<ProviderArg, String> {
             )),
             None => Err(format!(
                 "{other:?} is not a provider [possible values: local, microsandbox, substrate, \
-                 recipe:NAME]"
+                 recipe:NAME, container, agent-sandbox]"
             )),
         },
     }
@@ -299,7 +305,7 @@ pub struct Launch {
     /// Launch this instead of the profile's executable, for development and testing
     #[arg(long, value_name = "CMD", value_parser = command_argv)]
     command: Option<Argv>,
-    /// Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local,
+    /// Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local,
     /// or the branch's own)
     #[arg(long, value_name = "PROVIDER", value_parser = provider_arg)]
     provider: Option<ProviderArg>,
@@ -308,6 +314,8 @@ pub struct Launch {
     pass_env: Option<List>,
     #[command(flatten)]
     microsandbox: MicrosandboxFlags,
+    #[command(flatten)]
+    native: NativeSandboxFlags,
     #[command(flatten)]
     substrate: SubstrateFlags,
     #[command(flatten)]
@@ -392,20 +400,104 @@ pub(crate) fn keep_sandbox(value: &str) -> Result<branchyard::SandboxKeep, Strin
 }
 
 #[derive(Args, Clone, Debug, Default, PartialEq)]
-#[command(next_help_heading = "Microsandbox provider (--provider microsandbox)")]
+#[command(next_help_heading = "Sandbox image and limits")]
 pub struct MicrosandboxFlags {
-    /// OCI image with the harness installed
+    /// OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST
     #[arg(long, value_name = "REF")]
     image: Option<String>,
-    /// Virtual CPUs for the sandbox
+    /// CPU limit for the sandbox
     #[arg(long, value_name = "N", value_parser = cpus)]
     cpus: Option<u8>,
     /// Sandbox memory in MiB
     #[arg(long, value_name = "MIB", value_parser = memory)]
     memory: Option<u32>,
     /// Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM)
-    #[arg(long)]
+    #[arg(long, help_heading = "Microsandbox provider (--provider microsandbox)")]
     live_branch: bool,
+}
+
+/// Runtime and cluster options for native sandbox providers.
+#[derive(Args, Clone, Debug, Default, PartialEq)]
+#[command(next_help_heading = "Native sandbox providers (--provider container or agent-sandbox)")]
+pub struct NativeSandboxFlags {
+    /// Existing operator-controlled kubeconfig context; requires --provider agent-sandbox
+    #[arg(long, value_name = "CONTEXT")]
+    kube_context: Option<String>,
+    /// Operator-controlled Kubernetes namespace; requires --provider agent-sandbox
+    #[arg(long, value_name = "NAMESPACE")]
+    kube_namespace: Option<String>,
+    /// Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox
+    #[arg(long, value_parser = ["gvisor", "runc", "microvm"], value_name = "RUNTIME")]
+    sandbox_runtime: Option<String>,
+    /// Allocation-wide networking (default deny); Container unrestricted permits cloud metadata
+    #[arg(long, value_parser = ["deny", "unrestricted"], value_name = "NETWORK")]
+    sandbox_network: Option<String>,
+}
+
+impl NativeSandboxFlags {
+    fn apply(
+        self,
+        task: &mut TaskArgs,
+        provider: ProviderArg,
+        image: MicrosandboxFlags,
+        pass_env: Vec<String>,
+    ) -> Result<(), String> {
+        let pinned = image
+            .image
+            .ok_or("native sandbox providers need --image pinned by @sha256:DIGEST")?;
+        branchyard_config::validate_sandbox_image(&pinned)
+            .map_err(|why| format!("--image {why}"))?;
+        let unrestricted = self.sandbox_network.as_deref() == Some("unrestricted");
+        if provider == ProviderArg::Container {
+            let runtime = match self.sandbox_runtime.as_deref() {
+                None | Some("gvisor") => branchyard::ContainerRuntime::Gvisor,
+                Some("runc") => branchyard::ContainerRuntime::Runc,
+                _ => return Err("--sandbox-runtime microvm needs --provider agent-sandbox".into()),
+            };
+            let options = branchyard::ContainerOptions {
+                image: pinned,
+                cpus: image.cpus,
+                memory_mib: image.memory,
+                runtime,
+                network: if unrestricted {
+                    branchyard::ContainerNetwork::Unrestricted
+                } else {
+                    branchyard::ContainerNetwork::Deny
+                },
+                pass_env,
+            };
+            options.validate().map_err(|error| error.to_string())?;
+            task.container = Some(options);
+        } else {
+            let runtime = match self.sandbox_runtime.as_deref() {
+                None | Some("gvisor") => branchyard::AgentSandboxRuntime::Gvisor,
+                Some("microvm") => branchyard::AgentSandboxRuntime::Microvm,
+                _ => return Err("--sandbox-runtime runc needs --provider container".into()),
+            };
+            let required = |value: Option<String>, flag| {
+                value
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| format!("--provider agent-sandbox needs --{flag}"))
+            };
+            let options = branchyard::AgentSandboxOptions {
+                context: required(self.kube_context, "kube-context")?,
+                namespace: required(self.kube_namespace, "kube-namespace")?,
+                image: pinned,
+                cpus: image.cpus,
+                memory_mib: image.memory,
+                runtime,
+                network: if unrestricted {
+                    branchyard::AgentSandboxNetwork::Unrestricted
+                } else {
+                    branchyard::AgentSandboxNetwork::Deny
+                },
+                pass_env,
+            };
+            options.validate().map_err(|error| error.to_string())?;
+            task.agent_sandbox = Some(options);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Args, Clone, Debug, Default, PartialEq)]
@@ -508,6 +600,10 @@ impl Launch {
         task.command = self.command.map(|argv| argv.0);
         let chosen = self.provider;
         let micro = &self.microsandbox;
+        let native = matches!(
+            chosen,
+            Some(ProviderArg::Container | ProviderArg::AgentSandbox)
+        );
         let recipe = matches!(chosen, Some(ProviderArg::Recipe(_)));
         if !recipe {
             let given = [
@@ -526,17 +622,38 @@ impl Launch {
                     .into(),
             );
         }
-        if chosen != Some(ProviderArg::Microsandbox) {
+        if native {
+            if let Some(flag) = self.lifecycle.first_given() {
+                return Err(format!("--{flag} is unsupported by native sandbox providers; allocations are destroyed after each turn"));
+            }
+        }
+        if chosen != Some(ProviderArg::AgentSandbox) {
+            if self.native.kube_context.is_some() || self.native.kube_namespace.is_some() {
+                return Err(
+                    "--kube-context and --kube-namespace need --provider agent-sandbox".into(),
+                );
+            }
+        }
+        if !native
+            && (self.native.sandbox_runtime.is_some() || self.native.sandbox_network.is_some())
+        {
+            return Err("--sandbox-runtime and --sandbox-network need --provider container or agent-sandbox".into());
+        }
+        if chosen != Some(ProviderArg::Microsandbox) && micro.live_branch {
+            return Err("--live-branch needs --provider microsandbox".into());
+        }
+        if chosen != Some(ProviderArg::Microsandbox) && !native {
             let given = [
                 ("image", micro.image.is_some()),
                 ("cpus", micro.cpus.is_some()),
                 ("memory", micro.memory.is_some()),
-                ("live-branch", micro.live_branch),
             ]
             .into_iter()
             .find_map(|(flag, given)| given.then_some(flag));
             if let Some(flag) = given {
-                return Err(format!("--{flag} needs --provider microsandbox"));
+                return Err(format!(
+                    "--{flag} needs --provider microsandbox, container or agent-sandbox"
+                ));
             }
         }
         if chosen != Some(ProviderArg::Substrate) {
@@ -546,7 +663,7 @@ impl Launch {
         }
         if matches!(chosen, None | Some(ProviderArg::Local)) && self.pass_env.is_some() {
             return Err(
-                "--pass-env needs --provider microsandbox, substrate or recipe:NAME".into(),
+                "--pass-env needs --provider microsandbox, substrate or recipe:NAME, container or agent-sandbox".into(),
             );
         }
         if matches!(chosen, None | Some(ProviderArg::Local)) {
@@ -591,6 +708,9 @@ impl Launch {
                     lifecycle,
                     live_branch: self.microsandbox.live_branch,
                 });
+            }
+            Some(kind @ (ProviderArg::Container | ProviderArg::AgentSandbox)) => {
+                self.native.apply(task, kind, self.microsandbox, pass_env)?;
             }
             Some(ProviderArg::Substrate) => {
                 let s = self.substrate;

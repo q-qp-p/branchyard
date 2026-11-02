@@ -34,7 +34,7 @@ pub enum SandboxNetwork {
     /// Disable external networking, including cloud metadata access.
     #[default]
     Deny,
-    /// Allow ordinary networking; this does not block cloud metadata.
+    /// Use the provider's ordinary network boundary; Container permits cloud metadata.
     Unrestricted,
 }
 
