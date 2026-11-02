@@ -14,8 +14,10 @@ use std::time::Duration;
 use branchyard::BranchStatus;
 use branchyard_client::api::{
     BudgetSpec, ForkRequest, MergeRequest, OperationKind, OperationState, PolicySpec, SendRequest,
+    TaskRequest,
 };
 use branchyard_client::{new_key, Client};
+use branchyard_server::store::Lane;
 use branchyard_testkit::wait;
 use common::{await_operation, get, post, raw, raw_bytes, run, task, Fixture, Server, TOKEN};
 use serde_json::Value;
@@ -1294,6 +1296,75 @@ fn an_operation_queued_at_shutdown_runs_after_a_restart_and_is_found_by_its_key(
             .branch("long")
             .is_ok_and(|b| b.status != BranchStatus::Running)
     });
+}
+
+/// A send to an existing branch is a follow-up: with the process's one
+/// normal slot held and a new task queued behind it, the send runs on the
+/// slot kept for follow-ups and finishes while the task still waits.
+/// Merges and checks are normal work.
+#[test]
+fn a_send_to_an_existing_branch_runs_while_new_work_waits_for_a_slot() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.max_running = 1;
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+    let settled = run(
+        &client,
+        &TaskRequest {
+            check: Some(vec!["test".into(), "-f".into(), "a.txt".into()]),
+            ..task("WRITE a.txt=1", "settled")
+        },
+    );
+    assert_eq!(settled.state, OperationState::Succeeded, "{settled:?}");
+    let held = repo.submit_task(&task("HANG", "held"), &new_key()).unwrap();
+    wait::until("the held turn to start", || {
+        common::started(&client, "app", "held")
+    });
+    let queued = repo
+        .submit_task(&task("WRITE q.txt=q", "queued"), &new_key())
+        .unwrap();
+    assert_eq!(queued.state, OperationState::Queued);
+    let sent = repo
+        .send(
+            "settled",
+            &SendRequest {
+                prompt: "WRITE b.txt=2".into(),
+                policy: PolicySpec::allow_all(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let sent = await_operation(&client, &sent.id);
+    assert_eq!(sent.state, OperationState::Succeeded, "{sent:?}");
+    assert_eq!(
+        client.operation(&queued.id).unwrap().state,
+        OperationState::Queued
+    );
+    assert_eq!(repo.cancel("held").unwrap(), ["held"]);
+    assert_eq!(
+        await_operation(&client, &held.id).state,
+        OperationState::Succeeded
+    );
+    assert_eq!(
+        await_operation(&client, &queued.id).state,
+        OperationState::Succeeded
+    );
+
+    let check = await_operation(&client, &repo.check("settled", &new_key()).unwrap().id);
+    assert_eq!(check.state, OperationState::Succeeded, "{check:?}");
+    let merge = repo
+        .merge("settled", &MergeRequest::default(), &new_key())
+        .unwrap();
+    let merge = await_operation(&client, &merge.id);
+    assert_eq!(merge.state, OperationState::Succeeded, "{merge:?}");
+    let lanes = [&sent, &queued, &check, &merge].map(|op| common::lane(&f.data, &op.id));
+    assert_eq!(
+        lanes,
+        [Lane::FollowUp, Lane::Normal, Lane::Normal, Lane::Normal]
+    );
 }
 
 /// The engine records each turn's own cost on the branch's event log once

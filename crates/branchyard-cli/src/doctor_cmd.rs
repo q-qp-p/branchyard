@@ -7,8 +7,9 @@
 //! one line. The checks are listed once, in [`CHECKS`], in report order; to add
 //! one, write its function and list it there.
 //!
-//! The run is offline except for a configured `[remote]`, asked once with a
-//! deadline, and a saved Substrate connection, whose Control is asked once
+//! The run is offline except for a configured `[remote]`, asked once per
+//! route with a deadline (`GET /v1/repos`, then `GET /v1/problems` when
+//! that succeeded), and a saved Substrate connection, whose Control is asked once
 //! to authenticate and read the template (no actor, no model). It reads
 //! state and changes none that the user keeps: it opens a
 //! `.branchyard/` that exists, as every `by` command does, creates none, and
@@ -173,6 +174,7 @@ const CHECKS: &[CheckFn] = &[
     checks::host_loopback,
     checks::host_kvm,
     checks::server_reachable,
+    checks::server_problems,
     serve::config,
     serve::database,
     checks::models_keys,

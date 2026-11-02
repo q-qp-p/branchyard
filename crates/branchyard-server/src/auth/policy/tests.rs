@@ -206,6 +206,7 @@ fn app(mut config: Config) -> (tempfile::TempDir, Arc<App>) {
             config.triggers.clone(),
             "http://127.0.0.1".into(),
         )),
+        seen: Default::default(),
         companion: Some(Arc::new(
             crate::companion::Companion::open(&config).unwrap(),
         )),
@@ -282,7 +283,9 @@ async fn exact_captured_leaf_revocation_cannot_borrow_another_tokens_identity() 
         .await
         .is_none());
     assert_eq!(
-        crate::companion::push::owner(&app, &new.token_sha256).await,
+        crate::companion::push::owner(&app, &new.token_sha256)
+            .await
+            .map(|(principal, _)| principal),
         Some(leaf)
     );
 }

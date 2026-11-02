@@ -7,6 +7,7 @@ mod common;
 
 use branchyard_client::api::OperationState;
 use branchyard_server::config::{Config, Principal, Token};
+use branchyard_server::store::Lane;
 use common::{await_operation, get, post, raw, Fixture, Server, TOKEN};
 use serde_json::{json, Value};
 
@@ -567,6 +568,12 @@ fn named_writer_sessions_keep_separate_attempts_and_native_conversations() {
     eprintln!("awaiting Researcher continuation: {}", continued["id"]);
     let finished = await_operation(&server.client(), continued["id"].as_str().unwrap());
     assert_eq!(finished.state, OperationState::Succeeded, "{finished:?}");
+    let lanes = [&first, &continued].map(|op| common::lane(&f.data, op["id"].as_str().unwrap()));
+    assert_eq!(
+        lanes,
+        [Lane::Normal, Lane::FollowUp],
+        "a start, then a send"
+    );
     let (_, transcript) = read(&server, &first_messages, TOKEN);
     assert!(transcript
         .to_string()

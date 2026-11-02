@@ -163,6 +163,9 @@ pub fn contract() -> Value {
     entry::<api::HarnessList>("HarnessList", &mut types);
     entry::<api::WorkerInventory>("WorkerInventory", &mut types);
     entry::<api::InventoryReport>("InventoryReport", &mut types);
+    entry::<api::Problem>("Problem", &mut types);
+    entry::<api::ProblemKind>("ProblemKind", &mut types);
+    entry::<api::ProblemList>("ProblemList", &mut types);
     entry::<api::MergedInfo>("MergedInfo", &mut types);
     entry::<branchyard::BranchInfo>("BranchInfo", &mut types);
     entry::<branchyard::Inspection>("Inspection", &mut types);
@@ -185,6 +188,7 @@ pub fn contract() -> Value {
     entry::<triggers::When>("When", &mut types);
     entry::<triggers::EventSource>("EventSource", &mut types);
     entry::<triggers::Conditions>("Conditions", &mut types);
+    entry::<triggers::Bots>("Bots", &mut types);
     entry::<triggers::Precheck>("Precheck", &mut types);
     entry::<triggers::RouteSpec>("RouteSpec", &mut types);
     entry::<triggers::TriggerPolicy>("TriggerPolicy", &mut types);
@@ -205,6 +209,8 @@ pub fn contract() -> Value {
     entry::<triggers::FireAck>("FireAck", &mut types);
     entry::<triggers::TriggerRemoved>("TriggerRemoved", &mut types);
     entry::<triggers::TriggerToggle>("TriggerToggle", &mut types);
+    entry::<triggers::TriggerMode>("TriggerMode", &mut types);
+    entry::<triggers::TriggerModeRequest>("TriggerModeRequest", &mut types);
     entry::<companion::PairRequest>("PairRequest", &mut types);
     entry::<companion::Paired>("Paired", &mut types);
     entry::<companion::Me>("Me", &mut types);

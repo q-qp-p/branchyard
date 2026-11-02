@@ -114,6 +114,54 @@ pub struct Task {
     pub files: TaskFiles,
     /// What started it: `run`, `fan`, `map`, `fork` or `task`.
     pub origin: String,
+    /// The server trigger whose run started it, when one did: why it was
+    /// started, kept after the trigger and its runs are removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<TaskTrigger>,
+}
+
+/// The trigger run that started a task (`docs/triggers.md`). `by` stays
+/// the principal it ran as; this says which trigger, which run, and who
+/// caused the event.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskTrigger {
+    /// The trigger's ID.
+    pub id: String,
+    /// Its name when the run fired.
+    pub name: String,
+    /// The run's ID.
+    pub run: String,
+    /// Who caused the event, when it says: `None` for a schedule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<TriggerActor>,
+}
+
+/// Who caused a trigger's event, on its source.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TriggerActor {
+    /// `github`, `slack`, `linear`, `generic`, or an email provider.
+    pub source: String,
+    /// The login, user ID, name or address the source gives.
+    pub name: String,
+    /// The source marks it a bot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
+}
+
+impl std::fmt::Display for TaskTrigger {
+    /// `triage (trg_…), run run_…, for github:alice` (`… (a bot)`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({}), run {}", self.name, self.id, self.run)?;
+        if let Some(actor) = &self.actor {
+            write!(f, ", for {}:{}", actor.source, actor.name)?;
+            if actor.bot {
+                write!(f, " (a bot)")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One attempt of a task, as [`list`] and [`view`] show it.
@@ -422,6 +470,7 @@ pub(crate) fn joining(
             created_ms: now_ms(),
             files: TaskFiles::Repository,
             origin: origin.to_owned(),
+            trigger: options.trigger.clone(),
         },
         inherit: None,
     })

@@ -64,6 +64,33 @@ After every `by run`, `by send`, and `by fork`, the CLI prints `next` lines with
 | `merged` | merged into TARGET | The candidate was integrated. The worktree stays until you remove it. | `by rm NAME` |
 | `discarded` | discarded: REASON | Set aside on purpose with `by discard`: never integrated, record and cost kept. | `by rm NAME` |
 
+## What a branch needs from you
+
+One function in the engine classifies every branch for the console, `GET …/decisions`, hook lines, the status line and bare `by`. The result is derived each time a branch is listed or looked up and never stored. `by show NAME --json` and `GET …/branches` carry it as `stage`, such as `{"lane": "needs_you", "reason": "approval"}`. The rows are in precedence order, and the first row that matches a branch gives its reason and lane.
+
+<!-- fact:stage.table -->
+
+| Reason | Lane | Condition |
+|---|---|---|
+| `approval` | `needs_you` | Its running turn is parked on an approval ask. It moves only when you allow or deny it. |
+| `question` | `needs_you` | It sent a question or escalation that nobody has answered, and it is running or it asked you. |
+| `stalled` | `needs_you` | It is running, and its harness has been silent for its stall window. |
+| `parent` | `running` | It is a delegated child that settled without being merged or discarded, and its parent still runs or waits. Its parent decides what comes next. |
+| `awaiting_plan_approval` | `needs_you` | Its plan waits for you to approve, edit or reject it. |
+| `failed` | `needs_you` | Its turn failed. |
+| `interrupted` | `needs_you` | Its turn was cancelled, or the engine running it stopped. |
+| `budget_exceeded` | `needs_you` | A limit you set stopped it. |
+| `blocked` | `needs_you` | A prerequisite did not succeed, so it will not start until its graph changes. |
+| `running` | `running` | A turn is in progress. |
+| `waiting_on_children` | `running` | Its turn ended while its children still ran. It starts again on its own when they settle. |
+| `waiting` | `running` | It waits for its prerequisites to settle. |
+| `ready` | `ready` | Its candidate waits to be merged. |
+| `no_changes` | `done` | Its last turn changed no file. |
+| `merged` | `done` | Its candidate was integrated. |
+| `discarded` | `done` | It was set aside on purpose. |
+
+<!-- /fact -->
+
 ## What "qualified" means
 
 Branchyard drives each harness through a protocol profile. Throughout the CLI and documentation (`by harnesses`, `by doctor`, [compatibility](compatibility.md), and [driver qualification](qualification/README.md)), Branchyard distinguishes between having a protocol driver that passes mock tests and having verified that driver against the real harness binary:

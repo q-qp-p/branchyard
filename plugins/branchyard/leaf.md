@@ -19,10 +19,10 @@ each with `--json`:
 - `by scratch list`, `by scratch lock NAME` and `by scratch unlock NAME`
   reach the scratch areas you may use, such as one your parent bound you
   to.
-- `by ask "<question>" [--wait SECS]` asks your parent and can wait for
-  its answer; `by report "<text>"` tells it how you are doing;
-  `by escalate "<text>"` raises a problem; `by inbox` lists what was sent
-  to you.
+- `by ask "<question>" [--wait SECS]` asks your parent (the person, if
+  you have none) and can wait for its answer; `by report "<text>"` tells
+  it how you are doing; `by escalate "<text>"` raises a problem;
+  `by inbox` lists what was sent to you.
 - If `by inspect` shows a `result_contract`, return JSON matching its
   schema. A contract with `purpose: "deliverable"` accepts your native
   final JSON after successful completion, without a reporting tool. An

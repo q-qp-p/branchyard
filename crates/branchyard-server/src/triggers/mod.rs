@@ -32,12 +32,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use branchyard_client::api::{Problem, ProblemKind};
 use branchyard_client::triggers::{
-    Conditions, EventSource, Trigger, TriggerEvent, TriggerSpec, When,
+    Bots, Conditions, EventSource, RunState, Trigger, TriggerEvent, TriggerRun, TriggerSpec, When,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Principal, WorkspaceScripts};
+use crate::problems::{Found, Scope};
 
 /// What a server's configuration says about triggers.
 #[derive(Clone, Debug)]
@@ -127,13 +129,14 @@ impl StoredTrigger {
             name: spec.name.clone(),
             repo: spec.repo.clone(),
             when: spec.when.clone(),
-            conditions: spec.conditions.clone(),
+            conditions: self.conditions(),
             task: spec.task.clone(),
             route: spec.route.clone(),
             deliver: spec.deliver.clone(),
             precheck: spec.precheck.clone(),
             policy: spec.policy.clone(),
             enabled: self.enabled,
+            mode: spec.mode,
             paused_reason: self.paused_reason.clone(),
             consecutive_failures: self.failures,
             next_due_ms: self.next_due_ms,
@@ -145,6 +148,16 @@ impl StoredTrigger {
         }
     }
 
+    /// Its conditions with `bots` as it acts: an event trigger stored
+    /// without it (from before bots were told apart) shows `allow`.
+    pub fn conditions(&self) -> Conditions {
+        let mut conditions = self.spec.conditions.clone();
+        if !self.spec.when.is_schedule() {
+            conditions.bots = Some(conditions.bots());
+        }
+        conditions
+    }
+
     /// The source of an event trigger.
     pub fn source(&self) -> Option<EventSource> {
         match self.spec.when {
@@ -152,6 +165,61 @@ impl StoredTrigger {
             _ => None,
         }
     }
+
+    /// Whether it paused itself: disabled with at least its
+    /// `pause_after_failures` failed runs in a row. A person who disabled
+    /// it below that chose to.
+    pub fn paused_itself(&self) -> bool {
+        let pause_after = self.spec.policy.pause_after_failures;
+        !self.enabled && pause_after > 0 && self.failures >= pause_after
+    }
+}
+
+/// How many of a paused trigger's latest runs [`problems`] looks through
+/// for the failure that paused it: runs still pending when it paused
+/// finish after it, as skipped.
+const RUNS_SEARCHED: usize = 20;
+
+/// Every tenant's triggers that paused themselves, for
+/// `GET /v1/problems`, each seen by its tenant on its repository. `since_ms` is when the newest
+/// failed run among the latest [`RUNS_SEARCHED`] finished (when it was
+/// recorded, if it has no finish time), which is the run that paused it:
+/// the store keeps no time of the pause itself. Without one it is the
+/// trigger's creation.
+pub(crate) fn problems(store: &dyn store::TriggerStore) -> std::io::Result<Vec<Found>> {
+    let failed = |run: &&TriggerRun| {
+        run.state == RunState::Failed || run.outcome.as_ref().is_some_and(|o| !o.ok)
+    };
+    store
+        .list(None)?
+        .into_iter()
+        .filter(StoredTrigger::paused_itself)
+        .map(|t| {
+            let since_ms = store
+                .runs(&t.id, None, RUNS_SEARCHED)?
+                .iter()
+                .find(failed)
+                .map_or(t.created_at_ms, |r| r.finished_at_ms.unwrap_or(r.at_ms));
+            let name = &t.spec.name;
+            Ok(Found {
+                scope: Scope::Tenant {
+                    tenant: t.tenant.clone(),
+                    repo: Some(t.spec.repo.clone()),
+                },
+                problem: Problem {
+                    kind: ProblemKind::Trigger,
+                    key: t.id.clone(),
+                    what: format!("trigger {name}"),
+                    since_ms,
+                    failures: Some(t.failures),
+                    error: t.paused_reason.clone().unwrap_or_default(),
+                    next: format!(
+                        "see why with `by trigger runs {name}`, fix it, then `by trigger enable {name}`"
+                    ),
+                },
+            })
+        })
+        .collect()
 }
 
 /// `BASE/v1/triggers/ID/fire`.
@@ -219,7 +287,8 @@ pub fn valid_name(name: &str) -> bool {
 /// Check a new trigger's spec, as far as it can be checked without the
 /// server: names, the schedule, conditions against the source, the
 /// templates, the route's kind, the precheck and the policy. Returns the
-/// spec with its precheck normalized.
+/// spec with its precheck normalized and, for an event trigger, `bots`
+/// written as it acts (`deny` unless given), so the stored spec says it.
 pub fn validate(mut spec: TriggerSpec) -> Result<TriggerSpec, String> {
     if !valid_name(&spec.name) {
         return Err(format!(
@@ -257,6 +326,9 @@ pub fn validate(mut spec: TriggerSpec) -> Result<TriggerSpec, String> {
         When::Event { .. } => true,
     };
     check_conditions(&spec.conditions, &spec.when)?;
+    if event {
+        spec.conditions.bots.get_or_insert(Bots::Deny);
+    }
     let task = &spec.task;
     if task.prompt.trim().is_empty() {
         return Err("the task's prompt is empty".into());
@@ -430,6 +502,12 @@ pub fn matches(conditions: &Conditions, event: &TriggerEvent) -> Result<(), Stri
     };
     one_of("repo", &conditions.repo, event.repo.as_deref())?;
     one_of("author", &conditions.author, event.author.as_deref())?;
+    if event.bot && conditions.author.is_empty() && conditions.bots() == Bots::Deny {
+        return Err(format!(
+            "{} is a bot (conditions.bots is deny; allow bots, or name it in conditions.author)",
+            event.author.as_deref().unwrap_or("its sender")
+        ));
+    }
     if !conditions.branch.is_empty()
         && !event
             .branch
@@ -518,7 +596,7 @@ mod tests {
     use super::*;
     use branchyard_client::api::TaskRequest;
     use branchyard_client::triggers::{
-        Busy, Deliver, Lifecycle, Precheck, RouteSpec, TriggerPolicy,
+        Busy, Deliver, Lifecycle, Precheck, RouteSpec, TriggerMode, TriggerPolicy,
     };
 
     fn spec(when: When) -> TriggerSpec {
@@ -535,6 +613,7 @@ mod tests {
             deliver: None,
             precheck: None,
             enabled: true,
+            mode: TriggerMode::Fire,
             policy: TriggerPolicy::default(),
             secret: None,
         }
@@ -773,11 +852,145 @@ mod tests {
         assert!(matches(&c, &e).unwrap_err().contains("kind"));
     }
 
+    /// A new event trigger is stored saying what it does with bots (`deny`
+    /// unless given); a schedule says nothing; one stored without it reads
+    /// `allow`. A bot's event is then skipped unless `author` names it.
+    #[test]
+    fn bots_are_denied_by_default_unless_allowed_or_named() {
+        let made = validate(spec(github())).unwrap();
+        assert_eq!(made.conditions.bots, Some(Bots::Deny));
+        let mut allowed = spec(github());
+        allowed.conditions.bots = Some(Bots::Allow);
+        assert_eq!(
+            validate(allowed).unwrap().conditions.bots,
+            Some(Bots::Allow)
+        );
+        let cron = When::Cron {
+            expr: "0 3 * * *".into(),
+            timezone: "UTC".into(),
+        };
+        assert_eq!(validate(spec(cron.clone())).unwrap().conditions.bots, None);
+        let mut on_schedule = spec(cron);
+        on_schedule.conditions.bots = Some(Bots::Allow);
+        assert!(validate(on_schedule)
+            .unwrap_err()
+            .contains("schedule has none"));
+        // A trigger stored before bots were told apart: allow, and shown so.
+        let legacy = Conditions::default();
+        assert_eq!(legacy.bots(), Bots::Allow);
+        let stored = StoredTrigger {
+            id: "trg_1".into(),
+            tenant: "default".into(),
+            spec: spec(github()),
+            principal: Principal::default_for("tester"),
+            created_at_ms: 0,
+            secret: None,
+            enabled: true,
+            paused_reason: None,
+            failures: 0,
+            next_due_ms: None,
+        };
+        assert_eq!(stored.info("http://x").conditions.bots, Some(Bots::Allow));
+        let bot = TriggerEvent {
+            source: "github".into(),
+            kind: "pull_request.opened".into(),
+            id: "1".into(),
+            author: Some("dependabot[bot]".into()),
+            bot: true,
+            ..TriggerEvent::default()
+        };
+        let denied = Conditions {
+            bots: Some(Bots::Deny),
+            ..Conditions::default()
+        };
+        let why = matches(&denied, &bot).unwrap_err();
+        assert!(why.contains("dependabot[bot] is a bot"), "{why}");
+        assert_eq!(matches(&legacy, &bot), Ok(()));
+        let named = Conditions {
+            author: vec!["Dependabot[bot]".into()],
+            ..denied.clone()
+        };
+        assert_eq!(matches(&named, &bot), Ok(()));
+        let person = TriggerEvent {
+            author: Some("alice".into()),
+            bot: false,
+            ..bot.clone()
+        };
+        assert_eq!(matches(&denied, &person), Ok(()));
+        let nameless = TriggerEvent {
+            author: None,
+            ..bot
+        };
+        assert!(matches(&denied, &nameless)
+            .unwrap_err()
+            .contains("its sender is a bot"));
+    }
+
     #[test]
     fn intervals_count_from_their_anchor() {
         let every = Schedule::Every(60_000);
         assert_eq!(every.next_after(1_000, 0), Some(60_000));
         assert_eq!(every.next_after(60_000, 0), Some(120_000));
         assert_eq!(every.next_after(10, 500), Some(500));
+    }
+
+    #[test]
+    fn only_a_trigger_that_paused_itself_is_a_problem() {
+        use store::conformance::{run, trigger};
+        use store::TriggerStore as _;
+
+        let store = store::SqliteTriggers::memory();
+        let mut manual = trigger("acme", "manual", false);
+        (manual.enabled, manual.failures) = (false, 2);
+        manual.paused_reason = Some("disabled by tester".into());
+        let mut never = trigger("acme", "never", false);
+        never.spec.policy.pause_after_failures = 0;
+        (never.enabled, never.failures) = (false, 5);
+        let mut running = trigger("acme", "running", false);
+        running.failures = 3;
+        let mut paused = trigger("acme", "paused", false);
+        (paused.enabled, paused.failures) = (false, 3);
+        paused.paused_reason = Some("paused after 3 failed runs in a row; the last: boom".into());
+        let mut elsewhere = paused.clone();
+        (elsewhere.id, elsewhere.tenant) = (new_id("trg"), "globex".into());
+        for t in [&manual, &never, &running, &paused, &elsewhere] {
+            assert!(store.create(t).unwrap());
+        }
+        let mut failed = run(&paused.id, "event:1", RunState::Failed);
+        (failed.at_ms, failed.finished_at_ms) = (40, Some(50));
+        store.record(&failed).unwrap();
+        let mut skipped = run(&paused.id, "event:2", RunState::SkippedDisabled);
+        skipped.at_ms = 60;
+        store.record(&skipped).unwrap();
+
+        let found = problems(&store).unwrap();
+        assert_eq!(found.len(), 2, "only the two that paused themselves");
+        let acme = Scope::Tenant {
+            tenant: "acme".into(),
+            repo: Some("app".into()),
+        };
+        let (mine, theirs): (Vec<_>, Vec<_>) = found.into_iter().partition(|f| f.scope == acme);
+        assert_eq!(mine.len(), 1, "acme's own");
+        let problem = &mine[0].problem;
+        assert_eq!(
+            (problem.kind, problem.key.as_str(), problem.what.as_str()),
+            (ProblemKind::Trigger, paused.id.as_str(), "trigger paused")
+        );
+        assert_eq!((problem.since_ms, problem.failures), (50, Some(3)));
+        assert_eq!(problem.error, paused.paused_reason.clone().unwrap());
+        assert!(
+            problem.next.contains("`by trigger enable paused`"),
+            "{}",
+            problem.next
+        );
+        // Without a failed run to date it, it dates from its creation.
+        assert_eq!(
+            theirs[0].scope,
+            Scope::Tenant {
+                tenant: "globex".into(),
+                repo: Some("app".into())
+            }
+        );
+        assert_eq!(theirs[0].problem.since_ms, 1);
     }
 }

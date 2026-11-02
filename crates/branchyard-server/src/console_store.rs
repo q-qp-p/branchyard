@@ -268,7 +268,7 @@ pub(crate) fn pg_mutate(
 mod tests {
     use super::*;
     use crate::store::{
-        Admission, AdmissionQuota, Idempotency, MemoryStore, OperationStore, SqliteStore,
+        Admission, AdmissionQuota, Idempotency, Lane, MemoryStore, OperationStore, SqliteStore,
         StoredOperation,
     };
     use branchyard_client::api::{Operation, OperationKind, OperationState};
@@ -312,6 +312,7 @@ mod tests {
             principal: None,
             creates: vec![],
             trace: None,
+            lane: Lane::Normal,
         }
     }
 
@@ -535,7 +536,10 @@ mod tests {
         let control = json!({"kind":"console","command":{"action":"control","control":"cancel","workspace_id":"w"}});
         store
             .admit(
-                &operation("control", "control"),
+                &StoredOperation {
+                    lane: Lane::Control,
+                    ..operation("control", "control")
+                },
                 &control,
                 &AdmissionQuota::default(),
             )
@@ -551,7 +555,14 @@ mod tests {
         let lease = Duration::from_secs(30);
         let scheduling = Scheduling::default();
         assert!(store
-            .claim_control(&worker, &["other-repo".into()], &[], lease, &scheduling)
+            .claim_from(
+                &worker,
+                &["other-repo".into()],
+                &[],
+                lease,
+                &scheduling,
+                Lane::Control,
+            )
             .unwrap()
             .is_none());
         let normal = store
@@ -560,19 +571,40 @@ mod tests {
             .unwrap();
         assert_eq!(normal.operation.operation.id, "normal");
         let claimed = store
-            .claim_control(&worker, &["managed".into()], &[], lease, &scheduling)
+            .claim_from(
+                &worker,
+                &["managed".into()],
+                &[],
+                lease,
+                &scheduling,
+                Lane::Control,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(claimed.operation.operation.id, "control");
-        assert!(crate::store::control_work(&claimed.work));
-        assert!(!crate::store::control_work(&normal.work));
+        assert_eq!(claimed.operation.lane, Lane::Control);
+        assert_eq!(normal.operation.lane, Lane::Normal);
         assert!(store
-            .claim_control(&worker, &["managed".into()], &[], lease, &scheduling)
+            .claim_from(
+                &worker,
+                &["managed".into()],
+                &[],
+                lease,
+                &scheduling,
+                Lane::Control,
+            )
             .unwrap()
             .is_none());
         store.release(&worker, "control", claimed.fence).unwrap();
         let renewed = store
-            .claim_control(&worker, &["managed".into()], &[], lease, &scheduling)
+            .claim_from(
+                &worker,
+                &["managed".into()],
+                &[],
+                lease,
+                &scheduling,
+                Lane::Control,
+            )
             .unwrap()
             .unwrap();
         assert!(renewed.fence > claimed.fence);

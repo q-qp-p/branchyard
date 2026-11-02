@@ -13,13 +13,19 @@
 //! that entry, so one broken target never blocks the others or the feed
 //! itself. `X-Branchyard-Delivery` carries the feed position as the
 //! receiver's dedupe key.
+//!
+//! Each delivery task also counts its failed attempts in a row, every
+//! retry included, in memory: from the third, `GET /v1/problems` lists the
+//! webhook for `admin` principals until an attempt is delivered.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use backon::{ExponentialBuilder, Retryable};
 use branchyard::{Activity, BranchStatus};
-use branchyard_client::api::FeedEntry;
+use branchyard_client::api::{FeedEntry, Problem, ProblemKind};
+use branchyard_support::time::now_ms;
+use branchyard_support::LockExt as _;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::Serialize;
 use sha2::Sha256;
@@ -28,6 +34,7 @@ use tokio::sync::watch;
 use crate::api::RepoState;
 use crate::config::WebhookConfig;
 use crate::observe::Observability;
+use crate::problems::Streak;
 use crate::store::OperationStore;
 
 /// Feed entries read per delivery batch.
@@ -115,38 +122,89 @@ fn sign(secret: &str, body: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// Start delivering `repo`'s feed to `webhook`, from its durably stored
-/// cursor (the feed's current head if none is stored, so a webhook added
-/// to a long-lived repository does not replay its whole history).
-pub fn spawn(
-    repo: RepoState,
-    webhook: WebhookConfig,
-    store: Arc<dyn OperationStore>,
-    client: reqwest::Client,
-    shutdown: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
-    spawn_observed(
-        repo,
-        webhook,
-        store,
-        client,
-        Observability::default(),
-        shutdown,
-    )
+/// One delivery task's run of failed attempts, with what names it, for
+/// `GET /v1/problems`. Only the task given [`Watch::streak`] writes it.
+pub(crate) struct Watch {
+    repo: String,
+    /// The first 12 hex digits of the SHA-256 of the webhook's id, which
+    /// is its URL unless the configuration names one.
+    key: String,
+    /// The URL's scheme, host and port: some receivers treat the rest of
+    /// the URL as a credential.
+    origin: String,
+    streak: Arc<Mutex<Streak>>,
 }
 
-/// [`spawn`], counting deliveries in `observability`'s metrics and sending
-/// each with the `traceparent` of the operation that last worked on its
-/// branch here, when there is one.
-pub fn spawn_observed(
+impl Watch {
+    pub(crate) fn new(repo: &str, webhook: &WebhookConfig) -> Watch {
+        let id: String = crate::config::sha256_hex(webhook.id.as_bytes())
+            .chars()
+            .take(12)
+            .collect();
+        Watch {
+            repo: repo.to_owned(),
+            key: format!("{repo}:{id}"),
+            origin: reqwest::Url::parse(&webhook.url).map_or_else(
+                |_| "a webhook".into(),
+                |url| url.origin().ascii_serialization(),
+            ),
+            streak: Arc::default(),
+        }
+    }
+
+    /// The repository whose feed the task delivers.
+    pub(crate) fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    /// The handle the delivery task writes.
+    pub(crate) fn streak(&self) -> Arc<Mutex<Streak>> {
+        self.streak.clone()
+    }
+
+    /// The `webhook` problem, once its run of failures counts.
+    pub(crate) fn problem(&self) -> Option<Problem> {
+        let streak = self.streak.lock_recovering("webhook streak");
+        let (since_ms, failures, error) = streak.problem()?;
+        Some(Problem {
+            kind: ProblemKind::Webhook,
+            key: self.key.clone(),
+            what: format!("webhook {} for {}", self.origin, self.repo),
+            since_ms,
+            failures: Some(failures),
+            error: error.to_owned(),
+            next: "check that the URL answers 2xx to deliveries signed with its configured \
+                   secret; delivery resumes by itself, and entries dead-lettered meanwhile \
+                   are not resent"
+                .into(),
+        })
+    }
+}
+
+/// Start delivering `repo`'s feed to `webhook`, from its durably stored
+/// cursor (the feed's current head if none is stored, so a webhook added
+/// to a long-lived repository does not replay its whole history),
+/// counting deliveries in `observability`'s metrics and sending each with
+/// the `traceparent` of the operation that last worked on its branch
+/// here, when there is one. Each attempt's outcome goes to `streak`.
+pub(crate) fn spawn(
     repo: RepoState,
     webhook: WebhookConfig,
     store: Arc<dyn OperationStore>,
     client: reqwest::Client,
     observability: Observability,
+    streak: Arc<Mutex<Streak>>,
     shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run(repo, webhook, store, client, observability, shutdown))
+    tokio::spawn(run(
+        repo,
+        webhook,
+        store,
+        client,
+        observability,
+        streak,
+        shutdown,
+    ))
 }
 
 async fn run(
@@ -155,6 +213,7 @@ async fn run(
     store: Arc<dyn OperationStore>,
     client: reqwest::Client,
     observability: Observability,
+    streak: Arc<Mutex<Streak>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let cursor_id = format!("{}:{}", repo.name, webhook.id);
@@ -200,7 +259,16 @@ async fn run(
             for entry in &entries {
                 let kinds = kinds_of(&entry.activity);
                 if wants(&webhook, &kinds) {
-                    deliver(&client, &webhook, &repo.name, entry, &kinds, &observability).await;
+                    deliver(
+                        &client,
+                        &webhook,
+                        &repo.name,
+                        entry,
+                        &kinds,
+                        &observability,
+                        &streak,
+                    )
+                    .await;
                 }
                 cursor = entry.seq;
                 let (store, id, cursor) = (store.clone(), cursor_id.clone(), cursor);
@@ -233,6 +301,7 @@ async fn run(
 /// Deliver one entry, retrying with backoff ([`backoff`], through
 /// `backon`); logs a warning for each failed attempt that will be retried,
 /// then a dead-letter note with the last error after [`MAX_ATTEMPTS`].
+/// Each failed attempt counts in `streak`; a delivered one clears it.
 async fn deliver(
     client: &reqwest::Client,
     webhook: &WebhookConfig,
@@ -240,7 +309,13 @@ async fn deliver(
     entry: &FeedEntry,
     kinds: &[&'static str],
     observability: &Observability,
+    streak: &Mutex<Streak>,
 ) {
+    let failed = |error: &Refused| {
+        streak
+            .lock_recovering("webhook streak")
+            .failed(now_ms(), error.reason())
+    };
     let metrics = &observability.metrics;
     let traceparent = observability.tracer.branch_trace(repo, &entry.branch);
     let envelope = Envelope {
@@ -289,6 +364,7 @@ async fn deliver(
         .retry(backoff(max_attempts))
         .sleep(tokio::time::sleep)
         .notify(|error, wait| {
+            failed(error);
             metrics.inc(crate::metrics::WEBHOOKS, &[("result", "retried")]);
             tracing::warn!(
                 webhook = %webhook.url,
@@ -299,9 +375,15 @@ async fn deliver(
             )
         })
         .await;
-    let result = match delivered {
-        Ok(()) => "delivered",
-        Err(_) => "dead_lettered",
+    let result = match &delivered {
+        Ok(()) => {
+            streak.lock_recovering("webhook streak").succeeded();
+            "delivered"
+        }
+        Err(error) => {
+            failed(error);
+            "dead_lettered"
+        }
     };
     metrics.inc(crate::metrics::WEBHOOKS, &[("result", result)]);
     if let Err(error) = delivered {
@@ -320,6 +402,26 @@ async fn deliver(
 enum Refused {
     Transport(reqwest::Error),
     Status(reqwest::StatusCode),
+}
+
+impl Refused {
+    /// What went wrong, without the target's URL, which reqwest's own
+    /// message carries.
+    fn reason(&self) -> String {
+        match self {
+            Refused::Transport(error) => {
+                let mut reason = String::from("could not deliver");
+                let mut cause = std::error::Error::source(error);
+                while let Some(next) = cause {
+                    reason.push_str(": ");
+                    reason.push_str(&next.to_string());
+                    cause = next.source();
+                }
+                reason
+            }
+            Refused::Status(_) => self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for Refused {

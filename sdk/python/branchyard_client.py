@@ -114,6 +114,7 @@ __all__ = [
     "Rewound",
     "RunningError",
     "ServerError",
+    "Stage",
     "StaleRevisionError",
     "Status",
     "StatusReport",
@@ -678,10 +679,21 @@ class Status(Record):
         return str(self.get("state", ""))
 
 
+@dataclasses.dataclass(frozen=True)
+class Stage:
+    """What a branch needs from a person now (`BranchInfo.stage`): its
+    `lane` (`needs_you`, `running`, `ready` or `done`) and the `reason`, the
+    first row of the table in `docs/concepts.md` ("What a branch needs from
+    you") that matches it, such as `approval`, `parent` or `ready`."""
+
+    lane: str
+    reason: str
+
+
 class BranchInfo(Record):
     """`BranchInfo`: `name`, `git_branch`, `harness`, `profile`, `parent`,
     `children`, `depth`, `base`, `candidate`, `status`, `turns`,
-    `cost_usd`, `created_at`, `stalled`, ..."""
+    `cost_usd`, `created_at`, `stalled`, `stage`, ..."""
 
     name: str
     git_branch: str
@@ -706,6 +718,14 @@ class BranchInfo(Record):
     def state(self) -> str:
         """The name of the status's state, such as `ready`; the empty string when there is none."""
         return str(self.status.get("state", ""))
+
+    @property
+    def stage(self) -> Optional[Stage]:
+        """Its `Stage`, or None when the answer carried none (an older server)."""
+        value = self.get("stage")
+        if not isinstance(value, dict):
+            return None
+        return Stage(lane=str(value.get("lane", "")), reason=str(value.get("reason", "")))
 
     @property
     def settled(self) -> bool:
@@ -884,8 +904,8 @@ class Approval(Record):
 
 class Decision(Record):
     """One thing that waits for a person (`Decision`): `kind` (`approval`,
-    `question`, `merge`, `stop`, `stall`, and for a project's workspaces
-    `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
+    `question`, `plan`, `merge`, `stop`, `stall`, and for a project's
+    workspaces `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
     `nobody`), `since_ms`, `status`, `candidate`, and the `approval` or
     `question` it is about. An `output` or `session` decision also names its
     `workspace`, `workspace_title`, `session` and `session_name`; a `session`
@@ -2004,6 +2024,14 @@ class Client:
         """The server's triggers (`docs/triggers.md`), as the server lists them."""
         return [Record(t) for t in self.get("/v1/triggers").get("triggers", [])]
 
+    def problems(self) -> list[Record]:
+        """`GET /v1/problems`: what background work could not do that a
+        person can act on, oldest first, each with `kind` (`trigger`,
+        `operation`, `webhook`, `push` or `effect`), `key`, `what`,
+        `since_ms`, `failures` (when counted), `error` and `next`; empty
+        when nothing needs a person."""
+        return [Record(p) for p in self.get("/v1/problems").get("problems", [])]
+
     def trigger(self, name_or_id: str) -> Record:
         """One trigger by name or id."""
         return Record(self.get(f"/v1/triggers/{_q(name_or_id)}"))
@@ -2013,8 +2041,9 @@ class Client:
         `name`, `repo`, `when`, `task`, and `deliver: {"branch": TEMPLATE,
         "busy": "queue" | "steer" | "skip", "lifecycle": {"idle_minutes": N,
         "dormant_days": N, "delete_days": N}}` for a branch that lives on
-        (each lifecycle threshold optional, rising when several are given).
-        Returns `{"trigger", "secret"?}`."""
+        (each lifecycle threshold optional, rising when several are given),
+        and `mode: "observe"` to record each run that would fire and start
+        nothing. Returns `{"trigger", "secret"?}`."""
         return Record(self.post("/v1/triggers", spec))
 
     def delete_trigger(self, name_or_id: str) -> None:
@@ -2025,6 +2054,11 @@ class Client:
         """Enable a trigger, or with `enabled=False` disable it; returns it."""
         verb = "enable" if enabled else "disable"
         return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/{verb}"))
+
+    def set_trigger_mode(self, name_or_id: str, mode: str) -> Record:
+        """`POST /v1/triggers/{t}/mode`: `"fire"`, or `"observe"` to record each run that would fire as
+        `observed`, with the task it would have started, and start nothing. Returns the trigger."""
+        return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/mode", {"mode": mode}))
 
     def test_trigger(
         self,
@@ -2038,9 +2072,11 @@ class Client:
         body = _drop_none({"event": event, "event_type": event_type, "run_precheck": run_precheck})
         return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/test", body))
 
-    def trigger_runs(self, name_or_id: str, limit: Optional[int] = None) -> list[Record]:
-        """The trigger's recent runs, newest first, at most `limit`."""
-        return [Record(r) for r in self.get(f"/v1/triggers/{_q(name_or_id)}/runs", limit=limit).get("runs", [])]
+    def trigger_runs(self, name_or_id: str, limit: Optional[int] = None, state: Optional[str] = None) -> list[Record]:
+        """The trigger's recent runs, newest first, at most `limit`; with `state` (such as `"observed"`), only
+        those in it."""
+        query = _drop_none({"limit": limit, "state": state})
+        return [Record(r) for r in self.get(f"/v1/triggers/{_q(name_or_id)}/runs", **query).get("runs", [])]
 
     def set_trigger_secret(self, name_or_id: str, secret: Optional[str] = None, key: Optional[str] = None) -> Record:
         """`POST /v1/triggers/{t}/secret`: set the webhook secret, or
@@ -2890,8 +2926,8 @@ class Repo:
         return Message(self.client.post(self._branch(source, "/handoff"), body, key=new_key()))
 
     def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None) -> Record:
-        """Ask `branch`'s parent a question, as `branch`. With `wait_seconds` (capped at 120 on the server) it waits for
-        the answer, `answer` being None when none came."""
+        """Ask `branch`'s parent (the person, if it has none) a question, as `branch`. With `wait_seconds` (capped at
+        120 on the server) it waits for the answer, `answer` being None when none came."""
         return Record(
             self.client.post(self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds}))
         )
@@ -2907,7 +2943,8 @@ class Repo:
         return Message(self.client.post(self._branch(branch, "/report"), body))
 
     def escalate(self, branch: str, text: str) -> Message:
-        """Escalate `text` as `branch` to its parent, or further up if its rig seat allows."""
+        """Escalate `text` as `branch` to its parent (the person, if it has none), or further up if its rig seat
+        allows."""
         return Message(self.client.post(self._branch(branch, "/escalate"), {"text": text}))
 
     def report_status(
@@ -2933,6 +2970,28 @@ class Repo:
     def answer(self, branch: str, message_id: int, text: str) -> Message:
         """Answer one of `branch`'s descendants' messages, as `branch`."""
         return Message(self.client.post(self._branch(branch, "/answer"), {"message_id": message_id, "text": text}))
+
+    # -- the inbox, as the person ------------------------------------------
+
+    def person_inbox(self, unread: bool = False) -> list[Message]:
+        """The person's inbox, as `Message`s: the questions and escalations
+        of branches nobody delegated (a root started with delegation, or a
+        fork), oldest first; like `by inbox` outside a harness. With
+        `unread`, only those neither answered (their ids are not in the
+        response's `answered`) nor delivered: what still waits for you."""
+        inbox = self.client.get(f"{self._base}/inbox")
+        messages = [Message(m) for m in inbox.get("messages", [])]
+        if unread:
+            answered = set(inbox.get("answered", []))
+            messages = [m for m in messages if m.id not in answered and not m.get("delivered")]
+        return messages
+
+    def answer_message(self, message_id: int, text: str) -> Message:
+        """Answer question or escalation `message_id` as whoever it was sent
+        to: the person, or the branch it went to; like `by answer ID TEXT`
+        outside a harness. Needs the `run` scope. An asker whose turn ended
+        reads the answer when its next turn starts; `send` starts one."""
+        return Message(self.client.post(f"{self._base}/answer", {"message_id": message_id, "text": text}))
 
     # -- plans -------------------------------------------------------------
 
@@ -3018,8 +3077,8 @@ class Repo:
 
     def decisions(self) -> list[Decision]:
         """What waits for a person, in the order to take it: a branch parked
-        on an approval or a question first, oldest wait first, then the
-        ready branches, then the stopped and stalled ones
+        on an approval, a question or a plan first, oldest wait first, then
+        the ready branches, then the stopped, blocked and stalled ones
         (`docs/server.md`, `GET …/decisions`). Nothing in it expires."""
         return [Decision(d) for d in self.client.get(f"{self._base}/decisions").get("decisions", [])]
 

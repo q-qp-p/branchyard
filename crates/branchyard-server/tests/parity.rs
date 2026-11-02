@@ -454,11 +454,15 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
         repo.inspect("kid").unwrap().reported,
         Some(repeated.report.clone())
     );
-    // A branch with no parent states its status with nobody to tell.
+    // A root's failure is escalated to the person.
     let alone = repo
         .report_status("root", ReportedState::Failure, "gave up", None, None)
         .unwrap();
-    assert!(alone.escalation.is_none(), "{alone:?}");
+    let escalation = alone.escalation.expect("the person hears of it");
+    assert_eq!(
+        (escalation.from.as_str(), escalation.to.as_str()),
+        ("root", branchyard::PERSON)
+    );
     // A field that breaks a rule is 400 invalid_request naming it; nothing
     // is recorded.
     let before = repo.events("kid", 0).unwrap().events.len();

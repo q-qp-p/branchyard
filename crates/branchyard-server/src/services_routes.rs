@@ -253,6 +253,7 @@ mod tests {
                 config.triggers.clone(),
                 "http://127.0.0.1".into(),
             )),
+            seen: Default::default(),
             companion: None,
             sync: None,
             config,

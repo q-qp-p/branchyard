@@ -2424,7 +2424,7 @@ by sync rotate-key [OPTIONS]
 
 Run tasks on a schedule or from webhooks
 
-Add, list, show, test, enable, disable and rm triggers, and see their runs (see docs/triggers.md).
+Add, list, show, test, enable, disable and rm triggers, let them fire or only observe, and see their runs (see docs/triggers.md).
 
 ```text
 by trigger [OPTIONS] <COMMAND>
@@ -2470,6 +2470,7 @@ by trigger add [OPTIONS] --prompt <PROMPT> <--cron <EXPR>|--every <DURATION>|--o
 | `--catch-up <DURATION>` | Fire a scheduled time missed by at most this long once (default 1h) |
 | `--secret-file <FILE>` | The webhook secret, from a file (default: generated and printed once) |
 | `--disabled` | Create it disabled |
+| `--observe` | Record each run that would fire, and start nothing, until `by trigger mode NAME fire` |
 
 ### `by trigger list`
 
@@ -2530,6 +2531,19 @@ by trigger disable [OPTIONS] <NAME>
 |---|---|
 | `<NAME>` | The trigger's name |
 
+### `by trigger mode`
+
+Fire (start its task), or observe (record each run that would fire and start nothing)
+
+```text
+by trigger mode [OPTIONS] <NAME> <MODE>
+```
+
+| Option | What it does |
+|---|---|
+| `<NAME>` | The trigger's name |
+| `<MODE>` | fire or observe |
+
 ### `by trigger rm`
 
 Remove it and its runs
@@ -2554,6 +2568,7 @@ by trigger runs [OPTIONS] <NAME>
 |---|---|
 | `<NAME>` | The trigger's name |
 | `--limit <LIMIT>` | How many (default `20`) |
+| `--state <STATE>` | Only runs in this state, such as observed, fired or skipped_condition |
 
 ### `by trigger secret`
 

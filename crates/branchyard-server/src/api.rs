@@ -40,7 +40,7 @@ use crate::console::Projection;
 use crate::error::{self, ApiError};
 use crate::feed::Feed;
 use crate::ops::{NewOperation, Registry};
-use crate::store::{AdmissionQuota, ExistingBranches, Idempotency};
+use crate::store::{AdmissionQuota, ExistingBranches, Idempotency, Lane};
 use crate::work::{self, Work};
 
 /// Requests handled at once; more wait.
@@ -61,6 +61,9 @@ pub struct App {
     /// Triggers and schedules: their store, settings and the dispatcher's
     /// wake-up; see `crate::triggers`.
     pub triggers: Arc<crate::triggers::dispatch::Hub>,
+    /// What this process's webhook delivery tasks and repository pollers
+    /// publish for `GET /v1/problems`; see `crate::problems`.
+    pub(crate) seen: crate::problems::Seen,
     /// The web companion, when the operator turned it on; see
     /// `crate::companion`.
     pub companion: Option<Arc<crate::companion::Companion>>,
@@ -884,6 +887,11 @@ pub fn router(app: Shared) -> Router {
             "/v1/repos/{repo}/branches/{branch}/answer",
             axum::routing::post(post_answer),
         )
+        .route("/v1/repos/{repo}/inbox", get(person_inbox))
+        .route(
+            "/v1/repos/{repo}/answer",
+            axum::routing::post(post_person_answer),
+        )
         .route("/v1/repos/{repo}/branches/{branch}/diff", get(diff))
         .route("/v1/repos/{repo}/branches/{branch}/events", get(events))
         .route("/v1/repos/{repo}/events/stream", get(stream_events))
@@ -908,7 +916,9 @@ pub fn router(app: Shared) -> Router {
         .merge(crate::console::router())
         .merge(crate::preview::router(app.preview.clone()))
         // The fleet's service registry: `services_routes`.
-        .merge(crate::services_routes::router());
+        .merge(crate::services_routes::router())
+        // What background work could not do: `problems`.
+        .merge(crate::problems::router());
     let v1 = match (app.runtime.get(), app.pull_requests.get()) {
         (Some(runtime), Some(pr)) => v1
             .merge(crate::console_runtime::router(runtime.clone()))
@@ -1670,6 +1680,7 @@ async fn post_task(
         &caller,
         idem,
         request,
+        None,
         incoming_trace(&headers),
     )
     .await?;
@@ -1678,13 +1689,15 @@ async fn post_task(
 
 /// Admit a task on `repo` for `caller`, or return the operation `idem`
 /// already names (`true`): what `POST .../tasks` does, and what a firing
-/// trigger does as the principal that created it.
+/// trigger does as the principal that created it, with `trigger` naming
+/// its run on the task it starts.
 pub(crate) async fn admit_task(
     app: &Shared,
     repo: &RepoState,
     caller: &Caller,
     idem: Option<Idempotency>,
     request: TaskRequest,
+    trigger: Option<branchyard::tasks::TaskTrigger>,
     trace: Option<String>,
 ) -> Result<(Operation, bool), ApiError> {
     if let Some(op) = replayed_operation(app, caller, idem.as_ref()).await? {
@@ -1751,8 +1764,9 @@ pub(crate) async fn admit_task(
         requires,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace,
+        lane: Lane::Normal,
     };
-    let value = Work::Task { request }.to_value()?;
+    let value = Work::Task { request, trigger }.to_value()?;
     let registry = app.registry.clone();
     blocking(move || registry.submit(new, value)).await?
 }
@@ -1794,8 +1808,16 @@ async fn post_send(
         request,
         reincarnate: None,
     };
-    let (op, replayed) =
-        admit_send(&app, &repo, &caller, idem, to, incoming_trace(&headers)).await?;
+    let (op, replayed) = admit_send(
+        &app,
+        &repo,
+        &caller,
+        idem,
+        to,
+        incoming_trace(&headers),
+        Lane::FollowUp,
+    )
+    .await?;
     operation_response(&app, op, replayed)
 }
 
@@ -1816,7 +1838,9 @@ pub(crate) struct SendTo {
 /// operation `idem` already names (`true`): what `POST .../send` does,
 /// and what a trigger that delivers to a branch does as the principal
 /// that created it. The operation takes the branch's lock, so a send to a
-/// branch running a turn runs after that turn.
+/// branch running a turn runs after that turn. `POST .../send` admits it
+/// on [`Lane::FollowUp`], ahead of new launches; a trigger admits it on
+/// [`Lane::Normal`], in scheduling order with the rest of its work.
 pub(crate) async fn admit_send(
     app: &Shared,
     repo: &RepoState,
@@ -1824,6 +1848,7 @@ pub(crate) async fn admit_send(
     idem: Option<Idempotency>,
     to: SendTo,
     trace: Option<String>,
+    lane: Lane,
 ) -> Result<(Operation, bool), ApiError> {
     let SendTo {
         branch,
@@ -1862,6 +1887,7 @@ pub(crate) async fn admit_send(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace,
+        lane,
     };
     let work = match reincarnate {
         Some(reason) => Work::Resume {
@@ -1925,6 +1951,7 @@ async fn post_fork(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Fork { branch, request }).await
 }
@@ -1968,6 +1995,7 @@ async fn post_reincarnate(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Reincarnate { branch, request }).await
 }
@@ -2024,6 +2052,7 @@ async fn post_merge(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Merge { branch, target }).await
 }
@@ -2066,6 +2095,7 @@ async fn post_check(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(&app, new, Work::Check { branch }).await
 }
@@ -2273,6 +2303,7 @@ async fn post_spawn(
         requires: required_labels(&request.require_labels)?,
         priority: admitted_priority(&policy, request.priority, inherited)?,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(
         &app,
@@ -2338,6 +2369,7 @@ async fn post_integrate(
         requires: Vec::new(),
         priority: 0,
         trace: incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     admit(
         &app,
@@ -2714,6 +2746,38 @@ async fn post_answer(
     })
     .await
     .map(Json)
+}
+
+/// The person's inbox ([`branchyard::Yard::inbox`]), with the `read` scope.
+async fn person_inbox(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<branchyard::Inbox>, ApiError> {
+    let yard = app.authorized_repo(&caller, &repo, "read")?.yard.clone();
+    blocking(move || yard.inbox())
+        .await?
+        .map(Json)
+        .map_err(|e| error::sdk(&e))
+}
+
+/// Answer a question or escalation as whoever it was sent to
+/// ([`branchyard::Yard::answer`]): the person, whom a caller with the `run`
+/// scope stands for.
+async fn post_person_answer(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(request, _): JsonBody<branchyard_client::api::AnswerRequest>,
+) -> Result<Json<branchyard::Message>, ApiError> {
+    if request.text.trim().is_empty() {
+        return Err(ApiError::bad_request("text is empty"));
+    }
+    let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
+    blocking(move || yard.answer(request.message_id, &request.text))
+        .await?
+        .map(Json)
+        .map_err(|e| error::sdk(&e))
 }
 
 async fn branches(

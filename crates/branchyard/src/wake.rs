@@ -614,7 +614,9 @@ pub(crate) fn recovered_note(store: &Store, record: &Record, reason: &str) -> St
         "Your previous turn was cut off: the Branchyard engine running it stopped ({reason}). \
          Tool calls made after that failed; Claude Code reports them as `Tool permission request \
          failed: AbortError: Stream closed`. Your worktree keeps what was written; check it \
-         (`git status`, `git log`) before going on."
+         (`git status`, `git log`) before going on. Actions you took outside your worktree \
+         before the engine stopped (a push, a pull request, a comment, a message) may already \
+         have happened; check before you repeat one."
     ));
     text.push('\n');
     let children: Vec<String> = record

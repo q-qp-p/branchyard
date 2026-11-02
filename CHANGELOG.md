@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-02
+
 `by compute gce --service-account EMAIL` creates the worker with the
 `cloud-platform` access scope, so harnesses on it reach Vertex AI, `gs://` and
 Cloud KMS as that account, within its IAM roles. Workers previously got no
@@ -11,7 +13,88 @@ earlier, which has no scopes, is reused as it is, and the result's
 `access_scopes_note` says that its account cannot reach those services and how
 to get a worker that can.
 
-## 0.4.0 - 2026-11-02
+Every surface now places a branch with one table: its `stage` in branch JSON (`{"lane", "reason"}`, [what a branch needs from you](docs/concepts.md#what-a-branch-needs-from-you)). The console's lanes, `GET …/decisions`, the hook lines, the status line and bare `by` read it, so they agree. A branch waiting on its children now sits in Running, not Done. A delegated child that settled while its parent still runs or waits sits in Running too, and the console says "its parent decides". Bare `by` points at the first branch that needs you, a failed one before a ready one. A workspace session whose plan waits for approval no longer reads as failed.
+
+`GET …/decisions` lists a branch whose plan waits for approval as a new `plan` decision (`waits: agent`) and a blocked branch as a `stop`, lists each branch at most once, and no longer lists a question from a branch whose turn ended or a settled child whose parent still works. The console's deck shows a plan card that opens the branch. An older Rust client's `decisions()` cannot parse the `plan` kind; Python and the console read kinds as strings.
+
+The hook lines name a branch whose turn is parked on an approval, with `by approvals allow ID` and `by approvals deny ID`, and a running branch whose harness went silent past its stall window, with `by log NAME -f`. The status line and bare `by` count the first as asking and show a `stalled` count for the second.
+
+An event a bot caused no longer fires a new event trigger by default. Each
+source says when its event is a bot's: a GitHub App or `[bot]` account (never
+a check suite), a Slack `bot_id` or `bot_message`, a Linear actor that is not a
+user, a generic body's `"bot": true`, an email with `Auto-Submitted` other than
+`no`; the event carries `bot`. A new event trigger is stored with
+`conditions.bots: deny` unless it gives `--if bots=allow`, and a bot named in
+`--if author=` still fires; a skipped bot event is a `skipped_condition` run
+with the reason. Triggers created before this release have no `bots` and keep
+allowing bots, and `by trigger list` and `show` print the value each acts on.
+The bot fields are read as each source documents them; no live delivery has
+confirmed them. The task a trigger's run starts records the trigger, the run
+and who caused the event (`Task.trigger`, the `trigger` line of
+`by task show`), and keeps it after the trigger is removed.
+
+A trigger can observe before it fires. `by trigger add … --observe` (or
+`"mode": "observe"` in a `TriggerSpec`) records each run that would fire as
+`observed`, with the task it would have started, and starts nothing: no task,
+no send, and none of the lifecycle of a branch it delivers to. Read the record
+with `by trigger runs NAME --state observed` (`GET /v1/triggers/{t}/runs?state=`),
+then let it fire with `by trigger mode NAME fire` (`POST /v1/triggers/{t}/mode`),
+or from the console's **Observe only** toggle. An event observed stays observed
+when redelivered after the switch. The default is `fire`. A server older than
+this release cannot read a trigger stored with `mode: observe`; upgrade every
+server on a shared database first. `Client::trigger_runs` takes a state.
+
+The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
+
+A server runs a request that continues existing work ahead of new work. A
+send to an existing branch (`POST .../branches/{b}/send`), a plan's approval
+or rejection, and a console session send are follow-ups: they are claimed
+before every queued launch whatever its priority, and each process keeps one
+slot beyond `--max-running` for them. A tenant at its `max_running` still
+admits one follow-up while it has none unfinished. Previously such a send
+waited behind every queued trigger-fired task, then for a running turn to
+end, and a tenant that triggers had filled refused it with `429
+quota_exceeded`. A trigger's send, a merge, an integration and a check stay
+normal work, and a process now runs up to `max_running + 2` operations: one
+follow-up and one console cancel or steer beyond the limit.
+
+A branch nobody delegated (a root started with delegation, or a fork of one) can now `ask` and `escalate`, and its message goes to the person, `@person`. Its question keeps it in Needs you, with stage `question`, until someone answers it, also after its turn ends. `Yard::inbox` lists the person's messages and `Yard::answer` answers one. An answer to a branch whose turn ended does not start a turn; the branch gets it at the start of its next turn.
+
+A root's `report-status blocked` or `failure` is now escalated to the person. Before, it was only recorded.
+
+A fork's question or escalation now goes to the person. Before, it went to the branch it was forked from, which could not answer it.
+
+The person answers with `by answer ID "TEXT"` and reads with `by inbox` (which marks an answered question `[answered]`, and with `--unread`, or `unread=True` in Python, lists only those still waiting), outside a harness and without `--as`; in the console's Needs you, which labels the box "Answer"; through `GET /v1/repos/{repo}/inbox` and `POST /v1/repos/{repo}/answer`; or with `Repo::person_inbox` and `Repo::answer_message` in the Rust client and `Repo.person_inbox()` and `Repo.answer_message()` in Python. When the asker's turn has ended, `by answer` and the console say it reads the answer at its next turn and how to start one (`by send NAME "<prompt>"`). Hook lines and notices put such a question to you (`- root asks you #12: "…". Answer: by answer 12 "TEXT"`). Inside a harness started without delegation, `by` still refuses, and the refusal now says how to start a branch that can use it (`by run --delegate`, or a trigger request's `delegation`).
+
+`GET /v1/problems` lists what background work could not do that a person
+can act on: a trigger that paused itself after `pause_after_failures` failed
+runs in a row, a queued operation that requires labels no live worker
+carries once it has waited `unclaimable_after`, a webhook whose last three
+delivery attempts failed (every retry counts), a push subscription whose
+last three sends failed, and an effect the latest recovery pass left
+`unknown`. Each entry has `kind`, `key`, `what`, `since_ms`, `failures`
+where counted, `error` and `next`, the one thing to do; a healthy server
+lists nothing. A caller sees its tenant's push entries, its tenant's
+trigger and operation entries on the repositories it may reach, and the
+effect entries of those repositories, `admin` or not: `admin` never
+crosses tenants, since a credential without `scopes` holds it. Webhook
+entries, which are operator configuration, are seen only by an `admin`
+that may reach the webhook's repository. Trigger and operation entries are derived from the shared store
+and survive a restart; webhook, push and effect entries are what the
+server process saw, start empty when it restarts, and come back after the
+next failures. A push entry never shows the subscription's endpoint, and a
+push send's error no longer carries it either. `Client::problems` and the
+Python SDK's `Client.problems` read it, and the console's home page lists
+the entries above its tiles, each with its error and the one thing to do,
+and shows no strip when there are none. Previously a paused trigger showed
+only in `GET /v1/triggers`, an unclaimable operation only when read by its
+ID, a failing webhook or push only in the server's log, and an unknown
+effect only in the effect ledger without its reason. `/healthz` is
+unchanged. `by doctor` with a configured server adds a `server.problems`
+row: `ok` when the server lists nothing, a warning with the count, the
+oldest entry's `what` and `error` and its `next` as the fix when it lists
+something, and a warning to upgrade a server that answers `404` for the
+route.
 
 Native container and GKE Agent Sandbox providers copy each turn's worktree and
 private home into an owned allocation, enforce immutable image/runtime and

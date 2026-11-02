@@ -1,5 +1,6 @@
 //! `/v1/triggers`: create, list, show, enable, disable, test and remove
-//! triggers, read their runs, set a webhook secret; and
+//! triggers, set whether they fire or only observe, read their runs, set a
+//! webhook secret; and
 //! `POST /v1/triggers/{id}/fire`, where webhook senders deliver, which is
 //! authenticated by the trigger's own signature instead of a bearer token
 //! (and `POST /v1/triggers/{id}/fire/{token}`, for an inbound-mail provider
@@ -18,9 +19,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use branchyard_client::triggers::{
-    Deliver, FireAck, RunState, SecretRequest, SecretSet, TriggerCreated, TriggerList,
-    TriggerRemoved, TriggerRun, TriggerRuns, TriggerSpec, TriggerTest, TriggerTestRequest,
-    TriggerToggle, When,
+    Deliver, FireAck, RunState, SecretRequest, SecretSet, TriggerCreated, TriggerList, TriggerMode,
+    TriggerModeRequest, TriggerRemoved, TriggerRun, TriggerRuns, TriggerSpec, TriggerTest,
+    TriggerTestRequest, TriggerToggle, When,
 };
 
 use super::email;
@@ -36,6 +37,7 @@ pub(crate) fn router() -> Router<Shared> {
         .route("/v1/triggers/{t}", get(show).delete(remove))
         .route("/v1/triggers/{t}/enable", post(enable))
         .route("/v1/triggers/{t}/disable", post(disable))
+        .route("/v1/triggers/{t}/mode", post(mode))
         .route("/v1/triggers/{t}/secret", post(secret))
         .route("/v1/triggers/{t}/test", post(test))
         .route("/v1/triggers/{t}/runs", get(runs))
@@ -288,6 +290,34 @@ async fn disable(
     toggle(app, caller, key, false).await
 }
 
+/// `POST /v1/triggers/{t}/mode`: whether a run that would fire starts its
+/// task or is only recorded. Whether it is enabled, its failure count and
+/// its next time stay as they are.
+async fn mode(
+    State(app): State<Shared>,
+    Extension(caller): Extension<Caller>,
+    Path(key): Path<String>,
+    JsonBody(request, _): JsonBody<TriggerModeRequest>,
+) -> Result<Json<branchyard_client::triggers::Trigger>, ApiError> {
+    let trigger = find_for_change(&app, &caller, &key).await?;
+    let store = app.triggers.store.clone();
+    let id = trigger.id.clone();
+    let set = blocking(move || store.set_mode(&id, request.mode))
+        .await?
+        .map_err(store_error)?;
+    if !set {
+        return Err(unknown(&key));
+    }
+    let store = app.triggers.store.clone();
+    let id = trigger.id.clone();
+    let updated = blocking(move || store.get(&id))
+        .await?
+        .map_err(store_error)?
+        .ok_or_else(|| unknown(&key))?;
+    tracing::info!(trigger = %updated.spec.name, mode = request.mode.as_str(), by = %caller.name(), "trigger mode set");
+    Ok(Json(info(&app, &updated)))
+}
+
 async fn secret(
     State(app): State<Shared>,
     Extension(caller): Extension<Caller>,
@@ -327,6 +357,18 @@ fn query_limit(query: Option<&str>) -> Result<usize, ApiError> {
     Ok(20)
 }
 
+/// The `state=` of a runs query, if any.
+fn query_state(query: Option<&str>) -> Result<Option<RunState>, ApiError> {
+    for pair in query.unwrap_or("").split('&') {
+        if let Some(value) = pair.strip_prefix("state=") {
+            return RunState::parse(value)
+                .map(Some)
+                .ok_or_else(|| ApiError::bad_request(format!("state={value} is not a run state")));
+        }
+    }
+    Ok(None)
+}
+
 async fn runs(
     State(app): State<Shared>,
     Extension(caller): Extension<Caller>,
@@ -334,9 +376,10 @@ async fn runs(
     RawQuery(query): RawQuery,
 ) -> Result<Json<TriggerRuns>, ApiError> {
     let limit = query_limit(query.as_deref())?;
+    let state = query_state(query.as_deref())?;
     let trigger = find(&app, &caller, &key).await?;
     let store = app.triggers.store.clone();
-    let runs = blocking(move || store.runs(&trigger.id, limit))
+    let runs = blocking(move || store.runs(&trigger.id, state, limit))
         .await?
         .map_err(store_error)?;
     Ok(Json(TriggerRuns { runs }))
@@ -363,6 +406,7 @@ pub fn evaluate(
         event: None,
         reason: None,
         precheck: None,
+        task: None,
         operation: None,
         branches: Vec::new(),
         outcome: None,
@@ -451,6 +495,12 @@ pub fn evaluate(
             Some(why) => format!("the trigger is disabled: {why}"),
             None => "the trigger is disabled".into(),
         });
+        return Ok(test);
+    }
+    if trigger.spec.mode == TriggerMode::Observe {
+        test.reason = Some(
+            "the trigger observes: this run would be recorded as observed and start nothing".into(),
+        );
         return Ok(test);
     }
     test.would_fire = true;
@@ -643,6 +693,7 @@ async fn deliver(
         event: Some(event),
         reason: None,
         precheck: None,
+        task: None,
         operation: None,
         branches: Vec::new(),
         outcome: None,

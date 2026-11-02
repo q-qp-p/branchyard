@@ -13,15 +13,6 @@ use crate::store::AdmissionQuota;
 
 use super::{insert, new, sdk, update, MANAGED_REPO};
 
-/// Reserve one bounded short-control admission above a tenant's turn ceiling.
-pub(super) fn control_admission(policy: &TenantPolicy) -> AdmissionQuota {
-    AdmissionQuota {
-        max_running: policy.max_running.map(|max| max.saturating_add(1)),
-        max_branches: None,
-        existing_branches: None,
-    }
-}
-
 /// Build native branch ceilings and reserve the tenant snapshot revision before
 /// reading yards. The CAS and queue admission commit in the same transaction.
 pub(super) fn session_admission(
@@ -153,64 +144,6 @@ fn enforce_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn control_admission_allows_one_slot_at_saturation_and_refuses_another() {
-        use crate::store::{Admission, OperationStore, SqliteStore, StoredOperation};
-        let policy = TenantPolicy {
-            max_running: Some(1),
-            max_branches: Some(0),
-            ..Default::default()
-        };
-        let quota = control_admission(&policy);
-        assert_eq!(quota.max_running, Some(2));
-        assert!(quota.max_branches.is_none());
-        assert!(quota.existing_branches.is_none());
-        let store = SqliteStore::memory();
-        let operation = |id: &str| -> StoredOperation {
-            serde_json::from_value(json!({
-            "operation":{"id":id,"repo":"managed","kind":"task","state":"queued","branches":[],"cursor":0,"created_at_ms":0},
-            "tenant":"tenant"
-        })).unwrap()
-        };
-        assert_eq!(
-            store
-                .admit(
-                    &operation("normal"),
-                    &json!({"kind":"task"}),
-                    &AdmissionQuota::default()
-                )
-                .unwrap(),
-            Admission::Admitted
-        );
-        let work = json!({"kind":"console","command":{"action":"control","control":"cancel","workspace_id":"w"}});
-        assert_eq!(
-            store
-                .admit(&operation("first-control"), &work, &quota)
-                .unwrap(),
-            Admission::Admitted
-        );
-        assert_eq!(
-            store
-                .admit(&operation("second-control"), &work, &quota)
-                .unwrap(),
-            Admission::Quota {
-                limit: "max_running",
-                max: 2,
-                reserved: 2
-            }
-        );
-        assert!(store.get("second-control").unwrap().is_none());
-        assert_eq!(store.queue().unwrap().len(), 2);
-        assert_eq!(
-            control_admission(&TenantPolicy {
-                max_running: Some(usize::MAX),
-                ..Default::default()
-            })
-            .max_running,
-            Some(usize::MAX)
-        );
-    }
 
     #[test]
     fn usage_limits_match_registered_repository_semantics() {

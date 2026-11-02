@@ -16,7 +16,7 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use branchyard_client::triggers::{Lifecycle, RunState, TriggerRun};
+use branchyard_client::triggers::{Lifecycle, RunState, TriggerMode, TriggerRun};
 
 use super::engine::Engine;
 use super::StoredTrigger;
@@ -271,6 +271,7 @@ impl Engine {
             event: None,
             reason: Some(format!("{branch}: {reason}")),
             precheck: None,
+            task: None,
             operation: None,
             branches: vec![branch.to_owned()],
             outcome: None,
@@ -280,8 +281,9 @@ impl Engine {
         self.store.record(&run).map(|_| ())
     }
 
-    /// The lifecycle of every enabled trigger with one, on the repositories
-    /// served here, if [`EVERY_MS`] has passed since the last look.
+    /// The lifecycle of every enabled trigger with one that fires (an
+    /// observer acts on no branch), on the repositories served here, if
+    /// [`EVERY_MS`] has passed since the last look.
     /// Returns what was done, as `(trigger, branch, action)`.
     pub fn rest(&self) -> io::Result<Vec<(String, String, Action)>> {
         // One look at a time per engine; a tick that finds one running skips,
@@ -309,7 +311,8 @@ impl Engine {
         let mut done = Vec::new();
         for trigger in self.store.list(None)? {
             let served = repos.iter().any(|(name, _)| *name == trigger.spec.repo);
-            if !trigger.enabled || !served {
+            let observes = trigger.spec.mode == TriggerMode::Observe;
+            if !trigger.enabled || observes || !served {
                 continue;
             }
             for (branch, action) in self.rest_one(&trigger, now)? {

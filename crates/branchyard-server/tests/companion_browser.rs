@@ -1,8 +1,9 @@
 //! The companion page in headless Chromium against a real server: it pairs
 //! from a link, sees a branch appear and settle over the event stream,
 //! sends a follow-up from the branch page, shows each turn's own cost on its
-//! receipt, decides from the deck, and shows which files two open branches
-//! hold. Driven by Playwright
+//! receipt, decides from the deck, shows which files two open branches
+//! hold, and lists a problem on its home page only while there is one.
+//! Driven by Playwright
 //! (`companion_browser.js`); skipped, saying so, when Node or Playwright's
 //! module is not installed. `BY_TEST_PLAYWRIGHT` names the module's
 //! directory; otherwise `$(npm root -g)/playwright` is tried, with
@@ -13,6 +14,7 @@ mod common;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings};
 use branchyard::{Envelope, MessageKind};
@@ -89,6 +91,9 @@ fn the_page_pairs_follows_the_stream_and_sends() {
         }),
         ..ApprovalSettings::default()
     };
+    // An operation requiring a label no worker carries is a problem as soon
+    // as it is queued, so the page's problems strip has one to show.
+    config.unclaimable_after = Duration::ZERO;
     let server = Server::start(config.clone());
     let companion = store::open(&config).unwrap();
     let request = link::LinkRequest {
@@ -299,6 +304,25 @@ fn the_page_pairs_follows_the_stream_and_sends() {
     assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
     writeln!(stdin, "ground").unwrap();
     expect("GROUND");
+
+    let mut gpu = task("WRITE gpu.txt=1", "needs-gpu");
+    gpu.require_labels = vec!["gpu".into()];
+    let stuck = server
+        .client()
+        .repo("app")
+        .submit_task(&gpu, &new_key())
+        .unwrap();
+    wait::until("the operation to be listed as a problem", || {
+        server
+            .client()
+            .problems()
+            .unwrap()
+            .problems
+            .iter()
+            .any(|p| p.key == stuck.id)
+    });
+    writeln!(stdin, "problem {}", stuck.id).unwrap();
+    expect("PROBLEM");
 
     expect("DONE");
     assert!(child.wait().unwrap().success());

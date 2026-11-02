@@ -346,7 +346,7 @@ struct Flags {
     /// Largest artifact a publish may upload (default: 268435456)
     #[arg(long, value_name = "N", value_parser = artifact_bytes, help_heading = "Operations")]
     max_artifact_bytes: Option<u64>,
-    /// Operations running at once (default: 8)
+    /// Operations running at once, plus one follow-up and one console control (default: 8)
     #[arg(long, value_name = "N", value_parser = max_running, help_heading = "Operations")]
     max_running: Option<usize>,
     /// How long a claim on a queued operation lasts without renewal before another worker

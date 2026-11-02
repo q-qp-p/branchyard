@@ -8,7 +8,7 @@
 //! answer is one store write the waiting turn sees, and a promotion or an
 //! inverse is one gateway call recorded on its entry.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use axum::extract::{Path, RawQuery, State};
 use axum::routing::{get, post};
@@ -17,7 +17,8 @@ use axum::{Extension, Json, Router};
 use branchyard::effects::reconcile::Reconciled;
 use branchyard::effects::undo::UndoPlan;
 use branchyard::effects::{ApprovalAsk, EffectEntry};
-use branchyard::{BranchStatus, MessageKind, TaskOptions, Yard};
+use branchyard::stage::Reason;
+use branchyard::{BranchStatus, Yard};
 use branchyard_client::effects_api::{
     ApprovalAnswerRequest, ApprovalList, Decision, DecisionKind, DecisionList, EffectActionRequest,
     EffectDetail, EffectList, Ground, GroundBranch, GroundFile, UndoReport, UndoRequest, Waits,
@@ -67,106 +68,86 @@ async fn decisions(
     Ok(Json(DecisionList { decisions }))
 }
 
-/// The decisions of `yard`'s branches: parked turns first, oldest wait
-/// first; then the ready branches and the stopped ones, oldest branch
-/// first. A question counts once nobody has answered it: the asker's own
-/// inbox holds the replies.
+/// The decisions of `yard`'s branches, one for each branch whose stage
+/// puts it in Needs you or Ready ([`decision_of`]): those that keep an
+/// agent parked first, oldest wait first, a plan after the waits that have
+/// a time; then those delivery waits on; then the rest, each oldest branch
+/// first.
 fn decide(yard: &Yard) -> Result<Vec<Decision>, branchyard::Error> {
-    let branches = yard.branches()?;
-    let mut parked = Vec::new();
-    let mut merges = Vec::new();
-    let mut stops = Vec::new();
-    let decision = |b: &branchyard::BranchInfo, kind, waits, since_ms| Decision {
-        kind,
-        branch: b.name.clone(),
-        waits,
-        since_ms,
-        status: b.status.clone(),
-        candidate: b.candidate.clone(),
-        approval: None,
-        question: None,
-        workspace: None,
-        workspace_title: None,
-        session: None,
-        session_name: None,
-        phase: None,
-        output: None,
-    };
-    for b in &branches {
-        if let Some(awaiting) = &b.awaiting {
-            let mut d = decision(
-                b,
-                DecisionKind::Approval,
-                Waits::Agent,
-                Some(awaiting.since_ms),
-            );
-            d.approval = Some(yard.approval(&awaiting.id)?);
-            parked.push(d);
-        }
-        match &b.status {
-            BranchStatus::Ready if b.candidate.is_some() => {
-                merges.push((
-                    b.created_at,
-                    decision(b, DecisionKind::Merge, Waits::Delivery, None),
-                ));
+    let mut asking = yard.asking()?;
+    let mut decisions = Vec::new();
+    for b in yard.branches()? {
+        let Some((kind, waits)) = b.stage.and_then(|s| decision_of(s.reason, &b.status)) else {
+            continue;
+        };
+        let mut d = Decision {
+            kind,
+            branch: b.name.clone(),
+            waits,
+            since_ms: None,
+            status: b.status.clone(),
+            candidate: b.candidate.clone(),
+            approval: None,
+            question: None,
+            workspace: None,
+            workspace_title: None,
+            session: None,
+            session_name: None,
+            phase: None,
+            output: None,
+        };
+        match (kind, &b.awaiting) {
+            (DecisionKind::Approval, Some(awaiting)) => {
+                d.since_ms = Some(awaiting.since_ms);
+                d.approval = Some(yard.approval(&awaiting.id)?);
             }
-            BranchStatus::Failed { .. }
-            | BranchStatus::Interrupted
-            | BranchStatus::BudgetExceeded { .. } => {
-                stops.push((
-                    b.created_at,
-                    decision(b, DecisionKind::Stop, Waits::Nobody, None),
-                ));
-            }
-            BranchStatus::Running if b.stalled && b.awaiting.is_none() => {
-                stops.push((
-                    b.created_at,
-                    decision(b, DecisionKind::Stall, Waits::Nobody, None),
-                ));
+            (DecisionKind::Question, _) => {
+                // Asked after `asking` was read: the next read lists it.
+                let Some(message) = asking.remove(&b.name) else {
+                    continue;
+                };
+                d.since_ms = Some(message.at_ms);
+                d.question = Some(message);
             }
             _ => {}
         }
+        decisions.push((b.created_at, d));
     }
-    let inbox_of = |name: &str| {
-        yard.branch(name)
-            .and_then(|b| b.delegate(TaskOptions::default()))
-            .and_then(|d| d.inbox())
-            .map(|inbox| inbox.messages)
-    };
-    let mut asked = Vec::new();
-    for parent in branches.iter().filter(|b| !b.children.is_empty()) {
-        // A parent whose inbox cannot be read has no question to show.
-        if let Ok(messages) = inbox_of(&parent.name) {
-            asked.extend(
-                messages
-                    .into_iter()
-                    .filter(|m| matches!(m.kind, MessageKind::Question | MessageKind::Escalation)),
-            );
-        }
-    }
-    let askers: HashSet<String> = asked.iter().map(|m| m.from.clone()).collect();
-    let mut answered = HashSet::new();
-    for name in askers {
-        if let Ok(messages) = inbox_of(&name) {
-            answered.extend(messages.iter().filter_map(|m| m.in_reply_to));
-        }
-    }
-    for m in asked.into_iter().filter(|m| !answered.contains(&m.id)) {
-        let Some(b) = branches.iter().find(|b| b.name == m.from) else {
-            continue;
+    decisions.sort_by_key(|(created, d)| {
+        let rank = match d.waits {
+            Waits::Agent => 0,
+            Waits::Delivery => 1,
+            Waits::Nobody => 2,
         };
-        let mut d = decision(b, DecisionKind::Question, Waits::Agent, Some(m.at_ms));
-        d.question = Some(m);
-        parked.push(d);
-    }
-    parked.sort_by_key(|d| d.since_ms);
-    merges.sort_by_key(|(created, _)| *created);
-    stops.sort_by_key(|(created, _)| *created);
-    Ok(parked
-        .into_iter()
-        .chain(merges.into_iter().map(|(_, d)| d))
-        .chain(stops.into_iter().map(|(_, d)| d))
-        .collect())
+        (rank, d.since_ms.unwrap_or(u64::MAX), *created)
+    });
+    Ok(decisions.into_iter().map(|(_, d)| d).collect())
+}
+
+/// The decision a branch whose stage has `reason` and whose status is
+/// `status` is, and who it keeps waiting; `None` for a branch in the
+/// Running or Done lane.
+fn decision_of(reason: Reason, status: &BranchStatus) -> Option<(DecisionKind, Waits)> {
+    Some(match reason {
+        Reason::Approval => (DecisionKind::Approval, Waits::Agent),
+        Reason::Question => match status {
+            BranchStatus::Running => (DecisionKind::Question, Waits::Agent),
+            _ => (DecisionKind::Question, Waits::Nobody),
+        },
+        Reason::AwaitingPlanApproval => (DecisionKind::Plan, Waits::Agent),
+        Reason::Stalled => (DecisionKind::Stall, Waits::Nobody),
+        Reason::Failed | Reason::Interrupted | Reason::BudgetExceeded | Reason::Blocked => {
+            (DecisionKind::Stop, Waits::Nobody)
+        }
+        Reason::Ready => (DecisionKind::Merge, Waits::Delivery),
+        Reason::Parent
+        | Reason::Running
+        | Reason::WaitingOnChildren
+        | Reason::Waiting
+        | Reason::NoChanges
+        | Reason::Merged
+        | Reason::Discarded => return None,
+    })
 }
 
 /// `GET /v1/repos/{repo}/ground`: which files are in whose hands
@@ -391,8 +372,36 @@ async fn undo(
 
 #[cfg(test)]
 mod tests {
-    use super::{query, tally};
+    use super::{decision_of, query, tally, DecisionKind, Reason, Waits};
+    use branchyard::stage::{Lane, STAGES};
     use branchyard::BranchStatus;
+
+    #[test]
+    fn a_branch_is_one_decision_exactly_when_it_needs_you_or_is_ready() {
+        for (reason, lane, _) in STAGES {
+            assert_eq!(
+                decision_of(reason, &BranchStatus::Running).is_some(),
+                matches!(lane, Lane::NeedsYou | Lane::Ready),
+                "{reason:?}"
+            );
+        }
+        let blocked = BranchStatus::Blocked { reason: "x".into() };
+        assert_eq!(
+            decision_of(Reason::Blocked, &blocked),
+            Some((DecisionKind::Stop, Waits::Nobody))
+        );
+        assert_eq!(
+            decision_of(
+                Reason::AwaitingPlanApproval,
+                &BranchStatus::AwaitingPlanApproval
+            ),
+            Some((DecisionKind::Plan, Waits::Agent))
+        );
+        assert_eq!(
+            decision_of(Reason::Question, &BranchStatus::Ready),
+            Some((DecisionKind::Question, Waits::Nobody))
+        );
+    }
 
     #[test]
     fn query_values_decode_like_every_other_call_site() {

@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->129<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->133<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -250,6 +250,7 @@ Every command that takes a branch or prints a result takes `--json`. This round 
 | Surface | Before | Now |
 |---|---|---|
 | `Delegate::{ask, report, escalate, answer, inbox, send_and_wait}`, `Branch::send_and_wait`, `by ask/report/escalate/answer/inbox`, `by send --wait`, the MCP tools, `POST …/{ask,report,escalate,answer}`, `GET …/inbox`, the client and Python functions | none | parent/descendant messages ([delegation](delegation.md#inbox)) |
+| `Yard::inbox`, `Yard::answer`, `by inbox` and `by answer ID "TEXT"` outside a harness without `--as`, `GET …/inbox` and `POST …/answer` on a repository, `Repo::person_inbox`/`answer_message` in the client and `Repo.person_inbox`/`answer_message` in Python | `--as <branch>` needed; a branch nobody delegated could not ask | the person's inbox: a branch nobody delegated asks and escalates to `@person`, and the person answers ([delegation](delegation.md#the-persons-inbox)) |
 | `Activity` | no messages | `message` (the `Message`) on the sender's and recipient's logs; `messages_delivered` (`ids`, `via`: `{"path": "steer", "steer"}` or `{"path": "turn_start"}`) on the recipient's |
 | `DeliveryHook`, `Yard::set_delivery_hook`/`clear_delivery_hook`, `SteerDelivery` | none | every `Yard` steers a message into its recipient's running turn by default ([delegation](delegation.md#delivery)) |
 | Stall detection | children and permission answers excluded | a turn blocked in `ask --wait` is excluded too ([lifecycle](lifecycle.md#stall-detection)) |
@@ -428,9 +429,10 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 |---|---|---|
 | `priority` on task, send, fork, reincarnate and spawn requests; `Operation::priority` | none | -10 to 10, default 0 (a spawn: its parent's); capped at the tenant's `max_priority`; in `schema/contract.json` |
 | `--priority N` on `by run`, `fan`, `send`, `fork`, `reincarnate`, `spawn` | none | with `--remote`; refused locally |
-| Claim order | oldest first | highest effective priority (aged), then lowest tenant usage per weight, then oldest; one statement on PostgreSQL |
+| Claim order | oldest first | follow-ups (a request's send to an existing branch, a plan decision, a console session send), then highest effective priority (aged), then lowest tenant usage per weight, then oldest; one statement on PostgreSQL |
 | `tenants.<name>.weight`, `max_priority`; `aging_seconds`, `fair_share_window_seconds` in the configuration | none | the tenant's fair share and priority ceiling; aging step and usage decay |
 | `GET /metrics`; `--metrics`, `--metrics-addr`, `--metrics-token-file`; `metrics` in the configuration | none | Prometheus text, for `admin` or the metrics token; off by default |
+| `GET /v1/problems` (`ProblemList`, `Problem`, `ProblemKind`); `Client::problems`, Python `Client.problems` | none | what background work could not do that a person can act on (a trigger that paused itself, an operation no live worker can claim), oldest first, for the caller's tenant or, with `admin`, every tenant; in `schema/contract.json` ([problems](server.md#problems)) |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP/HTTP traces (protobuf or JSON) of admission, claim, operation, turns, tool and connector calls |
 | `traceparent` request header | ignored | the operation's trace continues it |
 | `TRACEPARENT` in a server-run turn's environment; `TaskOptions::trace_parent` | none | the operation's span, for the harness and what it calls (a connector SDK's `_meta.traceparent`) |
@@ -797,7 +799,7 @@ Every connector call that changes the world is decided, written to a ledger befo
 | Operation | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
 | List asks | `Yard::approvals`, `approval` | `approvals [ls [--all]] [--json]` | yes | `GET …/approvals[?all=true]` | `Repo::approvals` | no |
-| What waits for a person | `Yard::branches`, `branch` (`BranchInfo::awaiting`) | `ls` and `watch` show `waiting for approval: …` | yes | `GET …/decisions` (`DecisionList`) | `Repo::decisions` | no |
+| What waits for a person | `Yard::branches`, `branch` (`BranchInfo::awaiting`, `BranchInfo::stage`), `asking` | `ls` and `watch` show `waiting for approval: …`; bare `by`, `by hook` and `by statusline` read each branch's stage | yes | `GET …/decisions` (`DecisionList`) | `Repo::decisions` | no |
 | Which files are in whose hands (the ground plan) | `Yard::branches`, `Branch::diff`, `diff_files` | none | no | `GET …/ground` (`Ground`, `GroundFile`, `GroundBranch`) | `Repo::ground` | no |
 | What waits for a person in a project's workspaces (outputs to accept, sessions that stopped) | none: a workspace is a server resource | none | no | `GET /v1/projects/{project}/decisions` (`DecisionList`; `output` and `session` decisions) | `Client::project_decisions` | no |
 | Answer an ask | `Yard::answer_approval` | `approvals allow\|deny ID\|--branch B [--reason]`; `A`, `D` in `by watch` | yes | `POST …/approvals/{id}/allow\|deny` (`ApprovalAnswerRequest`) | `Repo::answer_approval` | `Delegate::answer_approval`, the MCP `answer_approval` tool, `by approvals` in its shell; descendants only |
@@ -903,7 +905,7 @@ Ten changes picked by impact over effort from the repository's own evidence (CI'
 
 | Operation | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
-| Is this machine and repository ready ([doctor](doctor.md)) | `branchyard::doctor` (the engine's part: a read-only schema reader, the Microsandbox check, kept-sandbox rows, the confinement probe, the price lookup) | `doctor [--json] [--path PATH] [--refresh]` (`--refresh` asks the harnesses again instead of reading `by harnesses`' cached inventory) | n/a: local checks; a configured server is asked `GET /v1/repos` once | none | none | none |
+| Is this machine and repository ready ([doctor](doctor.md)) | `branchyard::doctor` (the engine's part: a read-only schema reader, the Microsandbox check, kept-sandbox rows, the confinement probe, the price lookup) | `doctor [--json] [--path PATH] [--refresh]` (`--refresh` asks the harnesses again instead of reading `by harnesses`' cached inventory) | n/a: local checks; a configured server is asked `GET /v1/repos` once, then `GET /v1/problems` once when that succeeded (`server.problems`) | none | none | none |
 | Run a branch's check through a server | `Delegate::check` (unchanged) | `check BRANCH` | yes: waits, exits 1 on a failing report | `POST …/branches/{b}/check`, an operation whose `result.check_report` is the `CheckReport`; `run` scope; no branch lock | `Repo::check`; Python `Repo.check` | `check` (unchanged) |
 | State a branch's status through a server | `Delegate::report_status` (unchanged) | `report-status STATE SUMMARY [--link URL] [--ttl DURATION]` | yes, `--as BRANCH` | `POST …/branches/{b}/report-status`; `run` scope; a bad field is `400 invalid_request` with `detail.field` | `Repo::report_status`; Python `Repo.report_status` | `report_status` (unchanged) |
 | Ask a child for an answer of a given shape, and read it back as JSON ([result contract](delegation.md#result-contract)) | `Spawn::result`, `Delegate::report_result`, `Inspection::{result_contract, result}` | `spawn --result-schema JSON \| --result-schema-file PATH [--result-required]`; `report --result JSON \| --result-file PATH`; `inspect`, `wait --json` and `log` carry it | yes | `SpawnRequest.result`, `ReportRequest {text, result?}` | `Repo::spawn(..).result`, `Repo::report_result`; Python `spawn(result=…)`, `report(result=…)` | `spawn.result`, `report.result`, `inspect`, `wait`, `apply_graph`'s spawn edit |
@@ -1069,3 +1071,41 @@ A repository's `.agents/skills/` are text its writers committed, so they take th
 | `TaskOptions::repository_skills` (`SkillGate::Withheld`, `Trusted`, `Allowed`) | none | read when `run`, a fan or `run_attempts` creates a branch: its repository's `.agents/skills/` at the base commit are staged when allowed, else withheld with the reason; fixed with the branch (`BranchSkills`) and inherited by forks, reincarnations and delegated children; withheld by default |
 | `allow_repository_skills` in the server's JSON config | none | `true` or served repository names (`schema/server.config.json`); the server stages those repositories' skills for the branches it creates, and withholds every other's; never from a request or the repository's `branchyard.toml` |
 | `by rm`, `Yard::remove` | the branch's skill cache stayed | also delete `.branchyard/capabilities/<blake3 of the branch name>/` |
+
+## Added with observing triggers
+
+A trigger can observe: record each run that would fire, with the task it would have started, and start nothing ([observe before firing](triggers.md#observe-before-firing)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| Create a trigger that observes | no | `trigger add … --observe` | yes | `POST /v1/triggers` with `"mode": "observe"` | `create_trigger` (`TriggerSpec::mode`); Python `create_trigger({"mode": "observe", …})` | no |
+| Let it fire, or only observe | no | `trigger mode NAME fire\|observe` | yes | `POST /v1/triggers/{t}/mode` (`TriggerModeRequest`) | `set_trigger_mode`; Python `set_trigger_mode` | no |
+| Read runs in one state | no | `trigger runs NAME --state STATE` | yes | `GET /v1/triggers/{t}/runs?state=STATE` | `trigger_runs(name, state, limit)`; Python `trigger_runs(name, limit, state)` | no |
+
+| Surface | Before | Now |
+|---|---|---|
+| `TriggerSpec`, `Trigger` | no mode | `mode` (`TriggerMode`: `fire`, the default, or `observe`), kept in the trigger's stored spec; no new column |
+| `RunState`, `TriggerRun` | `fired`, the skips, `lifecycle`, `failed`, `missed` | also `observed`, with `TriggerRun::task`, the rendered task it would have created |
+| `TriggerTest` | `would_fire` when it matches, passes its precheck and is enabled | also not while it observes, with the reason |
+| `TriggerStore` | no way to change a spec | `set_mode`; `runs` takes a state; both on SQLite and PostgreSQL, in the conformance suite |
+| `Client::trigger_runs` | `(name, limit)` | `(name, state, limit)` |
+| The lifecycle of a branch a trigger delivers to | acts while the trigger is enabled | and fires: an observing trigger acts on no branch |
+| Console triggers view | an Enabled toggle | also an `observing` tag and an "Observe only" toggle (`POST …/mode`) |
+
+## Added with trigger bots and provenance
+
+An event a bot caused no longer fires a new event trigger unless it allows bots or names the bot, and the task a trigger starts records which trigger, which run and who caused the event ([bots](triggers.md#bots), [what a task records](triggers.md#what-a-task-records-of-its-trigger)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| Let bots' events fire, or not | no | `trigger add … --if bots=allow\|deny` | yes | `POST /v1/triggers` with `conditions.bots` | `create_trigger` (`Conditions::bots`, `Bots`) | no |
+| See what a trigger does with bots | no | `trigger list` (`on github (bots deny)`), `trigger show` (`bots:`) | yes | `GET /v1/triggers`, `/{t}`: `conditions.bots`, the value it acts on | `triggers`, `trigger` | no |
+| See which trigger started a task | `tasks::Task::trigger` (`TaskTrigger`, `TriggerActor`) | `task show` (`trigger` line), `task show --json` | n/a | `GET /v1/repos/{repo}/task-records/{key}` (`task.trigger`) | `Repo::task` | no |
+
+| Surface | Before | Now |
+|---|---|---|
+| `TriggerEvent` | `author` only | also `bot`, from each source as [bots](triggers.md#bots) says; a Slack bot's `author` is its `bot_id` |
+| `Conditions` | the field matchers | also `bots` (`Bots`: `allow`, `deny`); a new event trigger is stored with `deny` unless given; one stored without it reads `allow` (`Conditions::bots()`) |
+| `Task` | `by`, `policy`, `origin` | also `trigger`, set when a trigger's run starts the task; `by` and `policy` unchanged |
+| `TaskOptions` | no trigger | `trigger`, read when a branch starts a new task |
+| `trigger runs` text | the state, key and what happened | also `by AUTHOR`, marked `(bot)` |

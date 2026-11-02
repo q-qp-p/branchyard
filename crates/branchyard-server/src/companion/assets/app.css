@@ -1161,6 +1161,18 @@ details.more details.ledger > summary { margin-top: 14px; }
    clock, now at the right edge, a turn a bar with its calls as ticks, a
    wait on you filled amber, a merge a green tick; the done ones folded. */
 .home .page-head { align-items: center; }
+/* Problems sit above the tiles in the amber of the recovery banner, a row
+   each with its error and the one thing to do; a healthy server has none. */
+.problems { margin: 0 0 20px; border: 1px solid var(--amber-line); border-left: 3px solid var(--amber); border-radius: var(--r-3); background: var(--amber-tint); }
+.problems ul { list-style: none; margin: 0; padding: 0; }
+.problem { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; min-width: 0; overflow-wrap: anywhere; }
+.problem + .problem { border-top: 1px solid var(--amber-line); }
+.problem-head { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+.problem-what { font-weight: 600; min-width: 0; }
+.problem-meta { font-size: 12px; color: var(--amber-text); font-variant-numeric: tabular-nums; }
+.problem-error, .problem-next { padding-left: 16px; }
+.problem-error { color: var(--ink-2); }
+.problem-next code { padding: 1px 5px; border-radius: 5px; background: var(--surface-raised); border: 1px solid var(--amber-line); font-size: .86em; overflow-wrap: anywhere; }
 .tiles { list-style: none; margin: 0 0 20px; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .tile { min-width: 0; }
 .tile-link, .tile-body {

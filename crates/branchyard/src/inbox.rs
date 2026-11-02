@@ -4,13 +4,16 @@
 //! to the parent too, or further up an ancestor its rig seat's
 //! `escalates_to` names ([`crate::Seat::escalates_to`]); an `answer` goes
 //! from a branch to one of its own descendants, usually replying to a
-//! question. [`authorize`] is the one authority check every surface goes
-//! through; it follows the delegation tree exactly as spawning does.
+//! question. A branch nobody delegated (a root, or a fork) asks and
+//! escalates to the person, [`PERSON`], instead ([`answerer`]), and the
+//! person answers through [`Yard::answer`]. [`authorize`] is the one
+//! authority check every surface goes through; it follows the delegation
+//! tree exactly as spawning does.
 //!
 //! Every message is durable ([`crate::state::Backend`]'s `messages` rows,
 //! both SQLite and PostgreSQL) and is also recorded as `Activity::Message`
-//! on the sending and, when different, the receiving branch's event log, so
-//! `by events`/`log` show it.
+//! on the event log of each branch it is between (the person keeps none),
+//! so `by events`/`log` show it.
 //!
 //! Delivery follows Warp's `parent_bridge` mailbox: a message is *pending*
 //! until it is acknowledged, and acknowledging it (marking it delivered) is
@@ -39,8 +42,9 @@
 
 use std::time::Duration;
 
+use crate::record::Recorder;
 use crate::state::Store;
-use crate::{Error, Message, MessageKind, SteerState, Yard};
+use crate::{Activity, BranchInfo, Error, Message, MessageKind, Observer, SteerState, Yard};
 
 /// At most this many pending messages are rendered into one prompt; the
 /// rest stay pending for a later turn.
@@ -49,6 +53,14 @@ const RENDER_MAX: usize = 20;
 /// (excluding the wrapping tags and note), so one very large backlog cannot
 /// blow out a turn's prompt.
 const RENDER_CHARS: usize = 8_000;
+
+/// The address of the person who runs the repository: anyone acting
+/// outside a harness locally, and a caller with the `run` scope on a
+/// server. A branch nobody delegated asks and escalates to it, and the
+/// person reads and answers that through [`Yard::inbox`] and
+/// [`Yard::answer`]. It is never a branch's name, because a branch name
+/// starts with a lower-case letter or a digit.
+pub const PERSON: &str = "@person";
 
 /// Wraps the delivered block in a turn's prompt, so a harness (and a
 /// person reading the transcript) can tell it from the task itself.
@@ -136,11 +148,24 @@ fn line(message: &Message) -> String {
     text
 }
 
+/// Who a question or escalation from `info`'s branch goes to: its parent
+/// when that parent delegated it (`depth > 0`), else the person. A root has
+/// no parent, and a fork's `parent` is the branch it was forked from, which
+/// did not give it its task and cannot answer it.
+pub(crate) fn answerer(info: &BranchInfo) -> &str {
+    match info.parent.as_deref() {
+        Some(parent) if info.depth > 0 => parent,
+        _ => PERSON,
+    }
+}
+
 /// Whether `from` may send a message of `kind` to `to`, given the
-/// delegation tree: a `question` or a `report` go only to `from`'s parent;
-/// an `escalation` goes to the parent too, or further up an ancestor whose
-/// seat `from`'s seat's `escalates_to` names; an `answer` goes from an
-/// ancestor to one of its own descendants.
+/// delegation tree: a `question` goes only to `from`'s [`answerer`], and a
+/// `report` only to its parent; an `escalation` goes to its answerer too,
+/// or, from a delegated branch, further up an ancestor whose seat `from`'s
+/// seat's `escalates_to` names; an `answer` goes from an ancestor to one of
+/// its own descendants. The person sends only answers; [`send`] checks
+/// that each replies to a message sent to it.
 pub(crate) fn authorize(
     store: &Store,
     from: &str,
@@ -149,6 +174,14 @@ pub(crate) fn authorize(
 ) -> Result<(), Error> {
     if from == to {
         return Err(Error::Denied(format!("{from} cannot message itself")));
+    }
+    if from == PERSON {
+        return match kind {
+            MessageKind::Answer => Ok(()),
+            _ => Err(Error::Denied(format!(
+                "{PERSON} only answers a question or an escalation sent to it"
+            ))),
+        };
     }
     match kind {
         MessageKind::Answer => {
@@ -160,7 +193,7 @@ pub(crate) fn authorize(
                 )))
             }
         }
-        MessageKind::Question | MessageKind::Report => {
+        MessageKind::Report => {
             let parent = store.read(from)?.info.parent;
             match parent.as_deref() {
                 Some(p) if p == to => Ok(()),
@@ -170,23 +203,90 @@ pub(crate) fn authorize(
                 None => Err(Error::Denied(format!("{from} has no parent to {kind}"))),
             }
         }
-        MessageKind::Escalation => {
-            let parent = store.read(from)?.info.parent;
-            if parent.as_deref() == Some(to) {
+        MessageKind::Question | MessageKind::Escalation => {
+            let info = store.read(from)?.info;
+            let answerer = answerer(&info);
+            if to == answerer {
                 return Ok(());
             }
-            if crate::delegation::is_ancestor(store, to, from)? && escalates_to(store, from, to)? {
+            if answerer == PERSON {
+                return Err(Error::Denied(format!(
+                    "{from} was not delegated, so its {kind} goes only to the person, {PERSON}"
+                )));
+            }
+            if kind == MessageKind::Question {
+                return Err(Error::Denied(format!(
+                    "{from} may only {kind} its parent, {answerer}"
+                )));
+            }
+            if to != PERSON
+                && crate::delegation::is_ancestor(store, to, from)?
+                && escalates_to(store, from, to)?
+            {
                 return Ok(());
             }
             Err(Error::Denied(format!(
-                "{from} may only escalate to its parent{}",
-                match parent {
-                    Some(p) => format!(", {p}, or an ancestor its rig seat's escalates_to names"),
-                    None => String::new(),
-                }
+                "{from} may only escalate to its parent, {answerer}, or an ancestor its rig \
+                 seat's escalates_to names"
             )))
         }
     }
+}
+
+/// Send `kind` from `from` (a branch, or [`PERSON`] answering) to `to`,
+/// replying to message `in_reply_to` when given, which must have been sent
+/// to `from`. Checks it ([`authorize`]), stores it, records it on the log
+/// of each branch it is between, and tries to deliver it into `to`'s
+/// running turn; otherwise it waits for `to`'s next turn to start.
+pub(crate) fn send(
+    yard: &Yard,
+    observer: Option<Observer>,
+    from: &str,
+    kind: MessageKind,
+    to: &str,
+    text: &str,
+    in_reply_to: Option<u64>,
+) -> Result<Message, Error> {
+    if text.trim().is_empty() {
+        return Err(Error::Denied(format!("a {kind} needs text")));
+    }
+    let store = yard.store();
+    authorize(&store, from, kind, to)?;
+    if let Some(question_id) = in_reply_to {
+        let question = store
+            .backend()
+            .message(question_id)?
+            .ok_or(Error::UnknownMessage(question_id))?;
+        if question.to != from {
+            return Err(Error::Denied(format!(
+                "message #{question_id} was not sent to {from}"
+            )));
+        }
+    }
+    let message = store.backend().send_message(&Message {
+        id: 0,
+        from: from.to_owned(),
+        to: to.to_owned(),
+        kind,
+        text: text.to_owned(),
+        in_reply_to,
+        at_ms: 0,
+        delivered: false,
+        handoff: None,
+        next_turn: false,
+    })?;
+    // `authorize` above refused `to == from`, so these are two distinct
+    // logs.
+    for branch in [from, to].into_iter().filter(|b| *b != PERSON) {
+        if let Ok(mut recorder) = Recorder::open(&store, branch, observer.clone()) {
+            branchyard_support::best_effort(
+                "record the activity",
+                recorder.record(Activity::Message(message.clone())),
+            );
+        }
+    }
+    try_deliver_now(yard, &store, to, &message);
+    Ok(message)
 }
 
 /// Whether `from`'s rig seat lists `to`'s seat in its `escalates_to`.
@@ -206,8 +306,9 @@ fn escalates_to(store: &Store, from: &str, to: &str) -> Result<bool, Error> {
 /// [`begin_submit`]. Errors from the hook or the store are not
 /// fatal to sending the message, so they are swallowed here. For
 /// [`SteerDelivery`] the engine has already marked it, so this is a no-op.
-pub(crate) fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
-    if message.next_turn {
+/// The person has no turn to deliver into.
+fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
+    if message.next_turn || to == PERSON {
         return;
     }
     let Some(hook) = yard.delivery_hook() else {
@@ -555,6 +656,33 @@ mod tests {
         assert!(!waiting_for_answer(&store, "kid"));
     }
 
+    /// A branch blocked waiting for the person's answer is not taken for
+    /// stalled either.
+    #[test]
+    fn a_wait_for_the_persons_answer_counts_as_waiting() {
+        let (_t, store, _fence, _) = running("person");
+        let asked = store
+            .backend()
+            .send_message(&Message {
+                to: PERSON.into(),
+                ..message(0, MessageKind::Question, "which database?")
+            })
+            .unwrap();
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| wait_for_answer(&store, asked.id, Duration::from_secs(30)));
+            branchyard_testkit::wait::until("the wait to be recorded", || {
+                waiting_for_answer(&store, "kid") || waiter.is_finished()
+            });
+            assert!(waiting_for_answer(&store, "kid"));
+            let mut reply = message(0, MessageKind::Answer, "postgres");
+            (reply.from, reply.to, reply.in_reply_to) =
+                (PERSON.into(), "kid".into(), Some(asked.id));
+            store.backend().send_message(&reply).unwrap();
+            assert!(waiter.join().unwrap().unwrap().is_some());
+        });
+        assert!(!waiting_for_answer(&store, "kid"));
+    }
+
     fn message(id: u64, kind: MessageKind, text: &str) -> Message {
         Message {
             id,
@@ -568,6 +696,14 @@ mod tests {
             handoff: None,
             next_turn: false,
         }
+    }
+
+    #[test]
+    fn the_person_is_never_a_branch_name() {
+        assert!(matches!(
+            crate::names::validate(PERSON),
+            Err(Error::InvalidName { .. })
+        ));
     }
 
     #[test]

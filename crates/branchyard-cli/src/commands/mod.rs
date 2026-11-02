@@ -400,11 +400,16 @@ pub(crate) fn harness_delegate(json: bool) -> Result<Option<Delegate>, Failure> 
         };
     }
     if set(ENV_BRANCH) {
-        let error = branchyard::Error::Denied(format!(
-            "{ENV_BRANCH} is set but {ENV_TOKEN} is not: this harness was not given \
-             delegation, and by will not act with your authority inside it"
-        ));
-        return fail(json, &error).map(|()| None);
+        let report = Report::new(
+            "denied",
+            format!(
+                "{ENV_BRANCH} is set but {ENV_TOKEN} is not: this harness was not given \
+                 delegation, and by will not act with your authority inside it"
+            ),
+        )
+        .next("start a branch that can use by with delegation: by run --delegate \"<prompt>\"")
+        .next("for a trigger, give its request delegation");
+        return emit_report(json, report).map(|()| None);
     }
     Ok(None)
 }

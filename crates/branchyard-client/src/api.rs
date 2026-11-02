@@ -1077,6 +1077,60 @@ pub struct InventoryReport {
     pub workers: Vec<WorkerInventory>,
 }
 
+/// Something background work could not do that a person can act on
+/// (`GET /v1/problems`).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Problem {
+    /// Which background work it is about.
+    pub kind: ProblemKind,
+    /// Stable within its kind: the trigger's ID, the operation's ID,
+    /// `<repo>:<webhook id>`, a hash of the push subscription's endpoint,
+    /// `<repo>/<effect id>`.
+    pub key: String,
+    /// One line naming it for a person, such as `trigger nightly-triage`.
+    pub what: String,
+    /// The first failure of the current run of failures, or when it
+    /// started waiting, in milliseconds since the Unix epoch.
+    pub since_ms: u64,
+    /// Consecutive failures, for kinds that count them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures: Option<u32>,
+    /// The last error, or why it waits.
+    pub error: String,
+    /// What a person does about it, one line.
+    pub next: String,
+}
+
+/// What a [`Problem`] is about.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProblemKind {
+    /// A trigger that paused itself after `pause_after_failures` failed
+    /// runs in a row.
+    Trigger,
+    /// A queued operation that requires labels no live worker serving its
+    /// repository carries.
+    Operation,
+    /// A configured webhook whose delivery attempts failed three times in
+    /// a row on this server.
+    Webhook,
+    /// A push subscription whose sends failed three times in a row on
+    /// this server.
+    Push,
+    /// An effect this server's last reconcile pass left `unknown`.
+    Effect,
+}
+
+/// `GET /v1/problems`: oldest first, and empty when nothing needs a person.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProblemList {
+    /// Sorted by `since_ms`.
+    pub problems: Vec<Problem>,
+}
+
 /// A merge on the wire: [`branchyard::Merged`]'s own serde form.
 pub type MergedInfo = Merged;
 

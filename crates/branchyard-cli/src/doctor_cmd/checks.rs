@@ -17,6 +17,7 @@ use branchyard::inventory::{self, HarnessState, LoginState, Standing};
 use branchyard::models::Api;
 use branchyard::services::{Service, ServiceState, ServiceStore};
 use branchyard::{HarnessInfo, SandboxKeep, SandboxOptions, Yard};
+use branchyard_client::api::ProblemList;
 use branchyard_client::Client;
 use branchyard_setup::config::{
     Microsandbox, NetworkEnforceMode, ProjectConfig, ProviderKind as ConfiguredProvider,
@@ -27,6 +28,7 @@ use branchyard_workspace::Repository;
 
 use super::context::{Context, Layer, Merged, Store};
 use super::{Check, Status, NOT_CHECKED};
+use crate::args::Globals;
 use crate::readiness::Answer;
 use crate::render::age_text;
 use crate::workspace_cmd::{self, TrustState};
@@ -1313,7 +1315,7 @@ pub(super) fn ask_server(ctx: &Context) -> (Check, Option<Answer>) {
             )),
         );
     }
-    let Some(token_file) = globals.token_file.as_deref() else {
+    if globals.token_file.is_none() {
         let detail = format!("{shown} is configured but no token file is");
         return (
             Check::fail(
@@ -1323,14 +1325,8 @@ pub(super) fn ask_server(ctx: &Context) -> (Check, Option<Answer>) {
             ),
             Some(Answer::Unusable(detail)),
         );
-    };
-    let client = Client::from_token_file(url, token_file)
-        .and_then(|client| match globals.ca_file.as_deref() {
-            Some(ca) => client.with_ca_file(ca),
-            None => Ok(client),
-        })
-        .map(|client| client.with_timeout(SERVER_DEADLINE));
-    let client = match client {
+    }
+    let client = match client(globals, url) {
         Ok(client) => client,
         Err(error) => {
             return (
@@ -1343,7 +1339,12 @@ pub(super) fn ask_server(ctx: &Context) -> (Check, Option<Answer>) {
             )
         }
     };
-    match served_repositories(client, SERVER_DEADLINE) {
+    let repos = within(SERVER_DEADLINE, move || {
+        client
+            .repos()
+            .map(|repos| repos.into_iter().map(|r| r.name).collect::<Vec<_>>())
+    });
+    match repos {
         Err(error) => {
             let why = error.as_ref().map_or_else(
                 || format!("no answer within {SERVER_DEADLINE:?}"),
@@ -1397,23 +1398,101 @@ fn list(names: &[String]) -> String {
     }
 }
 
-/// The names of the repositories the server serves, or its error (`None`:
-/// no answer within `deadline`), whatever the network does: the request
-/// runs on a thread of its own, and one that outlives the deadline is left
-/// to end with the process.
-fn served_repositories(
-    client: Client,
+/// A client for the configured server at `url`, with the token and CA
+/// files `globals` name, whose requests end at the deadline.
+fn client(globals: &Globals, url: &str) -> Result<Client, branchyard_client::Error> {
+    let token_file = globals
+        .token_file
+        .as_deref()
+        .ok_or_else(|| branchyard_client::Error::Config("no token file is configured".into()))?;
+    let client = Client::from_token_file(url, token_file)?;
+    let client = match globals.ca_file.as_deref() {
+        Some(ca) => client.with_ca_file(ca)?,
+        None => client,
+    };
+    Ok(client.with_timeout(SERVER_DEADLINE))
+}
+
+/// What `GET /v1/problems` came to: the list, or the client's error
+/// (`None`: no answer within the deadline).
+type Listed = Result<ProblemList, Option<branchyard_client::Error>>;
+
+/// What a configured server lists as problems, asked only once its
+/// `GET /v1/repos` succeeded.
+pub(super) fn server_problems(ctx: &Context) -> Vec<Check> {
+    let globals = &ctx.globals;
+    let (Some(url), Some(answer)) = (globals.remote.as_deref(), &ctx.server().1) else {
+        return Vec::new();
+    };
+    let list = || {
+        let client = client(globals, url).map_err(Some)?;
+        within(SERVER_DEADLINE, move || client.problems())
+    };
+    problems_row(&without_userinfo(url), answer, list)
+        .into_iter()
+        .collect()
+}
+
+/// The `server.problems` row for the server shown as `shown`, from what
+/// its `GET /v1/repos` came to (`answer`): none for an ssh remote, which
+/// doctor does not contact; `not checked` when that request did not
+/// succeed, since `server.reachable` reports the outage; else from what
+/// `list` gets from `GET /v1/problems`.
+fn problems_row(shown: &str, answer: &Answer, list: impl FnOnce() -> Listed) -> Option<Check> {
+    const NAME: &str = "server.problems";
+    match answer {
+        Answer::NotAsked(_) => return None,
+        Answer::Unusable(_) | Answer::Unreachable(_) | Answer::Refused(_) | Answer::Failed(_) => {
+            return Some(skipped(
+                NAME,
+                "GET /v1/repos did not succeed, so GET /v1/problems was not sent",
+                "server.reachable",
+            ))
+        }
+        Answer::Repositories { .. } | Answer::Workers { .. } => {}
+    }
+    Some(match list() {
+        Ok(listed) => match listed.problems.first() {
+            None => Check::ok(NAME, "no problems"),
+            Some(oldest) => {
+                let count = match listed.problems.len() {
+                    1 => "1 problem".to_owned(),
+                    n => format!("{n} problems; the oldest"),
+                };
+                let detail = format!("{count}: {}: {}", oldest.what, oldest.error);
+                Check::warn(NAME, detail, &oldest.next)
+            }
+        },
+        Err(Some(branchyard_client::Error::Api { status: 404, .. })) => Check::warn(
+            NAME,
+            format!("{shown} has no GET /v1/problems: it is older than this `by`"),
+            "upgrade the server to this version of `by` to see what its background work could not do",
+        ),
+        Err(error) => Check::warn(
+            NAME,
+            format!(
+                "{shown} did not answer GET /v1/problems: {}",
+                error.map_or_else(
+                    || format!("no answer within {SERVER_DEADLINE:?}"),
+                    |error| error.to_string()
+                )
+            ),
+            "check the server's log, then run `by doctor` again",
+        ),
+    })
+}
+
+/// What `ask` gets from the server, or its error (`None`: no answer
+/// within `deadline`), whatever the network does: the request runs on a
+/// thread of its own, and one that outlives the deadline is left to end
+/// with the process.
+fn within<T: Send + 'static>(
     deadline: Duration,
-) -> Result<Vec<String>, Option<branchyard_client::Error>> {
+    ask: impl FnOnce() -> Result<T, branchyard_client::Error> + Send + 'static,
+) -> Result<T, Option<branchyard_client::Error>> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let answer = client
-            .repos()
-            .map(|repos| repos.into_iter().map(|r| r.name).collect::<Vec<_>>());
-        branchyard_support::best_effort(
-            "tell doctor what the server answered",
-            sender.send(answer),
-        );
+        branchyard_support::best_effort("tell doctor what the server answered", sender.send(ask()));
     });
     receiver
         .recv_timeout(deadline)
@@ -2137,16 +2216,18 @@ mod tests {
             Response::json(200, &json!({"repos": [{"name": "app", "root": "/r"}]}))
         });
         let client = Client::new(&served.url(), "tok").unwrap();
-        assert_eq!(
-            served_repositories(client, Duration::from_secs(10)).ok(),
-            Some(vec!["app".to_owned()])
-        );
+        let names = within(Duration::from_secs(10), move || {
+            client
+                .repos()
+                .map(|repos| repos.into_iter().map(|r| r.name).collect::<Vec<_>>())
+        });
+        assert_eq!(names.ok(), Some(vec!["app".to_owned()]));
         served.finish();
 
         let silent = MockHttp::start(|_| Response::hang());
         let client = Client::new(&silent.url(), "tok").unwrap();
         let began = std::time::Instant::now();
-        let answer = served_repositories(client, Duration::from_millis(300));
+        let answer = within(Duration::from_millis(300), move || client.repos());
         assert!(matches!(answer, Err(None)), "{answer:?}");
         assert!(
             began.elapsed() < Duration::from_secs(5),
@@ -2154,5 +2235,114 @@ mod tests {
             began.elapsed()
         );
         silent.finish();
+    }
+
+    fn problem(what: &str, error: &str, next: &str) -> branchyard_client::api::Problem {
+        branchyard_client::api::Problem {
+            kind: branchyard_client::api::ProblemKind::Trigger,
+            key: what.into(),
+            what: what.into(),
+            since_ms: 1_790_000_000_000,
+            failures: Some(3),
+            error: error.into(),
+            next: next.into(),
+        }
+    }
+
+    const SHOWN: &str = "https://server.example";
+
+    fn answered() -> Answer {
+        Answer::Repositories {
+            served: vec!["app".into()],
+            wanted: None,
+        }
+    }
+
+    #[test]
+    fn no_problems_is_ok_and_a_listed_problem_names_the_oldest_and_what_to_do() {
+        let row = problems_row(SHOWN, &answered(), || Ok(ProblemList::default()));
+        assert_eq!(row, Some(Check::ok("server.problems", "no problems")));
+
+        let paused = problem(
+            "trigger nightly-triage",
+            "paused after 3 failed runs in a row;\nthe last: branch_exists",
+            "see why with `by trigger runs nightly-triage`, fix it, then `by trigger enable nightly-triage`",
+        );
+        let waiting = problem(
+            "operation op_1",
+            "no live worker carries gpu",
+            "start a worker with --label gpu",
+        );
+        let listed = ProblemList {
+            problems: vec![paused.clone(), waiting],
+        };
+        let row = problems_row(SHOWN, &answered(), || Ok(listed)).unwrap();
+        assert_eq!(row.status, Status::Warn);
+        assert_eq!(
+            row.detail,
+            "2 problems; the oldest: trigger nightly-triage: paused after 3 failed runs in a row; \
+             the last: branch_exists"
+        );
+        assert_eq!(row.fix.as_deref(), Some(paused.next.as_str()));
+
+        let one = ProblemList {
+            problems: vec![paused],
+        };
+        let row = problems_row(SHOWN, &answered(), || Ok(one)).unwrap();
+        assert!(
+            row.detail
+                .starts_with("1 problem: trigger nightly-triage: "),
+            "{row:?}"
+        );
+    }
+
+    #[test]
+    fn a_server_without_the_route_is_to_be_upgraded_and_one_that_fails_says_how() {
+        let missing = branchyard_client::Error::Api {
+            status: 404,
+            error: Box::new(branchyard_client::api::ErrorBody {
+                code: "not_found".into(),
+                message: "no route GET /v1/problems".into(),
+                detail: None,
+            }),
+        };
+        let row = problems_row(SHOWN, &answered(), || Err(Some(missing))).unwrap();
+        assert_eq!(row.status, Status::Warn);
+        assert!(row.detail.contains("has no GET /v1/problems"), "{row:?}");
+        assert!(
+            row.fix
+                .as_deref()
+                .unwrap()
+                .starts_with("upgrade the server"),
+            "{row:?}"
+        );
+
+        let row = problems_row(SHOWN, &answered(), || Err(None)).unwrap();
+        assert_eq!(row.status, Status::Warn);
+        assert!(row.detail.ends_with("no answer within 5s"), "{row:?}");
+        let failed = branchyard_client::Error::Protocol("not JSON".into());
+        let row = problems_row(SHOWN, &answered(), || Err(Some(failed))).unwrap();
+        assert!(row.detail.contains("not JSON"), "{row:?}");
+        assert!(row.fix.is_some());
+    }
+
+    #[test]
+    fn problems_are_not_asked_of_a_server_whose_repository_list_was_not_read() {
+        for answer in [
+            Answer::Unreachable("connection refused".into()),
+            Answer::Refused("the token has expired".into()),
+            Answer::Unusable("no token file".into()),
+            Answer::Failed("500".into()),
+        ] {
+            let row = problems_row(SHOWN, &answer, || panic!("asked after {answer:?}")).unwrap();
+            assert_eq!(row.status, Status::Warn, "{answer:?}");
+            assert!(row.detail.starts_with(NOT_CHECKED), "{row:?}");
+            assert_eq!(row.fix.as_deref(), Some("fix server.reachable first"));
+        }
+        let ssh = Answer::NotAsked("doctor does not contact an ssh remote".into());
+        assert_eq!(
+            problems_row(SHOWN, &ssh, || panic!("asked an ssh remote")),
+            None
+        );
     }
 }

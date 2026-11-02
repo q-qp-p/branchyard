@@ -38,7 +38,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use branchyard::store_codec::{from_db_opt, from_db_u32, to_db, to_db_opt, to_db_usize};
-use branchyard_client::triggers::{RunOutcome, RunState, TriggerRun};
+use branchyard_client::triggers::{RunOutcome, RunState, TriggerMode, TriggerRun};
 use rusqlite::OptionalExtension;
 
 use super::StoredTrigger;
@@ -80,6 +80,10 @@ pub trait TriggerStore: Send + Sync {
         next_due_ms: Option<u64>,
     ) -> io::Result<bool>;
     fn set_secret(&self, id: &str, secret: &str) -> io::Result<bool>;
+    /// Set whether a run that would fire starts its task or is only
+    /// recorded: its spec's `mode`, rewritten in the body; false when it
+    /// does not exist.
+    fn set_mode(&self, id: &str, mode: TriggerMode) -> io::Result<bool>;
     /// Remove it and its runs; false when it did not exist.
     fn remove(&self, id: &str) -> io::Result<bool>;
 
@@ -126,8 +130,13 @@ pub trait TriggerStore: Send + Sync {
     /// pausing, a success starts the count over.
     fn settle(&self, run_id: &str, outcome: &RunOutcome, pause_after: u32)
         -> io::Result<Accounted>;
-    /// A trigger's runs, newest first.
-    fn runs(&self, trigger_id: &str, limit: usize) -> io::Result<Vec<TriggerRun>>;
+    /// A trigger's runs, newest first; with `state`, only those in it.
+    fn runs(
+        &self,
+        trigger_id: &str,
+        state: Option<RunState>,
+        limit: usize,
+    ) -> io::Result<Vec<TriggerRun>>;
     /// The branches the trigger's runs delivered to (a send, the task that
     /// created it, or a skip for want of the branch being free), by name,
     /// each once. A name that only appeared in a run that failed is not
@@ -154,6 +163,13 @@ fn parse<T: serde::de::DeserializeOwned>(what: &str, id: &str, body: &str) -> io
 
 fn body<T: serde::Serialize>(value: &T) -> io::Result<String> {
     serde_json::to_string(value).map_err(io::Error::other)
+}
+
+/// `body`, a stored trigger's, with its spec's mode set to `mode`.
+fn with_mode(id: &str, body_text: &str, mode: TriggerMode) -> io::Result<String> {
+    let mut trigger: StoredTrigger = parse("trigger", id, body_text)?;
+    trigger.spec.mode = mode;
+    body(&trigger)
 }
 
 fn needs_settling(run: &TriggerRun) -> bool {
@@ -553,6 +569,27 @@ impl TriggerStore for SqliteTriggers {
         })
     }
 
+    fn set_mode(&self, id: &str, mode: TriggerMode) -> io::Result<bool> {
+        self.immediate(|tx| {
+            let found: Option<String> = tx
+                .query_row("SELECT body FROM triggers WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(sql)?;
+            let Some(text) = found else {
+                return Ok((false, false));
+            };
+            let rows = tx
+                .execute(
+                    "UPDATE triggers SET body = ?2 WHERE id = ?1",
+                    [id, &with_mode(id, &text, mode)?],
+                )
+                .map_err(sql)?;
+            Ok((rows == 1, true))
+        })
+    }
+
     fn remove(&self, id: &str) -> io::Result<bool> {
         self.immediate(|tx| {
             tx.execute("DELETE FROM trigger_runs WHERE trigger_id = ?1", [id])
@@ -790,11 +827,17 @@ impl TriggerStore for SqliteTriggers {
         })
     }
 
-    fn runs(&self, trigger_id: &str, limit: usize) -> io::Result<Vec<TriggerRun>> {
+    fn runs(
+        &self,
+        trigger_id: &str,
+        state: Option<RunState>,
+        limit: usize,
+    ) -> io::Result<Vec<TriggerRun>> {
         let limit = to_db_usize("limit", limit)?;
+        let state = state.map(RunState::as_str);
         self.runs_where(
-            "WHERE trigger_id = ?1 ORDER BY seq DESC LIMIT ?2",
-            &[&trigger_id, &limit],
+            "WHERE trigger_id = ?1 AND (?3 IS NULL OR state = ?3) ORDER BY seq DESC LIMIT ?2",
+            &[&trigger_id, &limit, &state],
         )
     }
 
@@ -1202,6 +1245,30 @@ impl TriggerStore for PostgresTriggers {
         })
     }
 
+    fn set_mode(&self, id: &str, mode: TriggerMode) -> io::Result<bool> {
+        let id = id.to_owned();
+        self.with(move |c| {
+            let mut tx = c.transaction()?;
+            let found = tx.query_opt(
+                "SELECT body FROM by_triggers WHERE id = $1 FOR UPDATE",
+                &[&id],
+            )?;
+            let Some(row) = found else {
+                return Ok(Ok(false));
+            };
+            let text = match with_mode(&id, &row.get::<_, String>(0), mode) {
+                Ok(text) => text,
+                Err(e) => return Ok(Err(e)),
+            };
+            let rows = tx.execute(
+                "UPDATE by_triggers SET body = $2 WHERE id = $1",
+                &[&id, &text],
+            )?;
+            tx.commit()?;
+            Ok(Ok(rows == 1))
+        })?
+    }
+
     fn remove(&self, id: &str) -> io::Result<bool> {
         let id = id.to_owned();
         self.with(move |c| {
@@ -1435,14 +1502,20 @@ impl TriggerStore for PostgresTriggers {
         })?
     }
 
-    fn runs(&self, trigger_id: &str, limit: usize) -> io::Result<Vec<TriggerRun>> {
+    fn runs(
+        &self,
+        trigger_id: &str,
+        state: Option<RunState>,
+        limit: usize,
+    ) -> io::Result<Vec<TriggerRun>> {
         let id = trigger_id.to_owned();
         let limit = to_db_usize("limit", limit)?;
+        let state = state.map(|s| s.as_str().to_owned());
         let rows = self.with(move |c| {
             c.query(
                 "SELECT id, body FROM by_trigger_runs WHERE trigger_id = $1 \
-                 ORDER BY seq DESC LIMIT $2",
-                &[&id, &limit],
+                 AND ($3::text IS NULL OR state = $3) ORDER BY seq DESC LIMIT $2",
+                &[&id, &limit, &state],
             )
         })?;
         pg_runs(&rows)
@@ -1503,7 +1576,8 @@ pub mod conformance {
 
     use branchyard_client::api::TaskRequest;
     use branchyard_client::triggers::{
-        EventSource, RunOutcome, RunState, TriggerPolicy, TriggerRun, TriggerSpec, When,
+        EventSource, RunOutcome, RunState, TriggerMode, TriggerPolicy, TriggerRun, TriggerSpec,
+        When,
     };
 
     use super::{Recorded, TriggerStore};
@@ -1532,6 +1606,7 @@ pub mod conformance {
                 deliver: None,
                 precheck: None,
                 enabled: true,
+                mode: TriggerMode::Fire,
                 policy: TriggerPolicy::default(),
                 secret: None,
             },
@@ -1558,6 +1633,7 @@ pub mod conformance {
             event: None,
             reason: None,
             precheck: None,
+            task: None,
             operation: None,
             branches: Vec::new(),
             outcome: None,
@@ -1577,6 +1653,65 @@ pub mod conformance {
         failures_pause_and_successes_reset(store);
         nonces_are_spent_once(store);
         delivered_branches_are_listed_once(store);
+        modes_are_kept_and_runs_are_read_by_state(store);
+    }
+
+    /// A trigger's mode is rewritten in place, leaving its state, its
+    /// secret and its runs alone; a body without one (a firing trigger's,
+    /// and every trigger's from before modes) reads `fire`. Runs read back
+    /// by state are only those in it.
+    pub fn modes_are_kept_and_runs_are_read_by_state(store: &dyn TriggerStore) {
+        let t = trigger("modes", "watch", false);
+        assert!(store.create(&t).unwrap());
+        assert_eq!(
+            store.get(&t.id).unwrap().unwrap().spec.mode,
+            TriggerMode::Fire
+        );
+        assert!(store.set_secret(&t.id, "kept").unwrap());
+        assert!(store
+            .set_state(&t.id, false, Some("disabled by tester"), 1, None)
+            .unwrap());
+        assert!(store.set_mode(&t.id, TriggerMode::Observe).unwrap());
+        let got = store.get(&t.id).unwrap().unwrap();
+        assert_eq!(got.spec.mode, TriggerMode::Observe);
+        assert_eq!(got.secret.as_deref(), Some("kept"));
+        assert!(!got.enabled);
+        assert_eq!(got.paused_reason.as_deref(), Some("disabled by tester"));
+        assert_eq!(got.failures, 1);
+        assert_eq!(got.spec.name, "watch");
+        assert!(!store.set_mode("trg_unknown", TriggerMode::Observe).unwrap());
+        for (key, state) in [
+            ("event:1", RunState::SkippedCondition),
+            ("event:2", RunState::Observed),
+            ("event:3", RunState::SkippedCondition),
+            ("event:4", RunState::Observed),
+        ] {
+            assert_eq!(
+                store.record(&run(&t.id, key, state)).unwrap(),
+                Recorded::Inserted
+            );
+        }
+        let observed = store.runs(&t.id, Some(RunState::Observed), 10).unwrap();
+        let keys: Vec<&str> = observed.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["event:4", "event:2"]);
+        assert_eq!(
+            store
+                .runs(&t.id, Some(RunState::Observed), 1)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .runs(&t.id, Some(RunState::Fired), 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.runs(&t.id, None, 10).unwrap().len(), 4);
+        assert!(store.set_mode(&t.id, TriggerMode::Fire).unwrap());
+        assert_eq!(
+            store.get(&t.id).unwrap().unwrap().spec.mode,
+            TriggerMode::Fire
+        );
+        assert!(store.remove(&t.id).unwrap());
     }
 
     /// The branches a trigger's runs delivered to, each once: those of
@@ -1686,7 +1821,7 @@ pub mod conformance {
         assert!(store.remove(&b.id).unwrap());
         assert!(!store.remove(&b.id).unwrap());
         assert!(store.get(&b.id).unwrap().is_none());
-        assert!(store.runs(&b.id, 10).unwrap().is_empty());
+        assert!(store.runs(&b.id, None, 10).unwrap().is_empty());
         assert!(store.remove(&a.id).unwrap());
     }
 
@@ -1715,7 +1850,7 @@ pub mod conformance {
             .claim_schedule(&t.id, 60_000, Some(120_000), &[other], "w2", 90_000)
             .unwrap());
         assert!(store.due(&repos(), 60_000).unwrap().is_empty());
-        let runs = store.runs(&t.id, 10).unwrap();
+        let runs = store.runs(&t.id, None, 10).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].key, "schedule:60000");
         // Claimed by w1 until 90 000: nobody else takes it before.
@@ -1737,7 +1872,7 @@ pub mod conformance {
         waiting.reason = Some("assistant is running a turn; the send waits for it".into());
         assert!(store.defer_run(&waiting, fence, 96_000).unwrap());
         // What it waits for is on the run while it waits.
-        let shown = store.runs(&t.id, 10).unwrap();
+        let shown = store.runs(&t.id, None, 10).unwrap();
         let shown = shown.iter().find(|r| r.id == taken.id).unwrap();
         assert_eq!(
             (shown.state, shown.reason.as_deref()),
@@ -1813,11 +1948,11 @@ pub mod conformance {
             "once only"
         );
         assert!(store.unsettled(&repos()).unwrap().is_empty());
-        let runs = store.runs(&t.id, 10).unwrap();
+        let runs = store.runs(&t.id, None, 10).unwrap();
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, skipped.id, "newest first");
         assert_eq!(runs[1].outcome, Some(ok));
-        assert_eq!(store.runs(&t.id, 1).unwrap().len(), 1);
+        assert_eq!(store.runs(&t.id, None, 1).unwrap().len(), 1);
         assert!(store.remove(&t.id).unwrap());
     }
 

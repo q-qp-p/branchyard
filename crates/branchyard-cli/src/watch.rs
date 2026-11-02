@@ -1118,6 +1118,7 @@ mod tests {
             created_at: 1_000,
             stalled: false,
             awaiting: None,
+            stage: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

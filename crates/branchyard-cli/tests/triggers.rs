@@ -356,6 +356,121 @@ fn local_triggers_are_kept_where_by_serve_fires_them_and_remote_sees_them() {
     assert!(!gone.status.success());
 }
 
+/// A trigger added with --observe records what it would start and starts
+/// nothing; `by trigger mode` lets it fire, locally and remotely, and
+/// `runs --state` reads one state.
+#[test]
+fn an_observing_trigger_is_watched_then_let_fire() {
+    let d = Dir::new();
+    let root = d.repo("app");
+    let fake = |args: &[&str]| by(&root, args);
+    let added = fake(&[
+        "trigger",
+        "add",
+        "watch",
+        "--on",
+        "generic",
+        "--if",
+        "label=agent",
+        "--prompt",
+        "WRITE {{event.text}}.txt=1",
+        "--harness",
+        "gemini-cli",
+        "--branch-name",
+        "watch-{{event.text}}",
+        "--yes",
+        "--observe",
+    ]);
+    let text = ok(&added);
+    assert!(
+        text.contains("observing: each run that would fire is recorded"),
+        "{text}"
+    );
+    assert!(text.contains("next: by trigger mode watch fire"), "{text}");
+    let secret = text
+        .lines()
+        .find_map(|l| l.strip_prefix("webhook secret (shown once; give it to the sender): "))
+        .expect("a generated secret")
+        .to_owned();
+    let shown = json(&fake(&["trigger", "show", "watch", "--json"]));
+    assert_eq!(shown["mode"], "observe", "{shown}");
+    let id = shown["id"].as_str().unwrap().to_owned();
+    let list = ok(&fake(&["trigger", "list"]));
+    assert!(list.contains("observing"), "{list}");
+    // A new event trigger is stored denying bots, and says so.
+    assert!(list.contains("on generic (bots deny)"), "{list}");
+    let shown = ok(&fake(&["trigger", "show", "watch"]));
+    assert!(shown.contains("mode:     observe"), "{shown}");
+    assert!(shown.contains("bots:     deny"), "{shown}");
+    let bad = fake(&["trigger", "mode", "watch", "maybe"]);
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("use fire or observe"));
+
+    let served = Served::start(&root);
+    let fire = |body: &str| {
+        let signature = branchyard_server::triggers::events::sign(&secret, &[body.as_bytes()]);
+        served.post(
+            &format!("/v1/triggers/{id}/fire"),
+            &format!("X-Branchyard-Signature: sha256={signature}\r\n"),
+            body,
+        )
+    };
+    assert_eq!(fire(r#"{"id":"o1","text":"seen","labels":["agent"]}"#), 202);
+    assert_eq!(fire(r#"{"id":"o2","text":"other"}"#), 200);
+    let observed = wait::until("the run to be observed", || {
+        let runs = json(&fake(&[
+            "trigger", "runs", "watch", "--state", "observed", "--json",
+        ]));
+        match runs["runs"].as_array().map(Vec::len) {
+            Some(1) => Ok(runs),
+            _ => Err(runs),
+        }
+    });
+    assert_eq!(
+        observed["runs"][0]["task"]["name"], "watch-seen",
+        "{observed}"
+    );
+    let text = ok(&fake(&["trigger", "runs", "watch", "--state", "observed"]));
+    assert!(
+        text.contains("observed") && text.contains("would start watch-seen (gemini-cli)"),
+        "{text}"
+    );
+    assert!(!text.contains("skipped_condition"), "{text}");
+    let all = json(&fake(&["trigger", "runs", "watch", "--json"]));
+    assert_eq!(all["runs"].as_array().unwrap().len(), 2, "{all}");
+
+    // Remotely: let it fire, and read the same runs by state.
+    let fired = json(&served.remote(&root, &["trigger", "mode", "watch", "fire", "--json"]));
+    assert_eq!(
+        (fired["mode"].as_str(), fired["enabled"].as_bool()),
+        (Some("fire"), Some(true))
+    );
+    let list = ok(&fake(&["trigger", "list"]));
+    assert!(
+        !list.contains("observing") && list.contains("enabled"),
+        "{list}"
+    );
+    let remote = json(&served.remote(
+        &root,
+        &["trigger", "runs", "watch", "--state", "observed", "--json"],
+    ));
+    assert_eq!(remote["runs"].as_array().unwrap().len(), 1, "{remote}");
+    assert_eq!(fire(r#"{"id":"o3","text":"now","labels":["agent"]}"#), 202);
+    let runs = wait::until("the new event to fire", || {
+        let runs = json(&fake(&[
+            "trigger", "runs", "watch", "--state", "fired", "--json",
+        ]));
+        match runs["runs"][0]["outcome"].is_object() {
+            true => Ok(runs),
+            false => Err(runs),
+        }
+    });
+    assert_eq!(runs["runs"][0]["branches"][0], "watch-now", "{runs}");
+    // Locally, back to observing.
+    let back = ok(&fake(&["trigger", "mode", "watch", "observe"]));
+    assert!(back.contains("mode:     observe"), "{back}");
+}
+
 /// The lifecycle of a branch a trigger delivers to, from its flags: kept
 /// as given and shown, refused without the branch it belongs to, and held
 /// to the rules with the field named.

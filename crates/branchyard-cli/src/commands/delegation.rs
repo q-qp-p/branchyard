@@ -706,6 +706,9 @@ pub fn report_status(
     })
 }
 
+/// `by answer`: as the harness's own branch inside one; outside, as
+/// `--as`'s branch, or, without it, as whoever the message was sent to (the
+/// person, for a branch nobody delegated).
 pub fn answer(
     target: &Target,
     as_branch: Option<String>,
@@ -713,32 +716,72 @@ pub fn answer(
     text: &str,
     json: bool,
 ) -> Outcome {
-    let result = match (harness_delegate(json)?, target) {
-        (Some(delegate), _) => as_itself(&delegate, as_branch.as_deref(), "--as")
+    let inside = harness_delegate(json)?;
+    let as_the_person = inside.is_none() && as_branch.is_none();
+    let result = match (inside, target, as_branch) {
+        (Some(delegate), _, as_branch) => as_itself(&delegate, as_branch.as_deref(), "--as")
             .and_then(|()| delegate.answer(message_id, text)),
-        (None, Target::Remote(remote)) => as_branch_required(as_branch, "answer").and_then(|b| {
-            remote
-                .repo
-                .answer(&b, message_id, text)
-                .map_err(remote::sdk_error)
-        }),
-        (None, Target::Local) => as_branch_required(as_branch, "answer")
-            .and_then(|b| as_user(&b, TaskOptions::default())?.answer(message_id, text)),
+        (None, Target::Remote(remote), Some(b)) => remote
+            .repo
+            .answer(&b, message_id, text)
+            .map_err(remote::sdk_error),
+        (None, Target::Remote(remote), None) => remote
+            .repo
+            .answer_message(message_id, text)
+            .map_err(remote::sdk_error),
+        (None, Target::Local, Some(b)) => {
+            as_user(&b, TaskOptions::default()).and_then(|d| d.answer(message_id, text))
+        }
+        (None, Target::Local, None) => open_yard().and_then(|yard| yard.answer(message_id, text)),
+    };
+    let waits = match &result {
+        Ok(m) if as_the_person => !runs(target, &m.to),
+        _ => false,
     };
     emit(json, result, |m| {
-        format!("answered #{message_id} as #{}: {}\n", m.id, m.text)
+        let mut said = format!("answered #{message_id} as #{}: {}\n", m.id, m.text);
+        if waits {
+            said.push_str(&format!(
+                "{0} reads it when its next turn starts; to start one: by send {0} \"<prompt>\"\n",
+                m.to
+            ));
+        }
+        said
     })
 }
 
+/// Whether `branch` runs a turn now; `true` when that cannot be read, so
+/// nothing is said about a turn it may have.
+fn runs(target: &Target, branch: &str) -> bool {
+    let status = match target {
+        Target::Remote(remote) => remote
+            .repo
+            .branch(branch)
+            .map(|info| info.status)
+            .map_err(remote::sdk_error),
+        Target::Local => {
+            open_yard().and_then(|yard| Ok(yard.branch(branch)?.info().status.clone()))
+        }
+    };
+    branchyard_support::best_effort("read whether the asker runs a turn", status)
+        .is_none_or(|status| status == branchyard::BranchStatus::Running)
+}
+
+/// `by inbox`: the harness's own branch's inside one; outside, `--as`'s
+/// branch's, or, without it, the person's.
 pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: bool) -> Outcome {
-    let result = match (harness_delegate(json)?, target) {
-        (Some(delegate), _) => {
+    let result = match (harness_delegate(json)?, target, as_branch) {
+        (Some(delegate), _, as_branch) => {
             as_itself(&delegate, as_branch.as_deref(), "--as").and_then(|()| delegate.inbox())
         }
-        (None, Target::Remote(remote)) => as_branch_required(as_branch, "inbox")
-            .and_then(|b| remote.repo.inbox(&b).map_err(remote::sdk_error)),
-        (None, Target::Local) => as_branch_required(as_branch, "inbox")
-            .and_then(|b| as_user(&b, TaskOptions::default())?.inbox()),
+        (None, Target::Remote(remote), Some(b)) => remote.repo.inbox(&b).map_err(remote::sdk_error),
+        (None, Target::Remote(remote), None) => {
+            remote.repo.person_inbox().map_err(remote::sdk_error)
+        }
+        (None, Target::Local, Some(b)) => {
+            as_user(&b, TaskOptions::default()).and_then(|d| d.inbox())
+        }
+        (None, Target::Local, None) => open_yard().and_then(|yard| yard.inbox()),
     };
     // --unread holds for the JSON too, which the Python module reads.
     let result = result.map(|inbox| match unread {
@@ -757,7 +800,13 @@ pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: boo
                     Some(id) => format!(" (re #{id})"),
                     None => String::new(),
                 };
-                let read = if inbox.is_unread(m) { " [unread]" } else { "" };
+                let read = if inbox.is_unread(m) {
+                    " [unread]"
+                } else if inbox.answered.contains(&m.id) {
+                    " [answered]"
+                } else {
+                    ""
+                };
                 format!(
                     "#{} {} from {}{reply}{read}: {}\n",
                     m.id,

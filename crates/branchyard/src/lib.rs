@@ -166,6 +166,7 @@ pub mod skills;
 mod snapshots;
 mod spotlight;
 mod sqlite;
+pub mod stage;
 mod state;
 mod steer;
 mod storage;
@@ -259,7 +260,7 @@ pub use graph::{
     GraphProposal, SpawnSpec, MAX_EDITS,
 };
 pub use handoff::{Handoff, HandoffRequest, SourceVersion};
-pub use inbox::{DeliveryHook, SteerDelivery};
+pub use inbox::{DeliveryHook, SteerDelivery, PERSON};
 pub use json_schema::JsonSchema;
 pub use judge::{
     deterministic_scores, harness_judge, parse_verdict, prompt as judge_prompt, HarnessJudge,
@@ -693,42 +694,121 @@ impl Yard {
     }
 
     /// Every branch Branchyard knows, oldest first, each with what its
-    /// running turn waits on a person for ([`BranchInfo::awaiting`]).
+    /// running turn waits on a person for ([`BranchInfo::awaiting`]) and
+    /// what it needs from a person ([`BranchInfo::stage`]).
     pub fn branches(&self) -> Result<Vec<BranchInfo>, Error> {
-        let parked = self.parked()?;
-        Ok(self
+        let parked = parked(self.store().effects().asks(true)?);
+        let questions = self.store().backend().unanswered()?;
+        let infos = self
             .store()
             .list()?
             .into_iter()
             .map(|record| with_awaiting(record.info, &parked))
-            .collect())
+            .collect();
+        Ok(stage::staged(infos, &questions))
     }
 
     /// Look up one branch by name.
     pub fn branch(&self, name: &str) -> Result<Branch, Error> {
         let record = self.store().read(name)?;
-        let parked = self.parked()?;
+        let info = with_awaiting(record.info, &parked(self.store().effects().asks(true)?));
+        let questions = self.store().backend().unanswered()?;
+        let parent = match info.parent.as_deref() {
+            Some(parent) if info.depth > 0 => {
+                self.store().backend().read(parent)?.map(|p| p.info.status)
+            }
+            _ => None,
+        };
+        let asking = stage::asking(&questions, |n| (n == info.name).then_some(&info.status));
+        let info = stage::with_stage(info, asking.get(name), parent.as_ref());
         Ok(Branch {
             yard: self.clone(),
-            info: with_awaiting(record.info, &parked),
+            info,
         })
     }
 
-    /// The oldest pending ask of each branch that has one, by branch: what
-    /// a running turn is parked on.
-    fn parked(&self) -> Result<HashMap<String, Awaiting>, Error> {
-        let mut parked = HashMap::new();
-        for ask in self.store().effects().asks(true)? {
-            parked
-                .entry(ask.branch.clone())
-                .or_insert_with(|| Awaiting {
-                    kind: AwaitingKind::Approval,
-                    id: ask.id.clone(),
-                    about: ask.about.describe(),
-                    since_ms: ask.created_ms,
-                });
+    /// Per branch, the unanswered question or escalation its stage counts
+    /// as asking ([`stage::Reason::Question`]): its oldest one, while it
+    /// runs, or whatever its status when it asked the person. A branch that
+    /// asks nothing now has no entry.
+    pub fn asking(&self) -> Result<HashMap<String, Message>, Error> {
+        let questions = self.store().backend().unanswered()?;
+        let statuses: HashMap<String, BranchStatus> = self
+            .store()
+            .list()?
+            .into_iter()
+            .map(|record| (record.info.name, record.info.status))
+            .collect();
+        Ok(stage::asking(&questions, |name| statuses.get(name)))
+    }
+
+    /// The person's inbox: every message addressed to [`PERSON`], oldest
+    /// first, with the ids of those answered in `answered`. A branch
+    /// nobody delegated (a root, or a fork) sends its questions and
+    /// escalations here; [`Yard::answer`] answers them.
+    pub fn inbox(&self) -> Result<Inbox, Error> {
+        let store = self.store();
+        let messages = store.backend().inbox(PERSON)?;
+        let mut answered = Vec::new();
+        for message in &messages {
+            if store.backend().answer_to(message.id)?.is_some() {
+                answered.push(message.id);
+            }
         }
-        Ok(parked)
+        Ok(Inbox {
+            branch: PERSON.to_owned(),
+            messages,
+            steered_this_turn: Vec::new(),
+            answered,
+        })
+    }
+
+    /// Answer the question or escalation `message_id` with `text`, as
+    /// whoever it was sent to. One sent to [`PERSON`] is answered from the
+    /// person: the answer goes to its sender, steered into the sender's
+    /// running turn, or else given at the start of its next turn, which it
+    /// does not start. One sent to a branch is answered as that branch
+    /// ([`Delegate::answer`]). An unknown id is [`Error::UnknownMessage`];
+    /// a message of another kind, one answered already, and empty text are
+    /// refused.
+    pub fn answer(&self, message_id: u64, text: &str) -> Result<Message, Error> {
+        let message = self
+            .store()
+            .backend()
+            .message(message_id)?
+            .ok_or(Error::UnknownMessage(message_id))?;
+        let asker = &message.from;
+        if !matches!(
+            message.kind,
+            MessageKind::Question | MessageKind::Escalation
+        ) {
+            return Err(Error::Denied(format!(
+                "message #{message_id} is a {}, and only a question or an escalation takes an \
+                 answer; to tell {asker} something, send it a prompt",
+                message.kind
+            )));
+        }
+        if let Some(answer) = self.store().backend().answer_to(message_id)? {
+            return Err(Error::Denied(format!(
+                "message #{message_id} was answered already, by #{}; to tell {asker} more, send \
+                 it a prompt",
+                answer.id
+            )));
+        }
+        if message.to == PERSON {
+            return inbox::send(
+                self,
+                None,
+                PERSON,
+                MessageKind::Answer,
+                asker,
+                text,
+                Some(message_id),
+            );
+        }
+        self.branch(&message.to)?
+            .delegate(TaskOptions::default())?
+            .answer(message_id, text)
     }
 
     /// Merge `branch`'s candidate into the local branch `target`, running the
@@ -1502,6 +1582,10 @@ pub struct TaskOptions {
     /// default (`local:<user>` locally). A server sets it to the request's
     /// principal. See `docs/connectors.md`.
     pub actor: Option<connectors::Actor>,
+    /// The server trigger run that started a new task, recorded on it
+    /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
+    /// Read only when a branch starts a new task.
+    pub trigger: Option<tasks::TaskTrigger>,
     /// A W3C `traceparent` for this call's turns: each turn's harness gets
     /// it as `TRACEPARENT`, so what it calls (a connector SDK putting it in
     /// the gateway call's `_meta`, a tool exporting its own spans) joins
@@ -2254,6 +2338,12 @@ pub struct BranchInfo {
     /// turn is never stalled; it moves only when someone answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting: Option<Awaiting>,
+    /// What it needs from a person now, and why: the first row of
+    /// [`stage::STAGES`] that matches it (`docs/concepts.md`, "What a
+    /// branch needs from you"). Derived when the record is listed or
+    /// looked up, never stored, like [`BranchInfo::awaiting`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<stage::Stage>,
     /// The branch [`Branch::reincarnate`] started from this one's latest
     /// candidate, with a fresh session and a handoff brief.
     #[serde(default)]
@@ -2285,6 +2375,23 @@ pub struct BranchInfo {
 /// The `provider` of a record that predates the field.
 fn local_provider() -> String {
     "local".to_owned()
+}
+
+/// The oldest of the pending `asks` of each branch that has one, by
+/// branch: what a running turn is parked on.
+fn parked(asks: Vec<effects::ApprovalAsk>) -> HashMap<String, Awaiting> {
+    let mut parked = HashMap::new();
+    for ask in asks {
+        parked
+            .entry(ask.branch.clone())
+            .or_insert_with(|| Awaiting {
+                kind: AwaitingKind::Approval,
+                id: ask.id.clone(),
+                about: ask.about.describe(),
+                since_ms: ask.created_ms,
+            });
+    }
+    parked
 }
 
 /// `info` with what its turn is parked on, if it is running and has an
@@ -3112,7 +3219,9 @@ pub enum SteerState {
 /// `report` go to the sender's parent; an `escalation` goes to the parent
 /// too, or further up an ancestor its rig seat's `escalates_to` names; an
 /// `answer` goes from a branch to one of its own descendants, and normally
-/// carries `in_reply_to` a question's id.
+/// carries `in_reply_to` a question's id. A branch nobody delegated (a
+/// root, or a fork) sends its questions and escalations to the person,
+/// `@person`, whose answers carry `in_reply_to`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

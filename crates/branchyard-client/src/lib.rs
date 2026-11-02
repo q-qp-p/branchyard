@@ -80,9 +80,9 @@ use api::{
     AnswerRequest, AskRequest, BranchEvents, BranchList, CancelRequest, CancelResult, CheckRequest,
     Diff, DiscardRequest, ErrorBody, ErrorResponse, FeedEntry, ForkRequest, GraphRequest,
     HarnessList, IntegrateRequest, InventoryReport, MapList, MapRequest, MapResumeRequest,
-    MergeRequest, Operation, ReincarnateRequest, Removed, RepoEntry, RepoList, ReportRequest,
-    ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest, TaskList,
-    TaskRequest, TextRequest, WaitRequest,
+    MergeRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry, RepoList,
+    ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest,
+    TaskList, TaskRequest, TextRequest, WaitRequest,
 };
 use branchyard_support::time::now_ms;
 use http::{encode, Endpoint, Reply};
@@ -267,6 +267,12 @@ impl Client {
     /// harnesses each one's machine has: `GET /v1/inventory`.
     pub fn inventory(&self) -> Result<InventoryReport, Error> {
         self.get("/v1/inventory")
+    }
+
+    /// What background work could not do that a person can act on, oldest
+    /// first: `GET /v1/problems`. Empty when nothing needs a person.
+    pub fn problems(&self) -> Result<ProblemList, Error> {
+        self.get("/v1/problems")
     }
 
     /// The fleet's services, of `kind` when given (`GET /v1/services`).
@@ -779,6 +785,14 @@ impl Repo {
         self.client.get(&self.branch_path(branch, "/inbox"))
     }
 
+    /// The person's inbox: the questions and escalations sent to
+    /// `@person` by branches nobody delegated (a root started with
+    /// delegation, or a fork), oldest first; like `by inbox` outside a
+    /// harness.
+    pub fn person_inbox(&self) -> Result<Inbox, Error> {
+        self.client.get(&self.path("/inbox"))
+    }
+
     /// Relay a frozen result and selected artifacts without starting a recipient turn.
     pub fn handoff(&self, request: &branchyard::HandoffRequest) -> Result<Message, Error> {
         self.client.post(
@@ -788,9 +802,9 @@ impl Repo {
         )
     }
 
-    /// Ask `branch`'s parent a question; like `by ask`. Without
-    /// `wait_seconds`, returns once the question is sent; with it, blocks
-    /// on the server for up to that long for an answer.
+    /// Ask `branch`'s parent (the person, if it has none) a question; like
+    /// `by ask`. Without `wait_seconds`, returns once the question is sent;
+    /// with it, blocks on the server for up to that long for an answer.
     pub fn ask(&self, branch: &str, text: &str, wait_seconds: Option<f64>) -> Result<Asked, Error> {
         self.client.post(
             &self.branch_path(branch, "/ask"),
@@ -825,8 +839,8 @@ impl Repo {
         )
     }
 
-    /// Escalate to `branch`'s parent, or further up if its rig seat allows;
-    /// like `by escalate`.
+    /// Escalate to `branch`'s parent (the person, if it has none), or
+    /// further up if its rig seat allows; like `by escalate`.
     pub fn escalate(&self, branch: &str, text: &str) -> Result<Message, Error> {
         self.client.post(
             &self.branch_path(branch, "/escalate"),
@@ -871,6 +885,21 @@ impl Repo {
     pub fn answer(&self, branch: &str, message_id: u64, text: &str) -> Result<Message, Error> {
         self.client.post(
             &self.branch_path(branch, "/answer"),
+            &AnswerRequest {
+                message_id,
+                text: text.to_owned(),
+            },
+            &new_key(),
+        )
+    }
+
+    /// Answer question or escalation `message_id` as whoever it was sent
+    /// to: the person, or the branch it went to; like `by answer ID TEXT`
+    /// outside a harness. Needs the `run` scope. An asker whose turn has
+    /// ended reads the answer when its next turn starts.
+    pub fn answer_message(&self, message_id: u64, text: &str) -> Result<Message, Error> {
+        self.client.post(
+            &self.path("/answer"),
             &AnswerRequest {
                 message_id,
                 text: text.to_owned(),

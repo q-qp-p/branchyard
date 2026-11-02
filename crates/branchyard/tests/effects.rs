@@ -17,6 +17,7 @@ use branchyard::connectors::{Bundle, Gateway, GrantEntry, Packager};
 use branchyard::effects::{
     Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectState, Layer, UndoKind,
 };
+use branchyard::stage::{Reason, Stage};
 use branchyard::{
     Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy,
     Provisioning, Spawn, TaskOptions,
@@ -430,16 +431,20 @@ fn a_tool_approval_asks_and_never_loosens_the_policy() {
             ("tool write marker", ask.created_ms)
         );
         let listed = f.yard.branches().unwrap();
-        assert_eq!(
-            listed.iter().find(|b| b.name == "tool").unwrap().awaiting,
-            Some(parked)
-        );
+        let tool = listed.iter().find(|b| b.name == "tool").unwrap();
+        assert_eq!(tool.awaiting, Some(parked));
+        assert_eq!(tool.stage, Some(Stage::from(Reason::Approval)));
         f.yard
             .answer_approval(&ask.id, true, "ana", "cli", None)
             .unwrap();
         let branch = run.join().unwrap().unwrap();
         assert!(branch.info().worktree.join("p.txt").is_file());
         assert!(f.yard.branch("tool").unwrap().info().awaiting.is_none());
+        let listed = f.yard.branches().unwrap();
+        assert_eq!(
+            listed.iter().find(|b| b.name == "tool").unwrap().stage,
+            Some(Stage::from(Reason::Ready))
+        );
         let source = branch
             .events()
             .unwrap()

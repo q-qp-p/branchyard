@@ -5,8 +5,9 @@
 //! harness has a row of its own, a refused
 //! `branchyard.toml` is shown with its line, untrusted `[workspace]` scripts
 //! warn until trusted and again after a change, a store written by another
-//! `by` is reported and left as it is, a configured server is asked once,
-//! the model gateway's keys are named and never shown, and the exit status
+//! `by` is reported and left as it is, a configured server is asked once
+//! per route and what it lists as problems is a warning, the model
+//! gateway's keys are named and never shown, and the exit status
 //! is 0 without a failure (a to-do and a warning are not failures), 1 with
 //! one, and 2 for a usage error. Hermetic; requires `git`, `sh` and
 //! `python3`.
@@ -60,6 +61,14 @@ impl Report {
 
     fn overall(&self) -> &str {
         self.value["status"].as_str().unwrap()
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == name)
     }
 }
 
@@ -256,6 +265,7 @@ fn an_initialized_repository_has_no_failure() {
     assert!(report
         .detail("server.reachable")
         .starts_with("not configured"));
+    assert!(!report.has("server.problems"), "no server, no row");
     assert_eq!(report.status("models.keys"), "ok");
 }
 
@@ -1066,12 +1076,21 @@ fn a_configured_server_is_asked_once_with_its_token() {
     fs::write(&token, "tok-secret\n").unwrap();
     let token_arg = token.display().to_string();
     let mock = MockHttp::start(|request| {
-        if request.path == "/v1/repos"
-            && request.header("authorization") == Some("Bearer tok-secret")
-        {
+        let accepted = request.header("authorization") == Some("Bearer tok-secret");
+        if accepted && request.path == "/v1/repos" {
             Response::json(
                 200,
                 &json!({"repos": [{"name": "app", "root": "/srv/app"}]}),
+            )
+        } else if accepted && request.path == "/v1/problems" {
+            Response::json(
+                200,
+                &json!({"problems": [{
+                    "kind": "trigger", "key": "trg_1", "what": "trigger nightly-triage",
+                    "since_ms": 1_790_000_000_000_u64, "failures": 3,
+                    "error": "paused after 3 failed runs in a row",
+                    "next": "see why with `by trigger runs nightly-triage`, fix it, then `by trigger enable nightly-triage`"
+                }]}),
             )
         } else {
             Response::json(
@@ -1088,7 +1107,22 @@ fn a_configured_server_is_asked_once_with_its_token() {
         .detail("server.reachable")
         .contains("serves repository app"));
     assert!(!report.stdout.contains("tok-secret"));
-    assert_eq!(mock.requests().len(), 1, "readiness reads the same answer");
+    let paths: Vec<String> = mock.requests().into_iter().map(|r| r.path).collect();
+    assert_eq!(
+        paths,
+        ["/v1/repos", "/v1/problems"],
+        "each route once: readiness reads the same answer"
+    );
+    // A problem is a warning, not a failure: the oldest and what to do.
+    assert_eq!(report.status("server.problems"), "warn");
+    assert_eq!(
+        report.detail("server.problems"),
+        "1 problem: trigger nightly-triage: paused after 3 failed runs in a row"
+    );
+    assert_eq!(
+        report.fix("server.problems"),
+        "see why with `by trigger runs nightly-triage`, fix it, then `by trigger enable nightly-triage`"
+    );
     let readiness = |report: &Report, id: &str| -> String {
         let found = report.value["readiness"]
             .as_array()
@@ -1130,6 +1164,17 @@ fn a_configured_server_is_asked_once_with_its_token() {
     assert!(report
         .detail("server.reachable")
         .contains("the token is not accepted"));
+    // One refusal is one failure: the problems are not asked for.
+    assert!(report
+        .detail("server.problems")
+        .starts_with("not checked: "));
+    assert_eq!(report.fix("server.problems"), "fix server.reachable first");
+    let asked = mock.requests();
+    assert_eq!(
+        asked.iter().filter(|r| r.path == "/v1/problems").count(),
+        2,
+        "asked once by each run the token was accepted in"
+    );
     // An expired or replaced token: credentials fail, the server answered.
     assert_eq!(
         readiness(&report, "operator_credentials_available"),
@@ -1168,6 +1213,26 @@ fn a_configured_server_is_asked_once_with_its_token() {
         readiness(&report, "operator_credentials_available"),
         "unverified"
     );
+    assert_eq!(report.status("server.problems"), "warn");
+    assert!(report
+        .detail("server.problems")
+        .starts_with("not checked: "));
+
+    // A server older than the problems route answers 404 for it.
+    let older = MockHttp::start(|request| match request.path.as_str() {
+        "/v1/repos" => Response::json(200, &json!({"repos": [{"name": "app", "root": "/r"}]})),
+        _ => Response::json(
+            404,
+            &json!({"error": {"code": "not_found", "message": "no such route"}}),
+        ),
+    });
+    let report = repo.doctor(&["--remote", &older.url(), "--token-file", &token_arg]);
+    assert_eq!(report.status("server.reachable"), "ok", "{}", report.stdout);
+    assert_eq!(report.status("server.problems"), "warn");
+    assert!(report
+        .fix("server.problems")
+        .starts_with("upgrade the server"));
+    older.finish();
 
     // An ssh remote starts its own server; doctor does not.
     repo.project_file("");
@@ -1176,6 +1241,7 @@ fn a_configured_server_is_asked_once_with_its_token() {
     assert!(report
         .detail("server.reachable")
         .contains("not checked here"));
+    assert!(!report.has("server.problems"), "an ssh remote is not asked");
     assert_eq!(
         readiness(&report, "remote_control_plane_reachable"),
         "unknown"

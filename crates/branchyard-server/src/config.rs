@@ -693,7 +693,8 @@ pub struct Config {
     /// ones are refused with `413 body_too_large` before being written
     /// anywhere. See `docs/storage.md`.
     pub max_artifact_bytes: u64,
-    /// Operations running at once; more wait queued.
+    /// Operations running at once; more wait queued. A follow-up and a
+    /// console control each have one more slot of their own.
     pub max_running: usize,
     /// How long a worker's claim on a queued operation lasts without
     /// renewal. Another worker takes over a claim that expired.
