@@ -741,6 +741,7 @@ dependencies = [
  "backon",
  "blake3",
  "branchyard",
+ "branchyard-support",
  "branchyard-testkit",
  "branchyard-wire",
  "percent-encoding",

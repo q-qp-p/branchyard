@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -114,6 +115,13 @@ class Fake:
         self.hold: float = 0.0
         self.stream_opens: list[int | None] = []
         self.lock = threading.Lock()
+        # `idle_close`: close each connection after its answer, with no Connection header.
+        # `hang_up[(method, path)]`: how many requests to read and then close without an answer.
+        # `stall`: paths whose request waits on `gate` (bounded) and is then closed unanswered.
+        self.idle_close = False
+        self.hang_up: dict[tuple[str, str], int] = {}
+        self.stall: set[str] = set()
+        self.gate = threading.Event()
 
     def answer(self, method: str, path: str, *answers: tuple[int, Any]) -> None:
         self.routes[(method, path)] = deque(answers)
@@ -171,11 +179,24 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == f"{REPO}/events/stream":
             self._stream(url.query, headers)
             return
+        with self.fake.lock:
+            hang_up = self.fake.hang_up.get((method, url.path), 0)
+            if hang_up:
+                self.fake.hang_up[(method, url.path)] = hang_up - 1
+        if hang_up:
+            self.close_connection = True
+            return
+        if url.path in self.fake.stall:
+            self.fake.gate.wait(30)
+            self.close_connection = True
+            return
         status, answer = self.fake.response(method, url.path, body)
         extra: dict[str, str] = {}
         if isinstance(answer, tuple):
             answer, extra = answer
         self._send(status, answer, extra)
+        if self.fake.idle_close:
+            self.close_connection = True
 
     def _stream(self, query: str, headers: dict[str, str]) -> None:
         cursor = headers.get("last-event-id")
@@ -219,11 +240,33 @@ class Handler(BaseHTTPRequestHandler):
         self._handle("DELETE")
 
 
+class Tracking(ThreadingHTTPServer):
+    """A threaded server that keeps the connections it accepts: a test counts
+    them, and `ServerCase.stop` closes the ones still open, as a stopped
+    server's sockets go."""
+
+    def __init__(self, address: tuple[str, int], handler: type) -> None:
+        self.accepted: list[socket.socket] = []
+        super().__init__(address, handler)
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        conn, addr = super().get_request()
+        self.accepted.append(conn)
+        return conn, addr
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # A client that closes a kept-alive connection while a request is being read is what
+        # the tests do on purpose; that is not an error to print.
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class ServerCase(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = Fake()
         handler = type("H", (Handler,), {"fake": self.fake})
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.server = Tracking(("127.0.0.1", 0), handler)
         self.server.daemon_threads = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -237,8 +280,14 @@ class ServerCase(unittest.TestCase):
             self.stopped = True
             self.server.shutdown()
             self.server.server_close()
+            # A kept-alive connection outlives `shutdown`; close it as a stopped server's sockets go.
+            for conn in self.server.accepted:
+                with contextlib.suppress(OSError):
+                    conn.shutdown(socket.SHUT_RDWR)
+                conn.close()
 
     def tearDown(self) -> None:
+        self.client.close()
         self.stop()
 
     def op(self, id: str, state: str, branch: str = "b", cursor: int = 0, end: int | None = None, **extra: Any) -> dict:
@@ -1437,23 +1486,27 @@ class Errors(ServerCase):
             self.app.exists("b")
 
     def test_a_refused_connection_says_what_to_start(self):
-        # What urllib raises when nothing listens at the address; no port is freed to get it.
-        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
-        with mock.patch("urllib.request.urlopen", side_effect=refused):
+        # What the connection raises when nothing listens at the address; no port is freed to get it.
+        refused = ConnectionRefusedError(111, "Connection refused")
+        with mock.patch("http.client.HTTPConnection.connect", side_effect=refused):
             with self.assertRaises(bc.TransportError) as raised:
                 self.app.branches()
             message = raised.exception.message
             self.assertIn(f"GET {self.url}/v1/repos/app/branches", message)
             self.assertIn("Nothing is listening there. to fix: start a server with `by serve --repo app=.`", message)
             self.assertIn('Client.local(".")', message)
-            # The stream says the same when it cannot connect.
+        # The stream goes through urllib, which says the same when it cannot connect.
+        unreachable = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        with mock.patch("urllib.request.urlopen", side_effect=unreachable):
             with self.assertRaises(bc.TransportError) as streamed:
                 for _ in self.app.stream(0, read_timeout=1.0, max_failures=0):
                     pass
             self.assertIn("to fix: start a server", streamed.exception.message)
         # Other failures to connect keep their own words, with no advice that does not apply.
-        timed_out = urllib.error.URLError(TimeoutError("timed out"))
-        with mock.patch("urllib.request.urlopen", side_effect=timed_out), self.assertRaises(bc.TransportError) as other:
+        with (
+            mock.patch("http.client.HTTPConnection.connect", side_effect=TimeoutError("timed out")),
+            self.assertRaises(bc.TransportError) as other,
+        ):
             self.app.branches()
         self.assertNotIn("to fix", other.exception.message)
 
@@ -1486,6 +1539,141 @@ class Errors(ServerCase):
             bc.Client("http://x")
         with self.assertRaises(ValueError):
             bc.Client("http://x", "t", ca_file="/dev/null")
+
+
+class KeepAlive(ServerCase):
+    """`Client.request` over one kept-alive connection per thread: reuse, what
+    a server's close costs, what is sent again, the per-call timeout, proxies
+    and redirects."""
+
+    PROXY_VARIABLES = frozenset({"http_proxy", "https_proxy", "all_proxy", "no_proxy"})
+
+    def setUp(self) -> None:
+        # A proxy in the environment would send these calls to urllib's proxy; none may apply here.
+        environ = {k: v for k, v in os.environ.items() if k.lower() not in self.PROXY_VARIABLES}
+        patch = mock.patch.dict(os.environ, environ, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        super().setUp()
+
+    def test_sequential_calls_share_one_connection_and_send_the_same_headers(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        for _ in range(3):
+            self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 1)
+        headers = self.fake.requests[-1][2]
+        self.assertEqual(headers["authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(headers["user-agent"], "branchyard-client-python")
+        self.assertNotIn("connection", headers)
+
+    def test_a_response_that_closes_the_connection_is_not_reused(self):
+        path = f"{REPO}/branches/b"
+        self.fake.answer("GET", path, (200, ({"n": 1}, {"Connection": "close"})), (200, ({"n": 2}, {})))
+        self.assertEqual(self.client.request("GET", path), {"n": 1})
+        self.assertEqual(self.client.request("GET", path), {"n": 2})
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_connection_the_server_closed_while_idle_is_replaced_for_a_get(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        # Every connection is closed after its answer, with no Connection header: the next call finds it gone.
+        self.fake.idle_close = True
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 2)
+        self.assertEqual(len(self.requests("GET", path)), 2)
+
+    def test_a_post_on_a_stale_connection_is_not_sent_again_unless_it_has_a_key(self):
+        branch = f"{REPO}/branches/b"
+        send = f"{REPO}/branches/b/send"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("POST", send, 200, {"ok": True})
+        self.client.request("GET", branch)
+        # The server reads the POST and closes without an answer: it may have acted, so it is not sent again.
+        self.fake.hang_up[("POST", send)] = 1
+        with self.assertRaises(bc.TransportError):
+            self.client.request("POST", send, {"text": "x"})
+        self.assertEqual(len(self.requests("POST", send)), 1)
+        # A key makes the server answer a replay with the first result, so one retry on a new connection is allowed.
+        self.client.request("GET", branch)
+        self.fake.hang_up[("POST", send)] = 1
+        self.assertEqual(self.client.request("POST", send, {"text": "x"}, key="k1"), {"ok": True})
+        self.assertEqual(len(self.requests("POST", send)), 3)
+
+    def test_a_per_call_timeout_applies_to_a_kept_connection(self):
+        branch = f"{REPO}/branches/b"
+        slow = f"{REPO}/branches/slow"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("GET", slow, 200, {})
+        self.fake.stall.add(slow)
+        self.addCleanup(self.fake.gate.set)
+        self.client.timeout = 60.0
+        self.client.request("GET", branch)
+        started = time.monotonic()
+        with self.assertRaises(bc.TransportError):
+            self.client.request("GET", slow, timeout=0.2)
+        # The client's own 60 seconds did not apply; the call's 0.2 did, and its connection was dropped.
+        self.assertLess(time.monotonic() - started, 30.0)
+        self.assertEqual(self.client.request("GET", branch), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_proxy_in_the_environment_sends_the_call_through_urllib(self):
+        path = f"{REPO}/branches/b"
+        sent: list[str] = []
+
+        def opened(request: Any, **_options: Any) -> Any:
+            sent.append(request.full_url)
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+        # The proxy is a dead address: urllib is replaced by a spy, so nothing is sent anywhere.
+        with (
+            mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9"}),
+            mock.patch("urllib.request.urlopen", side_effect=opened),
+            self.assertRaises(bc.TransportError),
+        ):
+            self.client.request("GET", path)
+        self.assertEqual(sent, [self.url + path])
+        self.assertEqual(self.server.accepted, [])
+
+    def test_a_proxy_that_bypasses_the_host_is_not_used(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1"}):
+            self.client.request("GET", path)
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 1)
+
+    def test_a_redirect_is_followed_as_urllib_follows_it(self):
+        old = f"{REPO}/branches/old"
+        new = f"{REPO}/branches/new"
+        # The kept connection gets the 302; urllib then asks the old path again, gets it and follows it.
+        self.fake.answer("GET", old, (302, ({}, {"Location": new})), (302, ({}, {"Location": new})))
+        self.fake.always("GET", new, 200, {"name": "new"})
+        self.assertEqual(self.client.request("GET", old), {"name": "new"})
+
+    def test_a_post_answered_with_a_redirect_is_sent_once(self):
+        path = f"{REPO}/branches/b/send"
+        # A POST the server answered with a redirect may already have been acted on:
+        # it is reported, not sent again the way a GET is.
+        self.fake.always("POST", path, 307, {"error": "moved"})
+        with self.assertRaises(bc.BranchyardError):
+            self.client.request("POST", path, body={"text": "hi"})
+        self.assertEqual(len(self.requests("POST", path)), 1)
+
+    def test_each_thread_keeps_its_own_connection_and_close_ends_them(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        worker = threading.Thread(target=self.client.request, args=("GET", path))
+        worker.start()
+        worker.join()
+        self.assertEqual(len(self.server.accepted), 2)
+        self.client.close()
+        # After close the client still works; it opens a new connection.
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 3)
 
 
 class Waiting(ServerCase):
@@ -3205,6 +3393,7 @@ class OneApi(ServerCase):
             for name in ("BRANCHYARD_DELEGATION", "BRANCHYARD_REPO", "BRANCHYARD_CA_FILE"):
                 os.environ.pop(name, None)
             by = bc.connect()
+        self.addCleanup(by.repo.client.close)
         self.assertFalse(by.inside)
         self.assertEqual((by.repo.name if by.repo else None, by.branch), ("app", "lead"))
 

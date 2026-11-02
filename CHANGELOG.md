@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; a `POST` is never sent twice.
+
 Four corrections from the 1 November qualification of the ACP harnesses.
 DeepSeek Harness and Hermes run a benign shell command without asking their
 client, so their profiles now say so (`tool_approvals` carries the caveat in
@@ -20,6 +22,8 @@ option (`session/set_config_option`) where a profile turns it on. OpenCode
 takes a `ZAI_API_KEY` secret as the `ZHIPU_API_KEY` its Z.ai providers read.
 Each qualification report records the model the harness named in its usage
 (`model_reported`) beside the one asked for.
+
+The Python SDK's `Client` keeps one HTTP connection per thread and reuses it for ordinary calls (`http.client`), where it opened a new TCP and TLS connection for every call; a proxy from the environment, a redirect and the event stream are unchanged.
 
 ## 0.4.0 - 2026-11-01
 

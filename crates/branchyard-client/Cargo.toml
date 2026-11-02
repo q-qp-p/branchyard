@@ -18,6 +18,7 @@ schema = ["dep:schemars", "branchyard/schema"]
 [dependencies]
 blake3 = { workspace = true }
 branchyard = { path = "../branchyard" }
+branchyard-support = { path = "../branchyard-support" }
 branchyard-wire = { path = "../branchyard-wire" }
 percent-encoding = { workspace = true }
 rustls = { workspace = true }

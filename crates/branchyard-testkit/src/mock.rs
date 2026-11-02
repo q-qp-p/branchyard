@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufReader, ErrorKind, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -83,6 +83,9 @@ pub struct Response {
     /// The body to send.
     pub body: Vec<u8>,
     reply: Reply,
+    /// Leave the connection open for the client's next request, instead of
+    /// answering `Connection: close` and closing it.
+    keep_alive: bool,
 }
 
 /// Whether and how the server answers once the request is read.
@@ -103,6 +106,7 @@ impl Response {
             headers: Vec::new(),
             body: body.into(),
             reply: Reply::Answer,
+            keep_alive: false,
         }
     }
 
@@ -134,6 +138,14 @@ impl Response {
         self.headers.push((name.to_owned(), value.to_owned()));
         self
     }
+
+    /// Keep the connection open after this answer, for the client's next
+    /// request on it (HTTP/1.1 keep-alive). It closes when the client does,
+    /// so drop the client before the server is finished.
+    pub fn keep_alive(mut self) -> Response {
+        self.keep_alive = true;
+        self
+    }
 }
 
 type Handler = dyn Fn(&Request) -> Response + Send + Sync;
@@ -145,6 +157,7 @@ type Connection = JoinHandle<Result<(), String>>;
 pub struct MockHttp {
     addr: SocketAddr,
     requests: Arc<Mutex<Vec<Request>>>,
+    accepted: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<Vec<Connection>>>,
 }
@@ -174,8 +187,9 @@ impl MockHttp {
         let addr = listener.local_addr().expect("the listener's address");
         let requests: Arc<Mutex<Vec<Request>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
+        let accepted: Arc<AtomicUsize> = Arc::default();
         let accept = {
-            let (requests, stop) = (requests.clone(), stop.clone());
+            let (requests, stop, accepted) = (requests.clone(), stop.clone(), accepted.clone());
             std::thread::spawn(move || {
                 let mut connections = Vec::new();
                 // Not `incoming()`: stopping must not need a wake-up
@@ -194,6 +208,7 @@ impl MockHttp {
                     let stream = match listener.accept() {
                         Ok((stream, _)) => {
                             empty_since = None;
+                            accepted.fetch_add(1, Ordering::SeqCst);
                             stream.set_nonblocking(false).map(|()| stream)
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -221,6 +236,7 @@ impl MockHttp {
         MockHttp {
             addr,
             requests,
+            accepted,
             stop,
             accept: Some(accept),
         }
@@ -239,6 +255,12 @@ impl MockHttp {
     /// `http://host:port`, without a trailing slash.
     pub fn url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// How many TCP connections the server has accepted so far: one for
+    /// every request when none is kept alive.
+    pub fn connections(&self) -> usize {
+        self.accepted.load(Ordering::SeqCst)
     }
 
     /// The requests answered so far, oldest first.
@@ -356,72 +378,84 @@ fn connection(
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("clone: {e}"))?);
     let mut stream = stream;
 
-    // The request is read with the one HTTP/1.1 codec, so a malformed or
-    // cut-off request fails the test instead of being guessed at.
-    let head = match branchyard_wire::read_request_head(&mut reader, MAX_HEAD) {
-        Ok(Some(head)) => head,
-        Ok(None) => return Ok(()),
-        Err(e) => return Err(format!("read the request head: {e}")),
-    };
-    let method = head.method;
-    let path = head.target;
-    let framing = branchyard_wire::request_framing(&head.headers)
-        .map_err(|e| format!("{method} {path}: {e}"))?;
-    let headers: BTreeMap<String, String> = head
-        .headers
-        .into_iter()
-        .map(|(name, value)| (name.to_ascii_lowercase(), value))
-        .collect();
-    let expected = match framing {
-        branchyard_wire::Framing::Length(n) => format!(" (expected {n} bytes)"),
-        _ => String::new(),
-    };
-    let body = branchyard_wire::read_body(&mut reader, framing, MAX_BODY).map_err(|e| {
-        format!("{method} {path}: the body was cut off or malformed{expected}: {e}")
-    })?;
+    // A connection serves requests until one is answered without
+    // `keep_alive`, or until the client closes it.
+    loop {
+        // The request is read with the one HTTP/1.1 codec, so a malformed or
+        // cut-off request fails the test instead of being guessed at.
+        let head = match branchyard_wire::read_request_head(&mut reader, MAX_HEAD) {
+            Ok(Some(head)) => head,
+            Ok(None) => return Ok(()),
+            Err(e) => return Err(format!("read the request head: {e}")),
+        };
+        let method = head.method;
+        let path = head.target;
+        let framing = branchyard_wire::request_framing(&head.headers)
+            .map_err(|e| format!("{method} {path}: {e}"))?;
+        let headers: BTreeMap<String, String> = head
+            .headers
+            .into_iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value))
+            .collect();
+        let expected = match framing {
+            branchyard_wire::Framing::Length(n) => format!(" (expected {n} bytes)"),
+            _ => String::new(),
+        };
+        let body = branchyard_wire::read_body(&mut reader, framing, MAX_BODY).map_err(|e| {
+            format!("{method} {path}: the body was cut off or malformed{expected}: {e}")
+        })?;
 
-    let request = Request {
-        method,
-        path,
-        headers,
-        body,
-    };
-    let response = handler(&request);
-    requests
-        .lock_recovering("mock http requests")
-        .push(request.clone());
+        let request = Request {
+            method,
+            path,
+            headers,
+            body,
+        };
+        let response = handler(&request);
+        requests
+            .lock_recovering("mock http requests")
+            .push(request.clone());
 
-    match response.reply {
-        Reply::Answer => {}
-        Reply::Close => return Ok(()),
-        Reply::Hang => {
-            wait::until("the mock server to be finished", || {
-                stop.load(Ordering::SeqCst)
-            });
+        match response.reply {
+            Reply::Answer => {}
+            Reply::Close => return Ok(()),
+            Reply::Hang => {
+                wait::until("the mock server to be finished", || {
+                    stop.load(Ordering::SeqCst)
+                });
+                return Ok(());
+            }
+        }
+
+        let connection_header = if response.keep_alive {
+            ""
+        } else {
+            "Connection: close\r\n"
+        };
+        let mut head = format!(
+            "HTTP/1.1 {} X\r\nContent-Length: {}\r\n{connection_header}",
+            response.status,
+            response.body.len()
+        );
+        for (name, value) in &response.headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str("\r\n");
+        let write = |stream: &mut TcpStream, bytes: &[u8]| {
+            stream.write_all(bytes).map_err(|e| {
+                format!(
+                    "{} {}: write the response: {e}",
+                    request.method, request.path
+                )
+            })
+        };
+        write(&mut stream, head.as_bytes())?;
+        write(&mut stream, &response.body)?;
+        stream
+            .flush()
+            .map_err(|e| format!("{} {}: flush: {e}", request.method, request.path))?;
+        if !response.keep_alive {
             return Ok(());
         }
     }
-
-    let mut head = format!(
-        "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        response.body.len()
-    );
-    for (name, value) in &response.headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    head.push_str("\r\n");
-    let write = |stream: &mut TcpStream, bytes: &[u8]| {
-        stream.write_all(bytes).map_err(|e| {
-            format!(
-                "{} {}: write the response: {e}",
-                request.method, request.path
-            )
-        })
-    };
-    write(&mut stream, head.as_bytes())?;
-    write(&mut stream, &response.body)?;
-    stream
-        .flush()
-        .map_err(|e| format!("{} {}: flush: {e}", request.method, request.path))
 }
