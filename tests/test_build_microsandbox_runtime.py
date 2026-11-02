@@ -94,6 +94,11 @@ class RuntimeBuild(unittest.TestCase):
         self.write_plan()
         with self.assertRaisesRegex(ValueError, "unsupported"):
             runtime.read_plan(self.root)
+        self.plan["format"] = 1
+        self.plan["platform"] = "aarch64-unknown-linux-gnu"
+        self.write_plan()
+        with self.assertRaisesRegex(ValueError, "unsupported.*target"):
+            runtime.read_plan(self.root)
 
     def test_staging_uses_committed_source_and_exact_reviewed_payloads(self):
         (self.source / "Cargo.toml").write_text("local work must not enter the build")
@@ -131,13 +136,14 @@ class RuntimeBuild(unittest.TestCase):
         stage = self.prepared()
         with patch.object(runtime.subprocess, "run") as run:
             binary = runtime.build(stage, self.base / "target", "release")
-        self.assertEqual(binary, self.base / "target/release/msb")
+        self.assertEqual(binary, self.base / "target" / runtime.TARGET / "release/msb")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(len(commands), 2)
         for command in commands:
             self.assertIn("--locked", command)
             self.assertIn("--offline", command)
             self.assertEqual(command[:2], ["cargo", "+1.94.0"])
+            self.assertEqual(command[command.index("--target") + 1], runtime.TARGET)
         self.assertIn("x86_64::tests", commands[0])
         self.assertIn("microsandbox-cli", commands[1])
         self.assertIn("net,embed-binaries", commands[1])
@@ -192,6 +198,31 @@ class RuntimeBuild(unittest.TestCase):
             self.assertIn("--locked", command)
         for command in commands[2:]:
             self.assertIn("--offline", command)
+
+    def test_ambient_target_cannot_select_a_stale_preexisting_runtime(self):
+        stage = self.prepared()
+        compiler = self.base / "cargo"
+        compiler.write_text(
+            f"#!{sys.executable}\n"
+            "import os,sys\nfrom pathlib import Path\n"
+            "args=sys.argv[1:]\n"
+            "if 'build' in args:\n"
+            " target=args[args.index('--target')+1] if '--target' in args else os.environ['CARGO_BUILD_TARGET']\n"
+            " profile=args[args.index('--profile')+1]\n"
+            " binary=Path(os.environ['CARGO_TARGET_DIR'])/target/profile/'msb'\n"
+            " binary.parent.mkdir(parents=True,exist_ok=True)\n"
+            " binary.write_text(\"#!/bin/sh\\nprintf 'msb 0.7.3\\\\n'\\n# fresh-runtime\\n\")\n"
+            " binary.chmod(0o755)\n"
+        )
+        compiler.chmod(0o755)
+        target = self.base / "target"
+        stale = target / "release/msb"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("stale runtime must not be packaged")
+        with patch.dict(os.environ, PATH=str(self.base), CARGO_BUILD_TARGET="x86_64-unknown-linux-musl"):
+            binary = runtime.build(stage, target, "release")
+        self.assertIn("fresh-runtime", binary.read_text())
+        self.assertEqual(stale.read_text(), "stale runtime must not be packaged")
 
     def test_runtime_manifest_cannot_silently_switch_to_different_bytes(self):
         stage = self.prepared()
