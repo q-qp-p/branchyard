@@ -69,6 +69,7 @@ What exactly is true, and what has run.
 | [Driver qualification](qualification/README.md) | Which driver profiles passed live protocol qualification, and what did it find? |
 | [Validation](validation.md) | What has actually passed, what failed upstream, and what remains untested? |
 | [Substrate on GKE](substrate-gke.md) | Plan, provision or adopt a dedicated GKE cluster using pinned upstream tools |
+| [Agent Sandbox on GKE](agent-sandbox-gke.md) | Prepare private gVisor and Kata MicroVM pools with a pinned controller and runtime policies |
 | [Compute on GCE](compute-gce.md) | Create a dedicated agy worker and connect through native SSH |
 | [Substrate setup](substrate-setup.md) | Save a connection, prepare a template, and verify a disposable actor |
 | [Remote validation, 28 October 2026](remote-validation-2026-10-28.md) | What ran on remote compute, which execution backends passed, and what setup friction did a new developer encounter? |

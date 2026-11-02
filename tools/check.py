@@ -176,6 +176,7 @@ STEPS = (
     ),
     Step("test_install_ci_tool", "fast", (PY, "tests/test_install_ci_tool.py")),
     Step("test_substrate_gke", "fast", (PY, "tests/test_substrate_gke.py")),
+    Step("test_agent_sandbox_gke", "fast", (PY, "tests/test_agent_sandbox_gke.py")),
     Step("test_compute_gce", "fast", (PY, "tests/test_compute_gce.py")),
     Step("test_cloud_setup", "fast", (PY, "tests/test_cloud_setup.py")),
     Step("test_fetch_agy", "fast", (PY, "tests/test_fetch_agy.py")),
