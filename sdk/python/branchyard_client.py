@@ -1141,7 +1141,7 @@ class Client:
         elif ca_file is not None:
             raise ValueError("ca_file needs an https:// url")
         # Kept-alive connections (see `_connection`): each thread holds one in `_local`
-        # as (generation, connection); `close` ends them all by moving to a new generation.
+        # as (generation, connection, pid, idle-since); `close` ends them all by moving to a new generation.
         self._local = threading.local()
         self._pool_lock = threading.Lock()
         self._generation = 0
