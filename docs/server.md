@@ -1013,6 +1013,16 @@ read-only constraints; selecting a candidate grants no integration permission.
 
 An execution preset is a named environment the operator writes into the configuration. A workspace session start names its ID; the server supplies the provider, its paths and secrets, and the worker labels. A preset grants nothing. It resolves to the start's existing `provider`, provisioned secrets and `require_labels`, which then pass the same checks as any start: `allow_providers`, `allow_unapproved_tools`, provisioning, membership and roles, quotas and scheduling. Direct tasks (`POST /v1/repos/{repo}/tasks`) and native delegation are unchanged.
 
+Native `container` and `agent_sandbox` targets require an operator preset even
+when their kinds are allowed. A direct provider request is refused with
+`403 preset_required`. Admission and execution compare the provider with the
+private resolved preset; continuations compare the branch's recorded provider.
+Raw send, fork, reincarnate, spawn and graph mutation routes cannot inherit a
+native target. The worker's provider admission also applies before graph
+recovery or an automatic wake can claim a native turn. Default recovery options
+cannot stand in for a resolved preset.
+See [cloud execution](cloud-execution.md) for GCE and GKE provider examples.
+
 ```json
 "require_workspace_execution_presets": true,
 "execution_presets": [
@@ -1051,7 +1061,7 @@ An execution preset is a named environment the operator writes into the configur
 `GET /v1/execution-presets?workspace=ID` needs `read`. With `workspace`, the caller must be a member, and each preset's `can_start` says whether the caller's role there can start a writer or reviewer session on one of its harnesses. Without `workspace`, presets are filtered by tenant and `can_start` is absent. A preset for another tenant is absent, not refused. Each harness lists `models`, `default_model`, `tool_approvals`, `writer` (false without tool approvals unless the operator allows unapproved tools), `reviewer` (false without tool approvals), `effort` (whether its provisioner takes one), `credentials` (`configured` when the preset supplies a secret the harness reads as its key, else `none`) and readiness:
 
 - `environment`: `ready` for local. For Substrate, this server loads the bridge key and PEM files and opens no socket; the result is cached for at most 60 seconds and `checked_ms_ago` gives its age. For Microsandbox, `ready` when this build runs it.
-- `reachability`: Substrate only, always `unknown`. The cluster is contacted when a session starts.
+- `reachability`: Substrate and native container/Agent Sandbox targets, always `unknown`. The runtime is contacted when a session starts.
 - `executable`, per harness: for local, the PATH check of `GET /v1/harnesses`, cached like `environment`. For a remote environment, `unknown`.
 - `auth`, per harness: always `unknown` until a session verifies it. Console sessions do not use the server's own login.
 

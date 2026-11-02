@@ -150,7 +150,12 @@ pub(crate) fn execute(
                         "a console base requires a frozen reviewer candidate binding",
                     ));
                 }
-                let mut options = crate::work::task_options(app, &repo, &request)?;
+                let mut options = match super::presets::stored(&session)? {
+                    Some(preset) => {
+                        crate::work::preset_task_options(app, &repo, &request, &preset)?
+                    }
+                    None => crate::work::task_options(app, &repo, &request)?,
+                };
                 options.join_task = Some(text(&workspace.body, "task_id")?.into());
                 options.actor = Some(branchyard::connectors::Actor {
                     subject: caller.0.connector_subject(),
@@ -197,7 +202,21 @@ pub(crate) fn execute(
                     options.unapproved_tools = false;
                     options.policy = reviewer_policy(options.policy);
                 }
-                crate::work::send_allowed(app, &branch, text(&session.body, "branch")?, &request)?;
+                match super::presets::stored(&session)? {
+                    Some(preset) => crate::work::preset_send_allowed(
+                        app,
+                        &branch,
+                        text(&session.body, "branch")?,
+                        &request,
+                        &preset,
+                    )?,
+                    None => crate::work::send_allowed(
+                        app,
+                        &branch,
+                        text(&session.body, "branch")?,
+                        &request,
+                    )?,
+                }
                 cancel_observer(app, &repo, &session_id, &mut options);
                 let prompt = super::harness_input::Additions::later(
                     branch.result_contract().map_err(sdk)?.as_ref(),

@@ -71,6 +71,13 @@ What exactly is true, and what has run.
 | [Substrate on GKE](substrate-gke.md) | Plan, provision or adopt a dedicated GKE cluster using pinned upstream tools |
 | [Agent Sandbox on GKE](agent-sandbox-gke.md) | Prepare private gVisor and Kata MicroVM pools with a pinned controller and runtime policies |
 | [Compute on GCE](compute-gce.md) | Create a dedicated agy worker and connect through native SSH |
+| [Cloud execution](cloud-execution.md) | Select native GCE and GKE runtimes through CLI options and console presets |
+| [Container runtime](container-runtime.md) | Install and qualify the pinned gVisor Docker runtime |
+| [Container provider](container-sandbox.md) | Run an owned container with copied files and enforced resource limits |
+| [Agent Sandbox provider](agent-sandbox.md) | Run owned GKE gVisor and managed Kata allocations |
+| [Microsandbox runtime](microsandbox-runtime.md) | Build, verify and install the patched MicroVM runtime |
+| [GCE validation, 2 November 2026](remote-validation-2026-11-02-gce.md) | Read the patched MicroVM runtime and adapter evidence |
+| [GCE container evidence, 2 November 2026](evidence/gce-container-2026-11-02/README.md) | Read the actual gVisor isolation and resource-limit observations |
 | [Substrate setup](substrate-setup.md) | Save a connection, prepare a template, and verify a disposable actor |
 | [Remote validation, 28 October 2026](remote-validation-2026-10-28.md) | What ran on remote compute, which execution backends passed, and what setup friction did a new developer encounter? |
 | [Console validation, 29 October 2026](console-validation-2026-10-29.md) | Which console and remote checks ran, what setup failed, and which gaps remain before release? |

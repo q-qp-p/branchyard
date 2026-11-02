@@ -521,6 +521,13 @@ impl App {
             Provider::Local => return Ok(Some(provider)),
             Provider::Microsandbox(_) => "microsandbox",
             Provider::Substrate(_) => "substrate",
+            Provider::Container(_) | Provider::AgentSandbox(_) => {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "preset_required",
+                    "this provider requires an operator execution preset; select one from GET /v1/execution-presets",
+                ));
+            }
             // A recipe is the repository's own scripts, run as the person
             // who trusted them on the machine that has the repository; a
             // request carries its commands, which this server would run
@@ -1886,6 +1893,7 @@ async fn post_fork(
     app.check_admission_quotas(&caller, &policy).await?;
     let options = work::fork_options(&app, &repo, &request)?;
     let source = existing(&repo.yard, &branch).await?;
+    app.provider(source.provider().map_err(|error| error::sdk(&error))?)?;
     // At a checkpoint: one the branch has, checked before anything is
     // queued, as the local command refuses it.
     if let Some(turn) = request.at {
@@ -1938,6 +1946,7 @@ async fn post_reincarnate(
     app.check_admission_quotas(&caller, &policy).await?;
     let options = work::reincarnate_options(&app, &repo, &request)?;
     let source = existing(&repo.yard, &branch).await?;
+    app.provider(source.provider().map_err(|error| error::sdk(&error))?)?;
     let planned = {
         let (yard, prompt) = (repo.yard.clone(), source.info().prompt.clone());
         match blocking(move || yard.task(prompt).options(options).planned_names(&[])).await? {
@@ -2209,8 +2218,9 @@ async fn post_spawn(
         return Ok(response);
     }
     work::spawn_parts(&app, &repo, &request, None)?;
+    let source = existing(&repo.yard, &parent).await?;
+    app.provider(source.provider().map_err(|error| error::sdk(&error))?)?;
     app.check_admission_quotas(&caller, &policy).await?;
-    existing(&repo.yard, &parent).await?;
     // A seat's child is named `<parent>-<seat>` by default, as the engine
     // names it; the name is fixed here so the operation locks and reports
     // the branch it creates.
@@ -2529,6 +2539,8 @@ async fn post_graph(
     }
     app.opt_ins(false, false, request.unapproved_tools)?;
     let repo = app.authorized_repo(&caller, &repo, "run")?.clone();
+    let source = existing(&repo.yard, &parent).await?;
+    app.provider(source.provider().map_err(|error| error::sdk(&error))?)?;
     let new_children = request
         .edits
         .iter()

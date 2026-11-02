@@ -550,7 +550,9 @@ pub struct ExecutionPreset {
     #[serde(default)]
     pub description: String,
     /// The environment, in the form of a request's `provider`: `local`,
-    /// `substrate` or `microsandbox`. Its kind must be in `allow_providers`
+    /// `substrate`, `microsandbox`, `container` or `agent_sandbox`. Native
+    /// container and Agent Sandbox targets can be selected only through presets.
+    /// Its kind must be in `allow_providers`
     /// (`local` always is). Relative paths resolve against this file's
     /// directory.
     pub provider: branchyard::Provider,
@@ -1391,6 +1393,17 @@ impl Config {
                      --allow-provider {kind}"
                 ));
             }
+            match &preset.provider {
+                branchyard::Provider::Container(options) => options.validate().map_err(|_| {
+                    format!("execution preset {id}: invalid container configuration")
+                })?,
+                branchyard::Provider::AgentSandbox(options) => {
+                    options.validate().map_err(|_| {
+                        format!("execution preset {id}: invalid Agent Sandbox configuration")
+                    })?
+                }
+                _ => {}
+            }
             if let Some(options) = substrate_options(&preset.provider) {
                 let paths = [
                     Some(&options.key),
@@ -1495,7 +1508,13 @@ impl fmt::Debug for MetricsConfig {
 }
 
 /// The providers a server can allow requests to name.
-pub const PROVIDERS: &[&str] = &["local", "microsandbox", "substrate"];
+pub const PROVIDERS: &[&str] = &[
+    "local",
+    "microsandbox",
+    "substrate",
+    "container",
+    "agent_sandbox",
+];
 
 pub fn check_provider_name(name: &str) -> Result<(), String> {
     match PROVIDERS.contains(&name) {

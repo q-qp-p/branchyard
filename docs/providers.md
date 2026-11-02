@@ -1,6 +1,6 @@
 # Sandbox providers
 
-A provider is where a harness process runs. Branchyard talks to every provider through one vendor-independent contract, `SandboxProvider` in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Three providers implement it: the **local provider**, which is today's local mode behind the contract; the **Microsandbox provider**, which runs each turn's harness in a microVM; and the **Agent Substrate provider**, which runs it in a Kubernetes-hosted actor reached through a router. None is qualified against the M2 runtime gates in the [implementation plan](implementation-plan.md) yet.
+A provider is where a harness process runs. Branchyard talks to every provider through the `SandboxProvider` contract in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Native [containers](container-sandbox.md) and [GKE Agent Sandbox](agent-sandbox.md) use copied files and owned allocations. Their setup, console presets and qualification boundaries are described in [cloud execution](cloud-execution.md). Live runtime evidence is separate from a provider's declared capabilities.
 
 ## The contract
 

@@ -120,6 +120,7 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
     };
     let models = serde_json::json!({"harness": "claude-code-acp",
         "models": ["fake-fast", "fake-deep"], "default_model": "fake-fast"});
+    let native_image = format!("private-registry/worker@sha256:{}", "a".repeat(64));
     let path = f.dir.join("server.json");
     std::fs::write(
         &path,
@@ -130,7 +131,7 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
             "app": { "push": false },
             "managed_knowledge": { "enabled": true },
             "allow_unapproved_tools": true,
-            "allow_providers": ["substrate"],
+            "allow_providers": ["substrate", "container", "agent_sandbox", "microsandbox"],
             "require_workspace_execution_presets": true,
             "execution_presets": [
                 {"id": "local", "label": "Local workers",
@@ -142,7 +143,11 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
                  "provider": substrate("substrate/live.key"), "harnesses": [models]},
                 {"id": "substrate-missing", "label": "Substrate, key missing",
                  "description": "Runs each session in a Substrate actor; its bridge key is missing here.",
-                 "provider": substrate("substrate/missing.key"), "harnesses": [models]}
+                 "provider": substrate("substrate/missing.key"), "harnesses": [models]},
+                {"id":"gce-container","label":"GCE isolation","provider":{"kind":"container","image":native_image},"harnesses":[models]},
+                {"id":"gce-microvm","label":"GCE MicroVM","provider":{"kind":"microsandbox","image":native_image},"harnesses":[models]},
+                {"id":"gke-gvisor","label":"GKE Agent Sandbox","provider":{"kind":"agent_sandbox","context":"private-kube-context","namespace":"private-gvisor","image":native_image},"harnesses":[models]},
+                {"id":"gke-kata","label":"GKE Kata MicroVM","provider":{"kind":"agent_sandbox","context":"private-kube-context","namespace":"private-microvm","runtime":"microvm","image":native_image},"harnesses":[models]}
             ],
         })
         .to_string(),

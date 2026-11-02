@@ -51,6 +51,8 @@ enum Reason {
     MicrosandboxMissing,
     /// Discovery never contacts a remote environment.
     ContactedAtStart,
+    /// A native runtime is checked when its allocation starts.
+    RuntimeAtStart,
     /// The harness's executable is on this server.
     ExecutableFound,
     /// It is not.
@@ -116,6 +118,12 @@ impl Reason {
                 Unknown,
                 Environment,
                 "The cluster is contacted when a session starts, not before.",
+                None,
+            ),
+            Reason::RuntimeAtStart => (
+                Unknown,
+                Environment,
+                "The execution environment is checked when a session starts.",
                 None,
             ),
             Reason::ExecutableFound => (
@@ -294,15 +302,21 @@ fn installed(app: &App) -> Result<(Vec<Installed>, u64), ApiError> {
 enum Place {
     Local,
     Microsandbox,
+    NativeImage,
+    Recipe,
     Substrate(Box<branchyard::SubstrateOptions>),
 }
 
 impl Place {
     fn of(provider: &branchyard::Provider) -> Place {
-        match substrate_options(provider) {
-            Some(options) => Place::Substrate(Box::new(options)),
-            None if provider.label() == "microsandbox" => Place::Microsandbox,
-            None => Place::Local,
+        match provider {
+            branchyard::Provider::Local => Place::Local,
+            branchyard::Provider::Microsandbox(_) => Place::Microsandbox,
+            branchyard::Provider::Substrate(options) => Place::Substrate(Box::new(options.clone())),
+            branchyard::Provider::Container(_) | branchyard::Provider::AgentSandbox(_) => {
+                Place::NativeImage
+            }
+            branchyard::Provider::Recipe(_) => Place::Recipe,
         }
     }
 
@@ -312,6 +326,8 @@ impl Place {
     fn environment(&self) -> Result<Readiness, ApiError> {
         Ok(match self {
             Place::Local => Readiness::fixed(Reason::LocalProcesses),
+            Place::NativeImage => Readiness::fixed(Reason::RuntimeAtStart),
+            Place::Recipe => Readiness::fixed(Reason::ImageProvidesHarness),
             Place::Microsandbox => Readiness::fixed(match branchyard::MICROSANDBOX_BUILT {
                 true => Reason::MicrosandboxBuilt,
                 false => Reason::MicrosandboxMissing,
@@ -333,7 +349,8 @@ impl Place {
     fn reachability(&self) -> Option<Readiness> {
         match self {
             Place::Substrate(_) => Some(Readiness::fixed(Reason::ContactedAtStart)),
-            Place::Local | Place::Microsandbox => None,
+            Place::NativeImage => Some(Readiness::fixed(Reason::RuntimeAtStart)),
+            Place::Local | Place::Microsandbox | Place::Recipe => None,
         }
     }
 
@@ -350,7 +367,9 @@ impl Place {
                 };
                 Readiness::checked(reason, *age)
             }
-            Place::Microsandbox => Readiness::fixed(Reason::ImageProvidesHarness),
+            Place::Microsandbox | Place::NativeImage | Place::Recipe => {
+                Readiness::fixed(Reason::ImageProvidesHarness)
+            }
             Place::Substrate(_) => Readiness::fixed(Reason::TemplateProvidesHarness),
         }
     }
@@ -546,7 +565,7 @@ pub(super) fn discover(
 /// (`_preset`), so every continuation and every error view uses what the
 /// session started with, whatever the configuration says later.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct ResolvedPreset {
+pub(crate) struct ResolvedPreset {
     /// The preset's ID, shown as the session's `preset`.
     pub(super) id: String,
     /// The provider every turn runs on.
@@ -559,6 +578,37 @@ pub(super) struct ResolvedPreset {
     pub(super) model: Option<String>,
     /// Configured values the session's errors must not show, longest first.
     pub(super) hidden: Vec<Hidden>,
+}
+
+impl ResolvedPreset {
+    /// Recheck an operator-resolved provider at admission and execution.
+    /// This type comes only from server configuration or private session state.
+    pub(crate) fn provider(
+        &self,
+        app: &App,
+        requested: Option<&branchyard::Provider>,
+    ) -> Result<Option<branchyard::Provider>, ApiError> {
+        if requested != Some(&self.provider) {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "preset_conflict",
+                "the session provider differs from its execution preset",
+            ));
+        }
+        match &self.provider {
+            branchyard::Provider::Container(_) | branchyard::Provider::AgentSandbox(_) => {
+                if !app.config.allow_providers.contains(&self.provider.label()) {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "provider_not_allowed",
+                        "this server no longer allows the preset's provider",
+                    ));
+                }
+                Ok(Some(self.provider.clone()))
+            }
+            _ => app.provider(Some(self.provider.clone())),
+        }
+    }
 }
 
 /// The preset a session start selects, after workspace authorization and
@@ -674,6 +724,9 @@ pub(super) struct Hidden {
 /// What a hidden value is, as its placeholder names it.
 #[derive(Clone, Copy)]
 enum Configured {
+    RuntimeImage,
+    KubeContext,
+    KubeNamespace,
     BridgeKey,
     ApiToken,
     CertificateAuthority,
@@ -691,6 +744,9 @@ enum Configured {
 impl Configured {
     fn text(self) -> &'static str {
         match self {
+            Configured::RuntimeImage => "runtime image",
+            Configured::KubeContext => "Kubernetes context",
+            Configured::KubeNamespace => "Kubernetes namespace",
             Configured::BridgeKey => "bridge key",
             Configured::ApiToken => "API token file",
             Configured::CertificateAuthority => "certificate authority",
@@ -753,6 +809,15 @@ fn hidden(
             );
         }
         if let Ok(Value::Object(fields)) = serde_json::to_value(provider) {
+            for (field, what) in [
+                ("image", Configured::RuntimeImage),
+                ("context", Configured::KubeContext),
+                ("namespace", Configured::KubeNamespace),
+            ] {
+                if let Some(value) = fields.get(field).and_then(Value::as_str) {
+                    found.push((value.to_owned(), what));
+                }
+            }
             let passed = fields.get("pass_env").and_then(Value::as_array);
             for name in passed.into_iter().flatten() {
                 found.extend(
@@ -994,6 +1059,43 @@ mod tests {
 
     fn preset(value: Value) -> ExecutionPreset {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn native_readiness_never_uses_host_harness_readiness() {
+        for value in [
+            json!({"kind":"container","image":format!("operator/image@sha256:{}", "a".repeat(64))}),
+            json!({"kind":"agent_sandbox","context":"private-context","namespace":"private-namespace","image":format!("operator/image@sha256:{}", "a".repeat(64))}),
+        ] {
+            let provider = serde_json::from_value(value).unwrap();
+            let place = Place::of(&provider);
+            for readiness in [
+                place.environment().unwrap(),
+                place.executable(&(Vec::new(), 0), "codex"),
+            ] {
+                let value = serde_json::to_value(readiness).unwrap();
+                assert_eq!(value["state"], "unknown");
+                assert_eq!(value["scope"], "environment");
+            }
+        }
+    }
+
+    #[test]
+    fn native_preset_infrastructure_is_projected_from_errors() {
+        let image = format!("private-registry/worker@sha256:{}", "a".repeat(64));
+        let preset = preset(json!({
+            "id":"managed-kata","label":"Managed Kata",
+            "provider":{"kind":"agent_sandbox","context":"private-context","namespace":"private-namespace","image":image},
+            "harnesses":[{"harness":"codex"}]
+        }));
+        let hidden = hidden(&preset, &BTreeMap::new());
+        let projected = project_error(
+            &format!("{image} private-context private-namespace"),
+            &hidden,
+        );
+        for value in [&image, "private-context", "private-namespace"] {
+            assert!(!projected.contains(value), "{projected}");
+        }
     }
 
     fn request(value: Value) -> StartSessionRequest {

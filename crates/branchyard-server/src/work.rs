@@ -190,6 +190,8 @@ impl Work {
                     .map_err(sdk)
             }
             Work::Fork { branch, request } => {
+                let source = yard.branch(&branch).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 let options = TaskOptions {
                     actor: actor.clone(),
                     trace_parent: trace_parent.clone(),
@@ -204,6 +206,8 @@ impl Work {
                     .map_err(sdk)
             }
             Work::Reincarnate { branch, request } => {
+                let source = yard.branch(&branch).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 let options = TaskOptions {
                     actor: actor.clone(),
                     trace_parent: trace_parent.clone(),
@@ -251,6 +255,8 @@ impl Work {
                 request,
             } => {
                 let (mut options, spawn) = spawn_parts(app, repo, &request, name).map_err(api)?;
+                let source = yard.branch(&parent).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 options.trace_parent = trace_parent.clone();
                 let run = || {
                     let source = yard.branch(&parent)?;
@@ -805,6 +811,25 @@ pub(crate) fn task_options(
     repo: &RepoState,
     request: &TaskRequest,
 ) -> Result<TaskOptions, ApiError> {
+    task_options_from(app, repo, request, None)
+}
+
+/// Build a console turn using only a server-resolved execution preset.
+pub(crate) fn preset_task_options(
+    app: &App,
+    repo: &RepoState,
+    request: &TaskRequest,
+    preset: &crate::console::ResolvedPreset,
+) -> Result<TaskOptions, ApiError> {
+    task_options_from(app, repo, request, Some(preset))
+}
+
+fn task_options_from(
+    app: &App,
+    repo: &RepoState,
+    request: &TaskRequest,
+    preset: Option<&crate::console::ResolvedPreset>,
+) -> Result<TaskOptions, ApiError> {
     if request.prompt.trim().is_empty() {
         return Err(ApiError::bad_request("prompt is empty"));
     }
@@ -824,7 +849,10 @@ pub(crate) fn task_options(
             ));
         }
     }
-    let provider = app.provider(request.provider.clone())?;
+    let provider = match preset {
+        Some(preset) => preset.provider(app, request.provider.as_ref())?,
+        None => app.provider(request.provider.clone())?,
+    };
     app.opt_ins(
         request.delegation.is_some() || request.seats.is_some(),
         request.allow_delegation,
@@ -1009,6 +1037,36 @@ pub(crate) fn send_allowed(
     branch: &str,
     request: &SendRequest,
 ) -> Result<(), ApiError> {
+    send_allowed_from(app, target, branch, request, None)
+}
+
+/// Recheck the private preset and actual branch provider before continuation.
+pub(crate) fn preset_send_allowed(
+    app: &App,
+    target: &Branch,
+    branch: &str,
+    request: &SendRequest,
+    preset: &crate::console::ResolvedPreset,
+) -> Result<(), ApiError> {
+    send_allowed_from(app, target, branch, request, Some(preset))
+}
+
+fn send_allowed_from(
+    app: &App,
+    target: &Branch,
+    branch: &str,
+    request: &SendRequest,
+    preset: Option<&crate::console::ResolvedPreset>,
+) -> Result<(), ApiError> {
+    let provider = target.provider().map_err(|error| error::sdk(&error))?;
+    match preset {
+        Some(preset) => {
+            preset.provider(app, provider.as_ref())?;
+        }
+        None => {
+            app.provider(provider)?;
+        }
+    }
     if app.config.allow_delegation || request.delegation.is_some() {
         return Ok(());
     }

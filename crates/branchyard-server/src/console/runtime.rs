@@ -605,7 +605,10 @@ fn start_once(
         result,
         ..Default::default()
     };
-    crate::work::task_options(app, &repo, &request)?;
+    match preset.as_ref() {
+        Some(preset) => crate::work::preset_task_options(app, &repo, &request, preset)?,
+        None => crate::work::task_options(app, &repo, &request)?,
+    };
     let selected = super::sources::selection(app, caller, wid, &body)?;
     if access == "reviewer"
         && candidate.is_none()
@@ -734,7 +737,16 @@ pub(super) fn continue_session(
         ..Default::default()
     };
     crate::work::send_options(app, &repo, &request)?;
-    crate::work::send_allowed(app, &branch, text(&row.body, "branch")?, &request)?;
+    match super::presets::stored(&row)? {
+        Some(preset) => crate::work::preset_send_allowed(
+            app,
+            &branch,
+            text(&row.body, "branch")?,
+            &request,
+            &preset,
+        )?,
+        None => crate::work::send_allowed(app, &branch, text(&row.body, "branch")?, &request)?,
+    }
     let idem = operation_idem(
         caller,
         headers,

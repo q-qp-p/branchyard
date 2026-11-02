@@ -2814,7 +2814,7 @@
   // Whether an environment supplies a harness's key is configuration, not a
   // measurement: its row has a fact and no state.
   const KEY = { configured: 'This environment supplies its key', none: 'This environment supplies no key' };
-  const PROVIDERS = { local: 'Local', substrate: 'Substrate', microsandbox: 'Microsandbox' };
+  const PROVIDERS = { local: 'Local', substrate: 'Substrate', microsandbox: 'Microsandbox', container: 'Container', agent_sandbox: 'Agent Sandbox' };
   const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
   const readinessRow = (name, r) => ({

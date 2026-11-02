@@ -86,7 +86,14 @@ pub(super) fn target(
             .map_err(sdk)?
             .provider()
             .map_err(sdk)?;
-        let _checked_provider = app.provider(provider)?;
+        match super::presets::stored(&session)? {
+            Some(preset) => {
+                preset.provider(app, provider.as_ref())?;
+            }
+            None => {
+                app.provider(provider)?;
+            }
+        }
     }
     let binding = get(
         app,
