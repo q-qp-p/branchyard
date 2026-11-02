@@ -216,7 +216,7 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_iap_plan_is_offline_and_direct_fingerprints_remain_compatible(self):
         legacy = asdict(self.config)
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "gvisor"):
             legacy.pop(key)
         self.assertEqual(
             self.config.fingerprint, hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
@@ -578,6 +578,71 @@ class ComputeGceTests(unittest.TestCase):
             self.assertEqual(syntax.returncode, 0, syntax.stderr)
             self.assertIn("umask 077", configured)
             self.assertNotIn(self.env["GEMINI_API_KEY"], configured)
+
+    def test_gvisor_is_explicit_pinned_prerequisites_for_either_backend(self):
+        import install_container_runtime as runtime
+
+        for backend in ("local", "microsandbox"):
+            with self.subTest(backend=backend):
+                config = replace(self.config, backend=backend, gvisor=True)
+                self.assertNotEqual(config.fingerprint, replace(config, gvisor=False).fingerprint)
+                report = gce.plan(config)
+                self.assertEqual(report["gvisor"], {"release": runtime.RELEASE, "runtime": "runsc"})
+                self.state["instance"] = None
+                self.state["desired"] = self.instance(config)
+                self.save()
+                applied = self.apply(config)
+                self.assertEqual(applied["gvisor"], report["gvisor"])
+                script = next(
+                    call["script"]
+                    for call in reversed(self.calls())
+                    if call["script"] and "sudo apt-get" in call["script"]
+                )
+                self.assertIn(runtime.ARCHIVE_SHA512[:80], script)
+                self.assertIn("sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'", script)
+                syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
+                self.assertNotIn("restart docker", script)
+        with patch.dict(os.environ, BRANCHYARD_CONTAINER_RUNTIME_INSTALLER="print('packaged-runtime-helper')"):
+            self.assertIn("print('packaged-runtime-helper')", gce.bootstrap(replace(self.config, gvisor=True), None))
+        self.assertNotIn("BRANCHYARD_GVISOR_INSTALLER", gce.bootstrap(self.config, None))
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools/compute_gce.py"),
+                "--project=test-project",
+                "--zone=us-central1-a",
+                "--name=branchyard-test",
+                "--gvisor",
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["gvisor"]["release"], runtime.RELEASE)
+
+    def test_missing_packaged_gvisor_helper_stops_before_cloud_mutation(self):
+        environment = {key: value for key, value in self.env.items() if key != "BRANCHYARD_CONTAINER_RUNTIME_INSTALLER"}
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", None),
+            self.assertRaisesRegex(gce.SetupError, "must embed"),
+        ):
+            gce.apply(replace(self.config, gvisor=True))
+        self.assertFalse(any("create" in call["args"] for call in self.calls()))
+        with (
+            patch.dict(os.environ, BRANCHYARD_CONTAINER_RUNTIME_INSTALLER=""),
+            self.assertRaisesRegex(gce.SetupError, "empty"),
+        ):
+            gce.bootstrap(replace(self.config, gvisor=True), None)
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", str(self.root / "missing/compute_gce.py")),
+            self.assertRaisesRegex(gce.SetupError, "missing"),
+        ):
+            gce.bootstrap(replace(self.config, gvisor=True), None)
 
     def test_existing_selected_service_account_is_verified_without_iam_mutations(self):
         config = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
