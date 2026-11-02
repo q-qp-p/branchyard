@@ -83,9 +83,23 @@ pub struct Response {
     /// The body to send.
     pub body: Vec<u8>,
     reply: Reply,
-    /// Leave the connection open for the client's next request, instead of
-    /// answering `Connection: close` and closing it.
-    keep_alive: bool,
+    /// What happens to the connection after the answer.
+    after: After,
+}
+
+/// What happens to a connection once an answer is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum After {
+    /// Answer `Connection: close`, then close the connection.
+    Close,
+    /// Answer with no `Connection` header, and keep serving the connection.
+    KeepAlive,
+    /// Answer with no `Connection` header, then close the connection without
+    /// telling the client, as a server does when an idle connection times out.
+    SilentClose,
+    /// Answer `Connection: close`, but keep the socket open and keep serving
+    /// whatever the client sends on it.
+    CloseKeepOpen,
 }
 
 /// Whether and how the server answers once the request is read.
@@ -106,7 +120,7 @@ impl Response {
             headers: Vec::new(),
             body: body.into(),
             reply: Reply::Answer,
-            keep_alive: false,
+            after: After::Close,
         }
     }
 
@@ -143,7 +157,24 @@ impl Response {
     /// request on it (HTTP/1.1 keep-alive). It closes when the client does,
     /// so drop the client before the server is finished.
     pub fn keep_alive(mut self) -> Response {
-        self.keep_alive = true;
+        self.after = After::KeepAlive;
+        self
+    }
+
+    /// Answer with no `Connection` header, then close the connection once the
+    /// answer is written. The client is not told, so a client that keeps the
+    /// connection finds it closed the next time it uses it. The server counts
+    /// these closes in [`MockHttp::closed_silently`].
+    pub fn close_silently(mut self) -> Response {
+        self.after = After::SilentClose;
+        self
+    }
+
+    /// Answer `Connection: close` but leave the socket open: a client that
+    /// reuses the connection anyway gets its next request answered on it.
+    /// The server closes nothing; the client closes its end when it is done.
+    pub fn announce_close_keep_open(mut self) -> Response {
+        self.after = After::CloseKeepOpen;
         self
     }
 }
@@ -158,6 +189,7 @@ pub struct MockHttp {
     addr: SocketAddr,
     requests: Arc<Mutex<Vec<Request>>>,
     accepted: Arc<AtomicUsize>,
+    closed: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     accept: Option<JoinHandle<Vec<Connection>>>,
 }
@@ -188,8 +220,14 @@ impl MockHttp {
         let requests: Arc<Mutex<Vec<Request>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let accepted: Arc<AtomicUsize> = Arc::default();
+        let closed: Arc<AtomicUsize> = Arc::default();
         let accept = {
-            let (requests, stop, accepted) = (requests.clone(), stop.clone(), accepted.clone());
+            let (requests, stop, accepted, closed) = (
+                requests.clone(),
+                stop.clone(),
+                accepted.clone(),
+                closed.clone(),
+            );
             std::thread::spawn(move || {
                 let mut connections = Vec::new();
                 // Not `incoming()`: stopping must not need a wake-up
@@ -223,10 +261,14 @@ impl MockHttp {
                         }
                         Err(e) => Err(e),
                     };
-                    let (handler, requests, stop) =
-                        (handler.clone(), requests.clone(), stop.clone());
+                    let (handler, requests, stop, closed) = (
+                        handler.clone(),
+                        requests.clone(),
+                        stop.clone(),
+                        closed.clone(),
+                    );
                     connections.push(std::thread::spawn(move || match stream {
-                        Ok(stream) => connection(stream, &*handler, &requests, &stop),
+                        Ok(stream) => connection(stream, &*handler, &requests, &stop, &closed),
                         Err(e) => Err(format!("accept: {e}")),
                     }));
                 }
@@ -237,6 +279,7 @@ impl MockHttp {
             addr,
             requests,
             accepted,
+            closed,
             stop,
             accept: Some(accept),
         }
@@ -261,6 +304,14 @@ impl MockHttp {
     /// every request when none is kept alive.
     pub fn connections(&self) -> usize {
         self.accepted.load(Ordering::SeqCst)
+    }
+
+    /// How many connections the server closed right after an answer sent
+    /// without a `Connection` header ([`Response::close_silently`]). The close
+    /// is complete (both ends of the socket are dropped) when this counts it,
+    /// so a test can wait on it before the client tries the connection again.
+    pub fn closed_silently(&self) -> usize {
+        self.closed.load(Ordering::SeqCst)
     }
 
     /// The requests answered so far, oldest first.
@@ -370,6 +421,7 @@ fn connection(
     handler: &Handler,
     requests: &Mutex<Vec<Request>>,
     stop: &AtomicBool,
+    closed: &AtomicUsize,
 ) -> Result<(), String> {
     // A client that connects and then says nothing must not hang the test.
     stream
@@ -378,14 +430,30 @@ fn connection(
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("clone: {e}"))?);
     let mut stream = stream;
 
-    // A connection serves requests until one is answered without
-    // `keep_alive`, or until the client closes it.
+    // A connection serves requests until one is answered with its socket
+    // closed (`After::Close`, `After::SilentClose`), or until the client
+    // closes it.
+    let mut served = false;
     loop {
         // The request is read with the one HTTP/1.1 codec, so a malformed or
         // cut-off request fails the test instead of being guessed at.
         let head = match branchyard_wire::read_request_head(&mut reader, MAX_HEAD) {
             Ok(Some(head)) => head,
             Ok(None) => return Ok(()),
+            // A client that drops a connection while part of a response is still unread resets it
+            // (the kernel sends RST, not FIN). On a connection that has already served a request
+            // that is the client leaving, not a failure; anywhere else it still fails the test.
+            Err(branchyard_wire::WireError::Io { kind, .. })
+                if served
+                    && matches!(
+                        kind,
+                        ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionAborted
+                            | ErrorKind::BrokenPipe
+                    ) =>
+            {
+                return Ok(());
+            }
             Err(e) => return Err(format!("read the request head: {e}")),
         };
         let method = head.method;
@@ -427,10 +495,9 @@ fn connection(
             }
         }
 
-        let connection_header = if response.keep_alive {
-            ""
-        } else {
-            "Connection: close\r\n"
+        let connection_header = match response.after {
+            After::Close | After::CloseKeepOpen => "Connection: close\r\n",
+            After::KeepAlive | After::SilentClose => "",
         };
         let mut head = format!(
             "HTTP/1.1 {} X\r\nContent-Length: {}\r\n{connection_header}",
@@ -454,8 +521,18 @@ fn connection(
         stream
             .flush()
             .map_err(|e| format!("{} {}: flush: {e}", request.method, request.path))?;
-        if !response.keep_alive {
-            return Ok(());
+        match response.after {
+            After::Close => return Ok(()),
+            After::SilentClose => {
+                // Both descriptors must go before the count moves: the close
+                // the test waits for is the one the client sees as end of file.
+                drop(reader);
+                drop(stream);
+                closed.fetch_add(1, Ordering::SeqCst);
+                return Ok(());
+            }
+            After::KeepAlive | After::CloseKeepOpen => {}
         }
+        served = true;
     }
 }

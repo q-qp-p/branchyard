@@ -135,6 +135,28 @@ fn the_mock_answers_and_records_a_request() {
 }
 
 #[test]
+fn a_client_that_leaves_with_part_of_a_response_unread_does_not_fail_the_test() {
+    const BODY: usize = 16 * 1024;
+    let mock = MockHttp::start(|_| Response::new(200, vec![b'x'; BODY]).keep_alive());
+    let mut stream = TcpStream::connect(mock.addr()).unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
+    // Wait until the whole response is in this socket's buffer, so the server has finished writing.
+    stream.set_nonblocking(true).unwrap();
+    let mut peeked = vec![0u8; 2 * BODY];
+    wait::until("the whole response to arrive", || {
+        stream.peek(&mut peeked).map(|n| n > BODY).unwrap_or(false)
+    });
+    stream.set_nonblocking(false).unwrap();
+    // One byte read and the rest unread: closing now sends a reset, not a close, to a server that is
+    // waiting for the next request on a connection it has already served.
+    stream.read_exact(&mut [0u8; 1]).unwrap();
+    drop(stream);
+    mock.finish();
+}
+
+#[test]
 fn a_client_that_sends_a_truncated_body_fails_the_owning_test() {
     let message = panic_message(|| {
         let mock = MockHttp::start(|_| Response::new(200, "fine"));

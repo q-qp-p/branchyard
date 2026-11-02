@@ -1102,6 +1102,10 @@ class TerminalOutput(Record):
 # The statuses `urllib` follows (HTTPRedirectHandler); `request` sends those again through it.
 _REDIRECTS = (301, 302, 303, 307, 308)
 
+# A kept connection idle longer than this is dropped, not reused: the server closes idle
+# connections after a while, and a request sent on a closed one fails.
+_IDLE_MAX = 5.0
+
 
 class Client:
     """A connection to one `by serve`: `url` such as `http://127.0.0.1:8421`,
@@ -1326,9 +1330,12 @@ class Client:
         the next call. A connection the server closed is replaced by `_send`."""
         held = getattr(self._local, "held", None)
         if held is not None and held[0] == self._generation:
-            kept = held[1]
-            kept.timeout = timeout
-            return kept
+            _, kept, owner_pid, since = held
+            # A forked child shares its parent's socket: it must never use it.
+            if owner_pid == os.getpid() and self._still_good(kept, since):
+                kept.timeout = timeout
+                return kept
+            self._drop(kept)
         parsed = urllib.parse.urlsplit(self.url)
         host = parsed.hostname or ""
         connection: http.client.HTTPConnection
@@ -1347,8 +1354,33 @@ class Client:
                     old.close()
             kept.append((owner, connection))
             self._pool = kept
-            self._local.held = (self._generation, connection)
+            self._local.held = (self._generation, connection, os.getpid(), time.monotonic())
         return connection
+
+    @staticmethod
+    def _still_good(connection: http.client.HTTPConnection, since: float) -> bool:
+        """Whether a kept connection, idle since `since` (monotonic), may carry
+        the next request: it is young enough, and nothing is waiting to be read
+        from it. A readable idle socket means the server closed it, or sent
+        something nobody asked for; either way the next answer would be wrong."""
+        sock = connection.sock
+        if sock is None:
+            return True  # not connected (a `Connection: close` answer closed it): `http.client` reconnects
+        if time.monotonic() - since > _IDLE_MAX:
+            return False
+        try:
+            if isinstance(sock, ssl.SSLSocket) and sock.pending():
+                return False
+            readable, _, _ = select.select([sock], [], [], 0)
+        except (OSError, ValueError):
+            return False
+        return not readable
+
+    def _checked_in(self, connection: http.client.HTTPConnection) -> None:
+        """Note that `connection` finished an exchange now, so its idle age starts over."""
+        held = getattr(self._local, "held", None)
+        if held is not None and held[1] is connection:
+            self._local.held = (held[0], connection, held[2], time.monotonic())
 
     def _drop(self, connection: http.client.HTTPConnection) -> None:
         """Close `connection` and forget it, so the next call makes a new one."""
@@ -1389,7 +1421,7 @@ class Client:
                     connection.putheader("Content-Length", str(len(data)))
                 connection.endheaders(data)
                 response = connection.getresponse()
-            except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError):
+            except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
                 self._drop(connection)
                 if reused and retry:
                     retry = False
@@ -1404,6 +1436,7 @@ class Client:
                 self._drop(connection)
                 raise
             # A `Connection: close` answer has already closed the socket; the next call reconnects.
+            self._checked_in(connection)
             return response.status, {k.lower(): v for k, v in response.headers.items()}, content
 
     def _through_urlopen(self, url: str) -> bool:

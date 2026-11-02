@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; a `POST` is never sent twice.
+The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; no other request is sent again because of a closed connection (a `POST` is still resent with its idempotency key, as before).
 
 Four corrections from the 1 November qualification of the ACP harnesses.
 DeepSeek Harness and Hermes run a benign shell command without asking their
@@ -23,7 +23,7 @@ takes a `ZAI_API_KEY` secret as the `ZHIPU_API_KEY` its Z.ai providers read.
 Each qualification report records the model the harness named in its usage
 (`model_reported`) beside the one asked for.
 
-The Python SDK's `Client` keeps one HTTP connection per thread and reuses it for ordinary calls (`http.client`), where it opened a new TCP and TLS connection for every call; a proxy from the environment, a redirect and the event stream are unchanged.
+The Python SDK's `Client` keeps one HTTP connection per thread and reuses it for ordinary calls (`http.client`), where it opened a new TCP and TLS connection for every call. A kept connection that has idled more than 5 seconds, was made before a `fork`, or has been closed by the server is replaced before the next request is sent, so an unkeyed `POST` or `DELETE` never goes into a dead connection. A proxy from the environment and the event stream are unchanged. A redirect is still followed for a `GET`, a `HEAD` or a keyed request; any other request answered with a redirect is no longer followed (the server may already have acted on it) and raises the status as an error.
 
 ## 0.4.0 - 2026-11-01
 

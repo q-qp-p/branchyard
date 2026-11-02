@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import re
+import select
 import socket
 import sys
 import tempfile
@@ -1601,6 +1602,49 @@ class KeepAlive(ServerCase):
         self.fake.hang_up[("POST", send)] = 1
         self.assertEqual(self.client.request("POST", send, {"text": "x"}, key="k1"), {"ok": True})
         self.assertEqual(len(self.requests("POST", send)), 3)
+
+    def wait_until_the_server_has_closed(self) -> None:
+        """Block (up to ten seconds) until this thread's kept connection is readable, which for an idle
+        socket means the server's close has arrived; no fixed sleep."""
+        sock = self.client._local.held[1].sock
+        readable, _, _ = select.select([sock], [], [], 10)
+        self.assertTrue(readable, "the server did not close the connection")
+
+    def test_a_post_or_delete_after_the_server_closed_the_idle_connection_goes_out_on_a_new_one(self):
+        branch = f"{REPO}/branches/b"
+        send = f"{REPO}/branches/b/send"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("POST", send, 200, {"ok": True})
+        self.fake.always("DELETE", branch, 200, {})
+        self.fake.idle_close = True
+        # Neither call has a key, so neither may be sent twice: the dead connection must be noticed
+        # before the request goes out, not after it has failed.
+        self.client.request("GET", branch)
+        self.wait_until_the_server_has_closed()
+        self.assertEqual(self.client.request("POST", send, {"text": "x"}), {"ok": True})
+        self.wait_until_the_server_has_closed()
+        self.client.request("DELETE", branch)
+        self.assertEqual(len(self.server.accepted), 3)
+        self.assertEqual(len(self.requests("POST", send)), 1)
+        self.assertEqual(len(self.requests("DELETE", branch)), 1)
+
+    def test_a_connection_idle_for_too_long_is_replaced(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        with mock.patch.object(bc, "_IDLE_MAX", -1.0):
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_forked_child_does_not_use_its_parents_connection(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        parent = os.getpid()
+        # In a forked child `os.getpid()` differs from the pid the connection was made under.
+        with mock.patch("os.getpid", return_value=parent + 1):
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 2)
 
     def test_a_per_call_timeout_applies_to_a_kept_connection(self):
         branch = f"{REPO}/branches/b"
