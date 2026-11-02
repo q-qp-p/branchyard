@@ -1,0 +1,34 @@
+
+running 26 tests
+test x86_64::gdt::tests::field_parse ... ok
+test x86_64::interrupts::tests::test_apic_delivery_mode ... ok
+test x86_64::interrupts::tests::test_set_and_get_klapic_out_of_bounds - should panic ...
+thread 'x86_64::interrupts::tests::test_set_and_get_klapic_out_of_bounds' (819045) panicked at src/x86_64/interrupts.rs:35:42:
+set_klapic_reg range
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test x86_64::interrupts::tests::test_set_and_get_klapic_reg ... ok
+test x86_64::interrupts::tests::test_setlint ... ok
+test x86_64::interrupts::tests::test_setlint_fails ... ok
+test x86_64::mptable::tests::bounds_check ... ok
+test x86_64::mptable::tests::bounds_check_fails ... ok
+test x86_64::mptable::tests::cpu_entry_count ... ok
+test x86_64::mptable::tests::cpu_entry_count_max ... ok
+test x86_64::mptable::tests::intsrc_entries_match_ioapic_geometry ... ok
+test x86_64::mptable::tests::mpc_table_checksum ... ok
+test x86_64::mptable::tests::mpf_intel_checksum ... ok
+test x86_64::mptable::tests::rejects_unrepresentable_ioapic_geometry ... ok
+test x86_64::msr::tests::test_msr_whitelist ... ok
+test x86_64::msr::tests::test_setup_msrs ... ok
+test x86_64::regs::tests::test_configure_segments_and_sregs ... ok
+test x86_64::regs::tests::test_setup_fpu ... ok
+test x86_64::regs::tests::test_setup_page_tables ... ok
+test x86_64::regs::tests::test_setup_regs ... ok
+test x86_64::regs::tests::test_setup_sregs ... ok
+test x86_64::tests::kernel_mapping_stays_inside_the_requested_memory_budget ... ok
+test x86_64::tests::regions_gt_4gb ... ok
+test x86_64::tests::regions_lt_4gb ... ok
+test x86_64::tests::test_add_e820_entry ... ok
+test x86_64::tests::test_system_configuration ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s

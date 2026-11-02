@@ -1,0 +1,10 @@
+/var/tmp/branchyard-cloud-qual-20261102/microsandbox-0.7.3-branchyard-memory1-x86_64-unknown-linux-gnu-15e2f66ad438.tar.gz: OK
+msb 0.7.3
+   ✓ Loaded       alpine:3.20
+   ✓ Loaded       branchyard-qual-alpine
+requested_mib=128 guest_memtotal_kib=108108 limit_kib=131072
+   ✓ Removed      by-qual-128
+requested_mib=512 guest_memtotal_kib=494600 limit_kib=524288
+   ✓ Removed      by-qual-512
+requested_mib=1024 guest_memtotal_kib=1009928 limit_kib=1048576
+   ✓ Removed      by-qual-1024
