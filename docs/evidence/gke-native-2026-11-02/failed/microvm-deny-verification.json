@@ -1,0 +1,87 @@
+{
+  "cleanup": {
+    "destroy_succeeded": true,
+    "error": null,
+    "inspect_absent": true,
+    "remaining_allocation_policies": [],
+    "remaining_allocations": []
+  },
+  "config": {
+    "context": "gke_vital-octagon-19612_us-central1-a_by-v040-qual-20261102",
+    "namespace": "branchyard-microvm",
+    "network": "deny",
+    "runtime": "microvm"
+  },
+  "failure": "guest privilege boundary differs",
+  "guest": {
+    "cgroups": {
+      "cpu.max": "100000 100000",
+      "cpu.stat": "usage_usec 273941\nuser_usec 118380\nsystem_usec 155560\nnr_periods 9\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "memory.max": "536870912",
+      "memory.peak": "30306304"
+    },
+    "cwd": "/workspace",
+    "docker_socket_visible": false,
+    "external_tcp_error": "TimeoutError",
+    "external_tcp_reachable": false,
+    "gid": 1000,
+    "home": "/branchyard/home",
+    "kernel": "6.6.94-g7b99f7ef5fbf",
+    "kvm_visible": false,
+    "metadata": {
+      "169.254.169.252": {
+        "error": "URLError",
+        "reachable": false
+      },
+      "169.254.169.254": {
+        "error": "URLError",
+        "reachable": false
+      }
+    },
+    "network_interfaces": [
+      "eth0",
+      "lo",
+      "sit0"
+    ],
+    "pid_one": "tail",
+    "pod_uid": "d08155ad-ae2e-42d9-afc0-2db0d0228792",
+    "process_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "0"
+    },
+    "root_readonly": true,
+    "service_account_token_visible": false,
+    "uid": 1000,
+    "writable": {
+      "/branchyard/home": true,
+      "/tmp": true,
+      "/workspace": true
+    }
+  },
+  "identity": {
+    "image_id": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+    "kubelet_version": "v1.37.1-gke.3020000",
+    "node_kernel": "6.18.55+",
+    "node_name": "gke-by-v040-qual-202-branchyard-micro-308c2780-1053",
+    "node_runtime": "microvm",
+    "node_uid": "963a595c-1917-4064-9cbc-833dac08890e",
+    "pod_uid": "d08155ad-ae2e-42d9-afc0-2db0d0228792",
+    "resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "512Mi"
+      },
+      "requests": {
+        "cpu": "1",
+        "memory": "512Mi"
+      }
+    },
+    "runtime_class": "microvm",
+    "sandbox_uid": "4154b314-e1d1-4459-9888-c4cb786dcb6e"
+  },
+  "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+  "name": "gke-live-microvm-deny",
+  "passed": false,
+  "started_at": "2026-11-02T22:07:22.926Z"
+}

@@ -1,0 +1,114 @@
+{
+  "binary_exec_and_transfer": {
+    "blake3": "882179b8dbccd285cda241d968cfcccb3156c5edac2fa3761bb6eda7ff8cb172",
+    "bytes": 1024,
+    "exit_code": 7
+  },
+  "binary_observation": {
+    "exit_code": 7,
+    "stderr_hex": "6572726f7200ff",
+    "stdout_bytes": 1024
+  },
+  "cancellation": {
+    "first_descendant": 95,
+    "sibling_descendant": 105,
+    "sibling_survived_first_cancel": true
+  },
+  "cleanup": {
+    "destroy_succeeded": true,
+    "error": null,
+    "inspect_absent": true,
+    "remaining_allocation_policies": [],
+    "remaining_allocations": []
+  },
+  "config": {
+    "context": "gke_vital-octagon-19612_us-central1-a_by-v040-qual-20261102",
+    "namespace": "branchyard-microvm",
+    "network": "unrestricted",
+    "runtime": "microvm"
+  },
+  "escaped_descendant_pid": "148",
+  "guest": {
+    "cgroups": {
+      "cpu.max": "100000 100000",
+      "cpu.stat": "usage_usec 320255\nuser_usec 135836\nsystem_usec 184418\nnr_periods 10\nnr_throttled 0\nthrottled_usec 0\nnr_bursts 0\nburst_usec 0",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "memory.max": "536870912",
+      "memory.peak": "30105600"
+    },
+    "cwd": "/workspace",
+    "dns_resolved": true,
+    "docker_socket_visible": false,
+    "external_https_status": 200,
+    "external_tcp_reachable": true,
+    "gid": 1000,
+    "home": "/branchyard/home",
+    "kernel": "6.6.94-g7b99f7ef5fbf",
+    "kvm_visible": false,
+    "metadata": {
+      "169.254.169.252": {
+        "error": "URLError",
+        "reachable": false
+      },
+      "169.254.169.254": {
+        "error": "URLError",
+        "reachable": false
+      }
+    },
+    "network_interfaces": [
+      "eth0",
+      "lo",
+      "sit0"
+    ],
+    "pid_one": "tail",
+    "pid_one_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": "0"
+    },
+    "pod_uid": "99c8b204-6d63-483f-8869-8482e75fe1e2",
+    "process_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": "0"
+    },
+    "resolv_conf": "search branchyard-microvm.svc.cluster.local svc.cluster.local cluster.local us-central1-a.c.vital-octagon-19612.internal c.vital-octagon-19612.internal google.internal\nnameserver 34.118.224.10\noptions ndots:5\n",
+    "root_readonly": true,
+    "service_account_token_visible": false,
+    "uid": 1000,
+    "writable": {
+      "/branchyard/home": true,
+      "/tmp": true,
+      "/workspace": true
+    }
+  },
+  "identity": {
+    "image_id": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+    "kubelet_version": "v1.37.1-gke.3020000",
+    "node_kernel": "6.18.55+",
+    "node_name": "gke-by-v040-qual-202-branchyard-micro-308c2780-1053",
+    "node_runtime": "microvm",
+    "node_uid": "963a595c-1917-4064-9cbc-833dac08890e",
+    "pod_uid": "99c8b204-6d63-483f-8869-8482e75fe1e2",
+    "resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "512Mi"
+      },
+      "requests": {
+        "cpu": "1",
+        "memory": "512Mi"
+      }
+    },
+    "runtime_class": "microvm",
+    "sandbox_uid": "601a7c08-5b34-442f-a8ac-08df99085484"
+  },
+  "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+  "missing_program_refused": true,
+  "name": "gke-live-microvm-unrestricted",
+  "passed": true,
+  "started_at": "2026-11-02T22:16:29.285Z",
+  "stop_removed_allocation": true
+}

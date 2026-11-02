@@ -1,0 +1,260 @@
+{
+  "binary_exec_and_transfer": {
+    "blake3": "882179b8dbccd285cda241d968cfcccb3156c5edac2fa3761bb6eda7ff8cb172",
+    "bytes": 1024,
+    "exit_code": 7
+  },
+  "binary_observation": {
+    "exit_code": 7,
+    "stderr_hex": "6572726f7200ff",
+    "stdout_bytes": 1024
+  },
+  "cancellation": {
+    "first_descendant": 95,
+    "sibling_descendant": 105,
+    "sibling_survived_first_cancel": true
+  },
+  "cleanup": {
+    "destroy_succeeded": true,
+    "error": null,
+    "inspect_absent": true,
+    "remaining_allocation_policies": [],
+    "remaining_allocations": []
+  },
+  "config": {
+    "context": "gke_vital-octagon-19612_us-central1-a_by-v040-qual-20261102",
+    "namespace": "branchyard-gvisor",
+    "network": "deny",
+    "runtime": "gvisor"
+  },
+  "cpu_probe": {
+    "cpu_seconds": 1.83,
+    "wall_seconds": 3.034516818,
+    "workers": 4
+  },
+  "guest": {
+    "cgroups": {},
+    "cwd": "/workspace",
+    "docker_socket_visible": false,
+    "external_tcp_error": "TimeoutError",
+    "external_tcp_reachable": false,
+    "gid": 1000,
+    "home": "/branchyard/home",
+    "kernel": "4.19.0-gvisor",
+    "kvm_visible": false,
+    "metadata": {
+      "169.254.169.252": {
+        "error": "URLError",
+        "reachable": false
+      },
+      "169.254.169.254": {
+        "error": "URLError",
+        "reachable": false
+      }
+    },
+    "network_interfaces": [
+      "eth0",
+      "lo"
+    ],
+    "pid_one": "tail",
+    "pid_one_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": null
+    },
+    "pod_uid": "56db8a70-d2bf-4a01-8b93-a722c3c3b2fa",
+    "process_status": {
+      "CapEff": "0000000000000000",
+      "NoNewPrivs": "1",
+      "Seccomp": "0",
+      "Seccomp_filters": null
+    },
+    "resolv_conf": "search branchyard-gvisor.svc.cluster.local svc.cluster.local cluster.local us-central1-a.c.vital-octagon-19612.internal c.vital-octagon-19612.internal google.internal\nnameserver 34.118.224.10\noptions ndots:5\n",
+    "root_readonly": true,
+    "service_account_token_visible": false,
+    "uid": 1000,
+    "writable": {
+      "/branchyard/home": true,
+      "/tmp": true,
+      "/workspace": true
+    }
+  },
+  "identity": {
+    "image_id": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+    "kubelet_version": "v1.37.1-gke.3020000",
+    "node_kernel": "6.18.55+",
+    "node_name": "gke-by-v040-qual-202-branchyard-gviso-152cc23a-8bdq",
+    "node_runtime": "gvisor",
+    "node_uid": "4a79a231-6808-4056-bfef-cc7a7bb30ccc",
+    "pod_uid": "56db8a70-d2bf-4a01-8b93-a722c3c3b2fa",
+    "resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "512Mi"
+      },
+      "requests": {
+        "cpu": "1",
+        "memory": "512Mi"
+      }
+    },
+    "runtime_class": "gvisor",
+    "sandbox_uid": "0c04e953-1c62-4acf-b6c8-ee4fa9592f64"
+  },
+  "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+  "memory_probe": {
+    "exit_code": 128,
+    "pod_status_after": {
+      "allocatedResources": {
+        "cpu": "1",
+        "memory": "512Mi"
+      },
+      "conditions": [
+        {
+          "lastProbeTime": null,
+          "lastTransitionTime": "2026-11-02T22:16:03Z",
+          "message": "pod sandbox is not ready",
+          "observedGeneration": 1,
+          "reason": "PodSandboxNotReady",
+          "status": "False",
+          "type": "PodReadyToStartContainers"
+        },
+        {
+          "lastProbeTime": null,
+          "lastTransitionTime": "2026-11-02T22:15:04Z",
+          "observedGeneration": 1,
+          "status": "True",
+          "type": "Initialized"
+        },
+        {
+          "lastProbeTime": null,
+          "lastTransitionTime": "2026-11-02T22:16:03Z",
+          "observedGeneration": 1,
+          "reason": "PodFailed",
+          "status": "False",
+          "type": "Ready"
+        },
+        {
+          "lastProbeTime": null,
+          "lastTransitionTime": "2026-11-02T22:16:03Z",
+          "observedGeneration": 1,
+          "reason": "PodFailed",
+          "status": "False",
+          "type": "ContainersReady"
+        },
+        {
+          "lastProbeTime": null,
+          "lastTransitionTime": "2026-11-02T22:15:04Z",
+          "observedGeneration": 1,
+          "status": "True",
+          "type": "PodScheduled"
+        }
+      ],
+      "containerStatuses": [
+        {
+          "allocatedResources": {
+            "cpu": "1",
+            "memory": "512Mi"
+          },
+          "containerID": "containerd://3c3b4b7b7c64af0eb3f2b7c554c9437ce020fa741ea6e974022963fab66cf5a5",
+          "image": "sha256:0bfebfe89ed85eb8466f3048cc3dd1b2f3de12b1bc398ab00c68166ccdbb472c",
+          "imageID": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+          "lastState": {},
+          "name": "runtime",
+          "ready": false,
+          "resources": {
+            "limits": {
+              "cpu": "1",
+              "memory": "512Mi"
+            },
+            "requests": {
+              "cpu": "1",
+              "memory": "512Mi"
+            }
+          },
+          "restartCount": 0,
+          "started": false,
+          "state": {
+            "terminated": {
+              "containerID": "containerd://3c3b4b7b7c64af0eb3f2b7c554c9437ce020fa741ea6e974022963fab66cf5a5",
+              "exitCode": 128,
+              "finishedAt": "2026-11-02T22:16:03Z",
+              "reason": "OOMKilled",
+              "startedAt": "2026-11-02T22:15:05Z"
+            }
+          },
+          "user": {
+            "linux": {
+              "gid": 1000,
+              "supplementalGroups": [
+                4,
+                20,
+                24,
+                25,
+                27,
+                29,
+                30,
+                44,
+                46,
+                1000
+              ],
+              "uid": 1000
+            }
+          },
+          "volumeMounts": [
+            {
+              "mountPath": "/workspace",
+              "name": "workspace"
+            },
+            {
+              "mountPath": "/branchyard/home",
+              "name": "home"
+            },
+            {
+              "mountPath": "/tmp",
+              "name": "tmp"
+            },
+            {
+              "mountPath": "/var/run/branchyard-identity",
+              "name": "identity",
+              "readOnly": true,
+              "recursiveReadOnly": "Disabled"
+            }
+          ]
+        }
+      ],
+      "hostIP": "10.128.0.72",
+      "hostIPs": [
+        {
+          "ip": "10.128.0.72"
+        }
+      ],
+      "observedGeneration": 1,
+      "phase": "Running",
+      "podIP": "10.112.1.8",
+      "podIPs": [
+        {
+          "ip": "10.112.1.8"
+        }
+      ],
+      "qosClass": "Guaranteed",
+      "resources": {
+        "limits": {
+          "cpu": "1",
+          "memory": "512Mi"
+        },
+        "requests": {
+          "cpu": "975m",
+          "memory": "512Mi"
+        }
+      },
+      "startTime": "2026-11-02T22:15:04Z"
+    },
+    "stderr": "waiting on pid 159: waiting on PID 159 in sandbox \"5a7cc6d9752af90b734d3b82d708156240d03fca1b9fe3d664adf9e42d42cac4\": urpc method \"containerManager.WaitPID\" failed: EOF\n",
+    "stdout": "allocated_mib=8\nallocated_mib=16\nallocated_mib=24\nallocated_mib=32\nallocated_mib=40\nallocated_mib=48\nallocated_mib=56\nallocated_mib=64\nallocated_mib=72\nallocated_mib=80\nallocated_mib=88\nallocated_mib=96\nallocated_mib=104\nallocated_mib=112\nallocated_mib=120\nallocated_mib=128\nallocated_mib=136\nallocated_mib=144\nallocated_mib=152\nallocated_mib=160\nallocated_mib=168\nallocated_mib=176\nallocated_mib=184\nallocated_mib=192\nallocated_mib=200\nallocated_mib=208\nallocated_mib=216\nallocated_mib=224\nallocated_mib=232\nallocated_mib=240\nallocated_mib=248\nallocated_mib=256\nallocated_mib=264\nallocated_mib=272\nallocated_mib=280\nallocated_mib=288\nallocated_mib=296\nallocated_mib=304\nallocated_mib=312\nallocated_mib=320\nallocated_mib=328\nallocated_mib=336\nallocated_mib=344\nallocated_mib=352\nallocated_mib=360\nallocated_mib=368\nallocated_mib=376\nallocated_mib=384\nallocated_mib=392\nallocated_mib=400\nallocated_mib=408\nallocated_mib=416\nallocated_mib=424\nallocated_mib=432\nallocated_mib=440\nallocated_mib=448\nallocated_mib=456\nallocated_mib=464\n"
+  },
+  "missing_program_refused": true,
+  "name": "gke-live-gvisor-deny",
+  "passed": true,
+  "started_at": "2026-11-02T22:15:01.714Z"
+}

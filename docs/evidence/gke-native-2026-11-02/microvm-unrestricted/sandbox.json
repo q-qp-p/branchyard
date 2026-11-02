@@ -1,0 +1,189 @@
+{
+  "apiVersion": "agents.x-k8s.io/v1beta1",
+  "kind": "Sandbox",
+  "metadata": {
+    "annotations": {
+      "branchyard.io/spec": "0c12e5ba40521fdb85d5d23fb2af9557101359711088d224b8433f72692a1a77"
+    },
+    "creationTimestamp": "2026-11-02T22:16:30Z",
+    "generation": 1,
+    "labels": {
+      "branchyard.io/owner": "b2ed8f3d36451b289366ce7bb865884c"
+    },
+    "name": "by-47aef1a85fe5dbbdf38396d53605e9170caae9d7",
+    "namespace": "branchyard-microvm",
+    "resourceVersion": "1793657794172687002",
+    "uid": "601a7c08-5b34-442f-a8ac-08df99085484"
+  },
+  "spec": {
+    "failedPodPolicy": "Retain",
+    "operatingMode": "Running",
+    "podTemplate": {
+      "metadata": {
+        "annotations": {
+          "branchyard.io/spec": "0c12e5ba40521fdb85d5d23fb2af9557101359711088d224b8433f72692a1a77"
+        },
+        "labels": {
+          "branchyard.io/owner": "b2ed8f3d36451b289366ce7bb865884c"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "command": [
+              "setpriv",
+              "--no-new-privs",
+              "--",
+              "sh",
+              "-c",
+              "exec tail -f /dev/null"
+            ],
+            "env": [
+              {
+                "name": "HOME",
+                "value": "/branchyard/home"
+              },
+              {
+                "name": "PATH",
+                "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              }
+            ],
+            "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "runtime",
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "512Mi"
+              },
+              "requests": {
+                "cpu": "1",
+                "memory": "512Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/workspace",
+                "name": "workspace"
+              },
+              {
+                "mountPath": "/branchyard/home",
+                "name": "home"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              },
+              {
+                "mountPath": "/var/run/branchyard-identity",
+                "name": "identity",
+                "readOnly": true
+              }
+            ],
+            "workingDir": "/workspace"
+          }
+        ],
+        "enableServiceLinks": false,
+        "nodeSelector": {
+          "sandbox.gke.io/runtime": "microvm"
+        },
+        "restartPolicy": "Never",
+        "runtimeClassName": "microvm",
+        "securityContext": {
+          "fsGroup": 1000,
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 1000,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "terminationGracePeriodSeconds": 10,
+        "tolerations": [
+          {
+            "effect": "NoSchedule",
+            "key": "sandbox.gke.io/runtime",
+            "operator": "Equal",
+            "value": "microvm"
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {},
+            "name": "workspace"
+          },
+          {
+            "emptyDir": {},
+            "name": "home"
+          },
+          {
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            },
+            "name": "tmp"
+          },
+          {
+            "downwardAPI": {
+              "defaultMode": 292,
+              "items": [
+                {
+                  "fieldRef": {
+                    "apiVersion": "v1",
+                    "fieldPath": "metadata.uid"
+                  },
+                  "path": "pod-uid"
+                }
+              ]
+            },
+            "name": "identity"
+          }
+        ]
+      }
+    },
+    "service": false,
+    "shutdownPolicy": "Retain"
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-02T22:16:30Z",
+        "message": "Sandbox is not suspended",
+        "observedGeneration": 1,
+        "reason": "NotSuspended",
+        "status": "False",
+        "type": "Suspended"
+      },
+      {
+        "lastTransitionTime": "2026-11-02T22:16:30Z",
+        "message": "",
+        "observedGeneration": 1,
+        "reason": "PodScheduled",
+        "status": "True",
+        "type": "PodScheduled"
+      },
+      {
+        "lastTransitionTime": "2026-11-02T22:16:34Z",
+        "message": "Pod is Ready",
+        "observedGeneration": 1,
+        "reason": "DependenciesReady",
+        "status": "True",
+        "type": "Ready"
+      }
+    ],
+    "nodeName": "gke-by-v040-qual-202-branchyard-micro-308c2780-1053",
+    "podIPs": [
+      "10.112.2.7"
+    ],
+    "selector": "agents.x-k8s.io/sandbox-name-hash=875beadf"
+  }
+}
