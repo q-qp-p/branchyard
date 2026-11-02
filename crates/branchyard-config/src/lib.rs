@@ -15,8 +15,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+mod native;
 mod substrate;
 
+pub use native::{
+    validate_sandbox_image, AgentSandbox, AgentSandboxRuntime, Container, ContainerRuntime,
+    SandboxNetwork,
+};
 pub use substrate::{Substrate, SubstrateEgress};
 
 use schemars::JsonSchema;
@@ -76,6 +81,12 @@ pub struct ProjectConfig {
     /// Options for `provider = "microsandbox"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub microsandbox: Option<Microsandbox>,
+    /// Defaults for `provider = "container"` on the worker's local Docker daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<Container>,
+    /// Defaults for `provider = "agent_sandbox"` on an operator-controlled cluster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_sandbox: Option<AgentSandbox>,
     /// Saved Agent Substrate connection and actor egress policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub substrate: Option<Substrate>,
@@ -1731,6 +1742,11 @@ pub enum ProviderKind {
     /// A microVM per turn; needs `[microsandbox]` and a build with the
     /// `microsandbox` feature.
     Microsandbox,
+    /// A worker-local container configured by `[container]`.
+    Container,
+    /// A Kubernetes Agent Sandbox configured by `[agent_sandbox]`.
+    #[serde(rename = "agent_sandbox")]
+    AgentSandbox,
     /// An actor in the cluster configured by `[substrate]`.
     Substrate,
     /// The machine an environment recipe makes (`--provider recipe:NAME`);
@@ -1745,6 +1761,8 @@ impl<'de> Deserialize<'de> for ProviderKind {
         match text.as_str() {
             "local" => Ok(ProviderKind::Local),
             "microsandbox" => Ok(ProviderKind::Microsandbox),
+            "container" => Ok(ProviderKind::Container),
+            "agent_sandbox" => Ok(ProviderKind::AgentSandbox),
             "substrate" => Ok(ProviderKind::Substrate),
             "recipe" => Ok(ProviderKind::Recipe),
             other => Err(D::Error::custom(unknown_provider(other))),
@@ -1761,7 +1779,7 @@ fn unknown_provider(text: &str) -> String {
              provider = \"recipe\" and recipe = {name:?}"
         ),
         None => format!(
-            "unknown variant `{text}`, expected one of local, microsandbox, substrate, recipe"
+            "unknown variant `{text}`, expected one of local, microsandbox, substrate, recipe, container, agent_sandbox"
         ),
     }
 }
@@ -2079,6 +2097,31 @@ impl ProjectConfig {
         }
         if let Some(substrate) = &self.substrate {
             substrate.check()?;
+        }
+        for (provider, present, section) in [
+            (
+                ProviderKind::Container,
+                self.container.is_some(),
+                "container",
+            ),
+            (
+                ProviderKind::AgentSandbox,
+                self.agent_sandbox.is_some(),
+                "agent_sandbox",
+            ),
+        ] {
+            if d.provider == Some(provider) && !present {
+                return fail(
+                    "defaults.provider",
+                    format!("{section} needs a [{section}] table"),
+                );
+            }
+        }
+        if let Some(container) = &self.container {
+            container.check()?;
+        }
+        if let Some(agent_sandbox) = &self.agent_sandbox {
+            agent_sandbox.check()?;
         }
         for (name, source) in &self.secrets {
             secret_source(name, source).map_err(|e| ConfigError(format!("secrets.{name}: {e}")))?;
@@ -2707,6 +2750,8 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
                 toml_string(match p {
                     ProviderKind::Local => "local",
                     ProviderKind::Microsandbox => "microsandbox",
+                    ProviderKind::Container => "container",
+                    ProviderKind::AgentSandbox => "agent_sandbox",
                     ProviderKind::Substrate => "substrate",
                     ProviderKind::Recipe => "recipe",
                 })
@@ -2762,6 +2807,19 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
         out.push('\n');
         let table = BTreeMap::from([("substrate", substrate)]);
         out.push_str(&toml::to_string(&table).unwrap_or_default());
+    }
+    if let Some(container) = &config.container {
+        out.push('\n');
+        out.push_str(
+            &toml::to_string(&BTreeMap::from([("container", container)])).unwrap_or_default(),
+        );
+    }
+    if let Some(agent_sandbox) = &config.agent_sandbox {
+        out.push('\n');
+        out.push_str(
+            &toml::to_string(&BTreeMap::from([("agent_sandbox", agent_sandbox)]))
+                .unwrap_or_default(),
+        );
     }
     if !config.remote.is_empty() {
         out.push_str("\n# A Branchyard server to run commands against; BRANCHYARD_REMOTE and friends override it.\n[remote]\n");
