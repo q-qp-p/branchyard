@@ -48,12 +48,16 @@ by run [OPTIONS] [PROMPT]
 | `--deny <TOOL,TOOL,...>` | Tools the harness is denied outright, before any permission answer, --yes included; a trailing * matches a prefix. Stored with the branch: later sends and every child it delegates to keep them, as with by spawn --deny. Repeatable |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -142,12 +146,16 @@ by fan [OPTIONS] [PROMPT]
 | `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -245,12 +253,16 @@ by map [OPTIONS] <PROMPT>
 | `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -427,12 +439,16 @@ by fork [OPTIONS] <BRANCH> <PROMPT>
 | `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -498,12 +514,16 @@ by reincarnate [OPTIONS] <BRANCH>
 | `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -638,12 +658,16 @@ by task new [OPTIONS] <PROMPT>
 | `--deny <TOOL,TOOL,...>` | Tools the harness is denied outright, before any permission answer, --yes included; a trailing * matches a prefix. Stored with the branch: later sends and every child it delegates to keep them, as with by spawn --deny. Repeatable |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -774,12 +798,16 @@ by task fork [OPTIONS] <TASK> <PROMPT>
 | `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
-| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, substrate or recipe:NAME (default: local, or the branch's own) |
+| `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
 | `--pass-env <NAME,NAME,...>` | Variables to copy into the sandbox, such as API keys; nothing else is |
-| `--image <REF>` | OCI image with the harness installed |
-| `--cpus <N>` | Virtual CPUs for the sandbox |
+| `--image <REF>` | OCI image with the harness installed; container and agent-sandbox require @sha256:DIGEST |
+| `--cpus <N>` | CPU limit for the sandbox |
 | `--memory <MIB>` | Sandbox memory in MiB |
 | `--live-branch` | Use the SDK's pause, live branching and full snapshots (unqualified; needs KVM) |
+| `--kube-context <CONTEXT>` | Existing operator-controlled kubeconfig context; requires --provider agent-sandbox |
+| `--kube-namespace <NAMESPACE>` | Operator-controlled Kubernetes namespace; requires --provider agent-sandbox |
+| `--sandbox-runtime <RUNTIME>` | Required runtime (default gvisor); runc only for container, microvm only for agent-sandbox (one of `gvisor`, `runc`, `microvm`) |
+| `--sandbox-network <NETWORK>` | Allocation-wide networking (default deny); Container unrestricted permits cloud metadata (one of `deny`, `unrestricted`) |
 | `--substrate-endpoint <URL>` | Agent Substrate Control API, https://HOST:PORT |
 | `--substrate-router <URL>` | Router base URL; requests identify the actor with its routing header |
 | `--substrate-template <NAME>` | Actor template that runs branchyard-bridge and the harness |
@@ -2754,6 +2782,7 @@ by compute gce [OPTIONS] --project <PROJECT> --zone <ZONE> --name <NAME>
 | `--directory <PATH>` | Copy this repository's clean committed HEAD; omitted creates an empty repository |
 | `--image <PIN>` | Published worker image pinned by release tag or @sha256 digest; defaults to --version |
 | `--backend <BACKEND>` | Worker execution: local processes or Microsandbox KVM guests (one of `local`, `microsandbox`) (default `local`) |
+| `--gvisor` | Install the pinned gVisor Docker runtime without changing the worker's default provider |
 | `--machine-type <MACHINE_TYPE>` | VM machine type; Microsandbox needs n2-standard or c3-standard (default `n2-standard-4`) |
 | `--service-account <EMAIL>` | Existing service account in this project; its IAM roles decide what the worker reaches, such as roles/aiplatform.user for Vertex AI; omitted attaches no account |
 | `--scopes <SCOPES>` | Access scopes for --service-account: comma-separated names or URLs, or none; defaults to cloud-platform |

@@ -577,6 +577,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -951,6 +1077,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -1034,7 +1220,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -1297,7 +1483,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -2237,6 +2423,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -2611,6 +2923,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -2694,7 +3066,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -2957,7 +3329,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -5200,6 +5572,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -5573,6 +6071,66 @@
             "create"
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
+        },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
         },
         "ServiceState": {
           "oneOf": [
@@ -14990,6 +15548,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -15364,6 +16048,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -15447,7 +16191,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -15710,7 +16454,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -16165,6 +16909,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -16539,6 +17409,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -16622,7 +17552,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -16885,7 +17815,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -28002,6 +28932,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -28376,6 +29432,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "PolicySpec": {
           "type": "object",
           "additionalProperties": false,
@@ -28532,7 +29648,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -28795,7 +29911,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -57986,6 +59102,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -58360,6 +59602,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -58443,7 +59745,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -58706,7 +60008,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -60016,6 +61318,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -60390,6 +61818,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -60473,7 +61961,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -60736,7 +62224,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -62065,6 +63553,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -62439,6 +64053,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -62522,7 +64196,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -62785,7 +64459,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -64110,6 +65784,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -64484,6 +66284,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -64567,7 +66427,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -64830,7 +66690,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -66497,6 +68357,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -66871,6 +68857,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -66954,7 +69000,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -67217,7 +69263,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -68667,6 +70713,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -69041,6 +71213,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -69124,7 +71356,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -69387,7 +71619,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -70695,6 +72927,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -71069,6 +73427,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -71152,7 +73570,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -71415,7 +73833,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {
@@ -72736,6 +75154,132 @@
                 "kind"
               ],
               "description": "A machine an environment recipe's scripts make, per turn (or kept\npaused between turns when the recipe can suspend and resume),\nreached over ssh or the recipe's exec command; the worktree and the\nprivate home are copied in and back. See `docs/recipes.md`."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime",
+                  "description": "Required runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network",
+                  "description": "Allocation network boundary; unset denies external network access.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "container"
+                }
+              },
+              "required": [
+                "kind",
+                "image"
+              ],
+              "description": "An owned container per turn with copied workspace/home and a required\nruntime. The whole allocation is destroyed after output capture."
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "type": "string",
+                  "description": "Explicit kubeconfig context authenticated by the operator's worker."
+                },
+                "namespace": {
+                  "type": "string",
+                  "description": "Namespace prepared for this runtime and Dataplane V2 network enforcement."
+                },
+                "image": {
+                  "type": "string",
+                  "description": "Immutable OCI image reference with a lowercase SHA-256 digest."
+                },
+                "cpus": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "CPU limit; unset selects one CPU.",
+                  "default": null
+                },
+                "memory_mib": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Memory limit in MiB; unset selects 1024 MiB.",
+                  "default": null
+                },
+                "runtime": {
+                  "$ref": "#/$defs/Runtime2",
+                  "description": "Required managed runtime; unset selects gVisor, with no fallback.",
+                  "default": "gvisor"
+                },
+                "network": {
+                  "$ref": "#/$defs/Network2",
+                  "description": "Allocation network boundary; unset denies ingress and egress.",
+                  "default": "deny"
+                },
+                "pass_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Host environment variables to copy by name, such as model API keys.\nOperator Kubernetes and transport credentials are refused.",
+                  "default": []
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "agent_sandbox"
+                }
+              },
+              "required": [
+                "kind",
+                "context",
+                "namespace",
+                "image"
+              ],
+              "description": "A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,\nwith copied files and whole-allocation destruction after capture."
             }
           ],
           "description": "Where a branch's harness runs.\n\nSerialized as an object tagged by `kind`, such as `{\"kind\": \"local\"}` or\n`{\"kind\": \"microsandbox\", \"image\": \"...\", ...}`."
@@ -73110,6 +75654,66 @@
           ],
           "description": "An environment recipe a branch's harness runs on, as it was trusted when\nthe branch was given it: its commands are stored with the branch, so\nevery later turn, its recovery and its removal run what was trusted,\nnot what the configuration says by then. Resolved and trust-checked by\nthe caller (`by run --provider recipe:NAME`); see `docs/recipes.md`."
         },
+        "Runtime": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "gVisor's `runsc` runtime, installed and configured by the operator."
+            },
+            {
+              "type": "string",
+              "const": "runc",
+              "description": "Ordinary Linux container namespaces, sharing the host kernel."
+            }
+          ],
+          "description": "The container runtime the operator requires."
+        },
+        "Network": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "No external network interface. This does not implement a host allowlist."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "An ordinary container bridge, selected explicitly by the operator."
+            }
+          ],
+          "description": "The allocation's network boundary."
+        },
+        "Runtime2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "gvisor",
+              "description": "GKE's gVisor user-space kernel."
+            },
+            {
+              "type": "string",
+              "const": "microvm",
+              "description": "GKE's managed Kata Containers and Cloud Hypervisor microVM."
+            }
+          ],
+          "description": "Managed GKE runtime required for the Sandbox and its backing node."
+        },
+        "Network2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "Deny workload ingress and egress, including DNS and metadata."
+            },
+            {
+              "type": "string",
+              "const": "unrestricted",
+              "description": "Allow IPv4 Internet egress except GKE metadata, plus cluster DNS.\nIngress and IPv6 Internet egress remain denied."
+            }
+          ],
+          "description": "Network boundary applied by the setup-verified GKE Dataplane V2."
+        },
         "Provisioning": {
           "type": "object",
           "additionalProperties": false,
@@ -73193,7 +75797,7 @@
             "network": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/Network"
+                  "$ref": "#/$defs/Network3"
                 },
                 {
                   "type": "null"
@@ -73456,7 +76060,7 @@
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
         },
-        "Network": {
+        "Network3": {
           "description": "Which hosts, and which requests, the harness may reach (docs/egress.md): \"open\" (the default), \"none\", or allow rules [METHOD|METHOD ]HOST[:PORT][/PATH] such as github.com, *.npmjs.org:443 or GET|HEAD api.github.com/repos/*, with enforce best_effort (the default) or required.",
           "anyOf": [
             {

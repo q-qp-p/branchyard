@@ -55,6 +55,28 @@
       ],
       "description": "Options for `provider = \"microsandbox\"`."
     },
+    "container": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Container"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Defaults for `provider = \"container\"` on the worker's local Docker daemon."
+    },
+    "agent_sandbox": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentSandbox"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Defaults for `provider = \"agent_sandbox\"` on an operator-controlled cluster."
+    },
     "substrate": {
       "anyOf": [
         {
@@ -298,6 +320,16 @@
         },
         {
           "type": "string",
+          "const": "container",
+          "description": "A worker-local container configured by `[container]`."
+        },
+        {
+          "type": "string",
+          "const": "agent_sandbox",
+          "description": "A Kubernetes Agent Sandbox configured by `[agent_sandbox]`."
+        },
+        {
+          "type": "string",
           "const": "substrate",
           "description": "An actor in the cluster configured by `[substrate]`."
         },
@@ -435,6 +467,185 @@
       "required": [
         "image"
       ]
+    },
+    "Container": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "Locally preloaded image, pinned by registry SHA-256 digest."
+        },
+        "cpus": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 255,
+          "description": "Positive virtual CPU limit; omitted uses the provider default."
+        },
+        "memory_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Positive memory limit in MiB; also written `memory`."
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContainerRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required runtime; defaults to gVisor without fallback."
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxNetwork"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Allocation-wide networking; defaults to deny."
+        },
+        "pass_env": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Environment variable names copied into the allocation, never their values."
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "description": "`[container]`: worker-local Docker allocation defaults."
+    },
+    "ContainerRuntime": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "gvisor",
+          "description": "gVisor's runsc runtime; unavailable runtimes fail closed."
+        },
+        {
+          "type": "string",
+          "const": "runc",
+          "description": "Ordinary Linux namespaces sharing the worker's kernel."
+        }
+      ],
+      "description": "The runtime required for a worker-local container."
+    },
+    "SandboxNetwork": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "deny",
+          "description": "Disable external networking, including cloud metadata access."
+        },
+        {
+          "type": "string",
+          "const": "unrestricted",
+          "description": "Use the provider's ordinary network boundary; Container permits cloud metadata."
+        }
+      ],
+      "description": "Allocation-wide networking for native sandbox providers."
+    },
+    "AgentSandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "type": "string",
+          "description": "An existing operator-controlled kubeconfig context."
+        },
+        "namespace": {
+          "type": "string",
+          "description": "The operator's sandbox namespace."
+        },
+        "image": {
+          "type": "string",
+          "description": "Image with the harness installed, pinned by registry SHA-256 digest."
+        },
+        "cpus": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 1,
+          "maximum": 255,
+          "description": "Positive virtual CPU limit; omitted uses the provider default."
+        },
+        "memory_mib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Positive memory limit in MiB; also written `memory`."
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSandboxRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required runtime; defaults to gVisor without fallback."
+        },
+        "network": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxNetwork"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Allocation-wide networking; defaults to deny."
+        },
+        "pass_env": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Environment variable names copied into the allocation, never their values."
+        }
+      },
+      "required": [
+        "context",
+        "namespace",
+        "image"
+      ],
+      "description": "`[agent_sandbox]`: Kubernetes Agent Sandbox allocation defaults."
+    },
+    "AgentSandboxRuntime": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "gvisor",
+          "description": "gVisor's runsc runtime."
+        },
+        {
+          "type": "string",
+          "const": "microvm",
+          "description": "The operator's Kata and Cloud Hypervisor runtime."
+        }
+      ],
+      "description": "The runtime required for a Kubernetes Agent Sandbox."
     },
     "Substrate": {
       "type": "object",
