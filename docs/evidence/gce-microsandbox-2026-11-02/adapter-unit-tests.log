@@ -1,0 +1,32 @@
+   Compiling microsandbox v0.7.3
+   Compiling branchyard-microsandbox v0.4.0 (/home/user/branchyard/.branchyard/worktrees/cloud-gce/crates/branchyard-microsandbox)
+    Finished `test` profile [unoptimized] target(s) in 51.77s
+     Running unittests src/lib.rs (/tmp/branchyard-cloud-gce-sdk-target/debug/deps/branchyard_microsandbox-bdb590da882538c3)
+
+running 24 tests
+test bridge::tests::stdin_is_forwarded_and_dropping_a_running_exec_kills_it ... ok
+test bridge::tests::a_failed_start_is_an_error_of_its_kind ... ok
+test bridge::tests::output_and_exit_arrive_in_order ... ok
+test bridge::tests::a_lost_stream_leaves_the_status_unknown_and_closes_output ... ok
+test host_tests::kvm_refusals_distinguish_a_missing_device_from_login_permissions ... ok
+test host_tests::only_the_known_socket_path_failure_gets_msb_home_recovery ... ok
+test plan::tests::a_spec_maps_to_image_limits_and_bind_mounts ... ok
+test plan::tests::an_exec_maps_to_program_args_cwd_and_env ... ok
+test plan::tests::capabilities_are_exec_and_disk_checkpoints_only ... ok
+test plan::tests::execs_the_guest_protocol_cannot_carry_are_refused ... ok
+test plan::tests::live_branching_is_declared_only_when_opted_in ... ok
+test plan::tests::live_children_rebind_their_own_mounts ... ok
+test plan::tests::specs_the_runtime_would_reject_or_reinterpret_are_refused ... ok
+test checkpoint::tests::legacy_and_unknown_formats_are_never_passed_to_the_sdk ... ok
+test provider::tests::errors_and_failures_map_to_contract_errors ... ok
+test provider::tests::every_runtime_status_maps ... ok
+test checkpoint::tests::missing_or_unbound_provenance_cannot_stamp_a_checkpoint ... ok
+test provider::tests::exec_events_map_one_to_one ... ok
+test checkpoint::tests::every_changed_runtime_component_refuses_without_changing_the_saved_artifact ... ok
+test checkpoint::tests::opaque_reference_round_trip_retains_the_actual_artifact ... ok
+test provider::tests::the_provider_starts_without_a_runtime_and_declares_its_plan ... ok
+test provider::tests::legacy_absolute_checkpoints_refuse_before_runtime_access_or_removal ... ok
+test bridge::tests::the_group_teardown_script_names_and_kills_a_group ... ok
+test bridge::tests::a_slow_reader_does_not_lose_output ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s

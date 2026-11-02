@@ -44,6 +44,7 @@ use microsandbox::{ExecControl, ExecEvent, ExecHandle, MicrosandboxError, Sandbo
 use tokio::runtime::{Handle, Runtime};
 
 use crate::bridge::{self, BridgedProcess, GuestControl, GuestEvent, GuestEvents, GROUP_TEARDOWN};
+use crate::checkpoint::{self, Reference};
 use crate::plan::{self, CreatePlan, PlannedMount};
 
 /// How long a graceful stop may take before the microVM is killed.
@@ -151,6 +152,7 @@ impl MicrosandboxProvider {
         &self,
         source: &str,
     ) -> Result<(tempfile::TempDir, Checkpoint), ProviderError> {
+        let identity = checkpoint::current()?;
         // A separate store keeps temporary capture out of the source's saved checkpoint group.
         let directory = tempfile::Builder::new()
             .prefix("by-msb-branch-")
@@ -168,7 +170,8 @@ impl MicrosandboxProvider {
             .map_err(error)?;
         let checkpoint = Checkpoint {
             sandbox: source.to_owned(),
-            reference: snapshot.reference().value().to_owned(),
+            reference: Reference::capture(snapshot.reference().value().to_owned(), identity)
+                .encode()?,
             guarantee: plan::FULL_SNAPSHOT,
         };
         Ok((directory, checkpoint))
@@ -478,6 +481,7 @@ impl SandboxProvider for MicrosandboxProvider {
         let Some(guarantee) = offered.iter().find(|g| g.satisfies(required)).copied() else {
             return Err(unsupported(Operation::Checkpoint, required, offered));
         };
+        let identity = checkpoint::current()?;
         let label = format!("{name}-checkpoint-{}", branchyard_support::time::now_ms());
         plan::name(&label)?;
         let builder = Snapshot::builder(label.as_str()).from_sandbox(name);
@@ -488,7 +492,8 @@ impl SandboxProvider for MicrosandboxProvider {
         let snapshot = self.handle().block_on(builder.create()).map_err(error)?;
         Ok(Checkpoint {
             sandbox: name.to_owned(),
-            reference: snapshot.reference().value().to_owned(),
+            reference: Reference::capture(snapshot.reference().value().to_owned(), identity)
+                .encode()?,
             guarantee,
         })
     }
@@ -510,6 +515,8 @@ impl SandboxProvider for MicrosandboxProvider {
                 offered,
             ));
         }
+        let reference = Reference::parse(&checkpoint.reference)?;
+        let artifact = reference.compatible_artifact()?;
         let plan = plan::branch(spec)?;
         if self.inspect(&plan.name)?.is_some() {
             return Err(ProviderError::Invalid(format!(
@@ -517,7 +524,7 @@ impl SandboxProvider for MicrosandboxProvider {
                 plan.name
             )));
         }
-        let mut restore = Sandbox::restore(checkpoint.reference.as_str()).name(plan.name.as_str());
+        let mut restore = Sandbox::restore(artifact).name(plan.name.as_str());
         if let Some(cpus) = plan.cpus {
             restore = restore.cpus(cpus);
         }
@@ -652,10 +659,9 @@ impl SandboxProvider for MicrosandboxProvider {
     }
 
     fn release_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), ProviderError> {
-        match self
-            .handle()
-            .block_on(Snapshot::remove(checkpoint.reference.as_str(), true))
-        {
+        let reference = Reference::parse(&checkpoint.reference)?;
+        let artifact = reference.compatible_artifact()?;
+        match self.handle().block_on(Snapshot::remove(artifact, true)) {
             Ok(()) => Ok(()),
             Err(e) => match error(e) {
                 ProviderError::NotFound(_) => Ok(()),
@@ -669,6 +675,33 @@ impl SandboxProvider for MicrosandboxProvider {
 mod tests {
     use super::*;
     use crate::plan::DISK_SNAPSHOT;
+
+    #[test]
+    fn legacy_absolute_checkpoints_refuse_before_runtime_access_or_removal() {
+        let scratch = branchyard_testkit::Scratch::new("msb-legacy-checkpoint");
+        let artifact = scratch.join("saved-full-checkpoint");
+        std::fs::write(&artifact, b"preserve this checkpoint").unwrap();
+        let checkpoint = Checkpoint {
+            sandbox: "old-source".into(),
+            reference: artifact.to_string_lossy().into(),
+            guarantee: plan::FULL_SNAPSHOT,
+        };
+        let provider = MicrosandboxProvider::new().unwrap().with_live_branch(true);
+        for error in [
+            provider
+                .branch(&checkpoint, &SandboxSpec::new("new-child"))
+                .unwrap_err(),
+            provider.release_checkpoint(&checkpoint).unwrap_err(),
+        ] {
+            let error = error.to_string();
+            assert!(error.contains("legacy or malformed"), "{error}");
+            assert!(error.contains("original runtime"), "{error}");
+        }
+        assert_eq!(
+            std::fs::read(artifact).unwrap(),
+            b"preserve this checkpoint"
+        );
+    }
 
     #[test]
     fn every_runtime_status_maps() {
@@ -746,7 +779,7 @@ mod tests {
             Err(ProviderError::Invalid(_))
         ));
         assert!(matches!(
-            provider.exec("absent", &ExecSpec::default()),
+            provider.held("absent"),
             Err(ProviderError::NotFound(_))
         ));
         let full = SnapshotGuarantee {

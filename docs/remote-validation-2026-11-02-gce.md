@@ -13,6 +13,19 @@ All 26 architecture tests passed on the worker's KVM device. The
 and runtime provenance. Not done: no model calls, host-process RSS ceiling,
 egress confinement, or restoration of snapshots made with the old memory map.
 
+Live adapter verification on 2 November 2026: all 20 feature-enabled
+`branchyard-microsandbox` integration tests passed against the exact packaged
+runtime, with zero ignored tests, in 181.60 seconds. This includes the unchanged
+strict RAM assertion, exec status and stdio, workspace mounts, private root
+disks, process-group teardown, persistence, disk branching, and live full
+branches that preserve processes and reject changed open files. The new
+compatibility test rejected legacy and mismatched references without removing
+the artifact or creating a child, then restored with the compatible reference.
+Separate cleanup queries returned empty sandbox and snapshot lists. See
+`adapter-with-identity-guard.log` and `adapter-cleanup.log` in the evidence
+directory. Not done: no model calls, egress confinement, host RSS ceiling,
+cross-platform runs, or legacy full-snapshot migration.
+
 ## The RAM failure and fix
 
 For a requested 512 MiB, the official runtime reported `MemTotal: 529224 kB`,
@@ -99,7 +112,46 @@ and runtime provenance. No existing runtime or service is changed.
 Use a fresh runtime home for this patched memory layout. This record does
 not qualify restoring kept full snapshots made by the upstream layout.
 
+Branchyard checkpoint references also bind the resolved `msb` executable hash,
+resolved firmware hash and memory-layout source identity. The adapter reads the
+provenance beside the actual binary and verifies its binary hash. It records
+that identity before capturing either a disk or a full checkpoint. A legacy
+absolute reference or a different identity refuses branching and removal
+before the SDK can restore or delete it. Use the original runtime to read or
+export a refused checkpoint, or create a fresh one. The refusal preserves the
+saved artifact. A new `MSB_HOME` alone cannot provide this check because the
+SDK accepts absolute artifact paths outside its home.
+
+Keep each runtime installation immutable. Use a fresh runtime home when
+switching artifacts, and recreate kept guests there. Existing guest processes
+must not be adopted under a replacement runtime installation.
+
+Build the adapter tests with an owned target path, then run the resulting
+executable on the KVM worker with the same test-owned temporary path present:
+
+```sh
+CARGO_TARGET_DIR=/tmp/branchyard-cloud-gce-sdk-target \
+  cargo test -p branchyard-microsandbox --features microsandbox \
+  --test microsandbox --no-run --locked --offline
+```
+
+Cargo prints the executable path. Copy that file to the worker, create
+`/tmp/branchyard-cloud-gce-sdk-target/tmp`, set a short private `MSB_HOME`
+containing the verified runtime and cached image, and run the executable with
+`--ignored --test-threads 1`. Set `BY_MSB_IMAGE` to the imported image tag.
+The path is baked into the test executable; using a dedicated path avoids
+changing any existing worker directory. The recorded run used the digest-pinned
+Alpine image from `image-digests.json` and the runtime from
+`runtime-provenance.json` in the evidence directory.
+
 Hermetic on 2 November 2026: ten build-driver tests passed with temporary Git
 repositories, fake binaries and a fake compiler. Ruff, mypy and the vendor
 pin/patch verifier passed. Not done: these hermetic tests do not execute KVM
 or qualify cloud provisioning, release asset delivery or model authentication.
+
+Hermetic adapter verification on 2 November 2026: all 24 feature-enabled unit
+tests passed without a runtime-home override, including legacy reference
+refusal before SDK access, runtime/firmware/layout mismatch refusal and bound
+provenance checks. Clippy passed for the feature-enabled crate with all targets
+and warnings denied. See `adapter-unit-tests.log` in the evidence directory.
+Not done: these unit tests do not start a VM or contact a provider service.
