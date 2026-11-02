@@ -241,6 +241,12 @@ impl Probe for HostProbe {
         std::env::var_os(name).is_some_and(|v| !v.is_empty())
     }
 
+    fn cloudsdk_config(&self) -> Option<String> {
+        std::env::var("CLOUDSDK_CONFIG")
+            .ok()
+            .filter(|v| !v.is_empty())
+    }
+
     fn on_path(&self, program: &str) -> bool {
         which(program).is_some()
     }
@@ -546,6 +552,9 @@ impl<P: Probe> Probe for CachedProbe<P> {
     }
     fn env_is_set(&self, name: &str) -> bool {
         self.inner.env_is_set(name)
+    }
+    fn cloudsdk_config(&self) -> Option<String> {
+        self.inner.cloudsdk_config()
     }
     fn tool(&self, program: &str) -> Option<String> {
         let mut tools = self.tools.lock_recovering("tools");

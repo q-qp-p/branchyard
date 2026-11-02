@@ -356,7 +356,7 @@ A device-code login lives in a file. `codex login --device-auth` writes `~/.code
 by run "Fix the flaky test" --harness codex --isolated --secret CODEX_AUTH=@$HOME/.codex/auth.json
 ```
 
-`by init project` finds the file, shows it with its `auth_mode` (the only thing it reads from it, and only when it looks like a word), and offers to record it in `[secrets]` by where it is, never by its content: `CODEX_AUTH = "@~/.codex/auth.json"`. Claude Code's login is provisioned the same way as `CLAUDE_AUTH` from `~/.claude/.credentials.json` (on macOS it is in the keychain, not a file), and Gemini CLI's as `GEMINI_OAUTH_CREDS` from `~/.gemini/oauth_creds.json`. Antigravity's token file and settings are found and shown (its `modelProvider`) but not provisioned: Antigravity takes `GEMINI_API_KEY`.
+`by init project` finds the file, shows it with its `auth_mode` (the only thing it reads from it, and only when it looks like a word), and offers to record it in `[secrets]` by where it is, never by its content: `CODEX_AUTH = "@~/.codex/auth.json"`. Claude Code's login is provisioned the same way as `CLAUDE_AUTH` from `~/.claude/.credentials.json` (on macOS it is in the keychain, not a file), and Gemini CLI's as `GEMINI_OAUTH_CREDS` from `~/.gemini/oauth_creds.json`. Antigravity's token file and settings are found and shown (its `modelProvider`) but not provisioned: Antigravity takes `GEMINI_API_KEY`. gcloud's Application Default Credentials, which every harness on Vertex AI signs in with, are offered as `GCLOUD_ADC` ([Google Cloud](#google-cloud)), and never chosen for you.
 
 On an ephemeral machine, a CI runner or a cloud session whose home does not survive, keep the file's content as a secret variable named `CODEX_AUTH` in the environment the machine starts with (a repository or environment secret), and restore it to `~/.codex/auth.json`, mode 0600, before `by` runs:
 
@@ -368,6 +368,42 @@ codex login status        # Logged in using ChatGPT
 ```
 
 The refresh token in it keeps the login valid from one run to the next without logging in again. Restoring the file serves every branch: those in your own home read it, `by harnesses` and the [inventory default](fleet.md#the-inventory-default) see Codex logged in, and `[secrets] CODEX_AUTH = "@~/.codex/auth.json"` carries it into private homes. If a copy is refused because its refresh token was used up elsewhere (by another copy of the same login), log in once more and store the new file's content.
+
+## Google Cloud
+
+On a Cloud Workstation, a Compute Engine VM or Cloud Shell, Claude Code, Gemini CLI and OpenCode can reach their models through Vertex AI with no API key and no harness login, signed in with Application Default Credentials (ADC). Two Google sign-ins are involved, and they are made apart:
+
+- `gcloud auth login` signs in the `gcloud` command. `by compute gce` and the GKE helpers use it ([compute-gce.md](compute-gce.md), [substrate-gke.md](substrate-gke.md)).
+- ADC is what Vertex AI clients use, and what Branchyard's own `gs://` stores and Cloud KMS keys use ([identity.md](identity.md)). Google's libraries look in order for the file `GOOGLE_APPLICATION_CREDENTIALS` names, then the file `gcloud auth application-default login` writes (`~/.config/gcloud/application_default_credentials.json`, or under `CLOUDSDK_CONFIG`), then a Google VM's metadata server, which answers as the VM's service account. Vertex AI also needs the `aiplatform.googleapis.com` API on the project and the Vertex AI User role (`roles/aiplatform.user`) for the account, and the metadata server's token needs the VM's `cloud-platform` scope (Google's documentation; Branchyard checks none of these). Valid credentials do not make every model usable: a partner model may need enabling for the project first, and until it is, Vertex AI answers `403 PERMISSION_DENIED` (on this project, 2 November 2026, one Claude model answered "Access to this model requires data sharing to be enabled for publisher 'anthropic'", which `setPublisherModelConfig` turns on); the harness shows that error, and Branchyard cannot tell it apart from a missing role.
+
+Each harness has its own switch, read from the installed CLI on 2 November 2026:
+
+| Harness | Switches it to Vertex AI | Project and region | `by harnesses` shows |
+|---|---|---|---|
+| Claude Code 2.1.305 | `CLAUDE_CODE_USE_VERTEX=1` (or `true`, `yes`, `on`), in the environment or `env` of `~/.claude/settings.json` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` | `logged in`, from `claude auth status` (`third_party`), with what Vertex AI reads |
+| Gemini CLI 0.65.0 | `security.auth.selectedType` `vertex-ai` in `~/.gemini/settings.json`, or with none `GOOGLE_GENAI_USE_VERTEXAI=true` (exactly `true`) | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | `credentials found` |
+| Gemini CLI 0.65.0, the VM's own account | `selectedType` `compute-default-credentials`, or `GEMINI_CLI_USE_COMPUTE_ADC=true`, or `CLOUD_SHELL=true` | none | `credentials found` |
+| OpenCode 1.18.23 | `GOOGLE_CLOUD_PROJECT` (or `GCP_PROJECT`, `GCLOUD_PROJECT`) set turns on its `google-vertex` providers | `GOOGLE_CLOUD_LOCATION` (or `VERTEX_LOCATION`, default `global`) | `credentials found` |
+| Antigravity 1.4.10 | `AGY_ADC_AUTH=true` signs it in with ADC | not read | `credentials found` |
+| Hermes 0.19.0 | `VERTEX_PROJECT_ID`, in the environment or `~/.hermes/.env` (Scion's Hermes configuration; no Hermes was run) | `VERTEX_PROJECT_ID`, `VERTEX_REGION` | `credentials found` |
+
+Gemini CLI's settings come first: an environment switch does not count beside a `selectedType` its settings chose, as Gemini CLI ignores it then. `by doctor` adds a `harnesses.google_cloud` row that says where ADC comes from and which of these variables are set, by name, and is a `todo` with the `gcloud auth application-default login` fix when a harness is switched to Vertex AI and no ADC is found ([doctor.md](doctor.md)).
+
+A branch run in your own `HOME`, the default, sees all of this as your shell does. Elsewhere, from the code:
+
+- `--isolated` gives the harness a private `HOME` and removes `CLAUDE*` and `ANTHROPIC*` variables except Claude Code's Vertex AI selectors: `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION` reach it, as `GOOGLE_*` variables do, an absolute `GOOGLE_APPLICATION_CREDENTIALS` among them. So does the metadata server, unless a restricted [network policy](egress.md) confines the harness. On a VM, then, a harness switched to Vertex AI by variables runs isolated with nothing written down. A switch kept in the harness's own settings (`env` in `~/.claude/settings.json`, `selectedType` in `~/.gemini/settings.json`) does not reach it: those files are in the home it no longer has.
+- The private `HOME` also hides gcloud's ADC file. Off a VM, give it as one line of `branchyard.toml`, which `by init project` offers when it finds the file (under `CLOUDSDK_CONFIG` when that is set):
+
+  ```toml
+  [secrets]
+  GCLOUD_ADC = "@~/.config/gcloud/application_default_credentials.json"
+  ```
+
+  Every isolated or sandboxed harness then gets a 0600 copy at the same place in its private home, and `GOOGLE_APPLICATION_CREDENTIALS` names it ([provisioning.md](provisioning.md#harnesses)). What is given as a secret wins over what the harness inherits: `GCLOUD_ADC` over your `GOOGLE_APPLICATION_CREDENTIALS`, and a Claude Code credential (`ANTHROPIC_API_KEY`, `CLAUDE_AUTH`, a provider login) over your `CLAUDE_CODE_USE_VERTEX`, which Claude Code's provisioner then sets to `0`.
+- A sandbox (Microsandbox, Substrate) takes nothing from your environment, so there the project and region are secrets too: `ANTHROPIC_VERTEX_PROJECT_ID` (or `GOOGLE_CLOUD_PROJECT`) with `CLOUD_ML_REGION` (or `GOOGLE_CLOUD_LOCATION`) makes Claude Code's provisioner set its Vertex AI variables, and `GOOGLE_CLOUD_PROJECT`, with `GOOGLE_CLOUD_LOCATION` if you choose the region, does Gemini CLI's; OpenCode's Vertex AI is not provisioned ([not ported](provisioning.md#not-ported-per-harness)). A project given for Gemini CLI with no region does not stop a Claude Code turn: Claude Code is reported not to use it, with a warning naming the region it lacked, and only `--auth vertex-ai` refuses the turn for it.
+- `by compute gce` gives a worker made with a service account the `cloud-platform` scope ([compute-gce.md](compute-gce.md)), so harnesses on it reach Vertex AI through its metadata server once the account has `roles/aiplatform.user`. A worker with no account, or made with `--scopes none`, cannot.
+
+Status, 2 November 2026: the rules above were read in the installed CLIs (Hermes's in Scion's configuration; no Hermes was installed) on a Compute Engine VM (a Cloud Workstation whose service account has the `cloud-platform` scope), where `claude auth status` answered `third_party` with `apiProvider: vertex` and `opencode models` listed 55 `google-vertex` models with no key, and Gemini CLI 0.65.0's bundle reads `GOOGLE_CLOUD_LOCATION` for the region; detection and the doctor row are tested hermetically with fakes and golden cases. What isolated and sandboxed runs get is tested hermetically too (fakes only): the engine starts the fake agent isolated and it sees the three Claude Code selectors and no inherited `ANTHROPIC_API_KEY`; provisioning plans, and an isolated turn of the fake agent as Claude Code, show `GCLOUD_ADC` written 0600 where `GOOGLE_APPLICATION_CREDENTIALS` points, Claude Code's own Vertex AI names, `CLAUDE_CODE_USE_VERTEX=0` beside another credential, a project with no region reported unused with its warning, and Gemini CLI's region as `GOOGLE_CLOUD_LOCATION`; setup's offer is tested against a fake probe; `by compute gce`'s `cloud-platform` default, `--scopes`, and its reuse of a worker made without scopes are tested with a fake `gcloud`. Not done: no harness has called a model through Vertex AI under Branchyard; no isolated, sandboxed, Substrate or Compute Engine worker run has used Vertex AI with a real harness; whether Claude Code, Gemini CLI and OpenCode sign in from the copied ADC file, and whether a VM's metadata server answers from inside a sandbox, were not checked.
 
 ## Applying
 

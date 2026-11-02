@@ -1108,7 +1108,8 @@ pub fn keep_known_versions(inventory: &mut Inventory, last: &Inventory) {
 
 /// An inventory kept in a file for a while, so commands that run often do
 /// not run every version command each time. Keyed by what detection
-/// depends on: `PATH`, `HOME` and the install directories.
+/// depends on: `PATH`, `HOME`, the install directories, and the key
+/// variables and login-table flags that are set.
 #[derive(Clone, Debug)]
 pub struct InventoryCache {
     pub path: PathBuf,
@@ -1152,6 +1153,8 @@ impl InventoryCache {
             // The key variables that are set, by name: exporting one is a
             // login, so the cache from before it does not answer for after.
             set_key_variables().join(":"),
+            // So is a flag a login table reads, such as a Vertex AI switch.
+            logins::holding_flags().join(":"),
         ] {
             hasher.update(part.as_bytes());
             hasher.update(b"\0");
@@ -2243,7 +2246,10 @@ mod tests {
         assert!(nothing
             .login
             .detail
-            .ends_with("a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json"));
+            .contains("a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json"));
+        assert!(nothing.login.detail.ends_with(
+            "on Google Cloud, AGY_ADC_AUTH=true signs in with Application Default Credentials instead"
+        ));
         // GOOGLE_API_KEY has no effect on agy, so the script does not test it.
         let text = script(&DetectOptions {
             only: Some(vec!["antigravity".into()]),
@@ -2733,7 +2739,10 @@ mod tests {
         assert_eq!(out.login.state, LoginState::LoggedOut);
         assert_eq!(
             out.login.detail,
-            "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY"
+            "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex \
+             AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and \
+             GOOGLE_CLOUD_LOCATION (a security.auth.selectedType in ~/.gemini/settings.json comes \
+             first)"
         );
         let text = script(&DetectOptions {
             only: Some(vec!["gemini-cli".into()]),

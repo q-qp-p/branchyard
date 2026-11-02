@@ -649,7 +649,9 @@ An operator runs `by setup --guided` to choose a repository and compute backend.
 An operator can plan a dedicated worker with `by compute gce --project PROJECT
 --zone ZONE --name NAME --tunnel-through-iap`; `--apply` provisions the reviewed
 VM and its dedicated IAP TCP 22 firewall rule. `--internal-ip` also omits the
-external address. This command refuses harness sessions and `--remote`.
+external address. `--service-account EMAIL` attaches that account with the
+`cloud-platform` scope, so its IAM roles decide API access; `--scopes` narrows it.
+This command refuses harness sessions and `--remote`.
 `--gvisor` also installs the pinned gVisor Docker runtime. Container execution
 requires permission to use the worker's local Docker socket.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified

@@ -532,6 +532,51 @@ fn credentials_are_named_and_their_values_never_shown() {
 }
 
 #[test]
+fn application_default_credentials_and_vertex_ai_variables_are_named_after_the_credentials() {
+    let repo = Repo::used();
+    let key = repo.dir.join("service-account.json");
+    fs::write(&key, "{}").unwrap();
+    let report = repo.doctor_in(
+        &repo.root,
+        &[],
+        &[
+            ("GOOGLE_APPLICATION_CREDENTIALS", key.to_str().unwrap()),
+            ("CLAUDE_CODE_USE_VERTEX", "1"),
+            ("ANTHROPIC_VERTEX_PROJECT_ID", "project-never-shown"),
+        ],
+    );
+    assert_eq!(report.status("harnesses.google_cloud"), "ok");
+    assert_eq!(
+        report.detail("harnesses.google_cloud"),
+        "Application Default Credentials: the file GOOGLE_APPLICATION_CREDENTIALS names (not \
+         read); Vertex AI variables set: CLAUDE_CODE_USE_VERTEX, ANTHROPIC_VERTEX_PROJECT_ID \
+         (names only)"
+    );
+    assert!(!report.stdout.contains("project-never-shown"));
+    let names: Vec<&str> = report.value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+    assert_eq!(
+        at("harnesses.google_cloud"),
+        at("harnesses.credentials") + 1
+    );
+
+    let report = repo.doctor_in(
+        &repo.root,
+        &[],
+        &[("GOOGLE_APPLICATION_CREDENTIALS", "/nonexistent/sa.json")],
+    );
+    assert_eq!(report.status("harnesses.google_cloud"), "warn");
+    assert!(report
+        .fix("harnesses.google_cloud")
+        .contains("GOOGLE_APPLICATION_CREDENTIALS"));
+}
+
+#[test]
 fn a_gateway_token_and_provider_logins_are_named_and_a_login_without_its_key_is_a_warning() {
     let repo = Repo::used();
     // Claude Code's gateway token is one of the usual variables.

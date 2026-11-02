@@ -164,6 +164,11 @@ pub enum Probe {
         /// The detail when the fact alone is a likely login.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         login: Option<String>,
+        /// Another probe's fact that keeps this one from being a login when
+        /// it was found (the harness's settings chose, so its environment
+        /// does not).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unless: Option<String>,
         /// Added to a logged-in detail when the fact was found.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note_found: Option<String>,
@@ -171,17 +176,23 @@ pub enum Probe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note_missing: Option<String>,
     },
-    /// A variable equal to a value is a fact.
+    /// A variable equal to a value, or set at all, is a fact.
     Flag {
         /// The variable.
         var: String,
-        /// The value it must have.
-        value: String,
+        /// The value it must have; without one, any value that is not empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
         /// The fact's name.
         fact: String,
         /// The detail when the fact alone is a likely login.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         login: Option<String>,
+        /// Another probe's fact that keeps this one from being a login when
+        /// it was found (the harness's settings chose, so its environment
+        /// does not).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unless: Option<String>,
         /// Added to a logged-in detail when the fact was found.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note_found: Option<String>,

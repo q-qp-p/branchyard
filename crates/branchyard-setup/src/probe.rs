@@ -333,12 +333,15 @@ impl HarnessLogin {
     }
 }
 
-/// A login a harness keeps in a file, found in the home directory.
+/// A login a harness keeps in a file, found in the home directory; or
+/// gcloud's Application Default Credentials, which any harness on Vertex AI
+/// signs in with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LoginFile {
-    /// The harness that keeps it.
+    /// The harness that keeps it, or `gcloud`.
     pub harness: String,
-    /// The file, under `~/`: `~/.codex/auth.json`.
+    /// The file, under `~/` (`~/.codex/auth.json`), or absolute for
+    /// gcloud's under `CLOUDSDK_CONFIG`.
     pub file: String,
     /// The secret Branchyard provisions its content as into a private home
     /// (`CODEX_AUTH`); `None` when no provisioner takes this file.
@@ -375,8 +378,20 @@ fn login_label_key(harness: &str) -> Option<&'static str> {
     }
 }
 
+/// gcloud's Application Default Credentials, as setup offers them: the file
+/// `gcloud auth application-default login` writes, under `CLOUDSDK_CONFIG`
+/// when it is set, else `~/.config/gcloud`.
+fn gcloud_adc(probe: &dyn Probe) -> String {
+    use branchyard_provision::gcloud;
+    match probe.cloudsdk_config() {
+        Some(dir) => format!("{}/{}", dir.trim_end_matches('/'), gcloud::FILE),
+        None => format!("~/{}", gcloud::PATH),
+    }
+}
+
 /// The logins kept in files under the home directory, provisioned ones
-/// first (in the provisioners' order), each with its label.
+/// first (in the provisioners' order), each with its label, then gcloud's
+/// Application Default Credentials.
 pub fn login_files(probe: &dyn Probe) -> Vec<LoginFile> {
     let provisioned = branchyard_provision::file_logins().into_iter().map(|l| {
         (
@@ -388,11 +403,18 @@ pub fn login_files(probe: &dyn Probe) -> Vec<LoginFile> {
     });
     let others = OTHER_LOGIN_FILES
         .iter()
-        .map(|(harness, path, label)| (*harness, *path, None, *label));
+        .map(|(harness, path, label)| (*harness, format!("~/{path}"), None, *label));
+    let adc = (
+        "gcloud",
+        gcloud_adc(probe),
+        Some(branchyard_provision::gcloud::SECRET),
+        None,
+    );
     provisioned
+        .map(|(harness, path, secret, label)| (harness, format!("~/{path}"), secret, label))
         .chain(others)
-        .filter_map(|(harness, path, secret, label)| {
-            let file = format!("~/{path}");
+        .chain([adc])
+        .filter_map(|(harness, file, secret, label)| {
             probe.exists(&file).then(|| LoginFile {
                 harness: harness.to_owned(),
                 label: label.and_then(|key| {
@@ -482,6 +504,10 @@ pub trait Probe {
     fn harnesses(&self) -> Vec<HarnessFact>;
     /// Whether `name` is set to something non-empty. Never its value.
     fn env_is_set(&self, name: &str) -> bool;
+    /// The directory `CLOUDSDK_CONFIG` names, where gcloud keeps its
+    /// configuration instead of `~/.config/gcloud`; `None` when it is unset
+    /// or empty. A directory, never a credential, so its value is read.
+    fn cloudsdk_config(&self) -> Option<String>;
     /// `Some(version or "")` when `program` is on `PATH`.
     fn tool(&self, program: &str) -> Option<String>;
     /// Whether `program` is on `PATH`, without running it.
@@ -861,6 +887,7 @@ pub fn harness_label(harness: &str) -> String {
         "hermes" => "Hermes".into(),
         "droid" => "Droid".into(),
         "kiro" => "Kiro".into(),
+        "gcloud" => "Google Cloud ADC".into(),
         other => other.into(),
     }
 }
@@ -885,6 +912,8 @@ pub struct FakeProbe {
     pub build: BuildFacts,
     /// Files by path as [`Probe::read`] is asked for them.
     pub files: BTreeMap<String, String>,
+    /// What [`Probe::cloudsdk_config`] answers.
+    pub cloudsdk_config: Option<String>,
 }
 
 impl FakeProbe {
@@ -932,6 +961,7 @@ impl FakeProbe {
             },
             build: BuildFacts::full(),
             files: [("Cargo.toml".to_owned(), "[package]\n".to_owned())].into(),
+            cloudsdk_config: None,
         }
     }
 }
@@ -951,6 +981,9 @@ impl Probe for FakeProbe {
     }
     fn env_is_set(&self, name: &str) -> bool {
         self.variables.contains(name)
+    }
+    fn cloudsdk_config(&self) -> Option<String> {
+        self.cloudsdk_config.clone()
     }
     fn tool(&self, program: &str) -> Option<String> {
         self.tools.get(program).cloned()

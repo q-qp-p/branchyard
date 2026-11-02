@@ -556,10 +556,11 @@ fn login_source(login: &LoginFile) -> String {
 }
 
 /// The logins harnesses keep in files that a provisioner can carry into a
-/// private home: recorded in `[secrets]` by name with where the file is
-/// (`CODEX_AUTH = "@~/.codex/auth.json"`), never its content. Suggested
-/// for installed harnesses when new branches get a private home, since
-/// they have no login there otherwise.
+/// private home, and gcloud's Application Default Credentials: recorded in
+/// `[secrets]` by name with where the file is (`CODEX_AUTH =
+/// "@~/.codex/auth.json"`), never its content. Suggested for installed
+/// harnesses when new branches get a private home, since they have no
+/// login there otherwise; gcloud's, which every harness would get, never.
 fn login_question(
     facts: &Facts,
     current: &ProjectConfig,
@@ -609,7 +610,9 @@ fn login_question(
             "A branch with a private home (--isolated, a sandbox) is not logged in. Each login \
              chosen is recorded in [secrets] by name with where its file is (CODEX_AUTH = \
              \"@~/.codex/auth.json\"), never its content, and copied 0600 into such a branch's \
-             home when it starts. Branches that use your own home are not affected.",
+             home when it starts. Google Cloud ADC (GCLOUD_ADC), gcloud's credentials for \
+             Vertex AI, goes to every harness and is never chosen for you. Branches that use \
+             your own home are not affected.",
         )
         .optional()
         .default(Value::Array(default))
@@ -2140,6 +2143,86 @@ mod tests {
         );
         let config = config_of(&again, &dropped.answers, &probe_with);
         assert!(!config.secrets.contains_key("CODEX_AUTH"));
+    }
+
+    /// gcloud's Application Default Credentials are offered as GCLOUD_ADC
+    /// by where the file is, under CLOUDSDK_CONFIG when it is set; never
+    /// chosen for you, even isolated; and recorded by where the file is
+    /// when chosen. Nothing of the file comes back.
+    #[test]
+    fn gcloud_adc_is_offered_by_where_it_is_and_never_chosen_for_you() {
+        let mut probe = machine();
+        probe.files.insert(
+            "~/.config/gcloud/application_default_credentials.json".into(),
+            r#"{"type": "authorized_user", "refresh_token": "rt-SECRET-ADC"}"#.into(),
+        );
+        let facts = Facts::gather(&probe);
+        let adc = facts
+            .logins
+            .iter()
+            .find(|l| l.secret.as_deref() == Some("GCLOUD_ADC"))
+            .unwrap();
+        assert_eq!(
+            (
+                adc.harness.as_str(),
+                adc.file.as_str(),
+                adc.label.as_deref()
+            ),
+            (
+                "gcloud",
+                "~/.config/gcloud/application_default_credentials.json",
+                None
+            )
+        );
+        let lines = serde_json::to_string(&facts.lines()).unwrap();
+        assert!(!lines.contains("rt-SECRET"), "{lines}");
+        assert!(
+            lines.contains(
+                "gcloud ~/.config/gcloud/application_default_credentials.json, as GCLOUD_ADC"
+            ),
+            "{lines}"
+        );
+
+        let isolated = resolve(
+            &|a| questions(&facts, a),
+            &answers(json!({"isolated": true, "secrets": []})),
+            true,
+        );
+        assert_eq!(isolated.answers["logins"], json!(["CODEX_AUTH"]));
+        let chosen = resolve(
+            &|a| questions(&facts, a),
+            &answers(
+                json!({"isolated": true, "secrets": [], "logins": ["CODEX_AUTH", "GCLOUD_ADC"]}),
+            ),
+            true,
+        );
+        let config = config_of(&facts, &chosen.answers, &probe);
+        assert_eq!(
+            config.secrets["GCLOUD_ADC"],
+            "@~/.config/gcloud/application_default_credentials.json"
+        );
+        assert_eq!(config.secrets["CODEX_AUTH"], "@~/.codex/auth.json");
+        let by_label = resolve(
+            &|a| questions(&facts, a),
+            &answers(json!({"logins": "Google Cloud ADC login"})),
+            true,
+        );
+        assert_eq!(by_label.answers["logins"], json!(["GCLOUD_ADC"]));
+
+        let mut elsewhere = probe.clone();
+        elsewhere.cloudsdk_config = Some("/etc/gcloud/".into());
+        elsewhere.files.insert(
+            "/etc/gcloud/application_default_credentials.json".into(),
+            "{}".into(),
+        );
+        let facts = Facts::gather(&elsewhere);
+        let found: Vec<&str> = facts
+            .logins
+            .iter()
+            .filter(|l| l.harness == "gcloud")
+            .map(|l| l.file.as_str())
+            .collect();
+        assert_eq!(found, ["/etc/gcloud/application_default_credentials.json"]);
     }
 
     #[test]

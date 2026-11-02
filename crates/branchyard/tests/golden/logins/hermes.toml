@@ -8,7 +8,7 @@ lines = []
 cell = "unknown"
 state = "unknown"
 evidence = "none"
-detail = "Branchyard cannot read hermes's login; a key in GOOGLE_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY would tell, and so would a NAME_API_KEY= line in ~/.hermes/.env; `hermes status` shows what Hermes itself sees"
+detail = "Branchyard cannot read hermes's login; a key in GOOGLE_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY would tell, and so would a NAME_API_KEY= line in ~/.hermes/.env, or VERTEX_PROJECT_ID for Vertex AI; `hermes status` shows what Hermes itself sees"
 
 [[case]]
 name = "a comment, an empty key and a name that is no key configure nothing"
@@ -17,7 +17,7 @@ lines = []
 cell = "unknown"
 state = "unknown"
 evidence = "none"
-detail = "Branchyard cannot read hermes's login; a key in GOOGLE_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY would tell, and so would a NAME_API_KEY= line in ~/.hermes/.env; `hermes status` shows what Hermes itself sees"
+detail = "Branchyard cannot read hermes's login; a key in GOOGLE_API_KEY or OPENAI_API_KEY or ANTHROPIC_API_KEY would tell, and so would a NAME_API_KEY= line in ~/.hermes/.env, or VERTEX_PROJECT_ID for Vertex AI; `hermes status` shows what Hermes itself sees"
 
 [[case]]
 name = "a key line in the file it loads"
@@ -48,3 +48,21 @@ state = "logged_in"
 evidence = "likely"
 detail = "OPENAI_API_KEY is set (an API key; not checked)"
 key = "OPENAI_API_KEY"
+
+[[case]]
+name = "a Vertex AI project in its environment"
+env = { VERTEX_PROJECT_ID = "fake-project" }
+lines = ["fact vertex-project-env"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "VERTEX_PROJECT_ID is set, which Hermes's Vertex AI provider reads, signed in with Application Default Credentials (as Scion's Hermes configuration sets it up; not checked)"
+
+[[case]]
+name = "a Vertex AI project in the file it loads"
+home = { ".hermes/.env" = "export VERTEX_PROJECT_ID=fake-project\nVERTEX_REGION=us-central1\n" }
+lines = ["fact vertex-project-file"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "VERTEX_PROJECT_ID is set in ~/.hermes/.env, which Hermes loads for its Vertex AI provider, signed in with Application Default Credentials (as Scion's Hermes configuration sets it up; not checked)"

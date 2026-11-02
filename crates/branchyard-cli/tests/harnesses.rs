@@ -585,6 +585,27 @@ fn the_inventory_is_cached_for_a_minute_and_refreshed_on_request() {
 }
 
 #[test]
+fn exporting_a_vertex_ai_switch_is_not_answered_from_the_cache() {
+    let w = World::new();
+    w.fake_gemini();
+    let before = w.json(&["harnesses", "--json"]);
+    let gemini = harness(&before, "gemini-cli").unwrap();
+    assert_eq!(gemini["login"]["state"], "logged_out");
+    let out = w.by_env(
+        &["harnesses", "--json"],
+        &[("GOOGLE_GENAI_USE_VERTEXAI", "true")],
+    );
+    assert!(out.status.success());
+    let after: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let gemini = harness(&after, "gemini-cli").unwrap();
+    assert_eq!(gemini["login"]["state"], "logged_in", "{gemini}");
+    assert!(gemini["login"]["detail"]
+        .as_str()
+        .unwrap()
+        .starts_with("GOOGLE_GENAI_USE_VERTEXAI=true selects Vertex AI"));
+}
+
+#[test]
 fn detection_runs_over_ssh_and_on_a_recipes_machine() {
     let w = World::new();
     // Only the "remote" has Codex, in its home's .local/bin.

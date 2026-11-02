@@ -16,9 +16,21 @@ requires permission to attach that existing account.
 
 The helper attaches no service account by default and grants no project IAM
 roles. An optional `--service-account` must name an existing account in the
-selected project; the VM still receives no Google API OAuth scopes. Model
-credentials can be delivered through the explicit option below. No model key is embedded in VM
-metadata, the bootstrap script or an image.
+selected project. The VM then gets the `cloud-platform` access scope, so
+harnesses on the worker reach Google APIs as that account through the VM's
+metadata server, as on a Cloud Workstation, and the account's IAM roles decide
+what each request may do. `--scopes` replaces the default with a comma-separated
+list of scope names or URLs, or `none` for no scopes. It is refused without
+`--service-account`; a VM without an account gets no scopes.
+
+For Vertex AI, Google's documentation also requires the Vertex AI API
+(`aiplatform.googleapis.com`) enabled on the project and the Vertex AI User role
+(`roles/aiplatform.user`) granted to the account. Branchyard's `gs://` stores and
+Cloud KMS keys need their own roles ([identity.md](identity.md)). The helper
+enables no API, grants no role and checks neither.
+
+Model credentials can be delivered through the explicit option below. No model
+key is embedded in VM metadata, the bootstrap script or an image.
 
 The default uses an external SSH address, direct SSH and the existing `default`
 network and subnet. It requires your existing SSH firewall access.
@@ -74,7 +86,13 @@ The helper creates an `n2-standard-4` VM with a 100 GB balanced persistent disk.
 reviewed footprint. Existing machines must carry the matching
 `branchyard-deployment` label and exact configuration fingerprint. An unlabeled,
 foreign, stopped or differently configured machine is refused. The helper
-does not adopt or replace it.
+does not adopt or replace it. Access scopes are part of the fingerprint. A
+worker that Branchyard 0.4.0 or earlier made with a service account has none:
+without `--scopes` it is reused as it is, and `deployment.json` reports
+`access_scopes: []` with an `access_scopes_note` saying that its account cannot
+reach Vertex AI, `gs://` or Cloud KMS; run with another `--name`, or delete it
+and apply again, for a worker with `cloud-platform`. `--scopes none` reuses it
+without the note, and any other `--scopes` refuses it as differently configured.
 
 If a zone has no capacity for the selected machine type, review a different
 `--zone` or a compatible `--machine-type` and repeat the plan. Deployment
@@ -245,6 +263,15 @@ inspected while implementing the bootstrap. See the
 [dated live validation record](remote-validation-2026-10-28.md) for
 real-environment evidence. Not done: these hermetic checks do not qualify a live
 GCE bootstrap, model authentication or a complete Microsandbox lifecycle.
+
+Hermetic on 2 November 2026: `tests/test_compute_gce.py` checks the create
+command with fake `gcloud`: `--scopes=https://www.googleapis.com/auth/cloud-platform`
+with a service account by default, `--no-scopes` with `--scopes none` or with no
+account, an explicit list passed through, and `--scopes` refused without an
+account. The CLI's `cloud_setup` unit test checks that `by compute gce` forwards
+`--scopes`. Not done: no worker was created and no model was called for this
+change, so no harness has reached Vertex AI, `gs://` or Cloud KMS through a
+worker's metadata server.
 
 
 Public 0.1.1 follow-up, 28 October 2026: live provisioning through the published

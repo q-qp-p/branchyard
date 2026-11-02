@@ -56,4 +56,22 @@ lines = []
 cell = "login not verified"
 state = "logged_out"
 evidence = "likely"
-detail = "no ~/.gemini/antigravity-cli/antigravity-oauth-token and no GEMINI_API_KEY or AGY_TOKEN; a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json"
+detail = "no ~/.gemini/antigravity-cli/antigravity-oauth-token and no GEMINI_API_KEY or AGY_TOKEN; a GEMINI_API_KEY also needs modelProvider gemini in ~/.gemini/antigravity-cli/settings.json; on Google Cloud, AGY_ADC_AUTH=true signs in with Application Default Credentials instead"
+
+[[case]]
+name = "Application Default Credentials on Google Cloud (1.4.10)"
+env = { AGY_ADC_AUTH = "true" }
+lines = ["fact adc-auth"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "AGY_ADC_AUTH=true signs Antigravity in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[case]]
+name = "ADC beside a Gemini key with no modelProvider is still a login, not an unused key"
+env = { AGY_ADC_AUTH = "true", GEMINI_API_KEY = "fake-gemini" }
+lines = ["env GEMINI_API_KEY", "fact adc-auth"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "AGY_ADC_AUTH=true signs Antigravity in with Application Default Credentials (not checked; `by doctor` says where they come from)"

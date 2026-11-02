@@ -611,6 +611,12 @@ fn plan(
     })
 }
 
+/// The value each available secret stands in with: an empty JSON object,
+/// which every provisioner that checks a credential file's shape (a login
+/// file, `GCLOUD_ADC`) takes as one, so the step names the method rather
+/// than a refusal of the stand-in.
+const READINESS_PLACEHOLDER: &str = "{}";
+
 /// Inspect credentials that can actually be provisioned into remote harness homes.
 ///
 /// Host executable and OAuth inventory do not establish remote readiness. Secret
@@ -637,7 +643,7 @@ pub fn remote_harness_readiness(
                 KeySource::Env(var) => machine.var_set(&var),
                 KeySource::File(path) => machine.file_present(&path),
             }
-        }).map(|secret| branchyard_provision::Secret::new(secret, "readiness-placeholder")).collect();
+        }).map(|secret| branchyard_provision::Secret::new(secret, READINESS_PLACEHOLDER)).collect();
         match branchyard_provision::plan(&context) {
             Ok(plan) if plan.auth.is_some() => Step::ready(name,
                 format!("{} credential source available for remote private home; model authentication unverified",
@@ -1306,7 +1312,7 @@ mod tests {
         assert!(available[0]
             .detail
             .contains("model authentication unverified"));
-        assert!(!available[0].detail.contains("readiness-placeholder"));
+        assert!(!available[0].detail.contains(READINESS_PLACEHOLDER));
         machine.vars.clear();
         config
             .secrets
@@ -1320,6 +1326,49 @@ mod tests {
             remote_harness_readiness(root, &config, &machine)[0].state,
             State::Ready
         );
+    }
+
+    /// A credential file stands in as JSON, so `GCLOUD_ADC` beside a
+    /// Vertex AI project and region, or a login file alone, is ready rather
+    /// than refused for the stand-in's shape.
+    #[test]
+    fn remote_readiness_takes_credential_files_and_gcloud_adc() {
+        let mut config = ProjectConfig::default();
+        config.defaults.harness = Some("claude-code".into());
+        let mut machine = Fake::new();
+        let root = Path::new("/unused");
+        for (name, source) in [
+            ("GCLOUD_ADC", "@/adc.json"),
+            ("GOOGLE_CLOUD_PROJECT", "PROJECT"),
+            ("CLOUD_ML_REGION", "REGION"),
+        ] {
+            config.secrets.insert(name.into(), source.into());
+        }
+        machine.files.insert(PathBuf::from("/adc.json"));
+        machine.vars.insert("PROJECT".into());
+        let partial = remote_harness_readiness(root, &config, &machine);
+        assert_eq!(
+            partial[0].state,
+            State::NeedsPerson,
+            "{}",
+            partial[0].detail
+        );
+        machine.vars.insert("REGION".into());
+        let ready = remote_harness_readiness(root, &config, &machine);
+        assert_eq!(ready[0].state, State::Ready, "{}", ready[0].detail);
+        assert!(
+            ready[0].detail.starts_with("vertex-ai "),
+            "{}",
+            ready[0].detail
+        );
+
+        config.secrets.clear();
+        config
+            .secrets
+            .insert("CLAUDE_AUTH".into(), "@/credentials.json".into());
+        machine.files.insert(PathBuf::from("/credentials.json"));
+        let login = remote_harness_readiness(root, &config, &machine);
+        assert_eq!(login[0].state, State::Ready, "{}", login[0].detail);
     }
 
     #[test]
