@@ -695,13 +695,20 @@ pub struct Inbox {
     /// Omitted when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steered_this_turn: Vec<u64>,
+    /// Messages in `messages` that have an answer, by id. Filled for the
+    /// person's inbox, which no turn reads, so there a message counts read
+    /// once it is answered ([`Inbox::is_unread`]). Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answered: Vec<u64>,
 }
 
 impl Inbox {
-    /// Whether the branch's turns have not read `message` yet: it is not
-    /// delivered, or it was steered into the running turn.
+    /// Whether `message` is unread: it is neither delivered nor
+    /// [answered](Inbox::answered), or it was steered into the running
+    /// turn, which has not read it yet.
     pub fn is_unread(&self, message: &Message) -> bool {
-        !message.delivered || self.steered_this_turn.contains(&message.id)
+        let read = message.delivered || self.answered.contains(&message.id);
+        !read || self.steered_this_turn.contains(&message.id)
     }
 
     /// Only the messages not read yet ([`Inbox::is_unread`]).
@@ -712,6 +719,8 @@ impl Inbox {
             .filter(|m| self.is_unread(m))
             .cloned()
             .collect();
+        self.answered
+            .retain(|id| unread.iter().any(|m| m.id == *id));
         self.messages = unread;
         self
     }
@@ -4534,6 +4543,7 @@ impl Local {
             branch: self.branch.clone(),
             messages: store.backend().inbox(&self.branch)?,
             steered_this_turn: inbox::steered_this_turn(&store, &self.branch)?,
+            answered: Vec::new(),
         })
     }
 }

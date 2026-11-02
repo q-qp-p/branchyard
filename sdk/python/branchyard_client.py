@@ -2973,11 +2973,18 @@ class Repo:
 
     # -- the inbox, as the person ------------------------------------------
 
-    def person_inbox(self) -> list[Message]:
+    def person_inbox(self, unread: bool = False) -> list[Message]:
         """The person's inbox, as `Message`s: the questions and escalations
         of branches nobody delegated (a root started with delegation, or a
-        fork), oldest first; like `by inbox` outside a harness."""
-        return [Message(m) for m in self.client.get(f"{self._base}/inbox").get("messages", [])]
+        fork), oldest first; like `by inbox` outside a harness. With
+        `unread`, only those neither answered (their ids are not in the
+        response's `answered`) nor delivered: what still waits for you."""
+        inbox = self.client.get(f"{self._base}/inbox")
+        messages = [Message(m) for m in inbox.get("messages", [])]
+        if unread:
+            answered = set(inbox.get("answered", []))
+            messages = [m for m in messages if m.id not in answered and not m.get("delivered")]
+        return messages
 
     def answer_message(self, message_id: int, text: str) -> Message:
         """Answer question or escalation `message_id` as whoever it was sent

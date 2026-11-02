@@ -800,7 +800,13 @@ pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: boo
                     Some(id) => format!(" (re #{id})"),
                     None => String::new(),
                 };
-                let read = if inbox.is_unread(m) { " [unread]" } else { "" };
+                let read = if inbox.is_unread(m) {
+                    " [unread]"
+                } else if inbox.answered.contains(&m.id) {
+                    " [answered]"
+                } else {
+                    ""
+                };
                 format!(
                     "#{} {} from {}{reply}{read}: {}\n",
                     m.id,

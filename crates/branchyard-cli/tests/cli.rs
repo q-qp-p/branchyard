@@ -1896,6 +1896,17 @@ fn a_root_asks_the_person_who_answers_without_as() {
     );
     let again = repo.by(&["answer", &id.to_string(), "MySQL", "--json"]);
     assert_eq!(again.status.code(), Some(4), "{}", stdout(&again));
+    let inbox = repo.json(&["inbox", "--json"]);
+    assert_eq!(inbox["answered"], serde_json::json!([id]), "{inbox}");
+    let listed = stdout(&repo.ok(&["inbox"]));
+    assert!(
+        listed.starts_with(&format!(
+            "#{id} question from root [answered]: Which database?"
+        )),
+        "{listed}"
+    );
+    assert!(!listed.contains("[unread]"), "{listed}");
+    assert_eq!(stdout(&repo.ok(&["inbox", "--unread"])), "empty\n");
 
     let sent = repo.json(&["send", "root", "WHOAMI", "--wait", "--json"]);
     assert_eq!(sent["status"]["state"], "no_changes", "{sent}");

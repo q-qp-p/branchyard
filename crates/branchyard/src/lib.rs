@@ -736,13 +736,23 @@ impl Yard {
     }
 
     /// The person's inbox: every message addressed to [`PERSON`], oldest
-    /// first. A branch nobody delegated (a root, or a fork) sends its
-    /// questions and escalations here; [`Yard::answer`] answers them.
+    /// first, with the ids of those answered in `answered`. A branch
+    /// nobody delegated (a root, or a fork) sends its questions and
+    /// escalations here; [`Yard::answer`] answers them.
     pub fn inbox(&self) -> Result<Inbox, Error> {
+        let store = self.store();
+        let messages = store.backend().inbox(PERSON)?;
+        let mut answered = Vec::new();
+        for message in &messages {
+            if store.backend().answer_to(message.id)?.is_some() {
+                answered.push(message.id);
+            }
+        }
         Ok(Inbox {
             branch: PERSON.to_owned(),
-            messages: self.store().backend().inbox(PERSON)?,
+            messages,
             steered_this_turn: Vec::new(),
+            answered,
         })
     }
 

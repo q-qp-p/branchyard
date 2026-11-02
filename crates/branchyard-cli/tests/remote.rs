@@ -1305,6 +1305,7 @@ fn delegation_commands_print_what_local_ones_do() {
             "{args:?}\nremote stderr: {}",
             text(&r.stderr)
         );
+        text(&r.stdout)
     };
 
     for args in [
@@ -1415,6 +1416,13 @@ fn delegation_commands_print_what_local_ones_do() {
         text(&r.stdout).contains("root reads it when its next turn starts"),
         "{}",
         text(&r.stdout)
+    );
+    let inbox = same_json(&["inbox", "--json"]);
+    assert_eq!(inbox["answered"][0], asked["message"]["id"], "{inbox}");
+    let listed = same_text(&["inbox"]);
+    assert!(
+        listed.contains(&format!("#{id} question from root [answered]")),
+        "{listed}"
     );
 
     let merged = same_json(&["integrate", "kid", "--json"]);

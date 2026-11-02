@@ -7,11 +7,12 @@ Show the state of this repository's Branchyard branches, for "{{args}}"
 1. Run `by ls --json` (on a Branchyard branch, where BRANCHYARD_BRANCH is
    set, run `by children --json` instead). With a branch named, run
    `by show <branch> --json` too.
-2. For each parent with children, run `by inbox --as <parent> --unread --json`
-   (on a Branchyard branch: `by inbox --unread --json`, your own).
+2. For each parent with children, run `by inbox --as <parent> --unread --json`,
+   and `by inbox --unread --json` for the questions sent to the user (on a
+   Branchyard branch, only that one: your own inbox).
 3. Summarise in a short table: name, state, harness, cost. Then list what
    needs attention, most urgent first: unanswered questions (with their
-   message id, so the user can `by answer --as <parent> ID TEXT`), blocked or failed
+   message id, so the user can `by answer ID TEXT`), blocked or failed
    branches with their reason, branches waiting for plan approval, and
    branches `ready` to integrate (`by merge <branch>`, or `by integrate` on
    a branch).

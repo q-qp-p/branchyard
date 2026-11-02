@@ -295,9 +295,9 @@ A branch nobody delegated, a root started with delegation or a fork, has no pare
 
 The person answers in any of three ways, each as whoever the message was sent to (the person, or the parent branch it went to):
 
-- `by answer ID "TEXT"` outside a harness, without `--as`; `by inbox` lists the person's messages. With `--remote`, `POST /v1/repos/{repo}/answer` (`{message_id, text}`, the `run` scope) and `GET /v1/repos/{repo}/inbox` (the `read` scope).
+- `by answer ID "TEXT"` outside a harness, without `--as`; `by inbox` lists the person's messages, marks an answered question `[answered]` (the JSON lists its id in `answered`), and with `--unread` lists the ones still waiting for you. With `--remote`, `POST /v1/repos/{repo}/answer` (`{message_id, text}`, the `run` scope) and `GET /v1/repos/{repo}/inbox` (the `read` scope).
 - The console's **Needs you**: the question's card answers it, and an escalation's card has **Approve** and **Deny** ([console](companion.md)).
-- `branchyard_client`'s `Repo::answer_message` and `Repo::person_inbox`, and Python's `Repo.answer_message(message_id, text)` and `Repo.person_inbox()`.
+- `branchyard_client`'s `Repo::answer_message` and `Repo::person_inbox`, and Python's `Repo.answer_message(message_id, text)` and `Repo.person_inbox(unread=False)`.
 
 An answer reaches a turn that still runs by steering, and returns from a `by ask --wait` that waits for it. An answer to a branch whose turn has ended does not start a turn: the branch reads it when its next turn starts, and `by answer` and the console say so; `by send NAME "<prompt>"` starts one.
 

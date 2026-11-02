@@ -934,3 +934,33 @@ fn the_person_answers_each_question_once_and_nothing_else() {
         .collect();
     assert_eq!(inbox, [to_person.id]);
 }
+
+/// No turn reads the person's inbox, so a question in it counts read once
+/// it is answered: it stays listed, with its id in `answered`, and only the
+/// question still waiting is unread.
+#[test]
+fn the_persons_inbox_marks_an_answered_question_read() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let root = f
+        .yard
+        .task("say hi")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap();
+    let delegate = root.delegate(options).unwrap();
+    let answered = delegate.ask("which database?", None).unwrap().message;
+    let waiting = delegate.ask("which port?", None).unwrap().message;
+    f.yard.answer(answered.id, "postgres").unwrap();
+
+    let inbox = f.yard.inbox().unwrap();
+    let listed: Vec<u64> = inbox.messages.iter().map(|m| m.id).collect();
+    assert_eq!(listed, [answered.id, waiting.id]);
+    assert_eq!(inbox.answered, [answered.id]);
+    assert!(!inbox.is_unread(&inbox.messages[0]));
+    assert!(inbox.is_unread(&inbox.messages[1]));
+    let unread = inbox.unread_only();
+    let listed: Vec<u64> = unread.messages.iter().map(|m| m.id).collect();
+    assert_eq!((listed, unread.answered), (vec![waiting.id], vec![]));
+}

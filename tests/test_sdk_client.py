@@ -2177,6 +2177,17 @@ class Approvals(ServerCase):
         [(_, _, _, body)] = self.requests("POST", f"{REPO}/answer")
         self.assertEqual(body, {"message_id": 7, "text": "postgres"})
 
+    def test_the_persons_unread_inbox_leaves_out_what_was_answered_or_delivered(self):
+        question = {"from": "root", "to": "@person", "kind": "question", "at_ms": 1}
+        messages = [
+            {**question, "id": 7, "text": "which db?"},
+            {**question, "id": 9, "text": "which port?"},
+            {**question, "id": 10, "text": "which host?", "delivered": True},
+        ]
+        self.fake.always("GET", f"{REPO}/inbox", 200, {"branch": "@person", "messages": messages, "answered": [7]})
+        self.assertEqual([m.id for m in self.app.person_inbox()], [7, 9, 10])
+        self.assertEqual([m.id for m in self.app.person_inbox(unread=True)], [9])
+
     def test_the_ground_names_the_branches_that_share_a_file(self):
         ready = {"state": "ready"}
         ground = {
