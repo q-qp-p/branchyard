@@ -653,6 +653,71 @@ fn a_lost_answer_is_unknown_until_the_lookup_settles_it() {
 }
 
 #[test]
+fn the_turn_after_a_lost_one_is_told_which_calls_it_made() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("lost")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("lost")).unwrap();
+    let states: Vec<_> = ledger.iter().map(|e| e.state).collect();
+    assert_eq!(states, [EffectState::Confirmed, EffectState::Unknown]);
+    // As recovery leaves a branch whose submitted turn its engine lost.
+    common::edit_record(&f.root, "lost", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+    });
+    let sent = branch.send("WHOAMI", granted(&f)).unwrap();
+    let prompt = sent
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(prompt.starts_with("<branchyard-recovered>"), "{prompt}");
+    let posted = format!("- slack: chat_post ({}): happened", short(&ledger[0].id));
+    let charged = format!(
+        "- flaky: charge ({}): may have happened: its answer was lost; do not call it again",
+        short(&ledger[1].id)
+    );
+    assert!(prompt.contains(&posted), "{prompt}");
+    assert!(prompt.contains(&charged), "{prompt}");
+    assert!(prompt.contains("`by effects reconcile`"), "{prompt}");
+    // Told once: the turn after does not repeat it.
+    let again = sent.send("WHOAMI", granted(&f)).unwrap();
+    let last = again
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(!last.contains("connector gateway"), "{last}");
+}
+
+fn short(id: &str) -> &str {
+    branchyard::effects::short_id(id)
+}
+
+#[test]
 fn an_irreversible_call_is_staged_as_a_draft_or_held_then_promoted() {
     let f = Fixture::new();
     let (mock, script) = setup(&f, ApprovalSettings::default());
