@@ -110,6 +110,7 @@ pub mod connectors;
 pub mod contract;
 mod delegation;
 pub mod doctor;
+mod drift;
 pub mod effects;
 mod egress;
 mod endpoint;
@@ -227,6 +228,7 @@ pub use delegation::{
     Delegate, Delegated, DelegationPlan, Envelope, EventPage, Inbox, Inspection, Sent, Spawn,
     Spawned, Waited, BRIEF_ENTRY_MAX, BRIEF_MAX, DEFAULT_MAX_WAKES,
 };
+pub use drift::Drift;
 pub use egress::{EgressActivity, Enforcement as EgressEnforcement};
 pub use endpoint::SandboxHost;
 pub use environments::{
@@ -734,6 +736,26 @@ impl Yard {
         now_ms: u64,
     ) -> Result<Vec<Obligation>, Error> {
         obligations::list(&self.store(), branch, now_ms)
+    }
+
+    /// Branches whose record disagrees with their event log: the status
+    /// the record holds against the last status the log recorded. Every
+    /// write that changes a status appends its event in the same
+    /// transaction, so this is empty unless a write path broke that rule.
+    /// `branch` checks one; `None` checks every branch. See
+    /// `docs/durability.md#the-record-and-the-log`.
+    pub fn drift(&self, branch: Option<&str>) -> Result<Vec<Drift>, Error> {
+        let store = self.store();
+        let records = match branch {
+            Some(name) => vec![store.read(name)?],
+            None => store.list()?,
+        };
+        let mut drifted = Vec::new();
+        for record in records {
+            let events = record::read(&store, &record.info.name)?;
+            drifted.extend(drift::check(&record, &events));
+        }
+        Ok(drifted)
     }
 
     /// The liveness of each branch holding a lease, by branch.

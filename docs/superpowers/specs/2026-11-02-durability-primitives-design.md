@@ -42,7 +42,7 @@ Each is a change of its own, with its tests and docs.
 5. **Leases on the database's clock.** *Built.* `Backend::clock_ms` is the store's clock (the database's on PostgreSQL); turn leases are written by it on grant, renewal and takeover and judged by it everywhere expiry is judged, as operation claims already were ([leases and fencing](../../durability.md#leases-and-fencing)). Not changed: trigger dispatchers still schedule by their own clocks ([triggers](../../triggers.md#what-is-durable)), and a time shown to a person (`no heartbeat for 14s`) is counted from the reader's clock.
 6. **A declared state taxonomy for a workspace.** Persisted (the snapshot), ephemeral (what setup rebuilds, keyed by the prepared environment) and resource (the harness, sandbox and port, reattached on resume), so a rewind across an environment change rebuilds the environment instead of leaving code at one time and dependencies at another.
 7. **Portable activation.** Seal a dormant branch's state (refs, session transcript, sandbox snapshot) as one version in object storage so any worker can activate it by a compare-and-swap on its owner record, which lifts the cross-host limits the durability page lists.
-8. **Projections derivable from the log.** A conformance check that folding a branch's events reproduces its stored record.
+8. **Projections derivable from the log.** *Built, for the status.* `Yard::drift` folds a branch's events to its last status and compares it with the record, and 13 flow tests assert no drift ([the record and the log](../../durability.md#the-record-and-the-log)). Not done: the candidate, which a rewind decides by comparing trees its event does not carry; recording that in the event would let it be checked too.
 
 ## What was not taken
 

@@ -223,6 +223,7 @@ fn a_killed_engine_is_recovered_its_harness_killed_and_nothing_resubmitted() {
         noted,
         fs::read_to_string(worktree.join("orphan.log")).unwrap()
     );
+    common::assert_no_drift(&yard);
 }
 
 #[test]
@@ -261,6 +262,7 @@ fn a_crash_before_the_prompt_was_submitted_says_the_turn_never_ran() {
         !delivered(&f, report),
         "a turn that never ran delivers nothing"
     );
+    common::assert_no_drift(&branchyard::Yard::open(&f.root).unwrap());
 }
 
 /// The battery's crash scenario: a child cut off before its harness
@@ -352,6 +354,7 @@ fn two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other() {
     assert!(other.cancel("held").unwrap().is_empty());
     let sent = held.send("WHOAMI", f.options()).unwrap();
     assert_eq!(sent.info().status, BranchStatus::NoChanges);
+    common::assert_no_drift(&f.yard);
 }
 
 #[test]
@@ -462,6 +465,7 @@ fn a_merge_cut_short_after_moving_the_target_is_recognised_not_repeated() {
         f.yard.merge("merging", "main"),
         Err(Error::AlreadyMerged { .. })
     ));
+    common::assert_no_drift(&branchyard::Yard::open(&f.root).unwrap());
 }
 
 #[test]

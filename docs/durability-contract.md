@@ -60,6 +60,12 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 | B2 | An obligation is discharged exactly when its source changes; it is never stored separately | `obligations.rs` stores nothing |
 | B3 | Each obligation names what deals with it | `Obligation::next` |
 
+## 6. The record and the log
+
+| # | Rule | Branchyard |
+|---|---|---|
+| P1 | Every write that changes a branch's status appends its status event in the same transaction, so the record's status is the log's last | `Recorder::finish`, and each status write; `Yard::drift` checks it ([the record and the log](durability.md#the-record-and-the-log)) |
+
 ## Conformance scenarios
 
 Each is a scenario either implementation can run against its own store; the Branchyard test that runs it is named.
@@ -77,4 +83,5 @@ Each is a scenario either implementation can run against its own store; the Bran
 | A held turn reads live from another owner; a dead owner's turn reads lost before recovery | O4 | `tests/durable.rs` (the two tests above); `liveness.rs` unit tests |
 | A timer claimed by one holder is not claimed by another until its lease lapses; a finish naming a stale revision deletes nothing | S3 | `conformance.rs` `timers`, both backends |
 | A lookup that cannot answer is asked again only after its backoff, and never again once settled | E3, S3 | `tests/effects.rs` `a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff` |
+| After crashes, cancels, merges, rewinds, forks, parks and wakes, every record agrees with its log | P1 | `common::assert_no_drift` in 13 flow tests |
 | What a branch owes appears, and disappears when its source settles | B1, B2 | `tests/effects.rs` `obligations_list_what_a_branch_owes_until_its_source_settles` |
