@@ -161,9 +161,7 @@ def package(binary: Path, firmware: Path, output: Path, plan: dict, profile: str
     if version != f"msb {plan['runtime_version']}":
         raise ValueError(f"built runtime reports an unexpected version: {version}")
     binary_sha = digest(binary)
-    name = f"microsandbox-{plan['runtime_version']}-{plan['revision']}-{plan['platform']}-{binary_sha[:12]}"
-    destination = output / f"{name}.tar.gz"
-    provenance = dict(plan, build_profile=profile, runtime_sha256=binary_sha)
+    provenance = dict(plan, build_profile=profile, runtime_sha256=binary_sha, firmware_sha256=digest(firmware))
     encoded = (json.dumps(provenance, indent=2) + "\n").encode()
     entries = [("msb", binary.read_bytes(), 0o755), (plan["firmware_member"], firmware.read_bytes(), 0o644)]
     entries.extend((name, (notices / name).read_bytes(), 0o644) for name in ["LICENSE", "THIRD-PARTY"])
@@ -180,6 +178,9 @@ def package(binary: Path, firmware: Path, output: Path, plan: dict, profile: str
                 bundle.addfile(entry, io.BytesIO(data))
         raw.seek(0)
         content = raw.read()
+    content_sha = hashlib.sha256(content).hexdigest()
+    name = f"microsandbox-{plan['runtime_version']}-{plan['revision']}-{plan['platform']}-{content_sha[:12]}"
+    destination = output / f"{name}.tar.gz"
     if destination.exists() and destination.read_bytes() != content:
         raise ValueError(f"refusing to overwrite a different immutable artifact: {destination}")
     if not destination.exists():
@@ -188,7 +189,27 @@ def package(binary: Path, firmware: Path, output: Path, plan: dict, profile: str
     archive_sha = digest(destination)
     destination.with_suffix(destination.suffix + ".sha256").write_text(f"{archive_sha}  {destination.name}\n")
     provenance["archive_sha256"] = archive_sha
-    destination.with_suffix(".provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    proof = destination.with_suffix(".provenance.json")
+    proof.write_text(json.dumps(provenance, indent=2) + "\n")
+    manifest = {
+        "format": 1,
+        "runtime_version": plan["runtime_version"],
+        "revision": plan["revision"],
+        "platform": plan["platform"],
+        "build_profile": profile,
+        "build_plan_sha256": digest(ROOT / PLAN),
+        "architecture_tree_sha256": plan["architecture_tree_sha256"],
+        "runtime_sha256": binary_sha,
+        "archive": destination.name,
+        "archive_sha256": archive_sha,
+        "provenance": proof.name,
+        "provenance_sha256": digest(proof),
+    }
+    locator = output / "microsandbox-runtime.json"
+    content = (json.dumps(manifest, indent=2) + "\n").encode()
+    if locator.exists() and locator.read_bytes() != content:
+        raise ValueError("runtime manifest already selects a different artifact; use a fresh output directory")
+    locator.write_bytes(content)
     return destination
 
 

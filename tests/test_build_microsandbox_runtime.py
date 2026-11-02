@@ -170,6 +170,13 @@ class RuntimeBuild(unittest.TestCase):
         self.assertEqual(provenance["runtime_sha256"], runtime.digest(self.binary))
         external = json.loads(artifact.with_suffix(".provenance.json").read_text())
         self.assertEqual(external["archive_sha256"], runtime.digest(artifact))
+        self.assertEqual(external["firmware_sha256"], runtime.digest(firmware))
+        manifest = json.loads((output / "microsandbox-runtime.json").read_text())
+        self.assertEqual(manifest["archive"], artifact.name)
+        self.assertEqual(manifest["archive_sha256"], runtime.digest(artifact))
+        self.assertEqual(manifest["provenance_sha256"], runtime.digest(artifact.with_suffix(".provenance.json")))
+        self.assertEqual(manifest["build_profile"], "release")
+        self.assertIn(runtime.digest(artifact)[:12], artifact.name)
         self.assertEqual(
             artifact.with_suffix(artifact.suffix + ".sha256").read_text(),
             f"{runtime.digest(artifact)}  {artifact.name}\n",
@@ -185,6 +192,20 @@ class RuntimeBuild(unittest.TestCase):
             self.assertIn("--locked", command)
         for command in commands[2:]:
             self.assertIn("--offline", command)
+
+    def test_runtime_manifest_cannot_silently_switch_to_different_bytes(self):
+        stage = self.prepared()
+        output = self.base / "artifacts"
+        output.mkdir()
+        firmware = stage / ".branchyard-embedded" / self.plan["firmware_member"]
+        original = runtime.package(self.binary, firmware, output, self.plan, "release", self.root / runtime.ARCH)
+        locator = output / "microsandbox-runtime.json"
+        selected = locator.read_bytes()
+        firmware.write_bytes(b"different firmware")
+        with self.assertRaisesRegex(ValueError, "manifest already selects a different artifact"):
+            runtime.package(self.binary, firmware, output, self.plan, "release", self.root / runtime.ARCH)
+        self.assertEqual(locator.read_bytes(), selected)
+        self.assertTrue(original.is_file())
 
     def test_wrong_binary_version_and_changed_existing_archive_are_refused(self):
         output = self.base / "artifacts"
@@ -239,7 +260,7 @@ class RuntimeBuild(unittest.TestCase):
             ):
                 runtime.main()
         self.assertTrue(Path(stdout.getvalue().strip()).is_file())
-        self.assertEqual(len(list(output.iterdir())), 3, "temporary checkout was removed")
+        self.assertEqual(len(list(output.iterdir())), 4, "temporary checkout was removed")
 
     def test_live_probe_refuses_relative_evidence_and_wrong_archive_before_kvm(self):
         script = runtime.ROOT / "tools/qualify_microsandbox_gce.sh"

@@ -194,6 +194,15 @@ that can run a VM. The portable build supports local processes, recipes and
 Substrate without the Microsandbox compile-time feature. Installing a shared
 library cannot add that feature to a portable executable.
 
+The release also builds the patched external `msb` runner for Linux x86_64.
+Its content-addressed archive, runtime manifest and source/patch provenance are
+covered by the release's shared checksums and, on a version tag, GitHub build
+attestations. GCE setup verifies and installs that artifact in an immutable
+directory, with provenance beside the executable and a separate private home.
+It does not install the upstream 0.7.3 runner that exceeds the guest RAM budget.
+See [runtime delivery](microsandbox-runtime.md) for the complete input pins,
+integrity checks and checkpoint compatibility rules.
+
 The agy worker image is published separately by the release's image job. Its
 immutable digest is recorded in `runtime-images.json`; cloud setup uses that
 record instead of asking a developer to build an image. A model task remains a
