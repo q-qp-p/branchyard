@@ -1,42 +1,44 @@
 # Remote over ssh
 
-`by --remote ssh://[user@]host[:port]/path/to/repo` runs every command against a repository on another machine you can `ssh` to, with nothing to configure there beyond having `by` on its `PATH`: no TCP listener, no TLS, no token to copy.
+Passing `by --remote ssh://[user@]host[:port]/path/to/repo` runs any `by` command against a Git repository on a remote machine over SSH. Nothing needs to be pre-configured on the remote host beyond having `by` on its `PATH`: no TCP port is opened, no TLS certificates are required, and you do not need to copy bearer tokens by hand.
 
 ```sh
 by --remote ssh://me@build.example/srv/app run "Make the flaky parser test deterministic" --check "cargo test" --yes
 by --remote ssh://me@build.example/srv/app ls
 export BRANCHYARD_REMOTE=ssh://me@build.example/srv/app   # or [remote] url in branchyard.toml
 by watch
-by remote ssh status            # the connection and the remote server
-by remote ssh stop              # stop the remote server and close the connection
+by remote ssh status            # inspect the SSH connection and remote server
+by remote ssh stop              # stop the remote server and close the SSH connection
 ```
 
-`ssh://host/~/src/app` names a repository under the remote home. Every `--remote` command works, with the output of an `http(s)://` server ([server](server.md#remote-mode-in-by)): it is the same client talking to the same `by serve`, only over a different socket.
+To point at a repository inside your remote home directory, use `ssh://host/~/src/app`. Every `--remote` command works the same way as it does against an `http(s)://` server ([server](server.md#remote-mode-in-by)) because the CLI speaks the same HTTP API over a forwarded Unix domain socket.
 
 ## What happens
 
-The first command for a URL:
+When you run the first command against an `ssh://` URL, `by` performs five steps automatically:
 
-1. **Connects once.** The system `ssh` starts a control master (`ssh -M -N -f -o ControlPersist=600`), authenticating as your `ssh` configuration says (keys, agent, `~/.ssh/config`, `ProxyJump`, and a prompt on the terminal if it must). Later commands reuse it; it exits ten minutes after the last one.
-2. **Starts the server** (or finds it running). One POSIX `sh` script, sent on the channel's stdin, makes `~/.branchyard/remote/<key>/` (mode 0700; `<key>` is a digest of the repository path) with `run/` inside it, generates a token there (`token`, 0600, from `/dev/urandom`) if there is none, and starts `by serve --listen-unix ~/.branchyard/remote/<key>/run/by.sock --token-file …/token` in the repository with `nohup`, waiting until the socket exists. `--listen-unix` serves plain HTTP on a Unix socket, mode 0600, and refuses a directory anyone but its owner can enter. The layout follows emdash's workspace server ([ports](vendoring.md#emdash-and-orca-ports-as-data-and-as-translations)).
-3. **Fetches the token** on the same channel's stdout into a 0600 file here. It is never on any command line, here or there.
-4. **Forwards the socket**: `ssh -O forward -L <here>/by.sock:<there>/run/by.sock`, through the master, so nothing listens on a TCP port on either machine.
-5. **Talks to it** with `branchyard-client` at `unix:<here>/by.sock`, the transport this added (`Client::new("unix:/path/to/socket", token)`).
+1. **Opens a shared SSH connection:** Spawns the system `ssh` client as a background ControlMaster (`ssh -M -N -f -o ControlPersist=600`), using your normal SSH configuration (keys, agent, `~/.ssh/config`, `ProxyJump`, and interactive prompts if needed). Subsequent `by` commands reuse the existing master connection, which closes automatically after ten minutes of inactivity.
+2. **Starts or reattaches to the remote server:** Sends a POSIX `sh` bootstrap script over standard input that creates `~/.branchyard/remote/<key>/run/` (mode `0700`, where `<key>` is a hash of the repository path), generates a random bearer token (`token`, mode `0600`, read from `/dev/urandom`) if one does not already exist, and starts `by serve --listen-unix ~/.branchyard/remote/<key>/run/by.sock --token-file …/token` in the target repository under `nohup`, waiting until the socket appears. `--listen-unix` serves HTTP over a mode `0600` Unix socket and refuses to run if the parent directory is accessible to other users. This layout is modeled on emdash's workspace server ([ports](vendoring.md#emdash-and-orca-ports-as-data-and-as-translations)).
+3. **Reads the bearer token:** Streams the token back over standard output of that same SSH channel into a local `0600` file, so the token never appears in process command-line arguments on either machine.
+4. **Forwards the Unix socket:** Runs `ssh -O forward -L <here>/by.sock:<there>/run/by.sock` over the control master so no TCP port is opened on either host.
+5. **Connects the HTTP client:** Talks to the forwarded socket using `branchyard-client` (`Client::new("unix:/path/to/socket", token)`).
 
-Local state is one private directory per URL: `$BRANCHYARD_SSH_DIR`, else `$XDG_RUNTIME_DIR/branchyard-ssh`, else `~/.branchyard/ssh`, then a digest of the URL, holding the control socket, the forwarded socket, the token and the master's log. A socket path must stay under 100 bytes; set `BRANCHYARD_SSH_DIR` to something short if your home is deep.
+Local connection state is stored in a private directory per URL under `$BRANCHYARD_SSH_DIR` (or `$XDG_RUNTIME_DIR/branchyard-ssh`, falling back to `~/.branchyard/ssh`), keyed by a digest of the URL. That directory holds the SSH control socket, the forwarded Unix socket, the bearer token, and the control master log. Because Unix domain socket paths must stay under roughly 100 bytes, set `BRANCHYARD_SSH_DIR` to a short path (such as `/tmp/by-ssh-$UID`) if your home directory path is deep.
 
-| Variable | Default | Meaning |
+| Variable | Default | Purpose |
 |---|---|---|
-| `BRANCHYARD_SSH` | `ssh` | The ssh program |
-| `BRANCHYARD_SSH_BY` | `by` | The `by` to run on the host, if it is not on the non-interactive `PATH` |
-| `BRANCHYARD_SSH_SERVE_ARGS` | none | More `by serve` arguments for a server this starts, such as `--allow-delegation` (split on whitespace) |
-| `BRANCHYARD_SSH_DIR` | see above | Where the local state lives |
+| `BRANCHYARD_SSH` | `ssh` | Path to the local `ssh` executable |
+| `BRANCHYARD_SSH_BY` | `by` | Path to `by` on the remote host (useful when it is not on the non-interactive `PATH`) |
+| `BRANCHYARD_SSH_SERVE_ARGS` | none | Extra arguments passed to `by serve` when starting the remote server (such as `--allow-delegation`), split on whitespace |
+| `BRANCHYARD_SSH_DIR` | see above | Local directory for SSH control and forwarded sockets |
 
-The remote server also reads the repository's own `[serve] config` from its `branchyard.toml` ([setup](setup.md)). Flags apply when the server starts; `by remote ssh stop` and the next command restarts it with new ones.
+The remote server also loads `[serve] config` from the remote repository's `branchyard.toml` ([setup](setup.md)). Server startup flags take effect when the remote `by serve` process starts; run `by remote ssh stop` before your next command if you want it to restart with new flags.
 
 ## Trust and isolation
 
-The server runs as your user on the host, with **no isolation** beyond it, like any `by serve` with the local provider ([server](server.md#security)). Only someone who can already log in as you there can reach the socket or read the token. `--token-file` and `--ca-file` are refused with an `ssh://` URL, since it brings its own. `by remote ssh stop` stops the server (SIGTERM, which drains as [running it](server.md#running-it) describes, waiting up to 90 seconds), closes the master and forgets the local socket and token; the remote token stays, so the next start reuses it, and the branches and their state stay in the repository's `.branchyard/`.
+The remote `by serve` process runs as your SSH user on the remote host with **no extra sandbox isolation** by default, just like a local `by serve` instance ([server](server.md#security)). Only processes running as your user on the remote host can access the Unix socket or read the token file. Passing `--token-file` or `--ca-file` alongside an `ssh://` URL is refused because SSH transport manages its own socket and token.
+
+Running `by remote ssh stop` sends `SIGTERM` to the remote server (which drains active work for up to 90 seconds; see [running it](server.md#running-it)), closes the SSH control master, and removes the local socket and cached token. The remote token file and the repository's `.branchyard/` state remain on the remote machine for the next session.
 
 ## Tested
 

@@ -1,45 +1,45 @@
 # Troubleshooting
 
-Find the words you see, read what they mean, run the command beside them. When you do not know where to start, run `by doctor` (it checks the machine and the repository and ends with what to fix) and `by ls`. The words come from `by`'s own output; [concepts](concepts.md) has the table of branch states.
+Look up the status or error message you see below for what it means and the command to fix it. If you are not sure where to start, run `by doctor` (which checks your machine and repository and lists what to fix) and `by ls`. The status labels below match `by`'s output; see [concepts](concepts.md) for the complete table of branch states.
 
 ## A branch is in a bad state
 
 ### `interrupted`
 
-The turn stopped before it finished: you cancelled it with `by cancel NAME`, or the engine running it stopped (a closed terminal, a killed process, a reboot). The session and the worktree are kept.
+The turn stopped before it finished, either because you cancelled it with `by cancel NAME` or because the engine process running it exited (due to a closed terminal, a killed process, or a reboot). Both the harness session and the worktree are preserved.
 
-- `by log NAME` says which. A cancel logs ``warning: cancelled with `by cancel` `` (another canceller, by its name: `cancelled by alice`); an engine that stopped logs `recovered: its engine (pid N) is no longer running; the prompt had been submitted and the turn's outcome is unknown`.
-- `by diff NAME` shows what the turn wrote before it stopped.
-- `by send NAME --retry` submits the cut-off prompt again; `by send NAME "…"` sends a new one into the same session; `by rewind NAME --to N` goes back to checkpoint N first (0 is the base).
+- `by log NAME` shows which happened. A cancellation logs ``warning: cancelled with `by cancel` `` (or `cancelled by alice` when cancelled by another user), whereas an unexpected engine exit logs `recovered: its engine (pid N) is no longer running; the prompt had been submitted and the turn's outcome is unknown`.
+- `by diff NAME` shows any changes the turn wrote before stopping.
+- `by send NAME --retry` resubmits the interrupted prompt, `by send NAME "…"` sends a new follow-up prompt into the same session, and `by rewind NAME --to N` rolls back to checkpoint `N` first (`0` is the base commit).
 
 ### `failed`
 
-The turn ended in failure. The reason follows the colon in `by ls` and `by show NAME`: the harness exited or lost its connection (`the turn's outcome is unknown: the harness connection closed before the turn ended`), a plan was rejected, or the harness could not start.
+The turn ended in an error. The specific reason appears after the colon in `by ls` and `by show NAME`: for example, the harness exited unexpectedly or lost its connection (`the turn's outcome is unknown: the harness connection closed before the turn ended`), a proposed plan was rejected, or the harness process could not start.
 
-- `by log NAME` has the last events and the harness's own error.
-- `by harnesses` says whether the harness is installed, on `PATH` and logged in; `by harnesses login ID` signs in.
-- `by send NAME "…"` tries again in the same session; `by rm NAME` throws the branch away.
-- Gemini CLI, `could not resume session …: open failed: Authentication required`: Gemini CLI's `session/load` (what `by send` uses) refuses a session until an auth type is chosen, though its `session/new` takes `GEMINI_API_KEY` without one. Branchyard now authenticates once with the `gemini-api-key` method and asks again, which makes Gemini CLI write `security.auth.selectedType: "gemini-api-key"` into `~/.gemini/settings.json`, as its own `/auth` does. If it still fails, the key is not in the environment the harness sees (`by harnesses` shows `key set (GEMINI_API_KEY)` when it is), and the failure now reads `authenticate with gemini-api-key failed: …`.
-- Antigravity, `open failed: authentication failed or timed out` within a second: `GEMINI_API_KEY` is set, but `~/.gemini/antigravity-cli/settings.json` does not select the gemini provider, so `agy` wants a Google sign-in. `by harnesses` shows `key set, unused`; `by harnesses login antigravity` shows the one-line change and writes it with `--yes` (and `by run` now refuses before a branch exists).
+- `by log NAME` shows the most recent events and the error reported by the harness.
+- `by harnesses` checks whether the harness is installed, on `PATH`, and logged in, and `by harnesses login ID` starts its sign-in flow.
+- `by send NAME "…"` retries in the same session, or `by rm NAME` removes the branch.
+- For Gemini CLI (`could not resume session …: open failed: Authentication required`): Gemini CLI's `session/load` method (used by `by send`) refuses to resume a session until an authentication type is selected in `~/.gemini/settings.json`, even though `session/new` accepts `GEMINI_API_KEY` directly. Branchyard now authenticates once using the `gemini-api-key` method and retries, which writes `security.auth.selectedType: "gemini-api-key"` into `~/.gemini/settings.json` just as Gemini's interactive `/auth` command does. If resuming still fails, the key is missing from the harness environment (`by harnesses` shows `key set (GEMINI_API_KEY)` when present), and the error message reports `authenticate with gemini-api-key failed: …`.
+- For Antigravity (`open failed: authentication failed or timed out` within a second): `GEMINI_API_KEY` is set in the environment, but `~/.gemini/antigravity-cli/settings.json` does not select the Gemini provider, causing `agy` to wait for a Google sign-in. `by harnesses` reports `key set, unused`; run `by harnesses login antigravity` to preview the one-line setting change and pass `--yes` to write it (`by run` also catches this before creating a branch).
 
 ### `blocked`
 
-A child branch that has not started because a prerequisite failed, was interrupted, hit a limit or was removed. `by ls` gives the reason, such as `its prerequisite lint failed`. `by graph show PARENT` shows the dependencies. Fix the prerequisite (`by send`, as above), or change the dependency with a graph proposal, which reopens the child. `by rm NAME` drops it.
+A delegated child branch is marked `blocked` when it cannot start because one of its prerequisite branches failed, was interrupted, hit a budget limit, or was removed. `by ls` prints the specific cause (such as `its prerequisite lint failed`), and `by graph show PARENT` displays the dependency graph. To unblock the child, fix the prerequisite branch (using `by send` as shown above) or update the dependency with a graph proposal. Run `by rm NAME` if you want to discard the blocked branch instead.
 
 ### `awaiting plan approval`
 
-A planning turn proposed a plan, and nothing happens until you answer. `by plan show NAME` prints it. `by plan approve NAME` runs it (`--edit` opens it in your editor first), `by plan reject NAME --reason "…"` fails the branch, and `--replan` asks for another plan instead.
+A planning turn has proposed a plan and is waiting for your decision before making changes. Run `by plan show NAME` to read the plan, `by plan approve NAME` to execute it (`--edit` opens it in your editor first), `by plan reject NAME --reason "…"` to reject it and fail the branch, or `--replan` to ask for a revised plan.
 
 ### `over budget`
 
-A limit stopped the branch. `by ls` names it: `max_usd (--budget-usd)`, `max_turns (--max-turns)` or `max_duration (--max-minutes)`. Branchyard counts the cost the harness reports, so a harness that reports none cannot hit `max_usd`. Look at `by diff NAME`, then continue with a higher limit: `by send NAME "…" --max-turns 5`. Sending without raising the limit stops again at once.
+The branch stopped because it reached a configured budget limit. `by ls` names the limit that was reached: `max_usd (--budget-usd)`, `max_turns (--max-turns)`, or `max_duration (--max-minutes)`. Note that Branchyard relies on the cost reported by the harness, so a harness that does not report cost cannot trigger `max_usd`. Inspect the current changes with `by diff NAME`, and pass a higher ceiling to continue (for example, `by send NAME "…" --max-turns 5`). Running `by send` without raising the limit that was reached will stop immediately again.
 
 ### `running`, and nothing seems to happen
 
-- `by watch` shows activity per branch; `by log NAME -f` follows one. A turn that has had no harness activity for its stall window is marked `(stalled)`; the window is off unless you start the branch with `--stall-after`.
-- `by send NAME --steer "…"` adds a hint to the running turn without stopping it. `by cancel NAME` stops it.
-- A branch whose engine died stays `running` only until the next `by` command that opens the repository: `by ls` recovers it to `interrupted`, with the log line above. Then `by send NAME --retry`.
-- A run started with `--detach` writes its output to `.branchyard/detached/NAME-run-*.log`.
+- Run `by watch` to monitor live activity across all branches, or `by log NAME -f` to follow a single branch. If a turn produces no harness output for longer than its stall window, `by` marks it `(stalled)` (stall detection is disabled unless you pass `--stall-after`).
+- Run `by send NAME --steer "…"` to inject guidance into the running turn without stopping it, or `by cancel NAME` to stop the turn.
+- If the `by` engine process died unexpectedly, the branch remains listed as `running` until the next `by` command opens the repository; running `by ls` automatically recovers it to `interrupted` and logs the recovery notice described above, after which you can run `by send NAME --retry`.
+- If the run was started with `--detach`, its output is written to `.branchyard/detached/NAME-run-*.log`.
 
 ## Messages and other errors
 

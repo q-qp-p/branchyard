@@ -1,49 +1,53 @@
 # Concepts
 
-The words Branchyard uses, in the order a newcomer meets them. Each one is a thing you can see in `by ls`, `by show` or `branchyard.toml`. Start with [getting started](getting-started.md) if you have not run `by` yet.
+This page explains the core terms you will see in `by ls`, `by show`, and `branchyard.toml`. If you have not run `by` yet, start with [Getting started](getting-started.md).
 
 ## What a piece of work is
 
-| Word | Meaning | See it |
+| Word | Meaning | Where to see it |
 |---|---|---|
-| **Task** | What you asked for, and every attempt at it. Every `by run` starts one. | `by task ls`, `by task show ID` |
-| **Branch** (an **attempt**) | One try at a task: a git branch `by/NAME`, its own worktree under `.branchyard/worktrees/NAME`, its own harness session and event log. "Branch" is the git side of an attempt, "attempt" the task side. | `by ls`, `by show NAME` |
-| **Base** | The revision the branch started from (`--base`, default `HEAD`). | `by show NAME` |
-| **Turn** | One prompt given to the harness, and the harness's work until it stops. `by run` makes turn 1; `by send` adds one. | `by log NAME` |
-| **Checkpoint** | The snapshot commit every turn ends with. `by rewind NAME --to N` goes back to one; `by fork NAME --at N` starts a branch from one. | `by show NAME` |
-| **Candidate** | The change a branch offers: its latest checkpoint against the base. It is what `by diff` shows and `by merge` merges. A branch has none until a turn changes a file. | `by diff NAME` |
-| **Check** | A command (`--check "cargo test"`) that must pass on the exact merge result before `by merge` moves your branch. | `by merge NAME` |
+| **Task** | The overall objective you asked for, along with every attempt made to solve it. Every `by run` creates a task. | `by task ls`, `by task show ID` |
+| **Branch** (an **attempt**) | One attempt at a task: a Git branch `by/NAME`, an isolated worktree under `.branchyard/worktrees/NAME`, a harness session, and an event log. "Branch" refers to the Git side of an attempt; "attempt" refers to the task side. | `by ls`, `by show NAME` |
+| **Base** | The Git revision the branch started from (`--base`, defaulting to `HEAD`). | `by show NAME` |
+| **Turn** | One prompt sent to the harness and all the work the harness performs until it stops. `by run` runs turn 1; `by send` adds a follow-up turn. | `by log NAME` |
+| **Checkpoint** | The snapshot commit created at the end of every turn. You can roll a branch back to an earlier checkpoint with `by rewind NAME --to N`, or branch off from one with `by fork NAME --at N`. | `by show NAME` |
+| **Candidate** | The net change a branch offers: the diff between its base commit and its latest checkpoint. This is what `by diff` displays and what `by merge` integrates. A branch has no candidate until a turn modifies at least one file. | `by diff NAME` |
+| **Check** | A verification command (such as `--check "cargo test"`) that must pass on the exact merged tree before `by merge` updates your target branch. | `by merge NAME` |
 
 ## Ways to start work
 
-| Command | Who decides | What starts | Use it when |
+| Command | Who decides | What starts | When to use it |
 |---|---|---|---|
-| `by run` | You | One branch on one harness | You know what you want done |
-| `by fan` | You | The same prompt on several harnesses, one branch each (`NAME-HARNESS`), then a comparison table; `--judge` adds a verdict | You want to see which harness does it best, then merge one (`by compare --pick`) |
-| `by map` | You | One prompt over every item of a list, one branch per item, answers checked against a JSON schema and collected into a table | The same question has many inputs ([map](map.md)) |
-| `by spawn`, `by delegate` | The agent in a running branch | Child branches of that branch, each with its own harness, prompt and budget | The agent should split the work itself; its children's work comes back with `by integrate`, and it is woken when they settle ([delegation](delegation.md)) |
+| `by run` | You | One branch on a single harness | You have a specific task to run on one agent |
+| `by fan` | You | The same prompt across several harnesses (`NAME-HARNESS`), followed by a comparison table (`--judge` adds an automated evaluation) | You want to compare how different harnesses solve the same problem and merge the best result (`by compare --pick`) |
+| `by map` | You | One prompt applied to each item in a list, with one branch per item and structured outputs validated against a JSON schema | You want to run the same analysis or change across many inputs ([map](map.md)) |
+| `by spawn`, `by delegate` | An agent inside a running branch | Child branches under the parent branch, each with its own harness, prompt, and budget | You want an agent to break down a complex task into subtasks, integrate child results with `by integrate`, and resume automatically when its children finish ([delegation](delegation.md)) |
 
-`by fork` starts one more branch from an existing branch's candidate and conversation.
+You can also run `by fork` to start a new branch from an existing branch's candidate commit and conversation history.
 
 ## Harness, profile, provider
 
-- **Harness**: a coding agent you run in a terminal, such as `claude-code`, `codex` or `gemini-cli`. `--harness ID` chooses one; `by harnesses` lists what is installed and logged in.
-- **Profile**: how Branchyard talks to a harness, one driver per protocol (`claude-code-stream-json`, `claude-code-acp`, `codex-app-server`). A harness may have two. `--harness` takes either name; `by harnesses --profiles` lists them.
-- **Provider**: where the harness process runs: `local` (the default), `microsandbox`, `substrate` or `recipe:NAME` (`--provider`). It is not the model provider (Anthropic, OpenAI and the rest), which the harness or the `[models]` gateway deals with.
+- **Harness**: A coding agent CLI you run in a terminal, such as `claude-code`, `codex`, or `gemini-cli`. Select one with `--harness ID`, or run `by harnesses` to see which ones are installed and logged in.
+- **Profile**: The protocol driver Branchyard uses to communicate with a harness (such as `claude-code-stream-json`, `claude-code-acp`, or `codex-app-server`). Some harnesses support more than one protocol profile. `--harness` accepts either a harness ID or a profile ID, and `by harnesses --profiles` lists all profiles.
+- **Provider**: The execution environment where the harness process runs (`--provider`): `local` (the default), `microsandbox`, `substrate`, or `recipe:NAME`. Note that this is separate from the LLM API provider (Anthropic, OpenAI, and others), which is configured inside the harness or via the `[models]` gateway.
 
 ## Modes
 
-How much stands between a harness and your machine, in steps. [`docs/modes.md`](modes.md) gives the one setting and the one `by doctor` row for each.
+Branchyard supports five deployment and isolation levels, ranging from running directly on your laptop to running across a multi-worker server cluster. See [`docs/modes.md`](modes.md) for the configuration setting and `by doctor` check for each mode.
 
-- **local**: the harness runs as your user in a git worktree, with no isolation beyond that.
-- **isolated**: `--isolated` gives it a scrubbed environment and a private `HOME`.
-- **sandbox**: `--provider microsandbox`, `substrate` or `recipe:NAME` runs it in a microVM, an actor or a machine.
-- **server**: `by serve` runs the engine behind an authenticated HTTP API and clients use `--remote`.
-- **postgres**: `by serve --database URL` keeps the server's state in PostgreSQL so several servers and workers share it (a build with the `postgres` feature).
+- **local**: The harness runs as your local user account inside a Git worktree, with no extra isolation.
+- **isolated**: Passing `--isolated` runs the harness with a scrubbed environment and a private `HOME` directory.
+- **sandbox**: Passing `--provider microsandbox`, `substrate`, or `recipe:NAME` runs the harness inside a microVM, remote actor, or external sandbox command.
+- **server**: Running `by serve` hosts the engine behind an authenticated HTTP API so clients can connect with `--remote`.
+- **postgres**: Running `by serve --database URL` stores server state in PostgreSQL so multiple servers and workers can share state (requires a binary built with the `postgres` Cargo feature).
 
 ## Branch states
 
-`by ls` prints the words in the second column; `by show NAME --json` has them as `{"state": "…"}`. A running turn parked on an [approval](effects.md#approvals) shows `waiting for approval: …` instead, with what it asks (`awaiting` in the JSON, with the ask's id and when it parked); it moves only when someone answers, and is never stalled. A running turn that has had no harness activity for its stall window shows `(stalled)`. After every run, send and fork, the `next` lines list the commands that fit the state. A branch in a bad state keeps its worktree and session until `by rm`; [troubleshooting](troubleshooting.md) has the fixes.
+`by ls` prints the status label shown in the second column below, while `by show NAME --json` reports the snake_case identifier in `{"state": "…"}`.
+
+If a running turn is waiting on a user [approval](effects.md#approvals), `by ls` displays `waiting for approval: …` along with the request details (and the JSON output includes an `awaiting` object with the request ID and timestamp). A branch waiting on an approval stays paused until someone responds and is never marked as stalled. By contrast, an active turn that produces no harness output for longer than its stall window shows `(stalled)` next to `running`.
+
+After every `by run`, `by send`, and `by fork`, the CLI prints `next` lines with suggested commands for the branch's current state. If a branch stops in an error or interrupted state, its worktree and session are preserved until you run `by rm`; see [troubleshooting](troubleshooting.md) for recovery steps.
 
 | State | Shows as | Meaning | Do next |
 |---|---|---|---|
@@ -62,15 +66,15 @@ How much stands between a harness and your machine, in steps. [`docs/modes.md`](
 
 ## What "qualified" means
 
-A harness can be driven only through a profile. Two facts about a profile are kept apart: whether a driver exists, and whether anyone ran it against the real program. The words below are used the same way in `by harnesses`, `by doctor`, [compatibility](compatibility.md) and [driver qualification](qualification/README.md).
+Branchyard drives each harness through a protocol profile. Throughout the CLI and documentation (`by harnesses`, `by doctor`, [compatibility](compatibility.md), and [driver qualification](qualification/README.md)), Branchyard distinguishes between having a protocol driver that passes mock tests and having verified that driver against the real harness binary:
 
-| Word | Meaning |
+| Term | Meaning |
 |---|---|
-| **live-qualified** | The profile's driver ran the nine-scenario battery against the real harness binary, and the report records how many passed, the date and the harness version: "9 of 9 pass, 2026-10-16, codex-cli 0.157.1". `by doctor` shows `qualified 9/9 on 2.1.283`. |
-| **unqualified** | A driver exists and passes its protocol tests against mocks (the compatibility table says "not qualified"), but no live run is recorded. It may work; nobody has shown it. |
-| **drivable** | `by run --harness ID` can start it: it has a profile. `by harnesses --all` lists the others as "knows about". |
-| **inform-only** | Hooks tell a session in that harness about your branches, but there is no driver: Droid and Kiro today. See [harness hooks](harness-hooks.md). |
+| **live-qualified** | The profile's driver has been run through the nine-scenario qualification suite against the real harness binary, and the report records the pass count, date, and harness version (for example, `9 of 9 pass, 2026-10-16, codex-cli 0.157.1`). `by doctor` displays `qualified 9/9 on 2.1.283`. |
+| **unqualified** | A driver exists and passes its protocol tests against mock processes (shown as "not qualified" in the compatibility table), but no live run against the real binary is recorded yet. |
+| **drivable** | `by run --harness ID` can launch and control the harness because it has a driver profile. Harnesses without a driver are listed under `by harnesses --all` as "knows about". |
+| **inform-only** | Branchyard can install hooks so an interactive session in that harness receives branch status updates, but Branchyard does not have a driver to launch it directly (currently Droid and Kiro). See [harness hooks](harness-hooks.md). |
 
-Qualification is protocol behaviour with the harness started as a local process. It does not cover sandbox isolation, network policy, credential handling or node recovery; those stay unqualified for every profile.
+Qualification tests the protocol driver when launching the harness as a local process. It does not test sandbox isolation, network egress policy, credential injection, or multi-node recovery.
 
 Not done: `drivable` and `inform-only` are this page's names for what the catalog and the hook packaging show; the qualification pages use neither word. The rows for `waiting`, `blocked`, `awaiting_plan_approval` and `waiting_on_children` come from the enum's comments and the delegation, graph and plan pages, not from a live run; the others were run against the fake agent.
