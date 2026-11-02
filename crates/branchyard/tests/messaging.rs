@@ -7,6 +7,7 @@ mod common;
 
 use std::time::Duration;
 
+use branchyard::stage::Reason;
 use branchyard::{
     Activity, BranchStatus, Budget, DeliveredVia, Envelope, Error, MessageKind, Policy,
     ReportedState, Spawn, TaskOptions,
@@ -94,10 +95,20 @@ fn a_child_reports_and_asks_its_parent_across_both_event_logs() {
         .unwrap();
     assert!(asked.answer.is_none(), "no --wait, no answer expected yet");
     assert!(asked.message.in_reply_to.is_none());
+    let reason = |name: &str| {
+        f.yard
+            .branch(name)
+            .unwrap()
+            .info()
+            .stage
+            .map(|stage| stage.reason)
+    };
+    assert_eq!(reason("kid"), Some(Reason::Question));
 
     let answer = root_delegate
         .answer(asked.message.id, "yes, rename it")
         .unwrap();
+    assert_eq!(reason("kid"), Some(Reason::Running));
     assert_eq!(answer.to, "kid");
     assert_eq!(answer.in_reply_to, Some(asked.message.id));
 

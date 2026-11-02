@@ -8615,7 +8615,12 @@
             {
               "type": "string",
               "const": "question",
-              "description": "A question or an escalation a branch sent and nobody answered."
+              "description": "A question or an escalation a running branch sent and nobody\nanswered."
+            },
+            {
+              "type": "string",
+              "const": "plan",
+              "description": "A branch whose plan waits for approval: approve, edit or reject it\n(`by plan …`, `…/plan/approve`)."
             },
             {
               "type": "string",
@@ -8625,7 +8630,7 @@
             {
               "type": "string",
               "const": "stop",
-              "description": "A failed, interrupted or over-budget branch: resume it or let it be."
+              "description": "A failed, interrupted, over-budget or blocked branch: resume it or\nlet it be."
             },
             {
               "type": "string",
@@ -20926,6 +20931,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -21227,6 +21243,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -22816,6 +22960,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -23117,6 +23272,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -24737,6 +25020,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -25038,6 +25332,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -29181,6 +29603,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -29482,6 +29915,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -43744,6 +44305,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -44045,6 +44617,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -44495,6 +45195,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -44796,6 +45507,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -46875,6 +47714,17 @@
           ],
           "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
         },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+        },
         "superseded_by": {
           "type": [
             "string",
@@ -47178,6 +48028,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [
@@ -48401,6 +49379,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "stage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Stage"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What it needs from a person now, and why: the first row of\n[`stage::STAGES`] that matches it (`docs/concepts.md`, \"What a\nbranch needs from you\"). Derived when the record is listed or\nlooked up, never stored, like [`BranchInfo::awaiting`]."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -48702,6 +49691,134 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Stage": {
+          "type": "object",
+          "properties": {
+            "lane": {
+              "$ref": "#/$defs/Lane",
+              "description": "The lane, always [`Reason::lane`] of `reason`."
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason",
+              "description": "The first row of [`STAGES`] that matched."
+            }
+          },
+          "required": [
+            "lane",
+            "reason"
+          ],
+          "description": "A branch's lane and why: [`BranchInfo::stage`]. Serialized as\n`{\"lane\": \"needs_you\", \"reason\": \"approval\"}`."
+        },
+        "Lane": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "needs_you",
+              "description": "It waits on a person."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "It is working, or will start again on its own."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "done",
+              "description": "Nothing more will happen to it."
+            }
+          ],
+          "description": "The column of the console a branch sits in."
+        },
+        "Reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "Its running turn is parked on an approval ask."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "It is running and has asked a question nobody has answered."
+            },
+            {
+              "type": "string",
+              "const": "stalled",
+              "description": "It is running, and its harness has gone silent."
+            },
+            {
+              "type": "string",
+              "const": "parent",
+              "description": "A settled delegated child whose parent still works."
+            },
+            {
+              "type": "string",
+              "const": "awaiting_plan_approval",
+              "description": "Its plan waits for approval."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "Its turn failed."
+            },
+            {
+              "type": "string",
+              "const": "interrupted",
+              "description": "Its turn was cancelled or its engine stopped."
+            },
+            {
+              "type": "string",
+              "const": "budget_exceeded",
+              "description": "A limit stopped it."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "A prerequisite did not succeed."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "A turn is in progress."
+            },
+            {
+              "type": "string",
+              "const": "waiting_on_children",
+              "description": "Parked until its children settle."
+            },
+            {
+              "type": "string",
+              "const": "waiting",
+              "description": "Waiting for its prerequisites."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Its candidate waits to be merged."
+            },
+            {
+              "type": "string",
+              "const": "no_changes",
+              "description": "Its last turn changed no file."
+            },
+            {
+              "type": "string",
+              "const": "merged",
+              "description": "Integrated."
+            },
+            {
+              "type": "string",
+              "const": "discarded",
+              "description": "Set aside on purpose."
+            }
+          ],
+          "description": "Why a branch is in its lane: one per row of [`STAGES`], declared in\nprecedence order."
         },
         "Guard": {
           "oneOf": [

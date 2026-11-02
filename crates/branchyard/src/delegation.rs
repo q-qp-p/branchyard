@@ -5669,6 +5669,7 @@ Checks on the merged result: \
                 created_at: 0,
                 stalled: false,
                 awaiting: None,
+                stage: None,
                 superseded_by: None,
                 model: None,
                 provider: "local".into(),

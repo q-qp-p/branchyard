@@ -16,6 +16,7 @@ use axum::{
     extract::{Path, State},
     Extension, Json,
 };
+use branchyard::stage::Reason;
 use branchyard::{BranchStatus, ResultContract};
 use branchyard_client::effects_api::{Decision, DecisionKind, DecisionList, DecisionOutput, Waits};
 use std::collections::BTreeSet;
@@ -206,28 +207,34 @@ fn stopped(session: &Value) -> Option<(BranchStatus, Waits, String, bool)> {
         };
     }
     let status: BranchStatus = serde_json::from_value(session["status_detail"].clone()).ok()?;
-    match &status {
-        BranchStatus::Failed { reason } => {
-            let phase = with("Failed", Some(reason));
-            Some((status, Waits::Nobody, phase, true))
-        }
-        BranchStatus::Blocked { reason } => {
-            let phase = with("Blocked", Some(reason));
-            Some((status, Waits::Nobody, phase, true))
-        }
-        BranchStatus::BudgetExceeded { limit } => {
-            let phase = with("Over its budget", Some(limit));
-            Some((status, Waits::Nobody, phase, true))
-        }
-        BranchStatus::Interrupted => Some((status, Waits::Nobody, "Interrupted".to_owned(), false)),
-        BranchStatus::AwaitingPlanApproval => Some((
-            status,
+    let detail = match &status {
+        BranchStatus::Failed { reason } | BranchStatus::Blocked { reason } => Some(reason.as_str()),
+        BranchStatus::BudgetExceeded { limit } => Some(limit.as_str()),
+        _ => None,
+    };
+    let (waits, phase, moves_on) = match Reason::of_status(&status) {
+        Reason::Failed => (Waits::Nobody, with("Failed", detail), true),
+        Reason::Blocked => (Waits::Nobody, with("Blocked", detail), true),
+        Reason::BudgetExceeded => (Waits::Nobody, with("Over its budget", detail), true),
+        Reason::Interrupted => (Waits::Nobody, "Interrupted".to_owned(), false),
+        Reason::AwaitingPlanApproval => (
             Waits::Agent,
             "Its plan waits for approval".to_owned(),
             false,
-        )),
-        _ => None,
-    }
+        ),
+        Reason::Approval
+        | Reason::Question
+        | Reason::Stalled
+        | Reason::Parent
+        | Reason::Running
+        | Reason::WaitingOnChildren
+        | Reason::Waiting
+        | Reason::Ready
+        | Reason::NoChanges
+        | Reason::Merged
+        | Reason::Discarded => return None,
+    };
+    Some((status, waits, phase, moves_on))
 }
 
 #[cfg(test)]

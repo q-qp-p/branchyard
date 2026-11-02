@@ -326,6 +326,7 @@ const shots = process.env.BY_SCREENSHOTS;
   await question.locator('h2', { hasText: 'kid asks: Which parser?' }).waitFor();
   await question.locator('.deck-kind', { hasText: 'an agent is parked until you answer' }).waitFor();
   await question.locator('.deck-line', { hasText: 'to boss' }).waitFor();
+  await page.locator('#lane-needs a', { hasText: 'kid' }).filter({ hasText: 'question' }).waitFor();
   if (!(await page.locator('#main .deck-count', { hasText: /^1 of \d+/ }).count())) throw new Error(`the deck is not counted from the question: ${await page.locator('#main .deck-count').innerText()}`);
   if (await page.title() !== '(1) Branchyard') throw new Error(`the title counts ${await page.title()}, not (1)`);
   await noOverflow('the question card');

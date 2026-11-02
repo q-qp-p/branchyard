@@ -69,11 +69,11 @@
     }
   },
   "tests": {
-    "total": 3244,
+    "total": 3262,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
-        "tests": 989,
+        "tests": 1001,
         "ignored": 17
       },
       "branchyard-bridge": {
@@ -81,7 +81,7 @@
         "ignored": 0
       },
       "branchyard-cli": {
-        "tests": 756,
+        "tests": 760,
         "ignored": 3
       },
       "branchyard-client": {
@@ -133,7 +133,7 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 476,
+        "tests": 478,
         "ignored": 1
       },
       "branchyard-setup": {
@@ -668,6 +668,88 @@
       }
     ]
   },
+  "stages": [
+    {
+      "reason": "approval",
+      "lane": "needs_you",
+      "condition": "Its running turn is parked on an approval ask. It moves only when you allow or deny it."
+    },
+    {
+      "reason": "question",
+      "lane": "needs_you",
+      "condition": "It is running and has sent a question or escalation that nobody has answered."
+    },
+    {
+      "reason": "stalled",
+      "lane": "needs_you",
+      "condition": "It is running, and its harness has been silent for its stall window."
+    },
+    {
+      "reason": "parent",
+      "lane": "running",
+      "condition": "It is a delegated child that settled without being merged or discarded, and its parent still runs or waits. Its parent decides what comes next."
+    },
+    {
+      "reason": "awaiting_plan_approval",
+      "lane": "needs_you",
+      "condition": "Its plan waits for you to approve, edit or reject it."
+    },
+    {
+      "reason": "failed",
+      "lane": "needs_you",
+      "condition": "Its turn failed."
+    },
+    {
+      "reason": "interrupted",
+      "lane": "needs_you",
+      "condition": "Its turn was cancelled, or the engine running it stopped."
+    },
+    {
+      "reason": "budget_exceeded",
+      "lane": "needs_you",
+      "condition": "A limit you set stopped it."
+    },
+    {
+      "reason": "blocked",
+      "lane": "needs_you",
+      "condition": "A prerequisite did not succeed, so it will not start until its graph changes."
+    },
+    {
+      "reason": "running",
+      "lane": "running",
+      "condition": "A turn is in progress."
+    },
+    {
+      "reason": "waiting_on_children",
+      "lane": "running",
+      "condition": "Its turn ended while its children still ran. It starts again on its own when they settle."
+    },
+    {
+      "reason": "waiting",
+      "lane": "running",
+      "condition": "It waits for its prerequisites to settle."
+    },
+    {
+      "reason": "ready",
+      "lane": "ready",
+      "condition": "Its candidate waits to be merged."
+    },
+    {
+      "reason": "no_changes",
+      "lane": "done",
+      "condition": "Its last turn changed no file."
+    },
+    {
+      "reason": "merged",
+      "lane": "done",
+      "condition": "Its candidate was integrated."
+    },
+    {
+      "reason": "discarded",
+      "lane": "done",
+      "condition": "It was set aside on purpose."
+    }
+  ],
   "document_skills": [
     {
       "id": "artifact-tools",

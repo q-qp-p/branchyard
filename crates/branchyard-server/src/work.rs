@@ -740,14 +740,20 @@ fn admitted_principal_allowed(
 }
 
 /// The branches an operation ran, once every branch they delegated to on
-/// this server has finished, as `by run` waits for them.
+/// this server has finished, as `by run` waits for them. Each is read back
+/// as `GET …/branches/{b}` reads it, with its `awaiting` and `stage`, which
+/// a run's own handle does not carry.
 pub(crate) fn finished(branches: Vec<Branch>) -> Result<OperationResult, branchyard::Error> {
     let mut descendants = Vec::new();
     for branch in &branches {
         descendants.extend(branch.wait_subtree()?);
     }
+    let branches = branches
+        .iter()
+        .map(|b| Ok(b.yard().branch(&b.info().name)?.info().clone()))
+        .collect::<Result<Vec<_>, branchyard::Error>>()?;
     Ok(OperationResult {
-        branches: branches.iter().map(|b| b.info().clone()).collect(),
+        branches,
         descendants,
         ..OperationResult::default()
     })

@@ -34,6 +34,7 @@ use std::process::{Command as Process, Stdio};
 use std::time::{Duration, Instant};
 
 use branchyard::glance;
+use branchyard::stage::Lane;
 use branchyard_controls::catalog;
 use branchyard_setup::config::{self, WorkspaceConfig};
 use branchyard_setup::install::{self, Manifest};
@@ -1923,6 +1924,7 @@ pub fn card() -> Outcome {
                 (counts.waiting, "waiting"),
                 (counts.asking, "asking"),
                 (counts.blocked, "blocked"),
+                (counts.stalled, "stalled"),
                 (counts.ready, "ready"),
                 (counts.failed, "failed"),
             ]
@@ -1930,38 +1932,31 @@ pub fn card() -> Outcome {
             .filter(|(n, _)| *n > 0)
             .map(|(n, word)| format!("{n} {word}"))
             .collect();
+            // The first branch that needs a person, by the stage table's
+            // order, else the first ready one.
+            let first_in = |lane: Lane| {
+                look.branches
+                    .iter()
+                    .filter_map(|b| b.stage.filter(|s| s.lane == lane).map(|s| (s.reason, b)))
+                    .min_by_key(|(reason, _)| *reason as usize)
+                    .map(|(_, b)| b.name.clone())
+            };
+            let wants = first_in(Lane::NeedsYou).or_else(|| first_in(Lane::Ready));
             let total = look.branches.len();
-            let shown = match (total, parts.is_empty()) {
-                (0, _) => "none yet".to_owned(),
-                (n, true) => format!("{} (none needs you)", plural(n, "branch")),
-                (n, false) => format!("{} · {}", plural(n, "branch"), parts.join(" · ")),
+            let shown = match total {
+                0 => "none yet".to_owned(),
+                n => {
+                    let mut shown = std::iter::once(plural(n, "branch"))
+                        .chain(parts)
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if wants.is_none() {
+                        shown.push_str(" (none needs you)");
+                    }
+                    shown
+                }
             };
             row(&mut out, "branches", &shown);
-            // The first branch that wants a person, most urgent first.
-            let wants = look
-                .asking
-                .first()
-                .map(|m| m.from.clone())
-                .or_else(|| {
-                    first_with(&look, |s| {
-                        matches!(
-                            s,
-                            branchyard::BranchStatus::Blocked { .. }
-                                | branchyard::BranchStatus::AwaitingPlanApproval
-                        )
-                    })
-                })
-                .or_else(|| first_with(&look, |s| matches!(s, branchyard::BranchStatus::Ready)))
-                .or_else(|| {
-                    first_with(&look, |s| {
-                        matches!(
-                            s,
-                            branchyard::BranchStatus::Failed { .. }
-                                | branchyard::BranchStatus::BudgetExceeded { .. }
-                                | branchyard::BranchStatus::Interrupted
-                        )
-                    })
-                });
             match (total, wants) {
                 (0, _) if !configured => "by setup".to_owned(),
                 (0, _) => format!("by run \"{EXAMPLE_TASK}\""),
@@ -2024,17 +2019,6 @@ fn hooks_summary(cwd: &Path) -> Option<String> {
         ));
     }
     (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-/// The first branch whose status satisfies `wanted`.
-fn first_with(
-    look: &glance::Glance,
-    wanted: impl Fn(&branchyard::BranchStatus) -> bool,
-) -> Option<String> {
-    look.branches
-        .iter()
-        .find(|b| wanted(&b.status))
-        .map(|b| b.name.clone())
 }
 
 #[cfg(test)]

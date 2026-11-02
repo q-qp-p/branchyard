@@ -4,20 +4,25 @@
 //! as the caller, the ledger and an undo plan are read and an undo is
 //! performed through the API, and `/metrics` counts effects and waiting
 //! approvals. A shell script stands in for Anvil's packaging. The ground
-//! plan reads the open branches' diffs.
+//! plan reads the open branches' diffs, and the decisions follow each
+//! branch's stage.
 
 #![allow(clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
 #[path = "../../branchyard/tests/mock_gateway/mod.rs"]
 mod mock_gateway;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use branchyard::connectors::GrantEntry;
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings, EffectState, Layer};
-use branchyard::{BranchStatus, Provisioning};
-use branchyard_client::api::{MergeRequest, OperationState, TaskRequest};
+use branchyard::stage::Lane;
+use branchyard::{BranchStatus, Envelope, Provisioning};
+use branchyard_client::api::{
+    MergeRequest, OperationState, PolicySpec, SendRequest, SpawnRequest, TaskRequest,
+};
 use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
 use branchyard_client::new_key;
 use branchyard_server::config::{ConnectorsConfig, MetricsConfig};
@@ -295,4 +300,104 @@ fn the_ground_names_every_open_branch_holding_a_file_and_drops_a_merged_one() {
             ("shared.txt".to_owned(), vec!["app-2".to_owned()]),
         ]
     );
+}
+
+/// The decisions are the branches whose stage puts them in Needs you or
+/// Ready, one each: a plan waiting for approval is one; a settled child
+/// whose parent runs again is not, nor is the question it sent after its
+/// turn ended.
+#[test]
+fn the_decisions_are_the_branches_that_need_you_or_are_ready_once_each() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.allow_delegation = true;
+    config.by_path = Some("/bin/true".into());
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+
+    let planned = run(
+        &client,
+        &TaskRequest {
+            plan: true,
+            ..task("Mark it PERMISSION WRITE marker.txt=x", "planned")
+        },
+    );
+    assert_eq!(planned.state, OperationState::Succeeded, "{planned:?}");
+    let done = run(&client, &task("WRITE done.txt=1", "done"));
+    assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    run(&client, &task("EXIT", "broken"));
+    let root = run(
+        &client,
+        &TaskRequest {
+            delegation: Some(Envelope::depth(2)),
+            ..task("WRITE root.txt=1", "root")
+        },
+    );
+    assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
+    let kid = repo
+        .spawn(
+            "root",
+            &SpawnRequest {
+                prompt: "WRITE kid.txt=k".into(),
+                name: Some("kid".into()),
+                policy: PolicySpec::allow_all(),
+                ..SpawnRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let kid = await_operation(&client, &kid.id);
+    assert_eq!(kid.state, OperationState::Succeeded, "{kid:?}");
+    repo.ask("kid", "should I rename it?", None).unwrap();
+    let again = repo
+        .send(
+            "root",
+            &SendRequest {
+                prompt: "HANG".into(),
+                policy: PolicySpec::allow_all(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    wait::until("root to run again", || {
+        repo.branch("root").unwrap().status == BranchStatus::Running
+    });
+
+    let branches = repo.branches().unwrap();
+    let wanted: BTreeSet<String> = branches
+        .iter()
+        .filter(|b| matches!(b.stage.map(|s| s.lane), Some(Lane::NeedsYou | Lane::Ready)))
+        .map(|b| b.name.clone())
+        .collect();
+    assert_eq!(
+        wanted,
+        ["broken", "done", "planned"].map(String::from).into(),
+        "{branches:#?}"
+    );
+    let decisions = repo.decisions().unwrap();
+    let listed: Vec<&str> = decisions.iter().map(|d| d.branch.as_str()).collect();
+    let once: BTreeSet<String> = listed.iter().map(|b| (*b).to_owned()).collect();
+    assert_eq!(
+        once.len(),
+        listed.len(),
+        "a branch decided twice: {listed:?}"
+    );
+    assert_eq!(once, wanted, "{decisions:#?}");
+    let kinds: Vec<(&str, DecisionKind, Waits)> = decisions
+        .iter()
+        .map(|d| (d.branch.as_str(), d.kind, d.waits))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("planned", DecisionKind::Plan, Waits::Agent),
+            ("done", DecisionKind::Merge, Waits::Delivery),
+            ("broken", DecisionKind::Stop, Waits::Nobody),
+        ]
+    );
+
+    repo.cancel("root").unwrap();
+    await_operation(&client, &again.id);
 }

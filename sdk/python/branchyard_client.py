@@ -114,6 +114,7 @@ __all__ = [
     "Rewound",
     "RunningError",
     "ServerError",
+    "Stage",
     "StaleRevisionError",
     "Status",
     "StatusReport",
@@ -678,10 +679,21 @@ class Status(Record):
         return str(self.get("state", ""))
 
 
+@dataclasses.dataclass(frozen=True)
+class Stage:
+    """What a branch needs from a person now (`BranchInfo.stage`): its
+    `lane` (`needs_you`, `running`, `ready` or `done`) and the `reason`, the
+    first row of the table in `docs/concepts.md` ("What a branch needs from
+    you") that matches it, such as `approval`, `parent` or `ready`."""
+
+    lane: str
+    reason: str
+
+
 class BranchInfo(Record):
     """`BranchInfo`: `name`, `git_branch`, `harness`, `profile`, `parent`,
     `children`, `depth`, `base`, `candidate`, `status`, `turns`,
-    `cost_usd`, `created_at`, `stalled`, ..."""
+    `cost_usd`, `created_at`, `stalled`, `stage`, ..."""
 
     name: str
     git_branch: str
@@ -706,6 +718,14 @@ class BranchInfo(Record):
     def state(self) -> str:
         """The name of the status's state, such as `ready`; the empty string when there is none."""
         return str(self.status.get("state", ""))
+
+    @property
+    def stage(self) -> Optional[Stage]:
+        """Its `Stage`, or None when the answer carried none (an older server)."""
+        value = self.get("stage")
+        if not isinstance(value, dict):
+            return None
+        return Stage(lane=str(value.get("lane", "")), reason=str(value.get("reason", "")))
 
     @property
     def settled(self) -> bool:
@@ -884,8 +904,8 @@ class Approval(Record):
 
 class Decision(Record):
     """One thing that waits for a person (`Decision`): `kind` (`approval`,
-    `question`, `merge`, `stop`, `stall`, and for a project's workspaces
-    `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
+    `question`, `plan`, `merge`, `stop`, `stall`, and for a project's
+    workspaces `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
     `nobody`), `since_ms`, `status`, `candidate`, and the `approval` or
     `question` it is about. An `output` or `session` decision also names its
     `workspace`, `workspace_title`, `session` and `session_name`; a `session`
@@ -3018,8 +3038,8 @@ class Repo:
 
     def decisions(self) -> list[Decision]:
         """What waits for a person, in the order to take it: a branch parked
-        on an approval or a question first, oldest wait first, then the
-        ready branches, then the stopped and stalled ones
+        on an approval, a question or a plan first, oldest wait first, then
+        the ready branches, then the stopped, blocked and stalled ones
         (`docs/server.md`, `GET …/decisions`). Nothing in it expires."""
         return [Decision(d) for d in self.client.get(f"{self._base}/decisions").get("decisions", [])]
 

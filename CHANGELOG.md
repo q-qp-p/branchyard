@@ -4,6 +4,12 @@
 
 The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
 
+Every surface now places a branch with one table: its `stage` in branch JSON (`{"lane", "reason"}`, [what a branch needs from you](docs/concepts.md#what-a-branch-needs-from-you)). The console's lanes, `GET …/decisions`, the hook lines, the status line and bare `by` read it, so they agree. A branch waiting on its children now sits in Running, not Done. A delegated child that settled while its parent still runs or waits sits in Running too, and the console says "its parent decides". Bare `by` points at the first branch that needs you, a failed one before a ready one. A workspace session whose plan waits for approval no longer reads as failed.
+
+`GET …/decisions` lists a branch whose plan waits for approval as a new `plan` decision (`waits: agent`) and a blocked branch as a `stop`, lists each branch at most once, and no longer lists a question from a branch whose turn ended or a settled child whose parent still works. The console's deck shows a plan card that opens the branch. An older Rust client's `decisions()` cannot parse the `plan` kind; Python and the console read kinds as strings.
+
+The hook lines name a branch whose turn is parked on an approval, with `by approvals allow ID` and `by approvals deny ID`, and a running branch whose harness went silent past its stall window, with `by log NAME -f`. The status line and bare `by` count the first as asking and show a `stalled` count for the second.
+
 ## 0.4.0 - 2026-11-02
 
 The Rust client resumes a response read interrupted by an operating-system

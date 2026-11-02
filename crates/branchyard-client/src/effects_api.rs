@@ -170,11 +170,16 @@ pub struct DecisionOutput {
 pub enum DecisionKind {
     /// A running turn parked on an approval: allow or deny it.
     Approval,
-    /// A question or an escalation a branch sent and nobody answered.
+    /// A question or an escalation a running branch sent and nobody
+    /// answered.
     Question,
+    /// A branch whose plan waits for approval: approve, edit or reject it
+    /// (`by plan …`, `…/plan/approve`).
+    Plan,
     /// A ready branch: merge it, follow up, or discard it.
     Merge,
-    /// A failed, interrupted or over-budget branch: resume it or let it be.
+    /// A failed, interrupted, over-budget or blocked branch: resume it or
+    /// let it be.
     Stop,
     /// A running turn with no harness activity for its stall window.
     Stall,

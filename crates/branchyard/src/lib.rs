@@ -164,6 +164,7 @@ pub mod skills;
 mod snapshots;
 mod spotlight;
 mod sqlite;
+pub mod stage;
 mod state;
 mod steer;
 mod storage;
@@ -686,42 +687,51 @@ impl Yard {
     }
 
     /// Every branch Branchyard knows, oldest first, each with what its
-    /// running turn waits on a person for ([`BranchInfo::awaiting`]).
+    /// running turn waits on a person for ([`BranchInfo::awaiting`]) and
+    /// what it needs from a person ([`BranchInfo::stage`]).
     pub fn branches(&self) -> Result<Vec<BranchInfo>, Error> {
-        let parked = self.parked()?;
-        Ok(self
+        let parked = parked(self.store().effects().asks(true)?);
+        let questions = self.store().backend().unanswered()?;
+        let infos = self
             .store()
             .list()?
             .into_iter()
             .map(|record| with_awaiting(record.info, &parked))
-            .collect())
+            .collect();
+        Ok(stage::staged(infos, &questions))
     }
 
     /// Look up one branch by name.
     pub fn branch(&self, name: &str) -> Result<Branch, Error> {
         let record = self.store().read(name)?;
-        let parked = self.parked()?;
+        let info = with_awaiting(record.info, &parked(self.store().effects().asks(true)?));
+        let questions = self.store().backend().unanswered()?;
+        let parent = match info.parent.as_deref() {
+            Some(parent) if info.depth > 0 => {
+                self.store().backend().read(parent)?.map(|p| p.info.status)
+            }
+            _ => None,
+        };
+        let asking = stage::asking(&questions, |n| (n == info.name).then_some(&info.status));
+        let info = stage::with_stage(info, asking.get(name), parent.as_ref());
         Ok(Branch {
             yard: self.clone(),
-            info: with_awaiting(record.info, &parked),
+            info,
         })
     }
 
-    /// The oldest pending ask of each branch that has one, by branch: what
-    /// a running turn is parked on.
-    fn parked(&self) -> Result<HashMap<String, Awaiting>, Error> {
-        let mut parked = HashMap::new();
-        for ask in self.store().effects().asks(true)? {
-            parked
-                .entry(ask.branch.clone())
-                .or_insert_with(|| Awaiting {
-                    kind: AwaitingKind::Approval,
-                    id: ask.id.clone(),
-                    about: ask.about.describe(),
-                    since_ms: ask.created_ms,
-                });
-        }
-        Ok(parked)
+    /// Per branch, the unanswered question or escalation its stage counts
+    /// as asking ([`stage::Reason::Question`]): its oldest one, while it
+    /// runs. A branch that asks nothing now has no entry.
+    pub fn asking(&self) -> Result<HashMap<String, Message>, Error> {
+        let questions = self.store().backend().unanswered()?;
+        let statuses: HashMap<String, BranchStatus> = self
+            .store()
+            .list()?
+            .into_iter()
+            .map(|record| (record.info.name, record.info.status))
+            .collect();
+        Ok(stage::asking(&questions, |name| statuses.get(name)))
     }
 
     /// Merge `branch`'s candidate into the local branch `target`, running the
@@ -2241,6 +2251,12 @@ pub struct BranchInfo {
     /// turn is never stalled; it moves only when someone answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting: Option<Awaiting>,
+    /// What it needs from a person now, and why: the first row of
+    /// [`stage::STAGES`] that matches it (`docs/concepts.md`, "What a
+    /// branch needs from you"). Derived when the record is listed or
+    /// looked up, never stored, like [`BranchInfo::awaiting`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<stage::Stage>,
     /// The branch [`Branch::reincarnate`] started from this one's latest
     /// candidate, with a fresh session and a handoff brief.
     #[serde(default)]
@@ -2272,6 +2288,23 @@ pub struct BranchInfo {
 /// The `provider` of a record that predates the field.
 fn local_provider() -> String {
     "local".to_owned()
+}
+
+/// The oldest of the pending `asks` of each branch that has one, by
+/// branch: what a running turn is parked on.
+fn parked(asks: Vec<effects::ApprovalAsk>) -> HashMap<String, Awaiting> {
+    let mut parked = HashMap::new();
+    for ask in asks {
+        parked
+            .entry(ask.branch.clone())
+            .or_insert_with(|| Awaiting {
+                kind: AwaitingKind::Approval,
+                id: ask.id.clone(),
+                about: ask.about.describe(),
+                since_ms: ask.created_ms,
+            });
+    }
+    parked
 }
 
 /// `info` with what its turn is parked on, if it is running and has an

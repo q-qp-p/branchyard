@@ -366,6 +366,8 @@
       case 'failed': return { key: 'failed', text: `failed: ${s.reason}` };
       case 'merged': return { key: 'merged', text: `merged into ${s.target}` };
       case 'awaiting_plan_approval': return { key: 'awaiting_plan_approval', text: 'awaiting plan approval' };
+      case 'waiting_on_children': return { key: 'waiting_on_children', text: 'waiting on children' };
+      case 'discarded': return { key: 'discarded', text: `discarded: ${s.reason}` };
       default: return { key: 'unknown', text: s.state || 'unknown' };
     }
   }
@@ -398,48 +400,51 @@
     },
   };
 
-  // Branches grouped by what they ask of you, in display order: the first
-  // lane whose test passes takes the branch. `attention` maps a branch to
-  // the approval or question it waits on a person for.
+  // Branches grouped by what they ask of you, in display order. The server
+  // puts each branch in its lane (`stage`, docs/concepts.md "What a branch
+  // needs from you"); `meta` says why in a few words.
   const LANES = [
     {
       key: 'needs', label: 'Needs you', collapsed: false,
-      test: (b, attention) => attention.has(b.name) || b.stalled ||
-        ['blocked', 'failed', 'interrupted', 'budget_exceeded', 'awaiting_plan_approval'].includes(b.status.state),
-      meta: (b, attention) => (b.awaiting ? 'waiting for you' : attention.get(b.name) || (b.stalled ? 'stalled' : statusOf(b).text.split(/[:(]/)[0].trim())),
+      meta: (b) => statusOf(b).text.split(/[:(]/)[0].trim(),
     },
     {
       key: 'running', label: 'Running', collapsed: false,
-      test: (b) => ['running', 'waiting'].includes(b.status.state),
-      meta: (b) => b.status.state,
+      meta: (b) => statusOf(b).text,
     },
     {
       key: 'ready', label: 'Ready', collapsed: false,
-      test: (b) => b.status.state === 'ready',
       meta: (b) => (b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : 'ready'),
     },
     {
       key: 'done', label: 'Done', collapsed: true,
-      test: () => true,
       meta: (b) => (b.status.state === 'merged' ? 'merged' : statusOf(b).text),
     },
   ];
-
-  function attention() {
-    const waiting = new Map();
-    for (const m of state.inbox) waiting.set(m.from, m.kind);
-    for (const a of state.approvals) waiting.set(a.branch, 'approval');
-    for (const b of state.branches.values()) if (b.awaiting) waiting.set(b.name, 'approval');
-    return waiting;
+  const STAGE_LANE = { needs_you: 'needs', running: 'running', ready: 'ready', done: 'done' };
+  const reasonOf = (b) => (b.stage ? b.stage.reason : null);
+  const laneOf = (b) => LANES.find((lane) => lane.key === STAGE_LANE[b.stage && b.stage.lane]) || LANES[3];
+  // Whether a branch keeps an agent parked on you: an approval or a question.
+  const waitsOnYou = (b) => ['approval', 'question'].includes(reasonOf(b));
+  // What a lane row says of a branch: why it is there, for the reasons the
+  // lane alone does not tell.
+  function metaOf(b, lane) {
+    switch (reasonOf(b)) {
+      case 'approval': return 'waiting for you';
+      case 'question': {
+        const asked = state.inbox.find((m) => m.from === b.name);
+        return asked ? asked.kind : 'question';
+      }
+      case 'stalled': return 'stalled';
+      case 'parent': return 'its parent decides';
+      default: return lane.meta(b);
+    }
   }
-
-  const laneOf = (b, waiting) => LANES.find((lane) => lane.test(b, waiting));
   const activeAt = (b) => state.lastActive.get(b.name) || b.created_at * 1000;
 
   function lanes(branches) {
-    const waiting = attention();
     const sorted = branches.slice().sort((x, y) => activeAt(y) - activeAt(x));
-    return LANES.map((lane) => ({ lane, branches: sorted.filter((b) => laneOf(b, waiting) === lane) }));
+    return LANES.map((lane) => ({ lane, branches: sorted.filter((b) => laneOf(b) === lane) }));
   }
 
   // Workspaces grouped by state in the same order and colours: one that
@@ -960,6 +965,8 @@
       }
     }
     refreshBranch(entry.branch);
+    // A child's stage reads its parent's status, which no event of its own announces.
+    if (a.status) for (const child of (state.branches.get(entry.branch) || {}).children || []) refreshBranch(child);
     if (view && view.name === entry.branch) refreshTimeline(view);
   }
 
@@ -1098,7 +1105,6 @@
     const all = Array.from(state.branches.values());
     const matches = (b) => !needle || b.name.toLowerCase().includes(needle) || (b.prompt || '').toLowerCase().includes(needle);
     const shown = all.filter(matches);
-    const waiting = attention();
     $('filter').hidden = !all.length;
     $('branch-count').textContent = needle
       ? `Showing ${shown.length} of ${all.length} branches`
@@ -1108,7 +1114,7 @@
       class: 'branch-row', href: branchHref(b.name), 'data-branch': b.name, 'data-key': `b:${b.name}`, title: b.name,
       'aria-current': b.name === current ? 'page' : null,
     }, dot(lane.key), h('span', { class: 'row-name', text: b.name }),
-    h('span', { class: 'row-meta' }, lane.meta(b, waiting), lane.key === 'needs' || lane.key === 'running' ? [' · ', ago(activeAt(b), '')] : null)));
+    h('span', { class: 'row-meta' }, metaOf(b, lane), lane.key === 'needs' || lane.key === 'running' ? [' · ', ago(activeAt(b), '')] : null)));
     const status = [];
     if (state.branchError) {
       status.push(h('section', { class: 'list-state error-state', role: 'alert' },
@@ -1178,7 +1184,7 @@
   function homeSignature() {
     const groups = lanes(Array.from(state.branches.values()));
     return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 30000),
-      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering]);
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stage, b.awaiting, b.cost_usd, activeAt(b)])), state.inbox.map((m) => m.id), state.steering]);
   }
 
   // The board's clock: the smallest of these windows that holds the
@@ -1253,7 +1259,7 @@
   function homeSignature() {
     const groups = lanes(Array.from(state.branches.values()));
     return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 15000),
-      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering,
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stage, b.awaiting, b.cost_usd, activeAt(b)])), state.inbox.map((m) => m.id), state.steering,
       Array.from(state.tracks.entries()).map(([k, t]) => [k, t.loading, t.track && t.track.turns.length]), state.answered.length]);
   }
 
@@ -1287,12 +1293,13 @@
     else if (open) rail.append(h('i', { class: `head head-${lane.key}` }));
     let meta;
     if (b.awaiting) meta = [h('b', { text: 'waiting for you' }), ` · ${since(b.awaiting.since_ms)}`];
+    else if (reasonOf(b) === 'parent') meta = `${s.text} · its parent decides`;
     else if (lane.key === 'running') meta = b.status.state === 'running' ? `${b.stalled ? 'silent' : 'working'} · turn ${b.turns + 1} · ${plural(calls, 'call')}` : s.text;
     else if (lane.key === 'ready') meta = ['ready · ', b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : null, ` · ${plural(b.turns, 'turn')}`];
     else if (lane.key === 'done') meta = [s.text, track.merged ? ` · ${clock(track.merged).slice(0, 5)}` : ''];
     else meta = [s.text, calls ? ` after ${plural(calls, 'call')}` : ''];
     let action = null;
-    if (b.awaiting || attention().has(b.name)) action = h('a', { class: 'button small needs', href: '#/attention', text: 'Answer' });
+    if (waitsOnYou(b)) action = h('a', { class: 'button small needs', href: '#/attention', text: 'Answer' });
     else if (lane.key === 'ready' && applies(ACTIONS.merge, b)) action = h('button', { type: 'button', class: 'small primary', text: 'Merge', onclick: () => runAction(ACTIONS.merge, b.name) });
     else if (lane.key === 'running' && applies(COMPOSER.steer, b)) action = h('button', { type: 'button', class: 'small', text: 'Steer', 'aria-pressed': String(state.steering === b.name), onclick: () => { state.steering = state.steering === b.name ? null : b.name; redraw(homeSignature(), renderHome); } });
     else if (lane.key === 'needs' && applies(ACTIONS.resume, b)) action = h('button', { type: 'button', class: 'small', text: 'Resume', onclick: () => runAction(ACTIONS.resume, b.name) });
@@ -1380,13 +1387,12 @@
     const needs = groups[0].branches;
     const ready = groups[2].branches;
     const done = groups[3].branches;
-    const waiting = attention();
     const now = Date.now();
     const midnight = new Date(now).setHours(0, 0, 0, 0);
     const reporting = all.filter((b) => b.cost_usd != null);
     const cost = reporting.reduce((sum, b) => sum + b.cost_usd, 0);
     const inflight = groups[1].branches;
-    const parked = needs.filter((b) => b.awaiting || waiting.has(b.name)).length;
+    const parked = needs.filter(waitsOnYou).length;
     const mergedToday = done.filter((b) => b.status.state === 'merged' && activeAt(b) >= midnight);
     const added = ready.reduce((n, b) => n + (b.candidate ? b.candidate.insertions : 0), 0);
     const removed = ready.reduce((n, b) => n + (b.candidate ? b.candidate.deletions : 0), 0);
@@ -2435,7 +2441,7 @@
 
   function strip(info) {
     const s = statusOf(info);
-    const lane = laneOf(info, attention()).key;
+    const lane = laneOf(info).key;
     const primary = PRIMARY[info.status.state];
     const busy = state.pending.get(info.name);
     const menu = MENU.filter((a) => applies(a, info));
@@ -2467,7 +2473,7 @@
 
   function facts(info) {
     const c = info.candidate;
-    const lane = laneOf(info, attention()).key;
+    const lane = laneOf(info).key;
     const link = (name) => h('a', { href: branchHref(name), text: name });
     const rows = [
       ['Status', h('span', { class: 'fact-state' }, dot(lane), cap(statusOf(info).text))],
@@ -2490,7 +2496,7 @@
     const info = v && state.branches.get(v.name);
     if (!info || !$('strip')) return;
     const signature = JSON.stringify([info.status, info.stalled, info.turns, info.cost_usd, info.candidate, state.pending.get(info.name) || '',
-      state.merged.has(info.name), laneOf(info, attention()).key]);
+      state.merged.has(info.name), laneOf(info).key]);
     if (signature !== v.signature) {
       const first = v.signature == null;
       v.signature = signature;
@@ -2682,13 +2688,14 @@
     completed: { label: 'Completed', lane: 'done', next: 'Review its outputs, or continue it from the message box.' },
     failed: { label: 'Failed', lane: 'needs', next: RECOVER },
     not_started: { label: 'Did not start', lane: 'needs', next: RECOVER },
+    plan: { label: 'Plan waits for approval', lane: 'needs', next: 'Read it with by plan show, then approve it with by plan approve or reject it with by plan reject.' },
   };
   // A native state's phase, and an admission operation's before the
   // session's branch exists.
   const NATIVE_PHASE = {
     running: 'running', waiting: 'waiting', waiting_on_children: 'waiting', interrupted: 'interrupted',
     ready: 'completed', no_changes: 'completed', merged: 'completed',
-    failed: 'failed', blocked: 'failed', budget_exceeded: 'failed', awaiting_plan_approval: 'failed',
+    failed: 'failed', blocked: 'failed', budget_exceeded: 'failed', awaiting_plan_approval: 'plan',
   };
   const ADMISSION_PHASE = { queued: 'queued', running: 'starting', succeeded: 'starting', failed: 'not_started', interrupted: 'not_started' };
   const ACTIVE_PHASES = ['queued', 'starting', 'running', 'waiting'];
@@ -2962,7 +2969,7 @@
 
   // The one next useful step for this workspace and person, first match
   // first, with at most one button.
-  const needsAttention = (v) => sessionsOf(v).find((s) => ['not_started', 'failed', 'interrupted'].includes(sessionPhase(s).key)) || null;
+  const needsAttention = (v) => sessionsOf(v).find((s) => ['not_started', 'failed', 'interrupted', 'plan'].includes(sessionPhase(s).key)) || null;
   const awaitingReview = (v) => (v.artifacts ? outputGroups(v).flatMap((g) => g.rows).filter((r) => r.standing === 'current').length : 0);
   const NEXT_STEPS = [
     { when: (v) => !!notReady(v.workspace), text: (v) => notReady(v.workspace), action: () => null },
@@ -4268,9 +4275,9 @@
   }
 
   // What waits for a person, in the server's order: a branch parked on an
-  // approval or a question first, oldest wait first, then the ready
+  // approval, a question or a plan first, oldest wait first, then the ready
   // branches, then the stopped and stalled ones. The questions among them
-  // are also the inbox the lanes read.
+  // also give a lane row its words.
   async function loadDecisions() {
     let decisions;
     if (!state.repo) return;
@@ -4414,8 +4421,8 @@
   const HOLD_MS = 700;
   const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : d.output ? d.output.id : ''}`;
   const WAITS = { agent: 'an agent is parked until you answer', delivery: 'delivery waits on you', nobody: 'nothing waits on this' };
-  const KIND_LABEL = { approval: 'Approval', question: 'Question', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent', output: 'Delivered', session: 'Stopped' };
-  const KIND_VERB = { approval: 'allow or deny', question: 'answer', merge: 'merge', stop: 'resume', stall: 'look', output: 'accept', session: 'open' };
+  const KIND_LABEL = { approval: 'Approval', question: 'Question', plan: 'Plan', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent', output: 'Delivered', session: 'Stopped' };
+  const KIND_VERB = { approval: 'allow or deny', question: 'answer', plan: 'open', merge: 'merge', stop: 'resume', stall: 'look', output: 'accept', session: 'open' };
   // Who a card is about: a branch, or a workspace's session.
   const subjectOf = (d) => (d.session_name || d.branch);
   // What the bay and the line under a card say of a decision.
@@ -4423,6 +4430,7 @@
     switch (d.kind) {
       case 'approval': return `${d.branch} wants to ${aboutText(d.approval.about)}`;
       case 'question': return `${d.branch} asks: ${d.question.text}`;
+      case 'plan': return `${d.branch}: its plan waits for your approval`;
       case 'merge': return `${d.branch} is ready to merge`;
       case 'stall': return `${d.branch} is silent`;
       case 'output': return `${d.session_name} delivered ${d.output.name}`;
@@ -4674,6 +4682,15 @@
       const m = d.question;
       title = [m.from, m.kind === 'escalation' ? ' escalates: ' : ' asks: ', m.text];
       body = [h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · to ${m.to}` })), answerForm(m)];
+    } else if (d.kind === 'plan') {
+      // The console cannot approve a plan yet: the card says how, and opens the branch.
+      title = [d.branch, ': its plan waits for your approval'];
+      body = [
+        b.prompt ? h('p', { class: 'deck-asked' }, h('span', { class: 'muted', text: 'Asked: ' }), b.prompt) : null,
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: 'Read it, then approve, edit or reject it, in a terminal: ' }), h('code', { text: `by plan show ${d.branch}` })),
+      ];
+      primary = open;
+      actions = [h('button', { type: 'button', class: 'primary', text: 'Open', onclick: open }, h('kbd', { text: '↵' }))];
     } else if (d.kind === 'merge') {
       const c = d.candidate;
       const evidence = evidenceFor(d);

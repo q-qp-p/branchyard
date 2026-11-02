@@ -30,6 +30,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use branchyard::glance::{self, Glance};
+use branchyard::stage::Reason;
 use branchyard::{BranchInfo, BranchStatus, Message, MessageKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -761,10 +762,11 @@ fn inbox_lines(glance: &Glance, branch: &str, cursor: Option<&Cursor>) -> (Vec<S
 
 /// Branches whose state a person acts on and that changed since this
 /// session's last hook call, each with the command that deals with it. On a
-/// session's first call, only what needs an answer now (asking, blocked, a
-/// plan to approve); then up to [`NAMED_AT_START`] ready and as many failed
-/// branches by name (older endings are not news one by one, but each still
-/// waits on a decision), and a count of what is running.
+/// session's first call, only what needs an answer now (an approval, a
+/// question, blocked, a plan to approve); then up to [`NAMED_AT_START`]
+/// ready and as many failed branches by name (older endings are not news
+/// one by one, but each still waits on a decision), and a count of what is
+/// running.
 fn change_lines(glance: &Glance, cursor: Option<&Cursor>) -> (Vec<String>, Cursor) {
     let mut next = Cursor::default();
     let mut changed = Vec::new();
@@ -791,7 +793,9 @@ fn change_lines(glance: &Glance, cursor: Option<&Cursor>) -> (Vec<String>, Curso
     if cursor.is_none() {
         changed.extend(newest(ready, "ready"));
         changed.extend(newest(failed, "failed"));
-        let running = glance.counts().running;
+        let counts = glance.counts();
+        // A stalled turn is still running; its own line comes when it changes.
+        let running = counts.running + counts.stalled;
         if running > 0 {
             changed.push(format!("- {running} running: by ls"));
         }
@@ -867,25 +871,51 @@ fn notable(info: &BranchInfo, asking: Option<&Message>) -> Option<Label> {
             line,
         })
     };
-    if let Some(message) = asking {
-        let verb = match message.kind {
-            MessageKind::Escalation => "escalates",
-            _ => "asks",
-        };
-        let (id, to) = (message.id, &message.to);
-        return label(
-            format!(
-                "asking (#{} {}): {}",
-                message.id, message.kind, message.text
-            ),
-            true,
-            Group::Other,
-            fitted(
-                &format!("- {name} (under {to}): {verb} #{id}: \""),
-                &message.text,
-                &format!("\". Answer: by answer --as {to} {id} \"TEXT\""),
-            ),
-        );
+    match (info.stage.map(|s| s.reason), &info.awaiting, asking) {
+        (Some(Reason::Approval), Some(awaiting), _) => {
+            let id = &awaiting.id;
+            return label(
+                format!("waiting for approval {id}: {}", awaiting.about),
+                true,
+                Group::Other,
+                fitted(
+                    &format!("- {name} waits for your approval: "),
+                    &awaiting.about,
+                    &format!(". by approvals allow {id}, or by approvals deny {id}"),
+                ),
+            );
+        }
+        (Some(Reason::Question), _, Some(message)) => {
+            let verb = match message.kind {
+                MessageKind::Escalation => "escalates",
+                _ => "asks",
+            };
+            let (id, to) = (message.id, &message.to);
+            return label(
+                format!(
+                    "asking (#{} {}): {}",
+                    message.id, message.kind, message.text
+                ),
+                true,
+                Group::Other,
+                fitted(
+                    &format!("- {name} (under {to}): {verb} #{id}: \""),
+                    &message.text,
+                    &format!("\". Answer: by answer --as {to} {id} \"TEXT\""),
+                ),
+            );
+        }
+        (Some(Reason::Stalled), _, _) => {
+            return label(
+                "stalled".into(),
+                false,
+                Group::Other,
+                line(&format!(
+                    "- {name}: stalled, its harness has been silent. by log {name} -f"
+                )),
+            );
+        }
+        _ => {}
     }
     match &info.status {
         BranchStatus::Running
@@ -1029,6 +1059,7 @@ pub(crate) fn status_line_as(
         (counts.waiting, "waiting"),
         (counts.asking, "asking"),
         (counts.blocked, "blocked"),
+        (counts.stalled, "stalled"),
         (counts.ready, "ready"),
         (counts.failed, "failed"),
     ] {
@@ -1096,6 +1127,7 @@ mod tests {
             created_at: 10_000,
             stalled: false,
             awaiting: None,
+            stage: None,
             superseded_by: None,
             model: None,
         }
@@ -1117,17 +1149,13 @@ mod tests {
     }
 
     fn glance_of(branches: Vec<BranchInfo>, asking: Vec<Message>) -> Glance {
-        Glance {
-            root: PathBuf::from("/repo"),
-            branches,
-            asking,
-            unread: Vec::new(),
-        }
+        Glance::from_parts(PathBuf::from("/repo"), branches, asking, Vec::new())
     }
 
     /// Every `by ...` command in `text`, as the words a shell would give
-    /// `by`, with the placeholder `ID` made a number. A command ends at a
-    /// comma, a semicolon, a sentence's full stop or `shows why`.
+    /// `by`, with the placeholder `ID` made a number. A command ends at
+    /// `, then `, `, or `, a semicolon, a sentence's full stop or `shows
+    /// why`.
     fn commands_in(text: &str) -> Vec<Vec<String>> {
         let mut found = Vec::new();
         let mut rest = text;
@@ -1139,7 +1167,7 @@ mod tests {
             if before_is_word || !next_is_command {
                 continue;
             }
-            let end = [", then ", ";", " shows why"]
+            let end = [", then ", ", or ", ";", " shows why"]
                 .iter()
                 .filter_map(|stop| tail.find(stop))
                 .min()
@@ -1374,6 +1402,76 @@ mod tests {
             "{said}"
         );
         assert_commands_parse(said, &["by answer --as lead 3 TEXT"]);
+    }
+
+    #[test]
+    fn a_branch_parked_on_an_approval_is_named_with_its_answers() {
+        let mut parked = branch("parked", None, BranchStatus::Running, 0);
+        parked.awaiting = Some(branchyard::Awaiting {
+            kind: branchyard::AwaitingKind::Approval,
+            id: "01JBX3K7Q2M5Y9T6V8W0ZC4R1A".into(),
+            about: "tool write marker".into(),
+            since_ms: 1,
+        });
+        let (lines, _) = change_lines(&glance_of(vec![parked.clone()], Vec::new()), None);
+        assert_eq!(
+            lines,
+            [
+                HEADER,
+                "- parked waits for your approval: tool write marker. \
+                 by approvals allow 01JBX3K7Q2M5Y9T6V8W0ZC4R1A, or by approvals deny 01JBX3K7Q2M5Y9T6V8W0ZC4R1A",
+            ]
+        );
+        assert_commands_parse(
+            &lines[1],
+            &[
+                "by approvals allow 01JBX3K7Q2M5Y9T6V8W0ZC4R1A",
+                "by approvals deny 01JBX3K7Q2M5Y9T6V8W0ZC4R1A",
+            ],
+        );
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/harness-hooks.md"),
+        )
+        .unwrap();
+        assert!(doc.contains(lines[1].as_str()), "{}", lines[1]);
+        if let Some(awaiting) = parked.awaiting.as_mut() {
+            awaiting.about = format!("perform the staged {}", "github issues_create ".repeat(30));
+        }
+        let (lines, _) = change_lines(&glance_of(vec![parked], Vec::new()), None);
+        let said = &lines[1];
+        assert_eq!(said.chars().count(), MAX_LINE, "{said}");
+        assert!(
+            said.contains("...")
+                && said.ends_with(". by approvals allow 01JBX3K7Q2M5Y9T6V8W0ZC4R1A, or by approvals deny 01JBX3K7Q2M5Y9T6V8W0ZC4R1A"),
+            "{said}"
+        );
+        assert_commands_parse(
+            said,
+            &[
+                "by approvals allow 01JBX3K7Q2M5Y9T6V8W0ZC4R1A",
+                "by approvals deny 01JBX3K7Q2M5Y9T6V8W0ZC4R1A",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_stalled_branch_is_counted_as_running_then_named_once_it_changes() {
+        let silent = BranchInfo {
+            stalled: true,
+            ..branch("slow", None, BranchStatus::Running, 0)
+        };
+        let here = glance_of(vec![silent], Vec::new());
+        assert_eq!(change_lines(&here, None).0, [HEADER, "- 1 running: by ls"]);
+        let (lines, _) = change_lines(&here, Some(&Cursor::default()));
+        assert_eq!(
+            lines,
+            [
+                HEADER,
+                "- slow: stalled, its harness has been silent. by log slow -f"
+            ]
+        );
+        assert!(lines[1].chars().count() <= MAX_LINE);
+        assert_commands_parse(&lines[1], &["by log slow -f"]);
     }
 
     #[test]
