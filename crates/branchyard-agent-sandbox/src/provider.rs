@@ -162,6 +162,17 @@ impl AgentSandboxProvider {
                     locked.write(&receipt)?;
                 }
             }
+            if let Some(policy) = self.control.get_here("networkpolicy", &resource_name)? {
+                verify::check(
+                    receipt.target.network == Network::Unrestricted,
+                    "unexpected allocation policy in deny mode; refusing cascading deletion",
+                )?;
+                let policy_uid = verify::policy(&policy, &receipt, &uid)?;
+                if receipt.policy_uid.is_none() {
+                    receipt.policy_uid = Some(policy_uid);
+                    locked.write(&receipt)?;
+                }
+            }
             let path = format!(
                 "/apis/agents.x-k8s.io/v1beta1/namespaces/{}/sandboxes/{resource_name}",
                 receipt.target.namespace

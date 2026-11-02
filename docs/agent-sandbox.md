@@ -77,8 +77,11 @@ in control errors are replaced with a generic message; guest stderr after
 acknowledgement remains byte-exact. The engine must destroy the whole allocation
 after normal output capture, cancellation or failure. `stop` and `destroy` both delete the allocation
 with Kubernetes UID preconditions and foreground garbage collection, without
-force deletion. Failed cleanup retains the receipt for retry. A foreign or
-replaced object is never adopted or deleted. Pause, retention, snapshots,
+force deletion. Failed cleanup retains the receipt for retry. A name collision
+or recorded UID mismatch blocks adoption and cleanup. Cleanup verifies the
+recorded Pod and allocation policy identities before requesting foreground
+deletion of their Sandbox; garbage collection then removes its controller-owned
+children as part of the owned allocation. Pause, retention, snapshots,
 ingress, host mounts and write scopes are not offered.
 
 The host principal needs get/create/watch/delete on Sandboxes, Pods and
