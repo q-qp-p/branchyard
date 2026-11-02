@@ -20,9 +20,10 @@ def require_smoke(text: str) -> str:
         host = host.replace(dependency, dependency + "      - custom-release-smoke\n", 1)
     condition = "needs.plan.result == 'success'"
     guarded = condition + " && needs.custom-release-smoke.result == 'success'"
-    if guarded not in host:
+    result = "needs.custom-release-smoke.result == 'success'"
+    if result not in host:
         host = host.replace(condition, guarded, 1)
-    if "      - custom-release-smoke\n" not in host or guarded not in host:
+    if "      - custom-release-smoke\n" not in host or result not in host:
         raise ValueError("dist host job changed; review the release smoke dependency")
     return text[:start] + host + text[end:]
 
@@ -46,6 +47,12 @@ RELEASE_INPUTS = (
     "tools/package.py",
     "tools/release*.py",
     "tools/homebrew_formula.py",
+    "tools/build_microsandbox_runtime.py",
+    "tools/install_microsandbox_runtime.py",
+    "tools/microsandbox-*",
+    "vendor/msb-krun-arch/**",
+    "patches/msb-krun-arch-memory.patch",
+    "patches/zstd-0.13/**",
 )
 # dist builds on every event but a pull request (and on one only in its "upload" mode); `publishing`
 # no longer means "not a pull request" here, so the build jobs say so themselves.
@@ -196,6 +203,44 @@ def python_runtime(text: str) -> str:
     return text
 
 
+def runtime_artifacts(text: str) -> str:
+    """Build the patched runner before checksums, smoke tests or publication."""
+    job = (
+        "\n  custom-microsandbox-runtime:\n"
+        "    needs:\n      - plan\n"
+        f"    if: ${{{{ {BUILDS} }}}}\n"
+        "    uses: ./.github/workflows/release-microsandbox.yml\n"
+        "    with:\n"
+        "      publish: ${{ needs.plan.outputs.publishing == 'true' }}\n"
+        "    permissions:\n"
+        "      contents: read\n      attestations: write\n      id-token: write\n"
+    )
+    existing = re.search(r"\n  custom-microsandbox-runtime:\n.*?(?=\n  [\w-]+:\n|\Z)", text, re.S)
+    if existing:
+        text = text[: existing.start()] + job + text[existing.end() :]
+    else:
+        start = text.index("\n  custom-agy-image:\n")
+        text = text[:start] + job + text[start:]
+    jobs = list(re.finditer(r"^  ([\w-]+):\n", text, re.M))
+    consumers = {"build-global-artifacts", "custom-release-extras", "host", "custom-release-smoke", "rehearsal"}
+    for index in reversed(range(len(jobs))):
+        if jobs[index][1] not in consumers:
+            continue
+        start = jobs[index].start()
+        end = jobs[index + 1].start() if index + 1 < len(jobs) else len(text)
+        job = text[start:end]
+        dependency = "      - custom-microsandbox-runtime\n"
+        if dependency not in job:
+            job = job.replace("    needs:\n", "    needs:\n" + dependency, 1)
+        if jobs[index][1] == "host":
+            condition = "needs.custom-release-smoke.result == 'success'"
+            guarded = condition + " && needs.custom-microsandbox-runtime.result == 'success'"
+            job = job.replace(" && needs.custom-microsandbox-runtime.result == 'success'", "", 1)
+            job = job.replace(condition, guarded, 1)
+        text = text[:start] + job + text[end:]
+    return text
+
+
 def main() -> None:
     """Generate pinned dist configuration and apply the publication guard."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -212,7 +257,7 @@ def main() -> None:
         finally:
             config.write_text(original)
     text = path.read_text()
-    guarded = python_runtime(rehearsals(require_smoke(text)))
+    guarded = python_runtime(runtime_artifacts(rehearsals(require_smoke(text))))
     if args.check:
         if guarded != text:
             raise SystemExit("release workflow must require smoke success before publication")

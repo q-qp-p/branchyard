@@ -57,6 +57,12 @@ on:
       - tools/package.py
       - tools/release*.py
       - tools/homebrew_formula.py
+      - tools/build_microsandbox_runtime.py
+      - tools/install_microsandbox_runtime.py
+      - tools/microsandbox-*
+      - vendor/msb-krun-arch/**
+      - patches/msb-krun-arch-memory.patch
+      - patches/zstd-0.13/**
   push:
     branches: [main]
     tags:
@@ -78,6 +84,12 @@ on:
       - tools/package.py
       - tools/release*.py
       - tools/homebrew_formula.py
+      - tools/build_microsandbox_runtime.py
+      - tools/install_microsandbox_runtime.py
+      - tools/microsandbox-*
+      - vendor/msb-krun-arch/**
+      - patches/msb-krun-arch-memory.patch
+      - patches/zstd-0.13/**
 
   workflow_dispatch:
     inputs:
@@ -253,6 +265,18 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  custom-microsandbox-runtime:
+    needs:
+      - plan
+    if: ${{ github.event_name != 'pull_request' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload' }}
+    uses: ./.github/workflows/release-microsandbox.yml
+    with:
+      publish: ${{ needs.plan.outputs.publishing == 'true' }}
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+
   custom-agy-image:
     needs:
       - plan
@@ -269,6 +293,7 @@ jobs:
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
+      - custom-microsandbox-runtime
       - plan
       - build-local-artifacts
       - custom-agy-image
@@ -320,6 +345,7 @@ jobs:
 
   custom-release-extras:
     needs:
+      - custom-microsandbox-runtime
       - plan
       - build-local-artifacts
       - custom-agy-image
@@ -332,6 +358,7 @@ jobs:
     permissions:
       contents: write
     needs:
+      - custom-microsandbox-runtime
       - plan
       - build-local-artifacts
       - custom-agy-image
@@ -339,7 +366,7 @@ jobs:
       - custom-release-extras
       - custom-release-smoke
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.custom-release-smoke.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-release-extras.result == 'skipped' || needs.custom-release-extras.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.custom-agy-image.result == 'skipped' || needs.custom-agy-image.result == 'success') }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.custom-release-smoke.result == 'success' && needs.custom-microsandbox-runtime.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.custom-release-extras.result == 'skipped' || needs.custom-release-extras.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') && (needs.custom-agy-image.result == 'skipped' || needs.custom-agy-image.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
@@ -405,6 +432,7 @@ jobs:
 
   custom-release-smoke:
     needs:
+      - custom-microsandbox-runtime
       - plan
       - build-local-artifacts
       - build-global-artifacts
@@ -439,6 +467,7 @@ jobs:
 
   rehearsal:
     needs:
+      - custom-microsandbox-runtime
       - plan
       - build-local-artifacts
       - custom-agy-image

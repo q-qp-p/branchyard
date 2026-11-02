@@ -541,6 +541,8 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_microsandbox_uses_nested_virtualization_and_pinned_runtime(self):
         config = replace(self.config, backend="microsandbox", internal_ip=True)
+        self.assertEqual(gce.plan(config)["microsandbox_runtime"]["revision"], gce.MSB_RUNTIME_REVISION)
+        self.assertIn(f"/v{config.version}/", gce.plan(config)["microsandbox_runtime"]["manifest"])
         self.state["desired"] = self.instance(config)
         self.save()
         report = self.apply(config)
@@ -551,19 +553,50 @@ class ComputeGceTests(unittest.TestCase):
         self.assertEqual(len(scripts), 2)
         for required in (
             "--runtime",
-            gce.MSB_ARCHIVE_SHA256,
-            "msb context --format json",
-            "msb image load",
-            "MSB_HOME=/var/lib/by-msb",
+            "SHA256SUMS",
+            "microsandbox-runtime.json",
+            gce.MSB_RUNTIME_REVISION,
+            '"$MSB_PATH" context --format json',
+            '"$MSB_PATH" image load',
+            "microsandbox.env",
+            "bin/runtime-provenance.json",
         ):
             self.assertIn(required, scripts[0])
+        self.assertNotIn("superradcompany/microsandbox/releases/download", scripts[0])
+        self.assertNotIn("/var/lib/by-msb", scripts[0])
         self.assertIn('usermod -aG kvm "$(id -un)"', scripts[0])
         self.assertNotIn("by init project", scripts[0])
         self.assertIn("by init project", scripts[1])
         self.assertIn("by init server", scripts[1])
         self.assertIn("stage=$(mktemp -d)", scripts[1])
         self.assertIn(f"cd {config.remote_path}", scripts[1])
+        self.assertIn(gce.runtime_environment(config), scripts[1])
         self.assertEqual(report["qualification"]["microsandbox_hard_memory_ceiling"], "not_qualified")
+
+    def test_packaged_microsandbox_installer_is_required_before_cloud_mutation(self):
+        config = replace(self.config, backend="microsandbox")
+        self.state["desired"] = self.instance(config)
+        self.save()
+        with (
+            patch.dict(os.environ, {"BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER": "print('embedded-msb')"}),
+            patch.object(gce, "__file__", None),
+        ):
+            self.assertIn("print('embedded-msb')", gce.bootstrap(config, None))
+        with (
+            patch.dict(self.env, {"BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER": ""}),
+            self.assertRaisesRegex(gce.SetupError, "installer is empty"),
+        ):
+            self.apply(config)
+        self.assertFalse(any("create" in call["args"] for call in self.calls()))
+        environment = {
+            key: value for key, value in os.environ.items() if key != "BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER"
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", None),
+            self.assertRaisesRegex(gce.SetupError, "must embed install_microsandbox_runtime.py"),
+        ):
+            gce.bootstrap(config, None)
 
     def test_generated_bootstrap_is_valid_bash_for_both_backends_and_repository_modes(self):
         for backend in ("local", "microsandbox"):
