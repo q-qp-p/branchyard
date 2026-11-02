@@ -42,8 +42,14 @@ pub enum Work {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<crate::companion::Verified>,
     },
-    /// `POST /v1/repos/{repo}/tasks`.
-    Task { request: TaskRequest },
+    /// `POST /v1/repos/{repo}/tasks`, or a trigger's run, which `trigger`
+    /// names on the task it starts.
+    Task {
+        request: TaskRequest,
+        /// The trigger run that admitted it, recorded on the task it starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger: Option<branchyard::tasks::TaskTrigger>,
+    },
     /// `POST .../branches/{branch}/send`.
     Send {
         branch: String,
@@ -159,9 +165,10 @@ impl Work {
                 "console work must resolve its workspace before execution",
             )
             .body),
-            Work::Task { request } => {
+            Work::Task { request, trigger } => {
                 let options = TaskOptions {
                     actor: actor.clone(),
+                    trigger,
                     trace_parent: trace_parent.clone(),
                     ..task_options(app, repo, &request).map_err(api)?
                 };
@@ -1301,6 +1308,23 @@ mod tests {
                     prompt: "p".into(),
                     ..TaskRequest::default()
                 },
+                trigger: None,
+            },
+            Work::Task {
+                request: TaskRequest {
+                    prompt: "p".into(),
+                    ..TaskRequest::default()
+                },
+                trigger: Some(branchyard::tasks::TaskTrigger {
+                    id: "trg_1".into(),
+                    name: "triage".into(),
+                    run: "run_1".into(),
+                    actor: Some(branchyard::tasks::TriggerActor {
+                        source: "github".into(),
+                        name: "alice".into(),
+                        bot: false,
+                    }),
+                }),
             },
             Work::Send {
                 branch: "b".into(),

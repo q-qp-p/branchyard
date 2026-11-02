@@ -1060,3 +1060,21 @@ A trigger can observe: record each run that would fire, with the task it would h
 | `Client::trigger_runs` | `(name, limit)` | `(name, state, limit)` |
 | The lifecycle of a branch a trigger delivers to | acts while the trigger is enabled | and fires: an observing trigger acts on no branch |
 | Console triggers view | an Enabled toggle | also an `observing` tag and an "Observe only" toggle (`POST …/mode`) |
+
+## Added with trigger bots and provenance
+
+An event a bot caused no longer fires a new event trigger unless it allows bots or names the bot, and the task a trigger starts records which trigger, which run and who caused the event ([bots](triggers.md#bots), [what a task records](triggers.md#what-a-task-records-of-its-trigger)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| Let bots' events fire, or not | no | `trigger add … --if bots=allow\|deny` | yes | `POST /v1/triggers` with `conditions.bots` | `create_trigger` (`Conditions::bots`, `Bots`) | no |
+| See what a trigger does with bots | no | `trigger list` (`on github (bots deny)`), `trigger show` (`bots:`) | yes | `GET /v1/triggers`, `/{t}`: `conditions.bots`, the value it acts on | `triggers`, `trigger` | no |
+| See which trigger started a task | `tasks::Task::trigger` (`TaskTrigger`, `TriggerActor`) | `task show` (`trigger` line), `task show --json` | n/a | `GET /v1/repos/{repo}/task-records/{key}` (`task.trigger`) | `Repo::task` | no |
+
+| Surface | Before | Now |
+|---|---|---|
+| `TriggerEvent` | `author` only | also `bot`, from each source as [bots](triggers.md#bots) says; a Slack bot's `author` is its `bot_id` |
+| `Conditions` | the field matchers | also `bots` (`Bots`: `allow`, `deny`); a new event trigger is stored with `deny` unless given; one stored without it reads `allow` (`Conditions::bots()`) |
+| `Task` | `by`, `policy`, `origin` | also `trigger`, set when a trigger's run starts the task; `by` and `policy` unchanged |
+| `TaskOptions` | no trigger | `trigger`, read when a branch starts a new task |
+| `trigger runs` text | the state, key and what happened | also `by AUTHOR`, marked `(bot)` |

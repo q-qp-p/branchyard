@@ -1668,6 +1668,7 @@ async fn post_task(
         &caller,
         idem,
         request,
+        None,
         incoming_trace(&headers),
     )
     .await?;
@@ -1676,13 +1677,15 @@ async fn post_task(
 
 /// Admit a task on `repo` for `caller`, or return the operation `idem`
 /// already names (`true`): what `POST .../tasks` does, and what a firing
-/// trigger does as the principal that created it.
+/// trigger does as the principal that created it, with `trigger` naming
+/// its run on the task it starts.
 pub(crate) async fn admit_task(
     app: &Shared,
     repo: &RepoState,
     caller: &Caller,
     idem: Option<Idempotency>,
     request: TaskRequest,
+    trigger: Option<branchyard::tasks::TaskTrigger>,
     trace: Option<String>,
 ) -> Result<(Operation, bool), ApiError> {
     if let Some(op) = replayed_operation(app, caller, idem.as_ref()).await? {
@@ -1750,7 +1753,7 @@ pub(crate) async fn admit_task(
         priority: admitted_priority(&policy, request.priority, 0)?,
         trace,
     };
-    let value = Work::Task { request }.to_value()?;
+    let value = Work::Task { request, trigger }.to_value()?;
     let registry = app.registry.clone();
     blocking(move || registry.submit(new, value)).await?
 }

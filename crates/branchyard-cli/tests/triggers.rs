@@ -397,8 +397,11 @@ fn an_observing_trigger_is_watched_then_let_fire() {
     let id = shown["id"].as_str().unwrap().to_owned();
     let list = ok(&fake(&["trigger", "list"]));
     assert!(list.contains("observing"), "{list}");
+    // A new event trigger is stored denying bots, and says so.
+    assert!(list.contains("on generic (bots deny)"), "{list}");
     let shown = ok(&fake(&["trigger", "show", "watch"]));
     assert!(shown.contains("mode:     observe"), "{shown}");
+    assert!(shown.contains("bots:     deny"), "{shown}");
     let bad = fake(&["trigger", "mode", "watch", "maybe"]);
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("use fire or observe"));

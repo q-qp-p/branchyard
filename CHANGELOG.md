@@ -8,6 +8,20 @@ Every surface now places a branch with one table: its `stage` in branch JSON (`{
 
 The hook lines name a branch whose turn is parked on an approval, with `by approvals allow ID` and `by approvals deny ID`, and a running branch whose harness went silent past its stall window, with `by log NAME -f`. The status line and bare `by` count the first as asking and show a `stalled` count for the second.
 
+An event a bot caused no longer fires a new event trigger by default. Each
+source says when its event is a bot's: a GitHub App or `[bot]` account (never
+a check suite), a Slack `bot_id` or `bot_message`, a Linear actor that is not a
+user, a generic body's `"bot": true`, an email with `Auto-Submitted` other than
+`no`; the event carries `bot`. A new event trigger is stored with
+`conditions.bots: deny` unless it gives `--if bots=allow`, and a bot named in
+`--if author=` still fires; a skipped bot event is a `skipped_condition` run
+with the reason. Triggers created before this release have no `bots` and keep
+allowing bots, and `by trigger list` and `show` print the value each acts on.
+The bot fields are read as each source documents them; no live delivery has
+confirmed them. The task a trigger's run starts records the trigger, the run
+and who caused the event (`Task.trigger`, the `trigger` line of
+`by task show`), and keeps it after the trigger is removed.
+
 A trigger can observe before it fires. `by trigger add … --observe` (or
 `"mode": "observe"` in a `TriggerSpec`) records each run that would fire as
 `observed`, with the task it would have started, and starts nothing: no task,

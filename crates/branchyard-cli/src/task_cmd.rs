@@ -234,6 +234,9 @@ pub fn details(view: &TaskView, style: render::Style) -> String {
         branchyard_support::time::rfc3339_secs(task.created_ms),
     );
     field("started by", task.origin.clone());
+    if let Some(trigger) = &task.trigger {
+        field("trigger", trigger.to_string());
+    }
     if !task.policy.is_empty() {
         field("policy", task.policy.clone());
     }
@@ -476,5 +479,60 @@ fn remote_main(
         .next("start one with by --remote run, and accept an attempt with by --remote merge")
         .next("run the other task commands on the server's host")
         .into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(trigger: Option<tasks::TaskTrigger>) -> TaskView {
+        TaskView {
+            task: tasks::Task {
+                id: "01JTASK".into(),
+                title: "Resolve GitHub issue #42".into(),
+                asked: "Resolve GitHub issue #42".into(),
+                by: "ci-token".into(),
+                policy: "allow all".into(),
+                created_ms: 0,
+                files: TaskFiles::Repository,
+                origin: "run".into(),
+                trigger,
+            },
+            attempts: Vec::new(),
+            repository: "/repo/.git".into(),
+            accepted: None,
+            folder_at: None,
+        }
+    }
+
+    /// A task a trigger started says which trigger, which run and who
+    /// caused the event, beside the principal it ran as; others say
+    /// nothing of triggers.
+    #[test]
+    fn a_task_a_trigger_started_names_the_trigger_its_run_and_the_actor() {
+        let shown = details(
+            &view(Some(tasks::TaskTrigger {
+                id: "trg_1".into(),
+                name: "triage".into(),
+                run: "run_9".into(),
+                actor: Some(tasks::TriggerActor {
+                    source: "github".into(),
+                    name: "renovate[bot]".into(),
+                    bot: true,
+                }),
+            })),
+            render::Style::PLAIN,
+        );
+        assert!(shown.contains("  by         ci-token\n"), "{shown}");
+        assert!(
+            shown.contains(
+                "  trigger    triage (trg_1), run run_9, for github:renovate[bot] (a bot)\n"
+            ),
+            "{shown}"
+        );
+        assert!(shown.contains("  policy     allow all\n"), "{shown}");
+        let plain = details(&view(None), render::Style::PLAIN);
+        assert!(!plain.contains("trigger"), "{plain}");
     }
 }

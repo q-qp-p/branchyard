@@ -1565,6 +1565,10 @@ pub struct TaskOptions {
     /// default (`local:<user>` locally). A server sets it to the request's
     /// principal. See `docs/connectors.md`.
     pub actor: Option<connectors::Actor>,
+    /// The server trigger run that started a new task, recorded on it
+    /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
+    /// Read only when a branch starts a new task.
+    pub trigger: Option<tasks::TaskTrigger>,
     /// A W3C `traceparent` for this call's turns: each turn's harness gets
     /// it as `TRACEPARENT`, so what it calls (a connector SDK putting it in
     /// the gateway call's `_meta`, a tool exporting its own spans) joins

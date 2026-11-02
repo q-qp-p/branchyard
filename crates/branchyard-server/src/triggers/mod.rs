@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use branchyard_client::triggers::{
-    Conditions, EventSource, Trigger, TriggerEvent, TriggerSpec, When,
+    Bots, Conditions, EventSource, Trigger, TriggerEvent, TriggerSpec, When,
 };
 use serde::{Deserialize, Serialize};
 
@@ -127,7 +127,7 @@ impl StoredTrigger {
             name: spec.name.clone(),
             repo: spec.repo.clone(),
             when: spec.when.clone(),
-            conditions: spec.conditions.clone(),
+            conditions: self.conditions(),
             task: spec.task.clone(),
             route: spec.route.clone(),
             deliver: spec.deliver.clone(),
@@ -144,6 +144,16 @@ impl StoredTrigger {
             created_by: self.principal.name.clone(),
             created_at_ms: self.created_at_ms,
         }
+    }
+
+    /// Its conditions with `bots` as it acts: an event trigger stored
+    /// without it (from before bots were told apart) shows `allow`.
+    pub fn conditions(&self) -> Conditions {
+        let mut conditions = self.spec.conditions.clone();
+        if !self.spec.when.is_schedule() {
+            conditions.bots = Some(conditions.bots());
+        }
+        conditions
     }
 
     /// The source of an event trigger.
@@ -220,7 +230,8 @@ pub fn valid_name(name: &str) -> bool {
 /// Check a new trigger's spec, as far as it can be checked without the
 /// server: names, the schedule, conditions against the source, the
 /// templates, the route's kind, the precheck and the policy. Returns the
-/// spec with its precheck normalized.
+/// spec with its precheck normalized and, for an event trigger, `bots`
+/// written as it acts (`deny` unless given), so the stored spec says it.
 pub fn validate(mut spec: TriggerSpec) -> Result<TriggerSpec, String> {
     if !valid_name(&spec.name) {
         return Err(format!(
@@ -258,6 +269,9 @@ pub fn validate(mut spec: TriggerSpec) -> Result<TriggerSpec, String> {
         When::Event { .. } => true,
     };
     check_conditions(&spec.conditions, &spec.when)?;
+    if event {
+        spec.conditions.bots.get_or_insert(Bots::Deny);
+    }
     let task = &spec.task;
     if task.prompt.trim().is_empty() {
         return Err("the task's prompt is empty".into());
@@ -431,6 +445,12 @@ pub fn matches(conditions: &Conditions, event: &TriggerEvent) -> Result<(), Stri
     };
     one_of("repo", &conditions.repo, event.repo.as_deref())?;
     one_of("author", &conditions.author, event.author.as_deref())?;
+    if event.bot && conditions.author.is_empty() && conditions.bots() == Bots::Deny {
+        return Err(format!(
+            "{} is a bot (conditions.bots is deny; allow bots, or name it in conditions.author)",
+            event.author.as_deref().unwrap_or("its sender")
+        ));
+    }
     if !conditions.branch.is_empty()
         && !event
             .branch
@@ -773,6 +793,80 @@ mod tests {
         c.branch.clear();
         c.kind = vec!["issues.opened".into()];
         assert!(matches(&c, &e).unwrap_err().contains("kind"));
+    }
+
+    /// A new event trigger is stored saying what it does with bots (`deny`
+    /// unless given); a schedule says nothing; one stored without it reads
+    /// `allow`. A bot's event is then skipped unless `author` names it.
+    #[test]
+    fn bots_are_denied_by_default_unless_allowed_or_named() {
+        let made = validate(spec(github())).unwrap();
+        assert_eq!(made.conditions.bots, Some(Bots::Deny));
+        let mut allowed = spec(github());
+        allowed.conditions.bots = Some(Bots::Allow);
+        assert_eq!(
+            validate(allowed).unwrap().conditions.bots,
+            Some(Bots::Allow)
+        );
+        let cron = When::Cron {
+            expr: "0 3 * * *".into(),
+            timezone: "UTC".into(),
+        };
+        assert_eq!(validate(spec(cron.clone())).unwrap().conditions.bots, None);
+        let mut on_schedule = spec(cron);
+        on_schedule.conditions.bots = Some(Bots::Allow);
+        assert!(validate(on_schedule)
+            .unwrap_err()
+            .contains("schedule has none"));
+        // A trigger stored before bots were told apart: allow, and shown so.
+        let legacy = Conditions::default();
+        assert_eq!(legacy.bots(), Bots::Allow);
+        let stored = StoredTrigger {
+            id: "trg_1".into(),
+            tenant: "default".into(),
+            spec: spec(github()),
+            principal: Principal::default_for("tester"),
+            created_at_ms: 0,
+            secret: None,
+            enabled: true,
+            paused_reason: None,
+            failures: 0,
+            next_due_ms: None,
+        };
+        assert_eq!(stored.info("http://x").conditions.bots, Some(Bots::Allow));
+        let bot = TriggerEvent {
+            source: "github".into(),
+            kind: "pull_request.opened".into(),
+            id: "1".into(),
+            author: Some("dependabot[bot]".into()),
+            bot: true,
+            ..TriggerEvent::default()
+        };
+        let denied = Conditions {
+            bots: Some(Bots::Deny),
+            ..Conditions::default()
+        };
+        let why = matches(&denied, &bot).unwrap_err();
+        assert!(why.contains("dependabot[bot] is a bot"), "{why}");
+        assert_eq!(matches(&legacy, &bot), Ok(()));
+        let named = Conditions {
+            author: vec!["Dependabot[bot]".into()],
+            ..denied.clone()
+        };
+        assert_eq!(matches(&named, &bot), Ok(()));
+        let person = TriggerEvent {
+            author: Some("alice".into()),
+            bot: false,
+            ..bot.clone()
+        };
+        assert_eq!(matches(&denied, &person), Ok(()));
+        let nameless = TriggerEvent {
+            author: None,
+            ..bot
+        };
+        assert!(matches(&denied, &nameless)
+            .unwrap_err()
+            .contains("its sender is a bot"));
     }
 
     #[test]

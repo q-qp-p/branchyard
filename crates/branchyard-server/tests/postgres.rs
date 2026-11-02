@@ -278,7 +278,12 @@ fn admit_only(url: &str, request: TaskRequest, key: &str) -> Operation {
                 priority: 0,
                 trace: None,
             },
-            Work::Task { request }.to_value().unwrap(),
+            Work::Task {
+                request,
+                trigger: None,
+            }
+            .to_value()
+            .unwrap(),
         )
         .unwrap();
     assert!(!replayed);
@@ -774,6 +779,7 @@ fn a_worker_runs_another_tenants_operation_as_its_principal_without_leaking_it()
             },
             Work::Task {
                 request: task("WRITE w.txt=acme", "acme-work"),
+                trigger: None,
             }
             .to_value()
             .unwrap(),
@@ -919,6 +925,7 @@ fn a_spawn_that_waits_is_queued_run_by_a_worker_and_started_later() {
                 delegation: Some(Envelope::default()),
                 ..task("say hi", "root")
             },
+            trigger: None,
         },
         &["root"],
         &["root"],

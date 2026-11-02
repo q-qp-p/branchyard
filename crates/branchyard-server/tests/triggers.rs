@@ -16,11 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use branchyard::tasks::{TaskTrigger, TriggerActor};
 use branchyard::{Activity, LifecycleState};
 use branchyard_client::api::{OperationKind, OperationState, PolicySpec, SendRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_client::triggers::{
-    Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RunState, TriggerMode,
+    Bots, Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RunState, TriggerMode,
     TriggerPolicy, TriggerRun, TriggerSpec, TriggerTestRequest, When,
 };
 use branchyard_client::Client;
@@ -1103,6 +1104,104 @@ fn an_observing_schedule_sends_nothing_and_its_branch_rests_untouched() {
         "the schedule keeps its times"
     );
     assert_eq!(shown.consecutive_failures, 0);
+}
+
+/// A new event trigger is stored denying bots: a bot's event is skipped
+/// with the reason, unless the trigger names it in `author`. The task a
+/// run starts records the trigger, the run and who caused the event, and
+/// keeps it after the trigger is removed.
+#[test]
+fn bots_are_skipped_by_default_and_the_task_names_its_trigger() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    with_clock(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let app = client.repo("app");
+    let mut s = spec(
+        "triage",
+        event(EventSource::Github),
+        "WRITE issue-{{event.number}}.txt={{event.title}}",
+    );
+    s.secret = Some("gh-secret".into());
+    s.conditions = Conditions {
+        kind: vec!["issues.*".into()],
+        ..Conditions::default()
+    };
+    s.task.name = Some("fix-{{event.number}}".into());
+    let created = client.create_trigger(&s, &new_key()).unwrap();
+    assert_eq!(created.trigger.conditions.bots, Some(Bots::Deny));
+    let id = created.trigger.id.clone();
+    let opened = |number: u32, sender: serde_json::Value| {
+        let mut body: serde_json::Value =
+            serde_json::from_str(&issue(number, "Crash", &[])).unwrap();
+        body["sender"] = sender;
+        let body = body.to_string();
+        deliver(
+            &server,
+            &id,
+            &github_headers("gh-secret", "issues", &format!("d-{number}"), &body),
+            &body,
+        )
+    };
+    let (status, ack) = opened(
+        50,
+        serde_json::json!({"login": "acme-triage[bot]", "id": 9, "type": "Bot"}),
+    );
+    assert_eq!(status, 200, "{ack}");
+    assert_eq!(ack["run"]["state"], "skipped_condition");
+    assert_eq!(ack["run"]["event"]["bot"], true);
+    let reason = ack["run"]["reason"].as_str().unwrap();
+    assert!(reason.contains("acme-triage[bot] is a bot"), "{reason}");
+    let (status, _) = opened(
+        51,
+        serde_json::json!({"login": "alice", "id": 1, "type": "User"}),
+    );
+    assert_eq!(status, 202);
+    let runs = runs_when(&client, "triage", "the person's issue to fire", |runs| {
+        runs.iter().any(|r| r.state == RunState::Fired)
+    });
+    let fired = runs.iter().find(|r| r.state == RunState::Fired).unwrap();
+    let op = await_operation(&client, fired.operation.as_ref().unwrap());
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    let expected = TaskTrigger {
+        id: id.clone(),
+        name: "triage".into(),
+        run: fired.id.clone(),
+        actor: Some(TriggerActor {
+            source: "github".into(),
+            name: "alice".into(),
+            bot: false,
+        }),
+    };
+    let view = app.task("fix-51").unwrap();
+    assert_eq!(view.task.trigger.as_ref(), Some(&expected), "{view:?}");
+    assert_eq!(view.task.by, "tester", "the principal it ran as");
+    // A trigger that names the bot lets it fire.
+    let mut named = s.clone();
+    named.name = "bots-welcome".into();
+    named.conditions.author = vec!["acme-triage[bot]".into()];
+    let named = client.create_trigger(&named, &new_key()).unwrap().trigger;
+    let mut body: serde_json::Value = serde_json::from_str(&issue(52, "Crash", &[])).unwrap();
+    body["sender"] = serde_json::json!({"login": "acme-triage[bot]", "type": "Bot"});
+    let body = body.to_string();
+    let (status, _) = deliver(
+        &server,
+        &named.id,
+        &github_headers("gh-secret", "issues", "d-52", &body),
+        &body,
+    );
+    assert_eq!(status, 202);
+    runs_when(
+        &client,
+        "bots-welcome",
+        "the named bot's issue to fire",
+        |runs| runs.iter().any(|r| r.state == RunState::Fired),
+    );
+    // The record outlives the trigger and its runs.
+    client.remove_trigger("triage").unwrap();
+    let view = app.task("fix-51").unwrap();
+    assert_eq!(view.task.trigger, Some(expected));
 }
 
 #[test]

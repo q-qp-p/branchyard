@@ -2,7 +2,7 @@
 
 A **trigger** starts an ordinary Branchyard task on its own: on a cron schedule, at an interval, when a signed webhook from GitHub, Slack, Linear or any JSON sender arrives, or when an email arrives through Postmark's, Mailgun's or SendGrid's inbound webhook. It creates a branch per run, or, with [`deliver`](#a-branch-that-lives-on), continues one branch run after run, the way a chat assistant keeps a session. It is a durable object in the server's store, beside the operation registry, and every firing goes through the same admission path as `POST /v1/repos/{repo}/tasks`: quotas, branch locks, worker labels and an idempotency key, so a redelivered webhook or a restarted scheduler never starts a second task. This is the *triggers and schedules* track of the [roadmap](roadmap.md#wave-2), learned from Manus automations (validated conditions, test runs, pausing after repeated failures), Devin automations, Claude Code routines and Cursor's and Jules's scheduled tasks; the precheck is ported from Orca.
 
-> **Status.** Implemented and tested hermetically: the cron parser, every adapter's signature check and normalization, the store's conformance suite on SQLite and PostgreSQL 16, [observe mode](#observe-before-firing) (an observed delivery and an observed schedule over loopback, the switch to fire, `by trigger` locally and with `--remote`), two to four dispatchers racing for one schedule time, a dispatcher that dies mid-fire, the HTTP API over loopback with the fake ACP agent and a manual clock (a branch that lives on going idle, dormant and being deleted included), and `by trigger` locally, through `by serve`, and with `--remote`. **Nothing has received a delivery from the real GitHub, Slack, Linear, Postmark, Mailgun or SendGrid**: the payloads are built from their documentation, and the signatures from their documented schemes. Email arrives only through a provider's inbound webhook; nothing polls a mailbox ([email](#email)).
+> **Status.** Implemented and tested hermetically: the cron parser, every adapter's signature check and normalization, the store's conformance suite on SQLite and PostgreSQL 16, [observe mode](#observe-before-firing) (an observed delivery and an observed schedule over loopback, the switch to fire, `by trigger` locally and with `--remote`), two to four dispatchers racing for one schedule time, a dispatcher that dies mid-fire, the HTTP API over loopback with the fake ACP agent and a manual clock (a branch that lives on going idle, dormant and being deleted included), and `by trigger` locally, through `by serve`, and with `--remote`. [Bots](#bots) are told apart hermetically (fakes only): a unit test per source over payloads written from each source's documentation, and a GitHub delivery over loopback skipped as a bot's and fired as a person's, its task recording the trigger. Not done: a live delivery from any source, so the fields bot detection reads (GitHub's account `type` and `[bot]` login, Slack's `bot_id` and `subtype`, Linear's `actor.type`, email's `Auto-Submitted`) are not confirmed against what a source sends. **Nothing has received a delivery from the real GitHub, Slack, Linear, Postmark, Mailgun or SendGrid**: the payloads are built from their documentation, and the signatures from their documented schemes. Email arrives only through a provider's inbound webhook; nothing polls a mailbox ([email](#email)).
 
 ## Where triggers fire
 
@@ -96,7 +96,7 @@ Each event trigger has its own URL, `<public_url>/v1/triggers/<id>/fire`, and it
 
 **An event's ID comes only from the signed bytes.** A delivery ID header (`X-GitHub-Delivery`, `Linear-Delivery`, `X-Branchyard-Event-Id`) is not covered by the signature, so it is recorded as the event's `delivery`, for finding the delivery at its sender, but never used as the key: a captured delivery replayed under a new header is the same event, and a sender's own redelivery of the same body is too.
 
-The normalized event has `source`, `kind`, `id`, and where the source says: `repo` (GitHub `owner/name`, Linear team key, Slack team ID), `author` (GitHub login, Slack user ID, Linear actor name), `title`, `text` (issue or pull request body, comment, mention text, Linear description), `url`, `number` (issue or pull request number, Linear identifier such as `ENG-12`), `branch` (pull request head, check suite branch), `labels`, `channel` (Slack), and `payload`, the body as sent. A generic sender sets any of them as top-level fields. GitHub's `application/x-www-form-urlencoded` content type (`payload=…`) is read too.
+The normalized event has `source`, `kind`, `id`, and where the source says: `repo` (GitHub `owner/name`, Linear team key, Slack team ID), `author` (GitHub login, Slack user ID or a bot's ID, Linear actor name), `bot` (`true` when a [bot](#bots) caused it), `title`, `text` (issue or pull request body, comment, mention text, Linear description), `url`, `number` (issue or pull request number, Linear identifier such as `ENG-12`), `branch` (pull request head, check suite branch), `labels`, `channel` (Slack), and `payload`, the body as sent. A generic sender sets any of them as top-level fields. GitHub's `application/x-www-form-urlencoded` content type (`payload=…`) is read too.
 
 Answers: `202` with the pending run; `200` with a run skipped by condition, with `"duplicate": true` and the original run for a redelivery, or with `ignored` and why (a ping, an event kind no adapter reads, a disabled trigger, an email from a sender off the allowlist); `200 {"challenge": …}` for Slack's URL verification; `401 invalid_signature` or `401 stale_delivery`; `404 unknown_trigger` for an unknown ID or a schedule's (the same answer, so IDs cannot be probed); `413` over `max_body_bytes`.
 
@@ -115,8 +115,25 @@ Field matchers on the normalized event, every given field must match (any one of
 | `sender` | `sender=alice@example.com`, `sender=@example.com` | Email only, and required there: the From address is one of these, ignoring case; `@domain` is that domain exactly, not its subdomains. Anyone else is answered `ignored` and recorded nowhere |
 | `recipient` | `recipient=agent@by.example`, `to=@by.example` | Email only: one of its To, Cc or envelope recipients |
 | `subject_contains` | `subject=[agent]` | Email only: the subject contains it, ignoring case |
+| `bots` | `bots=allow`, `bots=deny` | Whether an event a [bot](#bots) caused may fire when `author` is empty. A new event trigger is stored with `deny` unless it says otherwise |
 
 A schedule takes no conditions. A delivery that does not match is recorded as a `skipped_condition` run saying which field missed (`no label agent (it has bug)`), so `by trigger runs` shows why nothing happened.
+
+### Bots
+
+An event a bot caused (`bot: true`) does not fire a trigger unless the trigger lets it. Without that, a trigger on comments that mention your agent fires again on the agent's own reply when the branch posts it through a GitHub App, and a branch fed every pull request comment answers each coverage and CI bot.
+
+| Source | A bot's event, when |
+|---|---|
+| GitHub | The account it names has `type: "Bot"` (a GitHub App's account) or a login ending in `[bot]` (`dependabot[bot]`): the comment's author for `issue_comment.*`, else the `sender`. **Never** a `check_suite.*` event: a CI result has no requester, and GitHub documents that its `sender` may be the `ghost` user |
+| Slack | The mention has a `bot_id`, or the subtype `bot_message`; its `author` is then the bot's ID |
+| Linear | Its `actor.type` is given and is not `user`: an OAuth client or an integration (Sentry creating issues, say) |
+| Generic | The body says `"bot": true` |
+| Postmark, Mailgun, SendGrid | An `Auto-Submitted` header other than `no` ([RFC 3834](https://www.rfc-editor.org/rfc/rfc3834): auto-replies, out-of-office notices, mail a program generated) |
+
+- **The rule.** With `conditions.author` given, the list decides, as ever: a bot fires only when it is named (`--if author=dependabot[bot]`). With `author` empty, `bots` decides: `deny` skips a bot's event as `skipped_condition`, with the reason (`dependabot[bot] is a bot (conditions.bots is deny; …)`); `allow` matches it like anyone's.
+- **The default is written down.** A new event trigger is stored with `bots: deny` unless it gives `bots` (`--if bots=allow`), so the stored spec of every trigger made from now on says what it does. A trigger stored before bots were told apart has no `bots` and reads as `allow`, so it behaves as it did; `by trigger show`, `by trigger list` (`on github (bots allow)`) and the API's `Trigger` show the value it acts on.
+- **Evidence.** Each source's fields are read as its documentation describes them, tested hermetically; none has been seen in a live delivery (see the status note above).
 
 ## The task
 
@@ -168,7 +185,7 @@ A run that creates the branch, or sends to it, is `fired` with its operation as 
 - **The handoff.** A reincarnated session starts from what the log has: the branch's original task, its candidate, and the prompts and replies of its last six turns, each cut at 1,200 characters. It is the same machinery as the fresh session after a [rewind](checkpoints.md) a session cannot continue from, and `by log` shows a warning saying so at that turn. It is **not** `by reincarnate`, which makes a new branch under a new name ([lifecycle](lifecycle.md#reincarnation)): the branch here keeps its name, its worktree and its place in the trigger.
 - **Delete is destructive.** The git branch and any commits not merged are removed with the worktree. Set `delete_days` where the branch's work is merged or disposable; nothing warns before it happens. It applies to every branch the trigger's runs have been delivered to, including one that already existed under that name when the first run found it.
 
-**Heartbeats cost a full turn each.** A heartbeat whose prompt asks the model to look around makes model calls whether or not anything happened; set its budget, and prefer the longest interval that serves. Restrict a chat trigger's `conditions.author` (`--if author=`) to the people who may drive the branch: every message that matches runs as a prompt, with the trigger's budget and policy.
+**Heartbeats cost a full turn each.** A heartbeat whose prompt asks the model to look around makes model calls whether or not anything happened; set its budget, and prefer the longest interval that serves. Restrict a chat trigger's `conditions.author` (`--if author=`) to the people who may drive the branch: every message that matches runs as a prompt, with the trigger's budget and policy. A [bot's](#bots) message is skipped unless the trigger allows bots or names it.
 
 ## Prechecks
 
@@ -215,6 +232,10 @@ Every firing is a **run**: a delivery, a scheduled time, or a block of missed ti
 | `lifecycle` | Not a firing: the branch it delivers to was deleted by its [lifecycle](#lifecycle), which the branch's own log cannot say any more. `reason` says which branch and why, `branches` names it. It counts neither as a failure nor as a success |
 | `failed` | No task could be admitted: a quota, a branch that exists, a refused option, a repository not served, a routing error |
 | `missed` | Scheduled times older than the catch-up window |
+
+### What a task records of its trigger
+
+The task a run starts (`Task.trigger`, in `by task show` as `trigger    triage (trg_…), run run_…, for github:alice`) records the trigger's ID and name, the run's ID, and who caused the event: its source, the login, user ID, name or address the source gives, and whether it is a [bot](#bots). A schedule's has no actor. `by` stays the principal the run acted as, and `policy` what its attempt may do. The record is the task's, so it remains after `by trigger rm` removes the trigger and its runs. A run that continues a branch it [delivers to](#a-branch-that-lives-on) joins the task the first run started; each later event's author is on its own run.
 
 A run's `key` is unique per trigger: `event:<event id>`, `schedule:<ms>`, `missed:<ms>` or `lifecycle:deleted:<branch>:<ms>`. (A test's key for GitHub, Linear or an ID-less generic body hashes the event file as re-serialized, which may differ from the bytes the sender will send.)
 
@@ -375,7 +396,7 @@ Both are in [`schema/server.config.json`](../schema/server.config.json). Every s
 - **Secrets.** Each event trigger has its own secret, generated (64 hex characters, shown once) or given. HMAC needs the secret itself, so the store holds it, in the trigger's row: protect `state.db` (mode 600 in a 700 directory) or the database as you would the tokens. It is never returned by the API or `by trigger show`; `by trigger secret` replaces it, and the old one stops working at once.
 - **Signatures.** Every delivery's signature is checked before its body is read, in constant time, over the exact bytes received; a missing, malformed or wrong signature is `401 invalid_signature`, and nothing is recorded. The fire endpoint is the only route without a bearer token, and it does nothing but this.
 - **Replays.** Slack's and Linear's signed timestamps must be within `replay_window_seconds` (default 300) of the server's clock (`401 stale_delivery`). GitHub and generic senders sign no timestamp, so a captured delivery can be sent again at any time; since an event's ID comes from the signed body, the replay is the run its first delivery recorded, and nothing fires again. What a replay cannot be is new: without the secret, no body that was not sent can be signed. Keep the URL and secret private, and terminate TLS so a delivery cannot be captured.
-- **Who a run acts as.** A trigger keeps the principal that created it (tenant, subject, scopes, repositories), and every run is admitted as that principal: its tenant's quotas apply, and its repository must still be in the tenant's allowlist. Removing a token does not remove its triggers; remove or disable them too.
+- **Who a run acts as.** A trigger keeps the principal that created it (tenant, subject, scopes, repositories), and every run is admitted as that principal: its tenant's quotas apply, and its repository must still be in the tenant's allowlist. Removing a token does not remove its triggers; remove or disable them too. The task a run starts records the trigger and who caused the event beside that principal ([what a task records](#what-a-task-records-of-its-trigger)).
 - **Prechecks** run as the server's user, only where the operator allows ([trust](#prechecks)). Event fields reach the precheck as a file, never interpolated into its command line; they reach the harness only in the rendered prompt, and the task's `policy` governs what the harness may do with them. A prompt built from an issue body is text a stranger may have written: allow tools with care.
 - **Unknown IDs** and schedules' IDs answer the same `404`, and bodies are bounded by `max_body_bytes`.
 
@@ -390,7 +411,7 @@ Both are in [`schema/server.config.json`](../schema/server.config.json). Every s
 
 The PostgreSQL tables are created like the registry's: a dispatcher opening the store checks the catalog first, and makes only what is missing, each step alone in a transaction under the schema's advisory lock.
 
-A trigger's spec is kept as JSON in its row, and every server reads it strictly, refusing a field it does not know: a server older than a field a trigger uses (`mode: observe`) cannot read that trigger, and its list of the tenant's triggers fails. Upgrade every server on a shared database before using a new field. A trigger that uses none of them stays readable by older servers.
+A trigger's spec is kept as JSON in its row, and every server reads it strictly, refusing a field it does not know: a server older than a field a trigger uses (`mode: observe`, `conditions.bots`, which every event trigger made from this release on stores) cannot read that trigger, and its list of the tenant's triggers fails. Upgrade every server on a shared database before using a new field. A trigger that uses none of them stays readable by older servers.
 
 ## Not yet
 

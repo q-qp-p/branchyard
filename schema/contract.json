@@ -3528,6 +3528,17 @@
               "type": "string",
               "description": "What started it: `run`, `fan`, `map`, `fork` or `task`."
             },
+            "trigger": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskTrigger"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The server trigger whose run started it, when one did: why it was\nstarted, kept after the trigger and its runs are removed."
+            },
             "attempts": {
               "type": "array",
               "items": {
@@ -3614,6 +3625,62 @@
             }
           ],
           "description": "What a task's files are."
+        },
+        "TaskTrigger": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The trigger's ID."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its name when the run fired."
+            },
+            "run": {
+              "type": "string",
+              "description": "The run's ID."
+            },
+            "actor": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TriggerActor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who caused the event, when it says: `None` for a schedule."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "run"
+          ],
+          "description": "The trigger run that started a task (`docs/triggers.md`). `by` stays\nthe principal it ran as; this says which trigger, which run, and who\ncaused the event."
+        },
+        "TriggerActor": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "description": "`github`, `slack`, `linear`, `generic`, or an email provider."
+            },
+            "name": {
+              "type": "string",
+              "description": "The login, user ID, name or address the source gives."
+            },
+            "bot": {
+              "type": "boolean",
+              "description": "The source marks it a bot."
+            }
+          },
+          "required": [
+            "source",
+            "name"
+          ],
+          "description": "Who caused a trigger's event, on its source."
         },
         "AttemptView": {
           "type": "object",
@@ -4017,6 +4084,17 @@
           "type": "string",
           "description": "What started it: `run`, `fan`, `map`, `fork` or `task`."
         },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The server trigger whose run started it, when one did: why it was\nstarted, kept after the trigger and its runs are removed."
+        },
         "attempts": {
           "type": "array",
           "items": {
@@ -4105,6 +4183,62 @@
             }
           ],
           "description": "What a task's files are."
+        },
+        "TaskTrigger": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The trigger's ID."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its name when the run fired."
+            },
+            "run": {
+              "type": "string",
+              "description": "The run's ID."
+            },
+            "actor": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TriggerActor"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who caused the event, when it says: `None` for a schedule."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "run"
+          ],
+          "description": "The trigger run that started a task (`docs/triggers.md`). `by` stays\nthe principal it ran as; this says which trigger, which run, and who\ncaused the event."
+        },
+        "TriggerActor": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "type": "string",
+              "description": "`github`, `slack`, `linear`, `generic`, or an email provider."
+            },
+            "name": {
+              "type": "string",
+              "description": "The login, user ID, name or address the source gives."
+            },
+            "bot": {
+              "type": "boolean",
+              "description": "The source marks it a bot."
+            }
+          },
+          "required": [
+            "source",
+            "name"
+          ],
+          "description": "Who caused a trigger's event, on its source."
         },
         "AttemptView": {
           "type": "object",
@@ -56824,10 +56958,55 @@
             "type": "string"
           },
           "description": "Email only: text the subject contains, ignoring case."
+        },
+        "bots": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bots"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether an event a bot caused (`TriggerEvent::bot`) may fire when\n`author` is empty; with `author` given, the list decides, so a bot\nit names fires. A new event trigger is stored with `deny` unless it\nsays otherwise; one stored without it (made before bots were told\napart) reads as `allow`."
         }
       },
-      "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything.",
+      "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything. `bots` says whether an event a bot caused may\nfire at all.",
       "title": "Conditions",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "Bots": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Bots' events are matched like anyone's."
+            },
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+            }
+          ],
+          "description": "Whether an event a bot caused may fire a trigger."
+        }
+      }
+    },
+    "Bots": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "allow",
+          "description": "Bots' events are matched like anyone's."
+        },
+        {
+          "type": "string",
+          "const": "deny",
+          "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+        }
+      ],
+      "description": "Whether an event a bot caused may fire a trigger.",
+      "title": "Bots",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "Precheck": {
@@ -57155,9 +57334,35 @@
                 "type": "string"
               },
               "description": "Email only: text the subject contains, ignoring case."
+            },
+            "bots": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bots"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether an event a bot caused (`TriggerEvent::bot`) may fire when\n`author` is empty; with `author` given, the list decides, so a bot\nit names fires. A new event trigger is stored with `deny` unless it\nsays otherwise; one stored without it (made before bots were told\napart) reads as `allow`."
             }
           },
-          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything."
+          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything. `bots` says whether an event a bot caused may\nfire at all."
+        },
+        "Bots": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Bots' events are matched like anyone's."
+            },
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+            }
+          ],
+          "description": "Whether an event a bot caused may fire a trigger."
         },
         "TaskRequest": {
           "type": "object",
@@ -59159,9 +59364,35 @@
                 "type": "string"
               },
               "description": "Email only: text the subject contains, ignoring case."
+            },
+            "bots": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bots"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether an event a bot caused (`TriggerEvent::bot`) may fire when\n`author` is empty; with `author` given, the list decides, so a bot\nit names fires. A new event trigger is stored with `deny` unless it\nsays otherwise; one stored without it (made before bots were told\napart) reads as `allow`."
             }
           },
-          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything."
+          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything. `bots` says whether an event a bot caused may\nfire at all."
+        },
+        "Bots": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Bots' events are matched like anyone's."
+            },
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+            }
+          ],
+          "description": "Whether an event a bot caused may fire a trigger."
         },
         "TaskRequest": {
           "type": "object",
@@ -61182,9 +61413,35 @@
                 "type": "string"
               },
               "description": "Email only: text the subject contains, ignoring case."
+            },
+            "bots": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bots"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether an event a bot caused (`TriggerEvent::bot`) may fire when\n`author` is empty; with `author` given, the list decides, so a bot\nit names fires. A new event trigger is stored with `deny` unless it\nsays otherwise; one stored without it (made before bots were told\napart) reads as `allow`."
             }
           },
-          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything."
+          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything. `bots` says whether an event a bot caused may\nfire at all."
+        },
+        "Bots": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Bots' events are matched like anyone's."
+            },
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+            }
+          ],
+          "description": "Whether an event a bot caused may fire a trigger."
         },
         "TaskRequest": {
           "type": "object",
@@ -63201,9 +63458,35 @@
                 "type": "string"
               },
               "description": "Email only: text the subject contains, ignoring case."
+            },
+            "bots": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Bots"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether an event a bot caused (`TriggerEvent::bot`) may fire when\n`author` is empty; with `author` given, the list decides, so a bot\nit names fires. A new event trigger is stored with `deny` unless it\nsays otherwise; one stored without it (made before bots were told\napart) reads as `allow`."
             }
           },
-          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything."
+          "description": "Field matchers on the normalized event, checked when the trigger is\ncreated. Every non-empty field must match (any one of its values);\nempty matches anything. `bots` says whether an event a bot caused may\nfire at all."
+        },
+        "Bots": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Bots' events are matched like anyone's."
+            },
+            {
+              "type": "string",
+              "const": "deny",
+              "description": "A bot's event is skipped (`skipped_condition`) unless `author`\nnames the bot."
+            }
+          ],
+          "description": "Whether an event a bot caused may fire a trigger."
         },
         "TaskRequest": {
           "type": "object",
@@ -64998,6 +65281,10 @@
             "null"
           ]
         },
+        "bot": {
+          "type": "boolean",
+          "description": "A bot caused it: a GitHub App or `[bot]` account (never for a check\nsuite, which has no requester), a Slack bot message, a Linear actor\nthat is not a user, a generic body's `\"bot\": true`, an email with\n`Auto-Submitted` other than `no`."
+        },
         "title": {
           "type": [
             "string",
@@ -65352,6 +65639,10 @@
                 "string",
                 "null"
               ]
+            },
+            "bot": {
+              "type": "boolean",
+              "description": "A bot caused it: a GitHub App or `[bot]` account (never for a check\nsuite, which has no requester), a Slack bot message, a Linear actor\nthat is not a user, a generic body's `\"bot\": true`, an email with\n`Auto-Submitted` other than `no`."
             },
             "title": {
               "type": [
@@ -67519,6 +67810,10 @@
                 "null"
               ]
             },
+            "bot": {
+              "type": "boolean",
+              "description": "A bot caused it: a GitHub App or `[bot]` account (never for a check\nsuite, which has no requester), a Slack bot message, a Linear actor\nthat is not a user, a generic body's `\"bot\": true`, an email with\n`Auto-Submitted` other than `no`."
+            },
             "title": {
               "type": [
                 "string",
@@ -69542,6 +69837,10 @@
                 "string",
                 "null"
               ]
+            },
+            "bot": {
+              "type": "boolean",
+              "description": "A bot caused it: a GitHub App or `[bot]` account (never for a check\nsuite, which has no requester), a Slack bot message, a Linear actor\nthat is not a user, a generic body's `\"bot\": true`, an email with\n`Auto-Submitted` other than `no`."
             },
             "title": {
               "type": [
@@ -71580,6 +71879,10 @@
                 "null"
               ]
             },
+            "bot": {
+              "type": "boolean",
+              "description": "A bot caused it: a GitHub App or `[bot]` account (never for a check\nsuite, which has no requester), a Slack bot message, a Linear actor\nthat is not a user, a generic body's `\"bot\": true`, an email with\n`Auto-Submitted` other than `no`."
+            },
             "title": {
               "type": [
                 "string",
@@ -73416,7 +73719,8 @@
       "additionalProperties": false,
       "properties": {
         "mode": {
-          "$ref": "#/$defs/TriggerMode"
+          "$ref": "#/$defs/TriggerMode",
+          "description": "`fire` or `observe`."
         }
       },
       "required": [

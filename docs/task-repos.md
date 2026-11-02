@@ -20,7 +20,7 @@ task: board-update (01J9...)
   .task/effects.jsonl             the task's ledger entries, as of each commit
 ```
 
-A task is a [`Task`](../crates/branchyard/src/tasks/mod.rs): an ID (a ULID), a title (the first line of what was asked), what was asked, who asked (the gateway actor, else git's `user.name <user.email>`, else the login name), the policy and grants in one line, when, what its files are, and what started it. It owns attempts, which are branches:
+A task is a [`Task`](../crates/branchyard/src/tasks/mod.rs): an ID (a ULID), a title (the first line of what was asked), what was asked, who asked (the gateway actor, else git's `user.name <user.email>`, else the login name), the policy and grants in one line, when, what its files are, and what started it; a task a server [trigger](triggers.md#what-a-task-records-of-its-trigger) started also records which trigger, which run, and who caused the event (`by task show` prints it as `trigger`). It owns attempts, which are branches:
 
 | Started by | Task |
 |---|---|

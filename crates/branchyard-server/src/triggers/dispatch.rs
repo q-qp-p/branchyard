@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use branchyard::{BranchStatus, Fleet, LifecycleState, RouteOptions, SteerState, TaskKind};
 use branchyard_client::api::{Operation, SendRequest, TaskRequest};
-use branchyard_client::triggers::Busy;
+use branchyard_client::triggers::{Busy, TriggerRun};
 use tokio::sync::{watch, Notify};
 
 use super::engine::{Admitted, Delivered, Engine, Refusal, Sink};
@@ -54,6 +54,26 @@ pub struct AppSink {
 /// unlike any credential's subject.
 pub fn idempotency_scope(trigger: &StoredTrigger) -> String {
     format!("trigger:{}/{}", trigger.tenant, trigger.id)
+}
+
+/// What the task `run` of `trigger` starts records of it: the trigger,
+/// the run, and who caused its event.
+fn task_trigger(trigger: &StoredTrigger, run: &TriggerRun) -> branchyard::tasks::TaskTrigger {
+    branchyard::tasks::TaskTrigger {
+        id: trigger.id.clone(),
+        name: trigger.spec.name.clone(),
+        run: run.id.clone(),
+        actor: run.event.as_ref().and_then(|event| {
+            event
+                .author
+                .as_ref()
+                .map(|name| branchyard::tasks::TriggerActor {
+                    source: event.source.clone(),
+                    name: name.clone(),
+                    bot: event.bot,
+                })
+        }),
+    }
 }
 
 /// How long a run that steers waits for the engine running the turn to
@@ -149,9 +169,10 @@ impl Sink for AppSink {
     fn admit(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
     ) -> Result<Admitted, Refusal> {
+        let key = &run.key;
         if let Some(admitted) = self.replayed(trigger, key)? {
             return Ok(admitted);
         }
@@ -161,9 +182,10 @@ impl Sink for AppSink {
         let caller = Caller::new(trigger.principal.clone());
         let app = self.app.clone();
         let repo = trigger.spec.repo.clone();
+        let fired_by = Some(task_trigger(trigger, run));
         let admitted = self.runtime.block_on(async move {
             let repo = app.authorized_repo(&caller, &repo, "run")?.clone();
-            crate::api::admit_task(&app, &repo, &caller, Some(idem), request, None).await
+            crate::api::admit_task(&app, &repo, &caller, Some(idem), request, fired_by, None).await
         });
         self.admitted(trigger, key, admitted)
     }
@@ -171,10 +193,11 @@ impl Sink for AppSink {
     fn deliver(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
         busy: Busy,
     ) -> Result<Delivered, Refusal> {
+        let key = &run.key;
         if let Some(admitted) = self.replayed(trigger, key)? {
             return Ok(Delivered::Admitted(admitted));
         }
@@ -189,7 +212,7 @@ impl Sink for AppSink {
             Ok(target) => target,
             // Missing: the task creates it, under the delivered name.
             Err(branchyard::Error::UnknownBranch(_)) => {
-                return self.admit(trigger, key, request).map(Delivered::Admitted)
+                return self.admit(trigger, run, request).map(Delivered::Admitted)
             }
             Err(e) => return Err(Refusal::Failed(e.to_string())),
         };

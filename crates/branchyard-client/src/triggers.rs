@@ -124,7 +124,8 @@ impl std::str::FromStr for EventSource {
 
 /// Field matchers on the normalized event, checked when the trigger is
 /// created. Every non-empty field must match (any one of its values);
-/// empty matches anything.
+/// empty matches anything. `bots` says whether an event a bot caused may
+/// fire at all.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,11 +164,59 @@ pub struct Conditions {
     /// Email only: text the subject contains, ignoring case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subject_contains: Vec<String>,
+    /// Whether an event a bot caused (`TriggerEvent::bot`) may fire when
+    /// `author` is empty; with `author` given, the list decides, so a bot
+    /// it names fires. A new event trigger is stored with `deny` unless it
+    /// says otherwise; one stored without it (made before bots were told
+    /// apart) reads as `allow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bots: Option<Bots>,
 }
 
 impl Conditions {
     pub fn is_empty(&self) -> bool {
         self == &Conditions::default()
+    }
+
+    /// What `bots` says, or `allow` for a trigger stored without it.
+    pub fn bots(&self) -> Bots {
+        self.bots.unwrap_or(Bots::Allow)
+    }
+}
+
+/// Whether an event a bot caused may fire a trigger.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Bots {
+    /// Bots' events are matched like anyone's.
+    Allow,
+    /// A bot's event is skipped (`skipped_condition`) unless `author`
+    /// names the bot.
+    Deny,
+}
+
+impl Bots {
+    /// The wire name: `allow` or `deny`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Bots::Allow => "allow",
+            Bots::Deny => "deny",
+        }
+    }
+}
+
+impl std::str::FromStr for Bots {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        match text {
+            "allow" => Ok(Bots::Allow),
+            "deny" => Ok(Bots::Deny),
+            other => Err(format!(
+                "{other:?} is not a bots setting; use allow or deny"
+            )),
+        }
     }
 }
 
@@ -527,6 +576,12 @@ pub struct TriggerEvent {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    /// A bot caused it: a GitHub App or `[bot]` account (never for a check
+    /// suite, which has no requester), a Slack bot message, a Linear actor
+    /// that is not a user, a generic body's `"bot": true`, an email with
+    /// `Auto-Submitted` other than `no`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

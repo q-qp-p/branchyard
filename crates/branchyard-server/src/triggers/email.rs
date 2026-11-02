@@ -840,6 +840,8 @@ pub fn read(
         id,
         delivery,
         author: Some(email.from.clone()),
+        // RFC 3834: an auto-reply or a message a program generated.
+        bot: header("auto-submitted").is_some_and(|v| !v.trim().eq_ignore_ascii_case("no")),
         title: Some(email.subject.clone()).filter(|s| !s.is_empty()),
         text: Some(email.text.clone()).filter(|t| !t.is_empty()),
         labels,
@@ -1322,6 +1324,52 @@ mod tests {
             multipart(b"--b\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\n1\r\n--b\r\nContent-Disposition: form-data; name=\"x\"\r\n\r\n2\r\n--b--\r\n", "b").unwrap();
         assert_eq!(fields["x"], "1", "the first of a repeated name");
         assert!(files.is_empty());
+    }
+
+    /// An auto-reply, or a message a program generated, says so in its
+    /// `Auto-Submitted` header (RFC 3834): any value but `no` makes the
+    /// event a bot's, read from each provider's headers.
+    #[test]
+    fn auto_submitted_mail_is_a_bots() {
+        let read_fields = |source: EventSource, fields: serde_json::Value| {
+            let fields = fields.as_object().unwrap().clone();
+            match read(source, &fields, &[]).unwrap() {
+                Delivery::Event(e) => *e,
+                other => panic!("not an event: {other:?}"),
+            }
+        };
+        let postmark = |headers: serde_json::Value| {
+            read_fields(
+                EventSource::Postmark,
+                serde_json::json!({"From": "alice@example.com", "Subject": "Out of office",
+                                   "TextBody": "Back Monday", "Headers": headers}),
+            )
+        };
+        let e = postmark(serde_json::json!([
+            {"Name": "Auto-Submitted", "Value": "auto-replied"},
+            {"Name": "Message-ID", "Value": "<ooo-1@example.com>"}
+        ]));
+        assert_eq!(
+            (e.author.as_deref(), e.bot),
+            (Some("alice@example.com"), true)
+        );
+        let e = postmark(serde_json::json!([{"Name": "Auto-Submitted", "Value": "No"}]));
+        assert!(!e.bot, "a person's mail may say no");
+        assert!(!postmark(serde_json::json!([])).bot);
+        let mailgun = read_fields(
+            EventSource::Mailgun,
+            serde_json::json!({"sender": "build@ci.example", "from": "build@ci.example",
+                               "subject": "Nightly failed", "body-plain": "red",
+                               "message-headers": "[[\"Auto-Submitted\", \"auto-generated\"]]"}),
+        );
+        assert!(mailgun.bot);
+        let sendgrid = read_fields(
+            EventSource::Sendgrid,
+            serde_json::json!({"from": "Carol <carol@example.com>", "subject": "Please fix #12",
+                               "text": "thanks",
+                               "headers": "Message-ID: <sg-2@example.com>\r\nAuto-Submitted: no\r\n"}),
+        );
+        assert!(!sendgrid.bot);
     }
 
     #[test]

@@ -88,21 +88,22 @@ pub trait Sink: Send + Sync {
     /// The repositories this process serves: (name, root).
     fn repos(&self) -> Vec<(String, PathBuf)>;
     /// Admit `request` as `trigger`'s principal, with the idempotency key
-    /// `key` scoped to the trigger; the operation, or why not.
+    /// `run.key` scoped to the trigger, the task recording the run; the
+    /// operation, or why not.
     fn admit(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
     ) -> Result<Admitted, Refusal>;
     /// Deliver `request` to the branch its `name` names, as `trigger`'s
-    /// principal with the idempotency key `key`: admit the task when the
-    /// branch is missing, else a send of its prompt, or while the branch
-    /// runs a turn what `busy` says.
+    /// principal with the idempotency key `run.key`: admit the task when
+    /// the branch is missing, else a send of its prompt, or while the
+    /// branch runs a turn what `busy` says.
     fn deliver(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
         busy: Busy,
     ) -> Result<Delivered, Refusal>;
@@ -450,10 +451,10 @@ impl Engine {
             return;
         }
         let admitted = match &trigger.spec.deliver {
-            None => self.sink.admit(trigger, &run.key, request),
+            None => self.sink.admit(trigger, run, request),
             Some(deliver) => {
                 let branch = request.name.clone().unwrap_or_default();
-                match self.sink.deliver(trigger, &run.key, request, deliver.busy) {
+                match self.sink.deliver(trigger, run, request, deliver.busy) {
                     Ok(Delivered::Admitted(admitted)) => Ok(admitted),
                     // Settled as it fires: nothing is left to wait for.
                     Ok(Delivered::Steered) => {
@@ -714,9 +715,10 @@ mod tests {
         fn admit(
             &self,
             t: &StoredTrigger,
-            key: &str,
+            run: &TriggerRun,
             request: TaskRequest,
         ) -> Result<Admitted, Refusal> {
+            let key = &run.key;
             if let Some(why) = self.refuse.lock().unwrap().clone() {
                 return Err(match why.strip_prefix("later: ") {
                     Some(why) => Refusal::Later(why.to_owned()),
@@ -738,7 +740,7 @@ mod tests {
         fn deliver(
             &self,
             t: &StoredTrigger,
-            key: &str,
+            run: &TriggerRun,
             request: TaskRequest,
             busy: Busy,
         ) -> Result<Delivered, Refusal> {
@@ -749,7 +751,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push((branch, "created".into()));
-                return self.admit(t, key, request).map(Delivered::Admitted);
+                return self.admit(t, run, request).map(Delivered::Admitted);
             }
             let running = self.running.lock().unwrap().contains(&branch);
             let what = match (running, busy) {
@@ -770,7 +772,7 @@ mod tests {
                 (false, _) => "sent",
             };
             self.delivered.lock().unwrap().push((branch, what.into()));
-            self.admit(t, key, request).map(Delivered::Admitted)
+            self.admit(t, run, request).map(Delivered::Admitted)
         }
         fn operation(&self, id: &str) -> Option<Operation> {
             self.ops.lock().unwrap().get(id).cloned()
@@ -1434,7 +1436,7 @@ mod tests {
         assert_eq!(claimed.len(), 1);
         let trigger = store.get(&t.id).unwrap().unwrap();
         let task = Engine::render(&trigger, &claimed[0].0).unwrap();
-        sink.admit(&trigger, &claimed[0].0.key, task).unwrap();
+        sink.admit(&trigger, &claimed[0].0, task).unwrap();
         // Another dispatcher sees nothing until the claim expires...
         assert!(engines[1].tick().unwrap().fired.is_empty());
         clock.store(10 * MINUTE + RUN_LEASE_MS + 1, Ordering::SeqCst);

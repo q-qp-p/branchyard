@@ -15,8 +15,8 @@ use std::time::Duration;
 use branchyard_client::api::{BudgetSpec, PolicySpec, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_client::triggers::{
-    Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RouteSpec, RunState, Trigger,
-    TriggerCreated, TriggerMode, TriggerPolicy, TriggerRun, TriggerSpec, TriggerTest,
+    Bots, Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RouteSpec, RunState,
+    Trigger, TriggerCreated, TriggerMode, TriggerPolicy, TriggerRun, TriggerSpec, TriggerTest,
     TriggerTestRequest, When,
 };
 use branchyard_server::config::Principal;
@@ -421,12 +421,18 @@ fn spec(args: &AddArgs, repo: &str) -> Result<TriggerSpec, Failure> {
             "sender" | "from" => conditions.sender.push(value),
             "recipient" | "to" => conditions.recipient.push(value),
             "subject" | "subject_contains" => conditions.subject_contains.push(value),
+            "bots" => {
+                conditions.bots = Some(value.parse().map_err(|why: String| {
+                    crate::errors::Report::usage(format!("--if bots={value}: {why}"))
+                        .next("write --if bots=allow to let bots' events fire, or --if bots=deny")
+                })?)
+            }
             other => {
                 return Err(crate::errors::Report::usage(format!(
                     "--if {other}=...: no such field"
                 ))
                 .next(
-                    "use kind, repo, label, author, branch, text, or for an email sender, \
+                    "use kind, repo, label, author, branch, text, bots, or for an email sender, \
                          recipient or subject",
                 )
                 .into())
@@ -551,10 +557,14 @@ fn show_list(triggers: &[Trigger], json: bool) -> Outcome {
             (None, Some(url)) => url.clone(),
             _ => String::new(),
         };
+        let when = match t.conditions.bots {
+            Some(bots) => format!("{} (bots {})", describe_when(&t.when), bots.as_str()),
+            None => describe_when(&t.when),
+        };
         out.push_str(&format!(
             "{:<20} {:<28} {:<10} {:<9} {next}\n",
             t.name,
-            describe_when(&t.when),
+            when,
             t.repo,
             state_of(t)
         ));
@@ -613,7 +623,18 @@ fn show_one(t: &Trigger, json: bool) -> Outcome {
                 parts.push(format!("{field}={}", values.join("|")));
             }
         }
-        out.push_str(&format!("  if:       {}\n", parts.join(" ")));
+        if !parts.is_empty() {
+            out.push_str(&format!("  if:       {}\n", parts.join(" ")));
+        }
+    }
+    if let Some(bots) = t.conditions.bots {
+        out.push_str(&format!(
+            "  bots:     {}\n",
+            match bots {
+                Bots::Allow => "allow (a bot's event is matched like anyone's)",
+                Bots::Deny => "deny (a bot's event is skipped unless if author= names it)",
+            }
+        ));
     }
     if let Some(p) = &t.precheck {
         out.push_str(&format!(
@@ -703,6 +724,10 @@ fn show_runs(runs: &[TriggerRun], json: bool) -> Outcome {
                     false => &outcome.detail,
                 }
             ));
+        }
+        if let Some(author) = r.event.as_ref().and_then(|e| e.author.as_ref()) {
+            let bot = r.event.as_ref().is_some_and(|e| e.bot);
+            what.push_str(&format!("  by {author}{}", if bot { " (bot)" } else { "" }));
         }
         out.push_str(&format!(
             "{}  {:<17} {:<28} {what}\n",
@@ -1258,6 +1283,17 @@ mod tests {
         let mut bad = args.clone();
         bad.conditions = vec!["colour=red".into()];
         assert!(spec(&bad, "app").is_err());
+        // Bots: unset here, so the server writes its default; set, as given.
+        assert_eq!(s.conditions.bots, None);
+        let mut bots = args.clone();
+        bots.conditions.push("bots=allow".into());
+        assert_eq!(
+            spec(&bots, "app").unwrap().conditions.bots,
+            Some(Bots::Allow)
+        );
+        bots.conditions = vec!["bots=sometimes".into()];
+        let refused = spec(&bots, "app").unwrap_err().to_string();
+        assert!(refused.contains("use allow or deny"), "{refused}");
         // --to names the branch every run continues; --busy says what a
         // run does while it runs a turn, queue unless told otherwise.
         let mut resident = args.clone();

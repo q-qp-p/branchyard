@@ -185,6 +185,7 @@ pub fn contract() -> Value {
     entry::<triggers::When>("When", &mut types);
     entry::<triggers::EventSource>("EventSource", &mut types);
     entry::<triggers::Conditions>("Conditions", &mut types);
+    entry::<triggers::Bots>("Bots", &mut types);
     entry::<triggers::Precheck>("Precheck", &mut types);
     entry::<triggers::RouteSpec>("RouteSpec", &mut types);
     entry::<triggers::TriggerPolicy>("TriggerPolicy", &mut types);
