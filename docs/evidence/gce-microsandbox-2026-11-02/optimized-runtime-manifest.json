@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "runtime_version": "0.7.3",
+  "revision": "branchyard-memory1",
+  "platform": "x86_64-unknown-linux-gnu",
+  "build_profile": "release",
+  "build_plan_sha256": "ff0508bfcc78f5a7d4e44eef5ed899b6bdcd07f20c609b63ae199521b14c5c74",
+  "architecture_tree_sha256": "0d4066cf8acf06990c153ad021e5f691e05ad556552395be3eb8c35a49dfd5c2",
+  "runtime_sha256": "a17d3a462371064512d5683ffc336b8c8cdc72d1a595bb92eaad926e5e6a93e8",
+  "archive": "microsandbox-0.7.3-branchyard-memory1-x86_64-unknown-linux-gnu-d27b38f1d1be.tar.gz",
+  "archive_sha256": "d27b38f1d1be122666c626331126b127f86c9b18c4587fe95835d511346837d4",
+  "provenance": "microsandbox-0.7.3-branchyard-memory1-x86_64-unknown-linux-gnu-d27b38f1d1be.tar.provenance.json",
+  "provenance_sha256": "6ae086953da3691239fb1373c9e86a7df115ce7fcf091f007fa33e79684e63c7"
+}

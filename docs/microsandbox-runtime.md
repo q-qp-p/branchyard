@@ -93,6 +93,13 @@ removal before the SDK can act on their absolute paths. Read or export a refused
 checkpoint with its original runtime, or create a fresh checkpoint. The refusal
 leaves the saved artifact intact.
 
+Live on 2 November 2026: the optimized candidate passed immutable root-owned
+installation and replay, all guarded adapter tests, strict guest RAM probes and
+cleanup on the GCE worker. The installer consumed locally staged verified
+release payloads. See the [optimized runtime record](remote-validation-2026-11-02-gce.md#optimized-runtime-and-installer-replay)
+for the exact artifact, commands and evidence. Not done: this replay did not
+download a published release, provision a new worker or call a model.
+
 Hermetic on 2 November 2026: installer tests verify checksum and provenance
 binding, unsafe archive and path refusals, immutable retries, separate homes,
 kept-record preservation and packaged-helper wiring. Release tests verify

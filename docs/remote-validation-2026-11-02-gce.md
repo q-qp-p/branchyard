@@ -26,6 +26,42 @@ Separate cleanup queries returned empty sandbox and snapshot lists. See
 directory. Not done: no model calls, egress confinement, host RSS ceiling,
 cross-platform runs, or legacy full-snapshot migration.
 
+## Optimized runtime and installer replay
+
+Live on 2 November 2026: the optimized `release` runner built from the same
+pinned upstream and architecture sources in 18 minutes 31 seconds. The final
+archive checksum is
+`d27b38f1d1be122666c626331126b127f86c9b18c4587fe95835d511346837d4`;
+the executable checksum is
+`a17d3a462371064512d5683ffc336b8c8cdc72d1a595bb92eaad926e5e6a93e8`.
+The production installer verified the locally staged release manifest,
+checksums and payloads on the GCE worker, installed the runtime as root-owned
+mode 0755 with firmware and provenance, and created an owner-only mode 0700
+home for UID `3718100505`. The worker user could not write the runtime or
+firmware. Running the installer again returned the identical paths and bytes.
+All 20 guarded adapter tests then passed, zero ignored, in 79.01 seconds.
+Separate final queries returned empty sandbox and snapshot lists. See
+`optimized-adapter-and-install.log`, `optimized-runtime-manifest.json` and
+`optimized-runtime-provenance.json` in the evidence directory. Not done: no
+published-release network download or complete GCE provisioning was exercised
+by this staged-asset replay, and no model was called.
+
+Live RAM and boundary probes on 2 November 2026: the exact optimized archive
+passed the 128, 512 and 1024 MiB ceilings with the same measurements shown
+below, plus one CPU, a distinct guest kernel, write/read and host-file hiding.
+This replay deliberately supplied `MSB_PATH` pointing to the upstream runner
+that failed the baseline; the script rebound the runtime pair to the extracted
+candidate. Its final sandbox list was empty, and its temporary runtime home was
+removed. See `optimized-memory.log` and the `optimized-meminfo-*.txt` records.
+Not done: no host RSS ceiling, egress confinement or legacy snapshot migration.
+
+The retained optimized installation is under
+`/opt/branchyard/microsandbox/branchyard-memory1-<complete-archive-checksum>/`
+and its private home is `/var/lib/bm-d27b38f1d1be1226`. The environment record
+is `/var/tmp/branchyard-cloud-qual-20261102/optimized-release/runtime.env`.
+Only test-owned compiled executables were removed after verification; existing
+services and runtime installations were left in place.
+
 ## The RAM failure and fix
 
 For a requested 512 MiB, the official runtime reported `MemTotal: 529224 kB`,
@@ -108,6 +144,8 @@ It checks the guest kernel, one CPU, strict RAM limits, write/read, host-file
 invisibility and an empty sandbox list. Its trap removes test guests and its
 own temporary runtime home. The retained evidence includes the image digest
 and runtime provenance. No existing runtime or service is changed.
+Both runtime paths are bound to the extracted candidate, so ambient
+`MSB_PATH` or `MSB_LIBKRUNFW_PATH` settings cannot select a different runner.
 
 Use a fresh runtime home for this patched memory layout. This record does
 not qualify restoring kept full snapshots made by the upstream layout.

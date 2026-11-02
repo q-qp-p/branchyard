@@ -21,6 +21,8 @@ trap 'if [ -n "$name" ]; then "$msb" sandbox remove --force "$name" >/dev/null 2
 mkdir "$MSB_HOME/bin" "$MSB_HOME/lib"
 tar -xzf "$archive" -C "$MSB_HOME/bin" --no-same-owner
 mv "$MSB_HOME/bin/libkrunfw.so.5.6.1" "$MSB_HOME/lib/"
+export MSB_PATH="$msb"
+export MSB_LIBKRUNFW_PATH="$MSB_HOME/lib/libkrunfw.so.5.6.1"
 cp "$MSB_HOME/bin/runtime-provenance.json" "$evidence/"
 "$msb" --version | tee "$evidence/runtime-version.txt"
 uname -r > "$evidence/host-kernel.txt"
