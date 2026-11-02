@@ -95,7 +95,7 @@ kubeconfig executable overrides. User and project tables merge key by key.
 | Policy: ask | `Policy::ask` | `--ask` | no: the harness runs on the server, which has no terminal | no, same | no, same | no: a child inherits its parent's policy |
 | `isolated` | yes | `--isolated` | yes | yes | yes | inherited |
 | `command` | yes | `--command` | server opt-in `--allow-client-commands` | same | same | inherited for the same harness |
-| Provider: Microsandbox, Substrate | `TaskOptions::provider` | `--provider` | server opt-in `--allow-provider`; `pass_env` and the key are the server's | `provider` | yes | inherited; a sandboxed turn gets no tools |
+| Provider: Microsandbox, Substrate, Container, Agent Sandbox | `TaskOptions::provider` | `--provider` | server admission and operator presets; `pass_env` and connection credentials are the server's | `provider`, or an approved execution `preset` | yes | inherited; a sandboxed turn gets no tools |
 | Delegation envelope | `TaskOptions::delegation` | `--delegate` | server opt-in `--allow-delegation` | `delegation` | yes | a child gets a narrower one |
 | Rig seats ([rigs](rigs.md)) | `TaskOptions::seats` | `rig run` | server opt-in `--allow-delegation`; each seat's provisioning under the same rules as provisioning below | `seats`, on task requests only | yes | a child gets the seats below its own |
 | Allow delegation commands | `Policy::allow_delegation_commands` | `--allow-delegation` | server opt-in `--allow-delegation` | `allow_delegation` | yes | inherited |
@@ -104,6 +104,19 @@ kubeconfig executable overrides. User and project tables merge key by key.
 | Provisioning: secrets ([provisioning](provisioning.md)) | `Provisioning::secrets`, with `isolated` or a sandbox provider | `--secret NAME[=VAR\|=@FILE]`, read from your environment or files | `--secret NAME` only: the server reads each from the source its operator defined with `by serve --secret`; a named source is refused | `provision.secrets`, names only; `403 secret_not_allowed` for one the server does not define | yes | inherited, with the parent's sources |
 | Provisioning: MCP servers | `Provisioning::mcp_servers` | `--mcp NAME=COMMAND` | server opt-in `--allow-client-commands`: the server runs them | `provision.mcp_servers`, same opt-in | yes | inherited |
 | Provisioning: instructions, model, effort, telemetry, auth method | `Provisioning` | `--instructions FILE`, `--model`, `--effort`, `--telemetry URL\|off`, `--auth` | yes; `by` reads the instructions file and sends its text | `provision` | yes | inherited |
+
+`by run` and `by fan` select native providers with `--provider container` or
+`--provider agent-sandbox`. Both reuse `--image`, `--cpus`, `--memory` and
+`--pass-env`. Agent Sandbox requires `--kube-context` and `--kube-namespace`.
+`--sandbox-runtime gvisor` is the default; `runc` applies only to Container and
+`microvm` only to Agent Sandbox. `--sandbox-network deny` is the default;
+`unrestricted` permits ordinary networking. Container permits cloud metadata;
+Agent Sandbox retains its provider-defined GKE metadata blocks.
+These allocation-wide choices do not implement a required per-exec hostname
+allowlist. Native providers refuse `--keep-sandbox`, snapshot controls,
+`--live-branch` and another provider's connection flags. A Container image must
+already be present on the worker. The native image supplies the harness, so
+local harness inventory and login checks do not determine its readiness.
 
 ## Delegation operations as a person
 

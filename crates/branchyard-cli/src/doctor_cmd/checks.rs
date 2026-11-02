@@ -71,6 +71,8 @@ pub(super) fn mode(ctx: &Context) -> String {
             _ => "local, no isolation".to_owned(),
         },
         ConfiguredProvider::Microsandbox => "sandbox: microsandbox".to_owned(),
+        ConfiguredProvider::Container => "native sandbox: Container".to_owned(),
+        ConfiguredProvider::AgentSandbox => "native sandbox: Kubernetes Agent Sandbox".to_owned(),
         ConfiguredProvider::Substrate => "remote sandbox: Agent Substrate".to_owned(),
         ConfiguredProvider::Recipe => format!(
             "sandbox: recipe {}",
@@ -588,6 +590,16 @@ pub(super) fn harnesses_default(ctx: &Context) -> Vec<Check> {
             .map(provider_check)
             .collect();
     }
+    if matches!(
+        config.defaults.provider,
+        Some(ConfiguredProvider::Container | ConfiguredProvider::AgentSandbox)
+    ) {
+        return vec![Check::warn(
+            NAME,
+            "the native image supplies the harness; image execution and model login were not checked",
+            "qualify the image's selected harness and provision its model credentials on the worker",
+        )];
+    }
     let set = config.defaults.harness.as_deref();
     let installed = ctx
         .inventory()
@@ -793,6 +805,11 @@ pub(super) fn provider_default(ctx: &Context) -> Vec<Check> {
             "local (the default): harnesses run as your user in a worktree, with no isolation",
         ),
         ConfiguredProvider::Microsandbox => microsandbox_row(ctx, config),
+        ConfiguredProvider::Container | ConfiguredProvider::AgentSandbox => Check::warn(
+            NAME,
+            "native sandbox configuration loaded; runtime, image, worker capacity and workload isolation were not checked",
+            "qualify the selected provider on its worker before running a workload",
+        ),
         ConfiguredProvider::Substrate => provider_check(ctx.substrate().step()),
         ConfiguredProvider::Recipe => recipe_row(ctx, config),
     }]

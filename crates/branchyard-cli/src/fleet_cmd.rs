@@ -101,7 +101,12 @@ pub fn with_inventory_default(task: &mut TaskArgs) -> Result<(), Failure> {
     if !task.auto || task.fleet.is_some() {
         return Ok(());
     }
-    if task.sandbox.is_some() || task.substrate.is_some() || task.recipe.is_some() {
+    if task.sandbox.is_some()
+        || task.container.is_some()
+        || task.agent_sandbox.is_some()
+        || task.substrate.is_some()
+        || task.recipe.is_some()
+    {
         return Err(Report::usage(
             "with no [fleet], --auto routes among the harnesses logged in on this machine, which \
              says nothing of a sandbox's",

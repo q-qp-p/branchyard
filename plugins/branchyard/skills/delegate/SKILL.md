@@ -658,3 +658,17 @@ connection flags. See the Substrate setup documentation for image and pool prere
 For GKE, an operator can use `tools/substrate_gke.py --atenet-dataplane=agentgateway`
 with the required target options. This pins a compatible gateway before installation
 from a private source export; the default Envoy path is unchanged.
+
+## Native sandbox providers
+
+An operator starts a native allocation with `by run "TASK" --provider container
+--image IMAGE@sha256:DIGEST`, or uses `--provider agent-sandbox` with
+`--kube-context CONTEXT --kube-namespace NAMESPACE`. The image supplies the
+harness. Both accept `--cpus`, `--memory` in MiB and `--pass-env` variable names.
+`--sandbox-runtime gvisor` is the default; `runc` applies only to Container and `microvm`
+applies only to Agent Sandbox. `--sandbox-network deny` disables external networking;
+explicit `unrestricted` permits ordinary networking. Container permits cloud
+metadata; Agent Sandbox retains its GKE metadata blocks.
+Native allocations are destroyed after each turn and refuse `--keep-sandbox`,
+snapshots, host mounts and required hostname allowlists. On a server, use its
+approved execution preset; a preset does not permit client provider overrides.

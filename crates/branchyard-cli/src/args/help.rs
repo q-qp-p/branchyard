@@ -69,9 +69,10 @@ Examples:
 Run 'by help <command>' or 'by <command> --help' for its options.
 Local mode: harnesses run as your operating-system user, with no other
 isolation. State lives in .branchyard/ at the repository root. Remote mode:
-harnesses run as the server's user, with no other isolation.
-To isolate: --isolated (a private HOME, not a sandbox) or --provider
-microsandbox (a microVM; needs a build with that feature). Where harnesses run
+work runs on the server's configured worker under its provider policy.
+To isolate: --provider container (gVisor by default), --provider agent-sandbox
+(gVisor or a Kata microVM), or --provider microsandbox (needs that build feature).
+--isolated gives a private HOME and no sandbox. Where harnesses run
 and where state lives, rung by rung: docs/modes.md.";
 
 pub(crate) const RUN_EXAMPLES: &str = "\

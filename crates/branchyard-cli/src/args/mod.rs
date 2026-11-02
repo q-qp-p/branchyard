@@ -121,6 +121,10 @@ pub struct TaskArgs {
     pub command: Option<Vec<String>>,
     /// `--provider microsandbox` and its options; `None` keeps the default.
     pub sandbox: Option<SandboxArgs>,
+    /// `--provider container` and its allocation options.
+    pub container: Option<branchyard::ContainerOptions>,
+    /// `--provider agent-sandbox` and its cluster allocation options.
+    pub agent_sandbox: Option<branchyard::AgentSandboxOptions>,
     /// `--provider substrate` and its options.
     pub substrate: Option<SubstrateArgs>,
     /// `--provider recipe:NAME` and its options; the recipe is resolved

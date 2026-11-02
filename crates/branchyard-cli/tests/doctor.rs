@@ -957,6 +957,34 @@ fn the_provider_is_checked_as_the_engine_checks_it() {
 }
 
 #[test]
+fn native_provider_reports_name_the_sandbox_without_claiming_live_readiness() {
+    let repo = Repo::new();
+    let image = format!("example/worker@sha256:{}", "a".repeat(64));
+    for (kind, extra, label) in [
+        ("container", "", "Container"),
+        (
+            "agent_sandbox",
+            "context = 'validation'\nnamespace = 'by-test'",
+            "Kubernetes Agent Sandbox",
+        ),
+    ] {
+        repo.project_file(&format!(
+            "[defaults]\nprovider = '{kind}'\n[{kind}]\nimage = '{image}'\n{extra}\n"
+        ));
+        let report = repo.doctor(&[]);
+        assert!(report.value["mode"].as_str().unwrap().contains(label));
+        assert_eq!(report.status("provider.default"), "warn");
+        assert!(report
+            .detail("provider.default")
+            .contains("were not checked"));
+        assert_eq!(report.status("harnesses.default"), "warn");
+        assert!(report
+            .detail("harnesses.default")
+            .contains("native image supplies the harness"));
+    }
+}
+
+#[test]
 fn confinement_that_must_hold_but_cannot_is_a_failure() {
     let repo = Repo::used();
     // Confinement turned off, as on a host that forbids user namespaces.

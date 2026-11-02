@@ -1582,6 +1582,8 @@ pub fn runs_text(provider: &str, isolated: bool) -> String {
         ("local", true) => "local, isolated: private HOME, not a sandbox".into(),
         ("microsandbox", _) => "microsandbox: a microVM per turn".into(),
         ("substrate", _) => "substrate: an Agent Substrate actor per turn".into(),
+        ("container", _) => "container: an owned worker-local container per turn".into(),
+        ("agent_sandbox", _) => "agent_sandbox: an owned Kubernetes sandbox per turn".into(),
         (other, _) => match other.strip_prefix("recipe:") {
             Some(_) => format!("{other}: a machine its recipe makes"),
             None => other.to_owned(),
@@ -3087,6 +3089,14 @@ mod tests {
         assert_eq!(
             runs_text("substrate", false),
             "substrate: an Agent Substrate actor per turn"
+        );
+        assert_eq!(
+            runs_text("container", false),
+            "container: an owned worker-local container per turn"
+        );
+        assert_eq!(
+            runs_text("agent_sandbox", false),
+            "agent_sandbox: an owned Kubernetes sandbox per turn"
         );
 
         let mut i: branchyard::Inspection = serde_json::from_value(serde_json::json!({
