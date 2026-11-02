@@ -206,6 +206,9 @@ STEPS = (
     # The CLI's failures are Reports with a kind and an exit status; the bare messages left only fall.
     Step("check_failure_messages", "fast", (PY, "tools/check_failure_messages.py")),
     Step("test_check_failure_messages", "fast", (PY, "tests/test_check_failure_messages.py")),
+    # What one agent is given stays under its cap, and the numbers it states are the code's.
+    Step("check_model_surface", "fast", (PY, "tools/check_model_surface.py")),
+    Step("test_check_model_surface", "fast", (PY, "tests/test_check_model_surface.py")),
     # The lint table's exceptions only fall, and every crate inherits the table.
     Step("check_lint_ratchet", "controls", (PY, "tools/check_lint_ratchet.py")),
     Step("test_check_lint_ratchet", "controls", (PY, "tests/test_check_lint_ratchet.py")),
