@@ -1,5 +1,5 @@
-//! `by trigger add|list|show|test|enable|disable|rm|runs|secret`: tasks
-//! started on a schedule or by a webhook. See docs/triggers.md.
+//! `by trigger add|list|show|test|enable|disable|mode|rm|runs|secret`:
+//! tasks started on a schedule or by a webhook. See docs/triggers.md.
 //!
 //! Locally, `by trigger` reads and writes the trigger store of the server
 //! this repository would run (`by serve`'s data directory, or its
@@ -16,7 +16,8 @@ use branchyard_client::api::{BudgetSpec, PolicySpec, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_client::triggers::{
     Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RouteSpec, RunState, Trigger,
-    TriggerCreated, TriggerPolicy, TriggerRun, TriggerSpec, TriggerTest, TriggerTestRequest, When,
+    TriggerCreated, TriggerMode, TriggerPolicy, TriggerRun, TriggerSpec, TriggerTest,
+    TriggerTestRequest, When,
 };
 use branchyard_server::config::Principal;
 use branchyard_server::triggers::store::TriggerStore;
@@ -33,8 +34,10 @@ Examples:
       --prompt 'Update dependencies and fix what breaks' --harness codex --check 'cargo test' --yes
   by trigger add triage --on github --if kind=issues.labeled --if label=agent \\
       --prompt 'Resolve GitHub issue #{{event.number}}: {{event.title}}\\n{{event.url}}\\n\\n{{event.text}}' \\
-      --branch-name 'issue-{{event.number}}' --auto --yes
+      --branch-name 'issue-{{event.number}}' --auto --yes --observe
   by trigger test triage --event issue.json       # conditions, precheck and the task, creating nothing
+  by trigger runs triage --state observed         # what it would have started, while it observes
+  by trigger mode triage fire                     # let it start them
   by trigger runs triage                          # fired, skipped (and why), failed, missed
   by trigger enable triage                        # after it paused itself
 Triggers fire where `by serve` or `by worker` runs. See docs/triggers.md.";
@@ -76,6 +79,14 @@ pub enum TriggerAction {
         /// The trigger's name
         name: String,
     },
+    /// Fire (start its task), or observe (record each run that would fire and start nothing)
+    Mode {
+        /// The trigger's name
+        name: String,
+        /// fire or observe
+        #[arg(value_name = "MODE", value_parser = mode)]
+        mode: TriggerMode,
+    },
     /// Remove it and its runs
     Rm {
         /// The trigger's name
@@ -88,6 +99,9 @@ pub enum TriggerAction {
         /// How many
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Only runs in this state, such as observed, fired or skipped_condition
+        #[arg(long, value_name = "STATE", value_parser = run_state)]
+        state: Option<RunState>,
     },
     /// Set the webhook secret from a file (Slack's or Linear's signing secret), or generate one
     Secret {
@@ -230,6 +244,24 @@ pub struct AddArgs {
     /// Create it disabled
     #[arg(long, help_heading = "Policy")]
     pub disabled: bool,
+    /// Record each run that would fire, and start nothing, until `by trigger mode NAME fire`
+    #[arg(long, help_heading = "Policy")]
+    pub observe: bool,
+}
+
+/// `fire` or `observe`.
+fn mode(text: &str) -> Result<TriggerMode, String> {
+    text.parse()
+}
+
+/// A run state's wire name.
+fn run_state(text: &str) -> Result<RunState, String> {
+    RunState::parse(text).ok_or_else(|| {
+        format!(
+            "{text:?} is not a run state; use pending, fired, observed, skipped_condition, \
+             skipped_precheck, skipped_disabled, skipped_busy, lifecycle, failed or missed"
+        )
+    })
 }
 
 /// `queue`, `steer` or `skip`.
@@ -463,6 +495,10 @@ fn spec(args: &AddArgs, repo: &str) -> Result<TriggerSpec, Failure> {
             timeout_seconds: args.precheck_timeout.unwrap_or(60),
         }),
         enabled: !args.disabled,
+        mode: match args.observe {
+            true => TriggerMode::Observe,
+            false => TriggerMode::Fire,
+        },
         policy,
         secret: args.secret_file.as_deref().map(read_secret).transpose()?,
     })
@@ -487,6 +523,7 @@ fn describe_when(when: &When) -> String {
 
 fn state_of(t: &Trigger) -> String {
     match (t.enabled, &t.paused_reason) {
+        (true, _) if t.mode == TriggerMode::Observe => "observing".into(),
         (true, _) => "enabled".into(),
         (false, Some(why)) if why.starts_with("paused") => "paused".into(),
         (false, _) => "disabled".into(),
@@ -541,6 +578,14 @@ fn show_one(t: &Trigger, json: bool) -> Outcome {
         out.push_str(&format!(" ({why})"));
     }
     out.push('\n');
+    out.push_str(&format!(
+        "  mode:     {}\n",
+        match t.mode {
+            TriggerMode::Fire => "fire (a run that matches starts its task)",
+            TriggerMode::Observe =>
+                "observe (each run that would fire is recorded; nothing starts)",
+        }
+    ));
     if let Some(next) = t.next_due_ms {
         out.push_str(&format!("  next:     {}\n", time(next)));
     }
@@ -636,6 +681,18 @@ fn show_runs(runs: &[TriggerRun], json: bool) -> Outcome {
                 r.missed.unwrap_or(0),
                 r.scheduled_ms.map(time).unwrap_or_default()
             ),
+            RunState::Observed => match &r.task {
+                Some(task) => format!(
+                    "would start {} ({})",
+                    task.name.as_deref().unwrap_or(""),
+                    match (&task.harness, task.harnesses.as_slice()) {
+                        (Some(h), _) => h.clone(),
+                        (None, []) => "the default harness".to_owned(),
+                        (None, several) => several.join(", "),
+                    }
+                ),
+                None => "would start its task".to_owned(),
+            },
             _ => r.reason.clone().unwrap_or_default(),
         };
         if let Some(outcome) = &r.outcome {
@@ -750,6 +807,14 @@ fn show_created(created: &TriggerCreated, json: bool, local: bool) -> Outcome {
             }
         }
     }
+    if t.mode == TriggerMode::Observe {
+        out.push_str(&format!(
+            "observing: each run that would fire is recorded as observed; nothing starts\n\
+             next: by trigger runs {name} --state observed\n\
+             next: by trigger mode {name} fire\n",
+            name = t.name
+        ));
+    }
     if local {
         out.push_str(
             "it fires where `by serve` or `by worker` runs on this repository's server state\n",
@@ -819,6 +884,9 @@ fn remote_main(
         TriggerAction::Disable { name } => {
             show_one(&client.disable_trigger(name, &new_key())?, json)
         }
+        TriggerAction::Mode { name, mode } => {
+            show_one(&client.set_trigger_mode(name, *mode, &new_key())?, json)
+        }
         TriggerAction::Rm { name } => {
             let removed = client.remove_trigger(name)?;
             match json {
@@ -826,7 +894,9 @@ fn remote_main(
                 false => print(&format!("removed trigger {}\n", removed.removed)),
             }
         }
-        TriggerAction::Runs { name, limit } => show_runs(&client.trigger_runs(name, *limit)?, json),
+        TriggerAction::Runs { name, limit, state } => {
+            show_runs(&client.trigger_runs(name, *state, *limit)?, json)
+        }
         TriggerAction::Secret { name, secret_file } => {
             let secret = secret_file.as_deref().map(read_secret).transpose()?;
             let set = client.set_trigger_secret(name, secret, &new_key())?;
@@ -998,9 +1068,17 @@ impl Local {
                     false => print(&format!("removed trigger {}\n", t.spec.name)),
                 }
             }
-            TriggerAction::Runs { name, limit } => {
+            TriggerAction::Mode { name, mode } => {
                 let t = self.find(name)?;
-                show_runs(&self.store.runs(&t.id, *limit).map_err(failure)?, json)
+                self.store.set_mode(&t.id, *mode).map_err(failure)?;
+                show_one(&self.reread(&t.id)?, json)
+            }
+            TriggerAction::Runs { name, limit, state } => {
+                let t = self.find(name)?;
+                show_runs(
+                    &self.store.runs(&t.id, *state, *limit).map_err(failure)?,
+                    json,
+                )
             }
             TriggerAction::Secret { name, secret_file } => {
                 let t = self.find(name)?;
@@ -1167,6 +1245,7 @@ mod tests {
             catch_up: None,
             secret_file: None,
             disabled: false,
+            observe: false,
         };
         let s = spec(&args, "app").unwrap();
         assert_eq!(s.conditions.kind, ["issues.labeled"]);

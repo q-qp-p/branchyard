@@ -2,13 +2,24 @@
 
 ## Unreleased
 
-The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
-
 Every surface now places a branch with one table: its `stage` in branch JSON (`{"lane", "reason"}`, [what a branch needs from you](docs/concepts.md#what-a-branch-needs-from-you)). The console's lanes, `GET …/decisions`, the hook lines, the status line and bare `by` read it, so they agree. A branch waiting on its children now sits in Running, not Done. A delegated child that settled while its parent still runs or waits sits in Running too, and the console says "its parent decides". Bare `by` points at the first branch that needs you, a failed one before a ready one. A workspace session whose plan waits for approval no longer reads as failed.
 
 `GET …/decisions` lists a branch whose plan waits for approval as a new `plan` decision (`waits: agent`) and a blocked branch as a `stop`, lists each branch at most once, and no longer lists a question from a branch whose turn ended or a settled child whose parent still works. The console's deck shows a plan card that opens the branch. An older Rust client's `decisions()` cannot parse the `plan` kind; Python and the console read kinds as strings.
 
 The hook lines name a branch whose turn is parked on an approval, with `by approvals allow ID` and `by approvals deny ID`, and a running branch whose harness went silent past its stall window, with `by log NAME -f`. The status line and bare `by` count the first as asking and show a `stalled` count for the second.
+
+A trigger can observe before it fires. `by trigger add … --observe` (or
+`"mode": "observe"` in a `TriggerSpec`) records each run that would fire as
+`observed`, with the task it would have started, and starts nothing: no task,
+no send, and none of the lifecycle of a branch it delivers to. Read the record
+with `by trigger runs NAME --state observed` (`GET /v1/triggers/{t}/runs?state=`),
+then let it fire with `by trigger mode NAME fire` (`POST /v1/triggers/{t}/mode`),
+or from the console's **Observe only** toggle. An event observed stays observed
+when redelivered after the switch. The default is `fire`. A server older than
+this release cannot read a trigger stored with `mode: observe`; upgrade every
+server on a shared database first. `Client::trigger_runs` takes a state.
+
+The note a branch's next turn starts with after its engine stopped mid-turn (`<branchyard-recovered>`) now also says that an action the branch took outside its worktree before then (a push, a pull request, a comment, a message) may already have happened, and to check before repeating it. Connector calls were already recorded in the effect ledger; a command the agent ran from its own shell was not.
 
 A branch nobody delegated (a root started with delegation, or a fork of one) can now `ask` and `escalate`, and its message goes to the person, `@person`. Its question keeps it in Needs you, with stage `question`, until someone answers it, also after its turn ends. `Yard::inbox` lists the person's messages and `Yard::answer` answers one. An answer to a branch whose turn ended does not start a turn; the branch gets it at the start of its next turn.
 

@@ -134,6 +134,7 @@ impl StoredTrigger {
             precheck: spec.precheck.clone(),
             policy: spec.policy.clone(),
             enabled: self.enabled,
+            mode: spec.mode,
             paused_reason: self.paused_reason.clone(),
             consecutive_failures: self.failures,
             next_due_ms: self.next_due_ms,
@@ -518,7 +519,7 @@ mod tests {
     use super::*;
     use branchyard_client::api::TaskRequest;
     use branchyard_client::triggers::{
-        Busy, Deliver, Lifecycle, Precheck, RouteSpec, TriggerPolicy,
+        Busy, Deliver, Lifecycle, Precheck, RouteSpec, TriggerMode, TriggerPolicy,
     };
 
     fn spec(when: When) -> TriggerSpec {
@@ -535,6 +536,7 @@ mod tests {
             deliver: None,
             precheck: None,
             enabled: true,
+            mode: TriggerMode::Fire,
             policy: TriggerPolicy::default(),
             secret: None,
         }

@@ -2,7 +2,7 @@
 
 A **trigger** starts an ordinary Branchyard task on its own: on a cron schedule, at an interval, when a signed webhook from GitHub, Slack, Linear or any JSON sender arrives, or when an email arrives through Postmark's, Mailgun's or SendGrid's inbound webhook. It creates a branch per run, or, with [`deliver`](#a-branch-that-lives-on), continues one branch run after run, the way a chat assistant keeps a session. It is a durable object in the server's store, beside the operation registry, and every firing goes through the same admission path as `POST /v1/repos/{repo}/tasks`: quotas, branch locks, worker labels and an idempotency key, so a redelivered webhook or a restarted scheduler never starts a second task. This is the *triggers and schedules* track of the [roadmap](roadmap.md#wave-2), learned from Manus automations (validated conditions, test runs, pausing after repeated failures), Devin automations, Claude Code routines and Cursor's and Jules's scheduled tasks; the precheck is ported from Orca.
 
-> **Status.** Implemented and tested hermetically: the cron parser, every adapter's signature check and normalization, the store's conformance suite on SQLite and PostgreSQL 16, two to four dispatchers racing for one schedule time, a dispatcher that dies mid-fire, the HTTP API over loopback with the fake ACP agent and a manual clock (a branch that lives on going idle, dormant and being deleted included), and `by trigger` locally, through `by serve`, and with `--remote`. **Nothing has received a delivery from the real GitHub, Slack, Linear, Postmark, Mailgun or SendGrid**: the payloads are built from their documentation, and the signatures from their documented schemes. Email arrives only through a provider's inbound webhook; nothing polls a mailbox ([email](#email)).
+> **Status.** Implemented and tested hermetically: the cron parser, every adapter's signature check and normalization, the store's conformance suite on SQLite and PostgreSQL 16, [observe mode](#observe-before-firing) (an observed delivery and an observed schedule over loopback, the switch to fire, `by trigger` locally and with `--remote`), two to four dispatchers racing for one schedule time, a dispatcher that dies mid-fire, the HTTP API over loopback with the fake ACP agent and a manual clock (a branch that lives on going idle, dormant and being deleted included), and `by trigger` locally, through `by serve`, and with `--remote`. **Nothing has received a delivery from the real GitHub, Slack, Linear, Postmark, Mailgun or SendGrid**: the payloads are built from their documentation, and the signatures from their documented schemes. Email arrives only through a provider's inbound webhook; nothing polls a mailbox ([email](#email)).
 
 ## Where triggers fire
 
@@ -20,12 +20,16 @@ by trigger add nightly --cron '0 3 * * 1-5' --tz Europe/Berlin \
     --harness codex --check 'cargo test' --budget-usd 3 --yes
 
 # An issue labeled `agent` on GitHub: one branch per issue, routed by the fleet table.
+# It starts by observing: each issue that would start a branch is recorded, and nothing starts.
 by trigger add triage --on github --if kind=issues.labeled --if label=agent \
     --prompt 'Resolve GitHub issue #{{event.number}}: {{event.title}}\n{{event.url}}\n\n{{event.text}}' \
-    --branch-name 'issue-{{event.number}}' --auto --yes
+    --branch-name 'issue-{{event.number}}' --auto --yes --observe
 # created trigger triage (trg_…)
 # webhook URL: https://by.example.com/v1/triggers/trg_…/fire
 # webhook secret (shown once; give it to the sender): …
+# observing: each run that would fire is recorded as observed; nothing starts
+by trigger runs triage --state observed       # what it would have started, after a few days of issues
+by trigger mode triage fire                   # then let it start them
 
 # An assistant that lives on: every mention in Slack continues one branch per channel, and a
 # heartbeat looks in every 30 minutes, skipping while it is busy.
@@ -46,13 +50,14 @@ by trigger rm triage
 
 | Command | Does |
 |---|---|
-| `by trigger add NAME (--cron EXPR [--tz ZONE] \| --every DURATION \| --on SOURCE) --prompt TEXT` | Create a trigger. Task: `--harness H` or `--auto [--kind K]`, `--branch-name TEMPLATE` or `--to TEMPLATE [--busy queue\|steer\|skip] [--idle-after D] [--dormant-after D] [--delete-after D]` ([a branch that lives on](#a-branch-that-lives-on), [its lifecycle](#lifecycle)), `--base REF`, `--check CMD`, `--budget-usd X`, `--max-turns N`, `--max-minutes N`, `--connector GRANT` (repeatable), `--require-label L` (repeatable), `--yes` (allow every tool request; otherwise each is denied). When: `--if FIELD=VALUE` (repeatable), `--precheck CMD [--precheck-timeout SECS]`. Policy: `--pause-after N`, `--catch-up DURATION`, `--secret-file FILE`, `--disabled` |
+| `by trigger add NAME (--cron EXPR [--tz ZONE] \| --every DURATION \| --on SOURCE) --prompt TEXT` | Create a trigger. Task: `--harness H` or `--auto [--kind K]`, `--branch-name TEMPLATE` or `--to TEMPLATE [--busy queue\|steer\|skip] [--idle-after D] [--dormant-after D] [--delete-after D]` ([a branch that lives on](#a-branch-that-lives-on), [its lifecycle](#lifecycle)), `--base REF`, `--check CMD`, `--budget-usd X`, `--max-turns N`, `--max-minutes N`, `--connector GRANT` (repeatable), `--require-label L` (repeatable), `--yes` (allow every tool request; otherwise each is denied). When: `--if FIELD=VALUE` (repeatable), `--precheck CMD [--precheck-timeout SECS]`. Policy: `--pause-after N`, `--catch-up DURATION`, `--secret-file FILE`, `--disabled`, `--observe` ([observe before firing](#observe-before-firing)) |
 | `by trigger list` (`ls`) | Every trigger |
 | `by trigger show NAME` | One in full |
 | `by trigger test NAME [--event FILE] [--event-type TYPE] [--precheck]` | What it would do, creating nothing ([test runs](#test-runs)) |
 | `by trigger enable NAME` / `disable NAME` | Start or stop it firing; enabling resets its failure count and counts a schedule's next time from now |
+| `by trigger mode NAME fire\|observe` | Let a run that would fire start its task, or only record it ([observe before firing](#observe-before-firing)); leaves whether it is enabled, its failure count and its next time alone |
 | `by trigger rm NAME` | Remove it and its runs |
-| `by trigger runs NAME [--limit N]` | Its runs, newest first (default 20) |
+| `by trigger runs NAME [--state STATE] [--limit N]` | Its runs, newest first (default 20); with `--state`, only those in that state, such as `observed` |
 | `by trigger secret NAME [--secret-file FILE]` | Set the webhook secret from a file, or generate and print one |
 
 Every action takes `--json`, which prints the wire types below. Durations are `90s`, `30m`, `2h`, `1d` or seconds. A trigger name is 1 to 63 of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit, unique in its tenant. Locally a trigger is created in the `default` tenant, by `<user> (local)`.
@@ -181,6 +186,19 @@ A run that creates the branch, or sends to it, is `fired` with its operation as 
 
 `by trigger test NAME [--event FILE]` (`POST /v1/triggers/{t}/test`) evaluates without creating anything: it reads `--event` as the trigger's source would send it (GitHub's event type from `--event-type`, else from the body's shape), checks the conditions, renders the task, and with `--precheck` runs the precheck. A schedule is rendered for its next time. It answers whether the run **would fire**, why not, the rendered task (prompt and branch name), the run key it would use, and the precheck's result.
 
+## Observe before firing
+
+A trigger with `"mode": "observe"` (`by trigger add … --observe`, or `by trigger mode NAME observe` later) records each run that would fire and **starts nothing**. Start an event trigger this way when its events come from people you do not control, read what it would have done over real traffic, then let it fire with `by trigger mode NAME fire` (`POST /v1/triggers/{t}/mode`). The default is `fire`; nothing changes for a trigger that does not set it.
+
+- **What is recorded.** A run that matches its conditions is rendered, routed and prechecked exactly as when it fires; then, instead of admitting the task, the run is `observed`, with `task`: the task it would have created, its prompt rendered, its harness routed, and its `name` the branch it would have created or continued. It has no operation and names no branch in `branches`. `by trigger runs NAME --state observed` lists them: `would start issue-42 (codex)`.
+- **What it does not do.** No task, no send, no steer, and no look at the branch it delivers to: an observing trigger never creates, wakes, parks or deletes a branch. The [lifecycle](#lifecycle) of a branch it delivered to while it fired stops while it observes, as while it is disabled.
+- **The precheck runs.** So `observed` means "would have fired": a precheck that fails makes the run `skipped_precheck`, as when it fires. Unmatched events are `skipped_condition`, as ever.
+- **Schedules keep their times.** An observing schedule records an `observed` run at each time, and missed times as `missed`.
+- **Counting.** An observed run is neither a failure nor a success. A run that cannot be rendered or routed still fails and counts toward [pausing](#failures-and-pausing), so a broken trigger pauses itself while it observes too.
+- **Switching does not replay.** An observed run keeps its key (`event:<id>`), so the same event redelivered after the switch to `fire` is answered `duplicate` with the observed run, and nothing fires. To act on one, start it yourself from its recorded `task`. The mode is read when a run fires, as `enabled` is: a run still `pending` when you switch (no dispatcher had served its repository yet) takes the new mode.
+- **Test runs.** `by trigger test` on an observing trigger answers `would fire: no (the trigger observes: …)`, with whether it matches and the rendered task as usual.
+- **Enabled is separate.** A disabled trigger records nothing, observing or not, and a paused observer resumes observing when enabled. `mode` changes neither whether the trigger is enabled nor its failure count nor its next time.
+
 ## Runs, outcomes and failures
 
 Every firing is a **run**: a delivery, a scheduled time, or a block of missed times.
@@ -193,6 +211,7 @@ Every firing is a **run**: a delivery, a scheduled time, or a block of missed ti
 | `skipped_precheck` | The precheck did not pass |
 | `skipped_disabled` | The trigger was disabled or removed between recording and firing |
 | `skipped_busy` | The branch it [delivers to](#a-branch-that-lives-on) was running a turn, and its `busy` policy is `skip` |
+| `observed` | The trigger [observes](#observe-before-firing): the run matched and passed its precheck, and `task` is the task it would have started. Nothing was started. It counts neither as a failure nor as a success |
 | `lifecycle` | Not a firing: the branch it delivers to was deleted by its [lifecycle](#lifecycle), which the branch's own log cannot say any more. `reason` says which branch and why, `branches` names it. It counts neither as a failure nor as a success |
 | `failed` | No task could be admitted: a quota, a branch that exists, a refused option, a repository not served, a routing error |
 | `missed` | Scheduled times older than the catch-up window |
@@ -207,7 +226,7 @@ A run that **failed**, or a fired run whose task's **outcome** was not ok, count
 
 - **Schedules.** A claim is a compare-and-set on `next_due_ms` (`UPDATE … WHERE id = … AND enabled AND next_due_ms = <what was read>`) in the transaction that records the run, so of any number of dispatchers on one store, one claims each time. Tested with four dispatchers ticking at once on SQLite, four handles racing on PostgreSQL, and two servers on one PostgreSQL database.
 - **Deliveries.** A run's key is unique per trigger, so a redelivered webhook finds the run its first delivery recorded and nothing new happens.
-- **Firing.** A claimed run is held by its dispatcher for 11 minutes (the longest precheck and a margin) under a fence, its attempt number; recording its outcome needs the fence. If the dispatcher dies, another fires the run once the hold expires, and the task's idempotency key — `trigger:<tenant>/<trigger id>` and the run's key, in the operation registry's unique index — makes the second admission return the first's operation instead of starting another. Before admitting, the dispatcher also looks the key up, so a run re-rendered differently (a routed run, a trigger edited in between) still maps to its first task.
+- **Firing.** A claimed run is held by its dispatcher for 11 minutes (the longest precheck and a margin) under a fence, its attempt number; recording its outcome needs the fence. If the dispatcher dies, another fires the run once the hold expires, and the task's idempotency key — `trigger:<tenant>/<trigger id>` and the run's key, in the operation registry's unique index — makes the second admission return the first's operation instead of starting another. Before admitting, the dispatcher also looks the key up, so a run re-rendered differently (a routed run, whose fleet table changed in between) still maps to its first task.
 - **Stopping.** A run that cannot be admitted because its server is shutting down is not a failure: it stays pending, held 30 seconds, after which any dispatcher fires it. A server on a data directory releases its predecessor's holds when it starts, so a run left by a crash or a restart fires at once.
 - **Clocks.** Due times and holds use the dispatchers' clocks, not the database's: keep hosts on NTP. Tests inject a clock and never depend on wall-clock timing.
 
@@ -220,12 +239,13 @@ A run that **failed**, or a fired run whose task's **outcome** was not ok, count
 | `GET /v1/triggers/{t}` | One, by name or ID | `read` | `Trigger` |
 | `DELETE /v1/triggers/{t}` | Remove it and its runs | `run` | `TriggerRemoved` |
 | `POST /v1/triggers/{t}/enable`, `/disable` | `{}` | `run` | `Trigger` |
+| `POST /v1/triggers/{t}/mode` | `{"mode": "fire"}` or `{"mode": "observe"}` | `run` | `Trigger` |
 | `POST /v1/triggers/{t}/secret` | `{"secret": "…"}`, or `{}` to generate one | `run` | `SecretSet` |
 | `POST /v1/triggers/{t}/test` | `TriggerTestRequest` | `run` | `TriggerTest` |
-| `GET /v1/triggers/{t}/runs?limit=N` | Newest first; default 20, at most 200 | `read` | `TriggerRuns` |
+| `GET /v1/triggers/{t}/runs?limit=N&state=S` | Newest first; default 20, at most 200; `state` keeps only runs in it (`400` for an unknown one) | `read` | `TriggerRuns` |
 | `POST /v1/triggers/{id}/fire` | A webhook delivery; **no bearer token**, the signature instead | — | `FireAck` |
 
-Another tenant's trigger, or one on a repository the caller may not see, is `404 unknown_trigger`. A second trigger of one name in a tenant is `409 trigger_exists`. A spec the server refuses is `400 invalid_request` with the reason, or the task's own refusals (`403 provider_not_allowed`, `secret_not_allowed`, …). `branchyard-client` has a method per row (`Client::create_trigger`, `triggers`, `trigger`, `remove_trigger`, `enable_trigger`, `disable_trigger`, `set_trigger_secret`, `test_trigger`, `trigger_runs`); the types are in [`schema/contract.json`](../schema/contract.json).
+Another tenant's trigger, or one on a repository the caller may not see, is `404 unknown_trigger`. A second trigger of one name in a tenant is `409 trigger_exists`. A spec the server refuses is `400 invalid_request` with the reason, or the task's own refusals (`403 provider_not_allowed`, `secret_not_allowed`, …). `branchyard-client` has a method per row (`Client::create_trigger`, `triggers`, `trigger`, `remove_trigger`, `enable_trigger`, `disable_trigger`, `set_trigger_mode`, `set_trigger_secret`, `test_trigger`, `trigger_runs`); the types are in [`schema/contract.json`](../schema/contract.json).
 
 ```json
 POST /v1/triggers
@@ -369,6 +389,8 @@ Both are in [`schema/server.config.json`](../schema/server.config.json). Every s
 | The task a run fired | The operation registry, as any task | Yes |
 
 The PostgreSQL tables are created like the registry's: a dispatcher opening the store checks the catalog first, and makes only what is missing, each step alone in a transaction under the schema's advisory lock.
+
+A trigger's spec is kept as JSON in its row, and every server reads it strictly, refusing a field it does not know: a server older than a field a trigger uses (`mode: observe`) cannot read that trigger, and its list of the tenant's triggers fails. Upgrade every server on a shared database before using a new field. A trigger that uses none of them stays readable by older servers.
 
 ## Not yet
 

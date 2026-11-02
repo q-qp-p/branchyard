@@ -2533,6 +2533,19 @@ class TriggerSecretsAndPush(ServerCase):
         self.assertEqual((given[3], generated[3]), ({"secret": "mine"}, {}))
         self.assertEqual(len(given[2]["idempotency-key"]), 32)
 
+    def test_a_trigger_observes_and_its_runs_are_read_by_state(self):
+        observing = {"id": "trg_1", "name": "hook", "mode": "observe", "enabled": True}
+        self.fake.answer("POST", "/v1/triggers/hook/mode", (200, observing))
+        self.fake.answer("GET", "/v1/triggers/hook/runs", (200, {"runs": [{"id": "run_1", "state": "observed"}]}))
+        self.assertEqual(self.client.set_trigger_mode("hook", "observe").mode, "observe")
+        (sent,) = self.requests("POST", "/v1/triggers/hook/mode")
+        self.assertEqual(sent[3], {"mode": "observe"})
+        runs = self.client.trigger_runs("hook", limit=5, state="observed")
+        self.assertEqual([r.state for r in runs], ["observed"])
+        (asked,) = self.requests("GET", "/v1/triggers/hook/runs")
+        self.assertIn("state=observed", asked[1])
+        self.assertIn("limit=5", asked[1])
+
     def test_web_push_is_described_subscribed_tested_and_unsubscribed(self):
         info = {"enabled": True, "public_key": "BPk", "services": ["push.example"], "subscriptions": [], "kinds": []}
         self.fake.answer("GET", "/v1/app/push", (200, info))
@@ -3643,6 +3656,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/triggers/{t}": [lambda c, _r: c.trigger("t"), lambda c, _r: c.delete_trigger("t")],
     "/v1/triggers/{t}/disable": [lambda c, _r: c.enable_trigger("t", False)],
     "/v1/triggers/{t}/enable": [lambda c, _r: c.enable_trigger("t")],
+    "/v1/triggers/{t}/mode": [lambda c, _r: c.set_trigger_mode("t", "observe")],
     "/v1/triggers/{t}/runs": [lambda c, _r: c.trigger_runs("t")],
     "/v1/triggers/{t}/test": [lambda c, _r: c.test_trigger("t")],
     "/v1/triggers/{t}/secret": [lambda c, _r: c.set_trigger_secret("t")],

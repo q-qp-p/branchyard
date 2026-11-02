@@ -2033,8 +2033,9 @@ class Client:
         `name`, `repo`, `when`, `task`, and `deliver: {"branch": TEMPLATE,
         "busy": "queue" | "steer" | "skip", "lifecycle": {"idle_minutes": N,
         "dormant_days": N, "delete_days": N}}` for a branch that lives on
-        (each lifecycle threshold optional, rising when several are given).
-        Returns `{"trigger", "secret"?}`."""
+        (each lifecycle threshold optional, rising when several are given),
+        and `mode: "observe"` to record each run that would fire and start
+        nothing. Returns `{"trigger", "secret"?}`."""
         return Record(self.post("/v1/triggers", spec))
 
     def delete_trigger(self, name_or_id: str) -> None:
@@ -2045,6 +2046,11 @@ class Client:
         """Enable a trigger, or with `enabled=False` disable it; returns it."""
         verb = "enable" if enabled else "disable"
         return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/{verb}"))
+
+    def set_trigger_mode(self, name_or_id: str, mode: str) -> Record:
+        """`POST /v1/triggers/{t}/mode`: `"fire"`, or `"observe"` to record each run that would fire as
+        `observed`, with the task it would have started, and start nothing. Returns the trigger."""
+        return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/mode", {"mode": mode}))
 
     def test_trigger(
         self,
@@ -2058,9 +2064,11 @@ class Client:
         body = _drop_none({"event": event, "event_type": event_type, "run_precheck": run_precheck})
         return Record(self.post(f"/v1/triggers/{_q(name_or_id)}/test", body))
 
-    def trigger_runs(self, name_or_id: str, limit: Optional[int] = None) -> list[Record]:
-        """The trigger's recent runs, newest first, at most `limit`."""
-        return [Record(r) for r in self.get(f"/v1/triggers/{_q(name_or_id)}/runs", limit=limit).get("runs", [])]
+    def trigger_runs(self, name_or_id: str, limit: Optional[int] = None, state: Optional[str] = None) -> list[Record]:
+        """The trigger's recent runs, newest first, at most `limit`; with `state` (such as `"observed"`), only
+        those in it."""
+        query = _drop_none({"limit": limit, "state": state})
+        return [Record(r) for r in self.get(f"/v1/triggers/{_q(name_or_id)}/runs", **query).get("runs", [])]
 
     def set_trigger_secret(self, name_or_id: str, secret: Optional[str] = None, key: Optional[str] = None) -> Record:
         """`POST /v1/triggers/{t}/secret`: set the webhook secret, or

@@ -279,6 +279,50 @@ impl Busy {
     }
 }
 
+/// What a trigger does with a run that would fire.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerMode {
+    /// Start the task, or continue the branch it delivers to.
+    #[default]
+    Fire,
+    /// Record the run as `observed`, with the task it would have started,
+    /// and start nothing: no task, no send, and none of the lifecycle of a
+    /// branch it delivers to. For reading what a trigger would do before
+    /// letting it.
+    Observe,
+}
+
+impl TriggerMode {
+    /// The wire name: `fire` or `observe`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TriggerMode::Fire => "fire",
+            TriggerMode::Observe => "observe",
+        }
+    }
+
+    /// The default: a run that would fire starts its task.
+    pub fn is_fire(&self) -> bool {
+        *self == TriggerMode::Fire
+    }
+}
+
+impl std::str::FromStr for TriggerMode {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        match text {
+            "fire" => Ok(TriggerMode::Fire),
+            "observe" => Ok(TriggerMode::Observe),
+            other => Err(format!(
+                "{other:?} is not a trigger mode; use fire or observe"
+            )),
+        }
+    }
+}
+
 /// How a trigger behaves over time.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +398,10 @@ pub struct TriggerSpec {
     pub precheck: Option<Precheck>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub enabled: bool,
+    /// `observe` records each run that would fire and starts nothing;
+    /// default `fire`.
+    #[serde(default, skip_serializing_if = "TriggerMode::is_fire")]
+    pub mode: TriggerMode,
     #[serde(default)]
     pub policy: TriggerPolicy,
     /// The webhook signing secret: one you choose for GitHub or a generic
@@ -383,6 +431,9 @@ pub struct Trigger {
     pub precheck: Option<Precheck>,
     pub policy: TriggerPolicy,
     pub enabled: bool,
+    /// Whether a run that would fire starts its task or is only recorded.
+    #[serde(default)]
+    pub mode: TriggerMode,
     /// Why it is disabled: by whom, or after which failures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_reason: Option<String>,
@@ -630,6 +681,10 @@ pub enum RunState {
     /// The branch it delivers to was running a turn, and its `busy`
     /// policy is `skip`.
     SkippedBusy,
+    /// The trigger observes: the run matched and passed its precheck, and
+    /// `task` is what it would have started. Nothing was started. Counts
+    /// neither as a success nor as a failure.
+    Observed,
     /// Not a firing: a step of the lifecycle of a branch the trigger
     /// delivers to that its own log cannot keep, such as its deletion.
     /// `reason` says which, and `branches` names the branch. Counts
@@ -650,6 +705,7 @@ impl RunState {
             RunState::SkippedPrecheck => "skipped_precheck",
             RunState::SkippedDisabled => "skipped_disabled",
             RunState::SkippedBusy => "skipped_busy",
+            RunState::Observed => "observed",
             RunState::Lifecycle => "lifecycle",
             RunState::Failed => "failed",
             RunState::Missed => "missed",
@@ -664,6 +720,7 @@ impl RunState {
             RunState::SkippedPrecheck,
             RunState::SkippedDisabled,
             RunState::SkippedBusy,
+            RunState::Observed,
             RunState::Lifecycle,
             RunState::Failed,
             RunState::Missed,
@@ -706,6 +763,11 @@ pub struct TriggerRun {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precheck: Option<PrecheckResult>,
+    /// For `observed`: the task it would have created, rendered (and
+    /// routed); its `name` is the branch, or the branch it would have
+    /// continued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskRequest>,
     /// The task's operation, once fired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<String>,
@@ -754,6 +816,16 @@ pub struct TriggerRemoved {
 #[serde(deny_unknown_fields)]
 pub struct TriggerToggle {}
 
+/// `POST /v1/triggers/{t}/mode`: fire, or only observe. Leaves whether
+/// it is enabled, its failure count and its next time alone.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerModeRequest {
+    /// `fire` or `observe`.
+    pub mode: TriggerMode,
+}
+
 impl Client {
     /// Create a trigger. An event trigger without a secret gets a
     /// generated one, returned here once.
@@ -793,6 +865,21 @@ impl Client {
         )
     }
 
+    /// Fire, or only observe: record each run that would fire and start
+    /// nothing.
+    pub fn set_trigger_mode(
+        &self,
+        name: &str,
+        mode: TriggerMode,
+        key: &str,
+    ) -> Result<Trigger, Error> {
+        self.post(
+            &format!("/v1/triggers/{}/mode", encode(name)),
+            &TriggerModeRequest { mode },
+            key,
+        )
+    }
+
     /// Set the webhook secret, or generate one with `None`.
     pub fn set_trigger_secret(
         &self,
@@ -817,10 +904,21 @@ impl Client {
         self.post(&format!("/v1/triggers/{}/test", encode(name)), request, key)
     }
 
-    /// Its most recent runs, newest first.
-    pub fn trigger_runs(&self, name: &str, limit: usize) -> Result<Vec<TriggerRun>, Error> {
+    /// Its most recent runs, newest first; with `state`, only those in it.
+    pub fn trigger_runs(
+        &self,
+        name: &str,
+        state: Option<RunState>,
+        limit: usize,
+    ) -> Result<Vec<TriggerRun>, Error> {
+        let state = state
+            .map(|s| format!("&state={}", s.as_str()))
+            .unwrap_or_default();
         Ok(self
-            .get::<TriggerRuns>(&format!("/v1/triggers/{}/runs?limit={limit}", encode(name)))?
+            .get::<TriggerRuns>(&format!(
+                "/v1/triggers/{}/runs?limit={limit}{state}",
+                encode(name)
+            ))?
             .runs)
     }
 }

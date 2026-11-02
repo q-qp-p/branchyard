@@ -205,6 +205,8 @@ pub fn contract() -> Value {
     entry::<triggers::FireAck>("FireAck", &mut types);
     entry::<triggers::TriggerRemoved>("TriggerRemoved", &mut types);
     entry::<triggers::TriggerToggle>("TriggerToggle", &mut types);
+    entry::<triggers::TriggerMode>("TriggerMode", &mut types);
+    entry::<triggers::TriggerModeRequest>("TriggerModeRequest", &mut types);
     entry::<companion::PairRequest>("PairRequest", &mut types);
     entry::<companion::Paired>("Paired", &mut types);
     entry::<companion::Me>("Me", &mut types);

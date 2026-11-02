@@ -20,8 +20,8 @@ use branchyard::{Activity, LifecycleState};
 use branchyard_client::api::{OperationKind, OperationState, PolicySpec, SendRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_client::triggers::{
-    Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RunState, TriggerPolicy,
-    TriggerRun, TriggerSpec, TriggerTestRequest, When,
+    Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RunState, TriggerMode,
+    TriggerPolicy, TriggerRun, TriggerSpec, TriggerTestRequest, When,
 };
 use branchyard_client::Client;
 use branchyard_server::config::MetricsConfig;
@@ -85,6 +85,7 @@ fn spec(name: &str, when: When, prompt: &str) -> TriggerSpec {
         deliver: None,
         precheck: None,
         enabled: true,
+        mode: TriggerMode::Fire,
         policy: TriggerPolicy::default(),
         secret: None,
     }
@@ -104,7 +105,7 @@ fn runs_when(
     done: impl Fn(&[TriggerRun]) -> bool,
 ) -> Vec<TriggerRun> {
     wait::until(what, || {
-        let runs = client.trigger_runs(trigger, 50).unwrap();
+        let runs = client.trigger_runs(trigger, None, 50).unwrap();
         match done(&runs) {
             true => Ok(runs),
             false => Err(states(&runs)),
@@ -187,7 +188,7 @@ fn a_schedule_fires_once_when_the_clock_reaches_it_and_its_outcome_is_recorded()
     assert_eq!(trigger.webhook_url, None);
     // Nothing before its time, however often the dispatcher looks.
     two_more_looks(&server, "the dispatcher to look, and find nothing due");
-    assert!(client.trigger_runs("nightly", 10).unwrap().is_empty());
+    assert!(client.trigger_runs("nightly", None, 10).unwrap().is_empty());
 
     clock.store(T0 + 3_600_000 + 5_000, Ordering::SeqCst);
     let runs = runs_when(&client, "nightly", "the scheduled run to fire", |runs| {
@@ -207,7 +208,7 @@ fn a_schedule_fires_once_when_the_clock_reaches_it_and_its_outcome_is_recorded()
     assert_eq!(shown.next_due_ms, Some(T0 + 7_200_000));
     // Still once, after more looks at the same time.
     two_more_looks(&server, "more looks at the same time");
-    assert_eq!(client.trigger_runs("nightly", 10).unwrap().len(), 1);
+    assert_eq!(client.trigger_runs("nightly", None, 10).unwrap().len(), 1);
     let prompt = client.repo("app").branch("nightly-20260921-1513").unwrap();
     assert_eq!(prompt.name, "nightly-20260921-1513");
 }
@@ -884,13 +885,224 @@ fn github_deliveries_are_verified_matched_rendered_and_never_fired_twice() {
     );
     assert_eq!(status, 404);
     // Exactly one task in all of that.
-    let runs = client.trigger_runs("issues", 50).unwrap();
+    let runs = client.trigger_runs("issues", None, 50).unwrap();
     assert_eq!(
         runs.iter().filter(|r| r.state == RunState::Fired).count(),
         1,
         "{runs:?}"
     );
     assert_eq!(runs.len(), 2, "the fired one and the skipped one");
+}
+
+/// An observing trigger records each run that would fire, with the task it
+/// would have started, and starts nothing. Switched to fire, it fires new
+/// events; an event it observed stays observed when redelivered.
+#[test]
+fn an_observing_trigger_records_what_it_would_start_and_starts_nothing() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    with_clock(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let app = client.repo("app");
+    let mut s = spec(
+        "watch",
+        event(EventSource::Github),
+        "WRITE issue-{{event.number}}.txt={{event.title}}",
+    );
+    s.secret = Some("gh-secret".into());
+    s.conditions = Conditions {
+        kind: vec!["issues.*".into()],
+        label: vec!["agent".into()],
+        ..Conditions::default()
+    };
+    s.task.name = Some("fix-{{event.number}}".into());
+    s.mode = TriggerMode::Observe;
+    let created = client.create_trigger(&s, &new_key()).unwrap();
+    assert_eq!(created.trigger.mode, TriggerMode::Observe);
+    assert!(created.trigger.enabled);
+    let id = created.trigger.id.clone();
+    let send = |body: &str, delivery: &str| {
+        deliver(
+            &server,
+            &id,
+            &github_headers("gh-secret", "issues", delivery, body),
+            body,
+        )
+    };
+
+    let body = issue(42, "Parser-crash", &["agent"]);
+    let (status, ack) = send(&body, "d-1");
+    assert_eq!(status, 202, "{ack}");
+    let runs = runs_when(&client, "watch", "the run to be observed", |runs| {
+        runs.iter().any(|r| r.state == RunState::Observed)
+    });
+    let observed = &runs[0];
+    assert_eq!(observed.state, RunState::Observed, "{runs:?}");
+    let task = observed
+        .task
+        .as_ref()
+        .expect("the task it would have started");
+    assert_eq!(task.name.as_deref(), Some("fix-42"));
+    assert_eq!(task.prompt, "WRITE issue-42.txt=Parser-crash");
+    assert_eq!(task.harness.as_deref(), Some("gemini-cli"));
+    assert_eq!(
+        (observed.operation.as_ref(), observed.reason.as_ref()),
+        (None, None)
+    );
+    assert!(observed.branches.is_empty(), "{observed:?}");
+    assert!(observed.finished_at_ms.is_some());
+    // Unmatched events are skipped as ever; reading by state finds the
+    // observed one among them.
+    let (_, ack) = send(&issue(43, "Other", &["bug"]), "d-2");
+    assert_eq!(ack["run"]["state"], "skipped_condition");
+    let only = client
+        .trigger_runs("watch", Some(RunState::Observed), 10)
+        .unwrap();
+    assert_eq!(only.len(), 1, "{only:?}");
+    assert_eq!(only[0].id, observed.id);
+    let (status, _, text) = raw(
+        server.addr,
+        &get("/v1/triggers/watch/runs?state=nope", Some(common::TOKEN)),
+    );
+    assert_eq!(status, 400, "{text}");
+    // Nothing started: no task, no branch, no failure counted.
+    assert!(app.tasks().unwrap().is_empty());
+    assert!(app.branches().unwrap().is_empty());
+    assert_eq!(client.trigger("watch").unwrap().consecutive_failures, 0);
+    // A test says it matches, and that it would only be recorded.
+    let tested = client
+        .test_trigger(
+            "watch",
+            &TriggerTestRequest {
+                event: Some(serde_json::from_str(&body).unwrap()),
+                event_type: Some("issues".into()),
+                run_precheck: false,
+            },
+            &new_key(),
+        )
+        .unwrap();
+    assert!(tested.matched && !tested.would_fire, "{tested:?}");
+    assert!(
+        tested.reason.as_deref().unwrap().contains("observes"),
+        "{tested:?}"
+    );
+
+    // Switched to fire: enabled as it was, and new events fire.
+    let fired = client
+        .set_trigger_mode("watch", TriggerMode::Fire, &new_key())
+        .unwrap();
+    assert_eq!((fired.mode, fired.enabled), (TriggerMode::Fire, true));
+    // The observed event, redelivered, is the run it was: nothing fires.
+    let (status, ack) = send(&body, "d-1-again");
+    assert_eq!(status, 200, "{ack}");
+    assert_eq!(ack["duplicate"], true);
+    assert_eq!(ack["run"]["state"], "observed");
+    assert_eq!(ack["run"]["id"], serde_json::json!(observed.id));
+    let (status, _) = send(&issue(44, "New-crash", &["agent"]), "d-3");
+    assert_eq!(status, 202);
+    let runs = runs_when(&client, "watch", "the new event to fire", |runs| {
+        runs.iter().any(|r| r.state == RunState::Fired)
+    });
+    let fired = runs.iter().find(|r| r.state == RunState::Fired).unwrap();
+    assert_eq!(fired.branches, ["fix-44"]);
+    assert_eq!(fired.task, None);
+    let op = await_operation(&client, fired.operation.as_ref().unwrap());
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    let tasks = app.tasks().unwrap();
+    assert_eq!(tasks.len(), 1, "one task in all of that: {tasks:?}");
+    let names: Vec<String> = app
+        .branches()
+        .unwrap()
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(names, ["fix-44"]);
+    // And back: the mode is the trigger's to set, by name, with `run`.
+    let back = client
+        .set_trigger_mode("watch", TriggerMode::Observe, &new_key())
+        .unwrap();
+    assert_eq!(back.mode, TriggerMode::Observe);
+    let err = client
+        .set_trigger_mode("nope", TriggerMode::Fire, &new_key())
+        .unwrap_err();
+    assert_eq!(err.code(), Some("unknown_trigger"));
+}
+
+/// An observing trigger that delivers to a branch touches no branch: its
+/// schedule keeps its times and records what it would send, and the
+/// lifecycle of the branch it delivered to while it fired stops.
+#[test]
+fn an_observing_schedule_sends_nothing_and_its_branch_rests_untouched() {
+    const DAY: u64 = 86_400_000;
+    let f = Fixture::new();
+    let mut config = f.config();
+    let clock = with_clock(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let app = client.repo("app");
+    let mut s = spec(
+        "heartbeat",
+        When::Interval { seconds: 60 },
+        "WRITE beat.txt={{scheduled_at}}",
+    );
+    s.deliver = Some(Deliver {
+        branch: "assistant".into(),
+        busy: Busy::Queue,
+        lifecycle: Some(Lifecycle {
+            idle_minutes: None,
+            dormant_days: None,
+            delete_days: Some(1),
+        }),
+    });
+    client.create_trigger(&s, &new_key()).unwrap();
+    // Firing, its first run creates the branch.
+    clock.store(T0 + 60_000 + 5_000, Ordering::SeqCst);
+    let runs = runs_when(&client, "heartbeat", "the first run to fire", |runs| {
+        runs.iter().any(|r| r.state == RunState::Fired)
+    });
+    let op = await_operation(&client, runs[0].operation.as_ref().unwrap());
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    runs_when(&client, "heartbeat", "the run to settle", |runs| {
+        runs[0].outcome.is_some()
+    });
+    assert_eq!(app.branch("assistant").unwrap().turns, 1);
+
+    // Observing, two days after the branch's last turn: past its
+    // delete_days, and many scheduled times later.
+    let observing = client
+        .set_trigger_mode("heartbeat", TriggerMode::Observe, &new_key())
+        .unwrap();
+    assert_eq!(observing.mode, TriggerMode::Observe);
+    let later = branchyard_support::time::now_ms().max(T0) + 2 * DAY;
+    clock.store(later, Ordering::SeqCst);
+    let runs = runs_when(&client, "heartbeat", "a run to be observed", |runs| {
+        runs.iter().any(|r| r.state == RunState::Observed)
+    });
+    let observed = runs.iter().find(|r| r.state == RunState::Observed).unwrap();
+    assert_eq!(
+        observed.task.as_ref().unwrap().name.as_deref(),
+        Some("assistant")
+    );
+    assert!(observed.branches.is_empty());
+    assert!(observed.scheduled_ms.unwrap() > T0 + 60_000);
+    two_more_looks(&server, "the lifecycle to look again");
+    // The branch is as it was: not sent to, not deleted.
+    let branch = app.branch("assistant").unwrap();
+    assert_eq!(branch.turns, 1);
+    assert_eq!(app.branches().unwrap().len(), 1);
+    let runs = client.trigger_runs("heartbeat", None, 50).unwrap();
+    assert!(
+        runs.iter().all(|r| r.state != RunState::Lifecycle),
+        "{}",
+        states(&runs)
+    );
+    let shown = client.trigger("heartbeat").unwrap();
+    assert!(
+        shown.next_due_ms.unwrap() > later,
+        "the schedule keeps its times"
+    );
+    assert_eq!(shown.consecutive_failures, 0);
 }
 
 #[test]
@@ -1162,7 +1374,7 @@ fn slack_tests_and_tenants() {
         .unwrap();
     assert!(!tested.would_fire);
     assert!(tested.reason.unwrap().contains("does not contain fix"));
-    assert!(acme.trigger_runs("mentions", 10).unwrap().is_empty());
+    assert!(acme.trigger_runs("mentions", None, 10).unwrap().is_empty());
     assert!(acme.repo("app").branches().unwrap().is_empty());
 
     // Validation at creation: an unknown placeholder, a bad cron.
@@ -1214,7 +1426,7 @@ fn a_run_recorded_before_a_restart_fires_after_it() {
     // recorded is still pending.
     let store = branchyard_server::triggers::store::open(&config).unwrap();
     assert_eq!(
-        states(&store.runs(&created.trigger.id, 10).unwrap()),
+        states(&store.runs(&created.trigger.id, None, 10).unwrap()),
         "[pending ()]"
     );
     drop(store);
@@ -1411,7 +1623,7 @@ fn email_deliveries_fire_once(config: Config) {
             .contains("eve@evil.example is not on this trigger's allowlist"),
         "{ack}"
     );
-    let runs = client.trigger_runs("mail", 50).unwrap();
+    let runs = client.trigger_runs("mail", None, 50).unwrap();
     assert_eq!(runs.len(), 1, "one run in all of that: {runs:?}");
 
     // Postmark signs nothing: the secret in the URL, or as a password.
@@ -1600,7 +1812,7 @@ mod postgres {
             handles.into_iter().map(|h| h.join().unwrap()).sum()
         });
         assert_eq!(won, 1);
-        assert_eq!(stores[1].runs(&t.id, 10).unwrap().len(), 1);
+        assert_eq!(stores[1].runs(&t.id, None, 10).unwrap().len(), 1);
         // Pending runs too: each is claimed by one of the racing stores.
         let e = conformance::trigger("acme", "events", false);
         assert!(stores[0].create(&e).unwrap());
@@ -1664,7 +1876,7 @@ mod postgres {
         // The other server looked at the same time after the run was
         // claimed, and claimed nothing.
         two_more_looks(&b, "the other server to look at the same time");
-        let runs_b = b.client().trigger_runs("both", 10).unwrap();
+        let runs_b = b.client().trigger_runs("both", None, 10).unwrap();
         assert_eq!(runs_b.len(), 1, "{runs_b:?}");
         assert_eq!(
             await_operation(&client, runs[0].operation.as_ref().unwrap()).state,

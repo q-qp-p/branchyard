@@ -4958,11 +4958,26 @@
             box.disabled = false;
           }
         });
+        const observing = t.mode === 'observe';
+        const watch = h('input', { type: 'checkbox', id: nextId('trigger-mode'), checked: observing, disabled: !can('run') });
+        watch.addEventListener('change', async () => {
+          watch.disabled = true;
+          try {
+            await api('POST', `/v1/triggers/${enc(t.id)}/mode`, { mode: watch.checked ? 'observe' : 'fire' });
+            toast(watch.checked ? `${t.name} observes: its runs are recorded, nothing starts.` : `${t.name} fires.`);
+            renderTriggers();
+          } catch (e) {
+            watch.checked = !watch.checked;
+            toast(`Could not change ${t.name}: ${e.message}`);
+            watch.disabled = false;
+          }
+        });
         return h('li', { class: 'item' },
-          h('div', { class: 'item-head' }, dot(t.enabled ? 'ready' : 'done'), h('span', { class: 'item-name', text: t.name }), h('span', { class: 'tag', text: t.enabled ? 'enabled' : 'disabled' })),
+          h('div', { class: 'item-head' }, dot(t.enabled ? 'ready' : 'done'), h('span', { class: 'item-name', text: t.name }), h('span', { class: 'tag', text: t.enabled ? 'enabled' : 'disabled' }), observing ? h('span', { class: 'tag', text: 'observing' }) : null),
           h('div', { class: 'item-meta', text: [t.repo, whenText(t.when), t.next_due_ms ? `next ${new Date(t.next_due_ms).toLocaleString()}` : null].filter(Boolean).join(' · ') }),
           t.paused_reason ? h('div', { class: 'item-meta', text: t.paused_reason }) : null,
-          h('label', { class: 'toggle', for: box.id }, box, h('span', { text: 'Enabled' })));
+          h('label', { class: 'toggle', for: box.id }, box, h('span', { text: 'Enabled' })),
+          h('label', { class: 'toggle', for: watch.id }, watch, h('span', { text: 'Observe only' })));
       })) : h('p', { class: 'muted', text: 'No triggers. by trigger add makes one.' })));
   }
 

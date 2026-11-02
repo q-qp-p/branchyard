@@ -936,8 +936,8 @@ pub enum Command {
     },
     /// Run tasks on a schedule or from webhooks
     ///
-    /// Add, list, show, test, enable, disable and rm triggers, and see their runs (see
-    /// docs/triggers.md).
+    /// Add, list, show, test, enable, disable and rm triggers, let them fire or only observe,
+    /// and see their runs (see docs/triggers.md).
     #[command(
         display_order = 503,
         subcommand_required = true,

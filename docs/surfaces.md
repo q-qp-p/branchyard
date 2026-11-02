@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->131<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->132<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -1040,3 +1040,23 @@ A repository's `.agents/skills/` are text its writers committed, so they take th
 | `TaskOptions::repository_skills` (`SkillGate::Withheld`, `Trusted`, `Allowed`) | none | read when `run`, a fan or `run_attempts` creates a branch: its repository's `.agents/skills/` at the base commit are staged when allowed, else withheld with the reason; fixed with the branch (`BranchSkills`) and inherited by forks, reincarnations and delegated children; withheld by default |
 | `allow_repository_skills` in the server's JSON config | none | `true` or served repository names (`schema/server.config.json`); the server stages those repositories' skills for the branches it creates, and withholds every other's; never from a request or the repository's `branchyard.toml` |
 | `by rm`, `Yard::remove` | the branch's skill cache stayed | also delete `.branchyard/capabilities/<blake3 of the branch name>/` |
+
+## Added with observing triggers
+
+A trigger can observe: record each run that would fire, with the task it would have started, and start nothing ([observe before firing](triggers.md#observe-before-firing)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| Create a trigger that observes | no | `trigger add … --observe` | yes | `POST /v1/triggers` with `"mode": "observe"` | `create_trigger` (`TriggerSpec::mode`); Python `create_trigger({"mode": "observe", …})` | no |
+| Let it fire, or only observe | no | `trigger mode NAME fire\|observe` | yes | `POST /v1/triggers/{t}/mode` (`TriggerModeRequest`) | `set_trigger_mode`; Python `set_trigger_mode` | no |
+| Read runs in one state | no | `trigger runs NAME --state STATE` | yes | `GET /v1/triggers/{t}/runs?state=STATE` | `trigger_runs(name, state, limit)`; Python `trigger_runs(name, limit, state)` | no |
+
+| Surface | Before | Now |
+|---|---|---|
+| `TriggerSpec`, `Trigger` | no mode | `mode` (`TriggerMode`: `fire`, the default, or `observe`), kept in the trigger's stored spec; no new column |
+| `RunState`, `TriggerRun` | `fired`, the skips, `lifecycle`, `failed`, `missed` | also `observed`, with `TriggerRun::task`, the rendered task it would have created |
+| `TriggerTest` | `would_fire` when it matches, passes its precheck and is enabled | also not while it observes, with the reason |
+| `TriggerStore` | no way to change a spec | `set_mode`; `runs` takes a state; both on SQLite and PostgreSQL, in the conformance suite |
+| `Client::trigger_runs` | `(name, limit)` | `(name, state, limit)` |
+| The lifecycle of a branch a trigger delivers to | acts while the trigger is enabled | and fires: an observing trigger acts on no branch |
+| Console triggers view | an Enabled toggle | also an `observing` tag and an "Observe only" toggle (`POST …/mode`) |
