@@ -6,6 +6,8 @@ import shutil
 import sys
 
 root = Path(__file__).parent
+if "exec" in sys.argv and (root / "fail-exec").exists():
+    sys.exit(1)
 source = Path(__file__).resolve().parents[3] / "branchyard-container/src/fake_docker.py"
 if sys.argv[1:5] == ["--host", "unix:///var/run/docker.sock", "container", "create"]:
     for name in ("workspace", "home"):
