@@ -45,6 +45,46 @@ It calls real harnesses, so it needs their CLIs installed and logged in. `Policy
 anything your user can; use a narrower `Policy` (or `Policy::deny_all()` and rules) where that is too much.
 `Yard::open_configured` reads `branchyard.toml` as `by` does, and `Yard::up` brings the configured backends up.
 
+## Native allocation
+
+Native provider options are typed and reject unknown fields. Validate them before creating a task; images must
+be pinned by SHA-256 digest and contain the selected harness. The worker authenticates its transport, while the
+workload receives only its private workspace, home and explicitly passed environment.
+
+```rust,no_run
+use branchyard::{AgentSandboxOptions, AgentSandboxRuntime, Provider, Yard};
+
+let options = AgentSandboxOptions {
+    context: "gke_project_zone_cluster".into(),
+    namespace: "branchyard-microvm".into(),
+    image: std::env::var("BRANCHYARD_RUNTIME_IMAGE")?,
+    runtime: AgentSandboxRuntime::Microvm,
+    ..AgentSandboxOptions::default()
+};
+options.validate()?;
+let branch = Yard::open(".")?
+    .task("Update the parser and run its checks")
+    .provider(Provider::agent_sandbox(options))
+    .run()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Provider::container(ContainerOptions { image, ..ContainerOptions::default() })` uses the worker's local Docker
+daemon with gVisor by default. Both native paths copy workspace and private home in and back, allocate a fresh
+sandbox on every follow-up, and destroy the allocation after capture or cancellation. They offer no retained
+sandbox, pause, checkpoint, host mount, or required proxy-egress support. The image, security, runtime, resource
+and network contracts are described in [the container guide](../../docs/container-sandbox.md) and
+[the Agent Sandbox guide](../../docs/agent-sandbox.md).
+
+A failed workspace copy-back fails an otherwise completed turn, even when it has no artifact capture contract.
+The allocation is still destroyed, and its transfer warning is retained in the branch events.
+Cancellation keeps its interrupted outcome when that return transport also fails.
+
+Hermetic evidence: `cargo test -p branchyard --test native --locked --offline` drives the real engine through
+fake Docker and kubectl commands, checking private-home/workspace copy-back, fresh follow-ups, cancellation,
+capture failure cleanup and refusal before allocation. Not done: live runtime isolation qualification or a model
+run in these tests.
+
 ## Features
 
 | Feature | Adds | Needs |
