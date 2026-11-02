@@ -470,24 +470,6 @@ fn is_transient(error: &io::Error) -> bool {
     )
 }
 
-/// A parsed request head.
-struct Head {
-    method: String,
-    target: String,
-    version: String,
-    headers: Vec<(String, String)>,
-}
-
-impl Head {
-    /// The first header named `name`, case-insensitively.
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-}
-
 /// A `CONNECT` the proxy will look inside.
 struct Opened {
     host: String,
@@ -505,7 +487,7 @@ fn handle(stream: TcpStream, shared: &Shared) {
     };
     let mut client = BufReader::new(stream);
     let mut out = writer;
-    let head = match read_head(&mut client) {
+    let head = match read_request(&mut client) {
         Ok(Some(head)) => head,
         Ok(None) => return,
         Err(why) => {
@@ -643,7 +625,7 @@ fn handle(stream: TcpStream, shared: &Shared) {
             return;
         }
     } else {
-        let mut request = format!("{} {} {}\r\n", head.method, path, head.version);
+        let mut request = format!("{} {} HTTP/1.{}\r\n", head.method, path, head.minor);
         for (name, value) in &head.headers {
             let lower = name.to_ascii_lowercase();
             if lower.starts_with("proxy-")
@@ -891,7 +873,7 @@ fn inspect(
     let host = opened.host;
     let port = opened.port;
     let mut reader = BufReader::new(inner);
-    let head = match read_head(&mut reader) {
+    let head = match read_request(&mut reader) {
         Ok(Some(head)) => head,
         Ok(None) => return reader.get_mut().close(),
         Err(why) => return refuse(reader.get_mut(), 400, "Bad Request", &why),
@@ -981,7 +963,7 @@ fn inspect(
         Ok(framing) => framing,
         Err(why) => return refuse(reader.get_mut(), 400, "Bad Request", &why.to_string()),
     };
-    let mut request = format!("{} {path} {}\r\n", head.method, head.version);
+    let mut request = format!("{} {path} HTTP/1.{}\r\n", head.method, head.minor);
     let mut expects_continue = false;
     for (name, value) in &head.headers {
         let lower = name.to_ascii_lowercase();
@@ -996,7 +978,7 @@ fn inspect(
         }
         request.push_str(&format!("{name}: {value}\r\n"));
     }
-    if head.header("host").is_none() {
+    if wire::header(&head.headers, "host").is_none() {
         let default = tls && port == 443 || !tls && port == 80;
         let value = match default {
             true => bracketed(&host),
@@ -1077,9 +1059,9 @@ fn request_path(target: &str) -> Result<String, String> {
 
 /// The host a request's `Host` header names when it is not `host`, the
 /// connection's.
-fn host_mismatch(head: &Head, host: &str) -> Option<String> {
-    let value = head.header("host")?;
-    match split_authority(value) {
+fn host_mismatch(head: &wire::RequestHead, host: &str) -> Option<String> {
+    let value = wire::header(&head.headers, "host")?;
+    match read_authority(value) {
         Ok((named, _)) if named == host => None,
         Ok((named, _)) => Some(named),
         Err(_) => Some(value.to_owned()),
@@ -1153,66 +1135,51 @@ fn authority(host: &str, port: u16) -> String {
     format!("{}:{port}", bracketed(host))
 }
 
-/// Read a request head: `None` when the client closed before sending one.
-fn read_head<R: Read>(client: &mut BufReader<R>) -> Result<Option<Head>, String> {
-    let mut lines = Vec::new();
-    let mut total = 0;
-    loop {
-        let mut line = Vec::new();
-        let read = client
-            .by_ref()
-            .take((HEAD_MAX - total + 1) as u64)
-            .read_until(b'\n', &mut line)
-            .map_err(|e| format!("could not read the request: {e}"))?;
-        if read == 0 {
-            if lines.is_empty() {
-                return Ok(None);
+/// Read one request head with the wire crate: `None` when the client closed
+/// before sending one. Blank lines before the request line are skipped, and
+/// count against the same `HEAD_MAX` as the head itself.
+fn read_request<R: Read>(client: &mut BufReader<R>) -> Result<Option<wire::RequestHead>, String> {
+    let mut used = 0;
+    let raw = loop {
+        let raw = match wire::read_head(client, HEAD_MAX.saturating_sub(used)) {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                return Err(match error {
+                    wire::WireError::Io { .. } => format!("could not read the request: {error}"),
+                    _ => error.to_string(),
+                })
             }
-            return Err("the request head ended early".into());
-        }
-        total += read;
-        if total > HEAD_MAX {
-            return Err("the request head is too large".into());
-        }
-        let text = String::from_utf8(line).map_err(|_| "the request head is not UTF-8")?;
-        let text = text.trim_end_matches(['\r', '\n']).to_owned();
-        if text.is_empty() {
-            if lines.is_empty() {
-                // Tolerate a blank line before the request line.
-                continue;
-            }
-            break;
-        }
-        lines.push(text);
-    }
-    let mut parts = lines[0].split(' ');
-    let (Some(method), Some(target), Some(version), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return Err("the request line is not METHOD TARGET VERSION".into());
-    };
-    if !version.starts_with("HTTP/1.") {
-        return Err(format!("{version} is not HTTP/1"));
-    }
-    let mut headers = Vec::new();
-    for line in &lines[1..] {
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(format!("{line:?} is not a header"));
         };
-        headers.push((name.trim().to_owned(), value.trim().to_owned()));
+        used += raw.len();
+        if matches!(raw.as_slice(), b"\r\n" | b"\n") {
+            continue;
+        }
+        break raw;
+    };
+    if std::str::from_utf8(&raw).is_err() {
+        return Err("the request head is not UTF-8".into());
     }
-    Ok(Some(Head {
-        method: method.to_owned(),
-        target: target.to_owned(),
-        version: version.to_owned(),
-        headers,
-    }))
+    wire::parse_request_head(&raw).map(Some).map_err(|error| {
+        // The parser says what is malformed, not which line: the request
+        // line on its own tells a bad request line from a bad header.
+        let mut first = raw
+            .split_inclusive(|&b| b == b'\n')
+            .next()
+            .unwrap_or_default()
+            .to_vec();
+        first.extend_from_slice(b"\r\n");
+        match wire::parse_request_head(&first) {
+            Err(_) => "the request line is not METHOD TARGET VERSION".to_owned(),
+            Ok(_) => error.to_string(),
+        }
+    })
 }
 
 /// The destination and, for plain HTTP, the origin-form path.
-fn parse_target(head: &Head) -> Result<(String, u16, String), String> {
+fn parse_target(head: &wire::RequestHead) -> Result<(String, u16, String), String> {
     if head.method == "CONNECT" {
-        let (host, port) = split_authority(&head.target)?;
+        let (host, port) = read_authority(&head.target)?;
         let port = port.ok_or("CONNECT needs host:port")?;
         return Ok((host, port, String::new()));
     }
@@ -1228,53 +1195,49 @@ fn parse_target(head: &Head) -> Result<(String, u16, String), String> {
         }
         None => return Err("the target is not an absolute http URI".into()),
     };
-    let (authority, path) = match rest.find(['/', '?']) {
-        Some(at) => (&rest[..at], rest[at..].to_owned()),
-        None => (rest, "/".to_owned()),
-    };
-    let path = match path.starts_with('?') {
-        true => format!("/{path}"),
-        false => path,
-    };
-    let (host, port) = split_authority(authority)?;
-    Ok((host, port.unwrap_or(80), path))
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let (host, port) = read_authority(authority)?;
+    let url = wire::HttpUrl::parse(&format!("http://{rest}")).map_err(|e| e.to_string())?;
+    Ok((host, port.unwrap_or(80), url.target()))
 }
 
-/// `host[:port]` or `[v6][:port]`, without user information.
-fn split_authority(authority: &str) -> Result<(String, Option<u16>), String> {
+/// `host[:port]` or `[v6][:port]` and nothing more, read by the wire
+/// crate's URL parser. The host is as the decision sees it (lower case, no
+/// trailing dot); the port is `None` when the authority names none.
+fn read_authority(authority: &str) -> Result<(String, Option<u16>), String> {
     if authority.contains('@') {
         return Err("user information in the target is not forwarded".into());
     }
-    let (host, port) = match authority.strip_prefix('[') {
-        Some(rest) => {
-            let (host, after) = rest.split_once(']').ok_or("an IPv6 host needs a ]")?;
-            match after {
-                "" => (host, None),
-                p => (host, Some(p.strip_prefix(':').ok_or("bad port")?)),
-            }
-        }
-        None => match authority.rsplit_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
-        },
+    let read = |scheme: &str| {
+        wire::HttpUrl::parse(&format!("{scheme}://{authority}"))
+            .map_err(|_| format!("{authority:?} is not a host and port"))
     };
+    let (plain, secure) = (read("http")?, read("https")?);
+    if !plain.path.is_empty() || plain.query.is_some() {
+        return Err(format!("{authority:?} is not a host and port"));
+    }
+    // The parser fills in each scheme's default port, so the authority names
+    // a port exactly when both schemes read the same one.
+    let port = (plain.port == secure.port).then_some(plain.port);
+    if port == Some(0) {
+        return Err("0 is not a port".into());
+    }
+    Ok((host_name(&plain.host)?, port))
+}
+
+/// A host name the proxy forwards: letters, digits, `-`, `.`, `_` and `:`
+/// (for an IPv6 literal), at most 253 bytes, lower-cased without a trailing dot.
+fn host_name(host: &str) -> Result<String, String> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     let ok = !host.is_empty()
         && host.len() <= 253
         && host
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'_'));
-    if !ok {
-        return Err(format!("{host:?} is not a host"));
+    match ok {
+        true => Ok(host),
+        false => Err(format!("{host:?} is not a host")),
     }
-    let port = match port {
-        None => None,
-        Some(p) => match p.parse::<u16>() {
-            Ok(n) if n > 0 => Some(n),
-            _ => return Err(format!("{p:?} is not a port")),
-        },
-    };
-    Ok((host, port))
 }
 
 /// An HTTP/1.1 response with a text body, closing the connection.
@@ -1303,13 +1266,18 @@ fn respond(out: &mut TcpStream, code: u16, reason: &str, body: &str) -> io::Resu
 mod tests {
     use super::*;
 
-    fn head(method: &str, target: &str) -> Head {
-        Head {
+    fn head(method: &str, target: &str) -> wire::RequestHead {
+        wire::RequestHead {
             method: method.into(),
             target: target.into(),
-            version: "HTTP/1.1".into(),
+            minor: 1,
             headers: Vec::new(),
         }
+    }
+
+    /// The request head `bytes` holds, read the way a client's is.
+    fn read(bytes: &[u8]) -> Result<Option<wire::RequestHead>, String> {
+        read_request(&mut BufReader::new(bytes))
     }
 
     #[test]
@@ -1341,12 +1309,114 @@ mod tests {
             ("GET", "/index.html", "absolute URI"),
             ("GET", "https://github.com/", "needs CONNECT"),
             ("GET", "http://user@github.com/", "user information"),
-            ("GET", "http://bad host/", "not a host"),
+            ("GET", "http://bad!host/", "not a host"),
             ("GET", "ftp://x/", "needs CONNECT"),
         ] {
             let error = parse(method, target).unwrap_err();
             assert!(error.contains(why), "{target}: {error}");
         }
+    }
+
+    #[test]
+    fn connect_authorities_are_host_and_port_with_brackets_for_v6() {
+        let parse = |t: &str| parse_target(&head("CONNECT", t));
+        assert_eq!(
+            parse("[2001:db8::1]:443").unwrap(),
+            ("2001:db8::1".into(), 443, String::new())
+        );
+        assert_eq!(
+            parse("Example.COM.:8443").unwrap(),
+            ("example.com".into(), 8443, String::new())
+        );
+        // Without brackets an IPv6 address is ambiguous with a port: refused.
+        for target in [
+            "::1:443",
+            "[::1]",
+            "[::1]x",
+            "github.com:443/x",
+            "github.com:443?x",
+        ] {
+            assert!(parse(target).is_err(), "{target}");
+        }
+        assert!(parse("[::1]").unwrap_err().contains("host:port"));
+        assert!(parse("[::1]:0").unwrap_err().contains("not a port"));
+    }
+
+    #[test]
+    fn a_plain_http_target_keeps_its_path_and_query_as_written() {
+        let parse = |t: &str| parse_target(&head("GET", t)).unwrap();
+        assert_eq!(parse("http://[::1]:8080/a?b").1, 8080);
+        assert_eq!(parse("http://[::1]/a?b").2, "/a?b");
+        assert_eq!(parse("http://example.com/a/b?c/d").2, "/a/b?c/d");
+        assert_eq!(parse("http://example.com?q/r").2, "/?q/r");
+        assert_eq!(parse("http://example.com:80").1, 80);
+    }
+
+    #[test]
+    fn a_request_head_is_read_after_blank_lines() {
+        let request = b"\r\n\nGET http://example.com/ HTTP/1.0\r\nHost: example.com\r\n\r\n";
+        let head = read(request).unwrap().unwrap();
+        assert_eq!(head.method, "GET");
+        assert_eq!(head.target, "http://example.com/");
+        assert_eq!(head.minor, 0);
+        assert_eq!(wire::header(&head.headers, "host"), Some("example.com"));
+        assert_eq!(
+            read(b"").unwrap(),
+            None,
+            "a client that closed sends nothing"
+        );
+        assert_eq!(
+            read(b"\r\n\r\n").unwrap(),
+            None,
+            "blank lines alone are not a head"
+        );
+    }
+
+    #[test]
+    fn a_malformed_request_line_or_header_is_refused() {
+        for bytes in [
+            &b"GET /only-two\r\n\r\n"[..],
+            &b"GET / HTTP/1.1 extra\r\n\r\n"[..],
+            &b"GET / HTTP/2.0\r\n\r\n"[..],
+            &b"GET / HTTP/1.1\r\nno colon here\r\n\r\n"[..],
+            &b"GET / HTTP/1.1\r\nHost: x\r\n"[..],
+            &b"GET / HTTP/1.1\r\nHost: \xff\r\n\r\n"[..],
+        ] {
+            assert!(read(bytes).is_err(), "{:?}", String::from_utf8_lossy(bytes));
+        }
+        assert_eq!(
+            read(b"nonsense\r\n\r\n").unwrap_err(),
+            "the request line is not METHOD TARGET VERSION"
+        );
+        assert!(read(b"GET / HTTP/1.1\r\nno colon here\r\n\r\n")
+            .unwrap_err()
+            .starts_with("the head is malformed"));
+    }
+
+    #[test]
+    fn a_head_over_the_limit_is_refused() {
+        let prefix = "GET http://example.com/ HTTP/1.1\r\nX: ";
+        let suffix = "\r\n\r\n";
+        let at_limit = format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(HEAD_MAX - prefix.len() - suffix.len())
+        );
+        assert!(
+            read(at_limit.as_bytes()).unwrap().is_some(),
+            "exactly the limit is read"
+        );
+        let over = format!(
+            "{prefix}{}{suffix}",
+            "a".repeat(HEAD_MAX - prefix.len() - suffix.len() + 1)
+        );
+        let error = read(over.as_bytes()).unwrap_err();
+        assert!(error.contains("larger than"), "{error}");
+        // One endless line, never ended: refused at the limit, not buffered.
+        let endless = vec![b'a'; HEAD_MAX + 10];
+        assert!(read(&endless).unwrap_err().contains("larger than"));
+        // Blank lines spend the same budget as the head they precede.
+        let blanks = "\r\n".repeat(HEAD_MAX);
+        assert!(read(blanks.as_bytes()).is_err());
     }
 
     #[test]
@@ -1365,6 +1435,13 @@ mod tests {
             Some("x.example")
         );
         assert_eq!(host_mismatch(&head("GET", "/"), "x.example"), None);
+        // A Host naming a path is not a host: it mismatches, as before.
+        let mut pathed = head("GET", "/");
+        pathed.headers.push(("Host".into(), "x.example/a".into()));
+        assert_eq!(
+            host_mismatch(&pathed, "x.example").as_deref(),
+            Some("x.example/a")
+        );
     }
 
     #[test]
