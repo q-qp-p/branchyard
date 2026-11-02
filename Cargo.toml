@@ -6,6 +6,7 @@ members = [
     "crates/branchyard-cli",
     "crates/branchyard-config",
     "crates/branchyard-client",
+    "crates/branchyard-container",
     "crates/branchyard-controls",
     "crates/branchyard-harness",
     "crates/branchyard-herdr",
