@@ -827,7 +827,9 @@ impl GoogleCloud<'_> {
     }
 
     /// Whether a harness is switched to Vertex AI: Claude Code's switch is
-    /// true, Gemini CLI's is exactly `true`, or OpenCode reads a project.
+    /// true, Gemini CLI's is exactly `true`, or a project is set, which
+    /// turns OpenCode's Vertex AI on and which Gemini CLI's Vertex AI needs
+    /// (however its settings select it).
     fn vertex_in_use(&self) -> bool {
         let claude = self.set("CLAUDE_CODE_USE_VERTEX").is_some_and(|v| {
             ["1", "true", "yes", "on"].contains(&v.trim().to_lowercase().as_str())

@@ -86,3 +86,13 @@ cell = "credentials found"
 state = "logged_in"
 evidence = "likely"
 detail = "CLOUD_SHELL=true selects compute-default-credentials, Cloud Shell's own sign-in (not checked); GEMINI_CLI_TRUST_WORKSPACE=true is set, so headless runs trust the workspace"
+
+[[case]]
+name = "its settings' choice is named before the environment's, as Gemini CLI uses it"
+home = { ".gemini/settings.json" = '{"security": {"auth": {"selectedType": "compute-default-credentials"}}}' }
+env = { GOOGLE_GENAI_USE_VERTEXAI = "true", GEMINI_CLI_TRUST_WORKSPACE = "true" }
+lines = ["fact compute-adc-selected", "fact vertex-ai-env", "fact trust-workspace"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "~/.gemini/settings.json selects compute-default-credentials, the service account of the Google VM it runs on (not checked); GEMINI_CLI_TRUST_WORKSPACE=true is set, so headless runs trust the workspace"
