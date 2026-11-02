@@ -42,6 +42,7 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 | O3 | A fenced-out owner writes nothing more and stops its work | `Error::Fenced`; the heartbeat notices within one beat |
 | O4 | Liveness is reported as known, unknown or lost, with when the owner was last heard and until when the lease holds; a reader is never told `running` without it | `BranchInfo::liveness`; [liveness](durability.md#liveness) |
 | O5 | *Planned.* A graceful stop seals: the owner ends at a boundary and releases with a checkpoint; only an unsealed owner is fenced and killed | design record, step 4 |
+| O6 | Lease expiry is written and judged on one clock, the store's: on a shared database, the database's, so owners on several hosts need no synchronized clocks | `Backend::clock_ms`; [leases and fencing](durability.md#leases-and-fencing) |
 
 ## 4. Signals and time
 
@@ -72,6 +73,7 @@ Each is a scenario either implementation can run against its own store; the Bran
 | A call the gateway describes nothing about is irreversible | E4 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |
 | A write after losing the lease is refused | O3 | `tests/durable.rs` `an_event_of_a_turn_that_lost_its_lease_is_refused` |
+| A lease's expiry is the store's clock plus its time to live, on grant and on renewal | O6 | `conformance.rs` `clock`, both backends |
 | A held turn reads live from another owner; a dead owner's turn reads lost before recovery | O4 | `tests/durable.rs` (the two tests above); `liveness.rs` unit tests |
 | A timer claimed by one holder is not claimed by another until its lease lapses; a finish naming a stale revision deletes nothing | S3 | `conformance.rs` `timers`, both backends |
 | A lookup that cannot answer is asked again only after its backoff, and never again once settled | E3, S3 | `tests/effects.rs` `a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff` |

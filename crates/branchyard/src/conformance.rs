@@ -2979,6 +2979,42 @@ fn upgrade_handoffs(
     assert_eq!(upgraded.message(new.id).unwrap(), Some(new));
 }
 
+/// The store's clock: close to this host's, and what a lease's expiry is
+/// written by, on grant and on renewal, so every engine judges expiry by
+/// one clock. (SQLite's is this host's; PostgreSQL's is the database's.)
+pub(crate) fn clock(s: Opened) {
+    let store = s.backend;
+    let clock = store.clock_ms().unwrap();
+    assert!(clock.abs_diff(now_ms()) < 60_000, "{clock} vs {}", now_ms());
+    let ttl = u64::try_from(TTL.as_millis()).unwrap();
+    let expiry = |store: &Arc<dyn Backend>| {
+        store
+            .leases()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.branch == "b")
+            .unwrap()
+            .expires_ms
+    };
+    store.reserve("b", &owner("a")).unwrap();
+    let before = store.clock_ms().unwrap();
+    let fence = granted(store.acquire(&record("b"), &owner("a"), TTL).unwrap());
+    let after = store.clock_ms().unwrap();
+    let granted_until = expiry(&store);
+    assert!(
+        (before + ttl..=after + ttl).contains(&granted_until),
+        "{granted_until} outside {before}..={after} + {ttl}"
+    );
+    let before = store.clock_ms().unwrap();
+    store.renew(&fence, TTL).unwrap();
+    let after = store.clock_ms().unwrap();
+    let renewed_until = expiry(&store);
+    assert!(
+        (before + ttl..=after + ttl).contains(&renewed_until),
+        "{renewed_until} outside {before}..={after} + {ttl}"
+    );
+}
+
 /// Durable timers: set, claim, a claim holding off others until its lease
 /// lapses, a revision guarding finish, and a second handle seeing it all.
 pub(crate) fn timers(s: Opened) {
@@ -3042,7 +3078,7 @@ macro_rules! suite {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
             concurrent_appends, contended_feed, races, storage, artifact_capture, messages, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
-            outcomes, knowledge, pools, usage, effects, timers, limits, corrupt);
+            outcomes, knowledge, pools, usage, effects, timers, clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {
         $(

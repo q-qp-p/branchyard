@@ -723,7 +723,7 @@ impl Yard {
     /// integrated. Read from the ledger, the asks, the records and the
     /// leases; nothing is stored. See `docs/obligations.md`.
     pub fn obligations(&self, branch: Option<&str>) -> Result<Vec<Obligation>, Error> {
-        self.obligations_at(branch, branchyard_support::time::now_ms())
+        self.obligations_at(branch, self.store().backend().clock_ms()?)
     }
 
     /// [`Yard::obligations`] as of `now_ms`, for an undo window's deadline
@@ -738,11 +738,9 @@ impl Yard {
 
     /// The liveness of each branch holding a lease, by branch.
     fn liveness(&self) -> Result<HashMap<String, Liveness>, Error> {
-        let leases = self.store().backend().leases()?;
-        Ok(liveness::by_branch(
-            &leases,
-            branchyard_support::time::now_ms(),
-        ))
+        let store = self.store();
+        let leases = store.backend().leases()?;
+        Ok(liveness::by_branch(&leases, store.backend().clock_ms()?))
     }
 
     /// The oldest pending ask of each branch that has one, by branch: what

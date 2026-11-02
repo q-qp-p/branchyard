@@ -32,7 +32,6 @@ use super::mcp::{CallError, Client};
 use super::{EffectActivity, EffectEntry, EffectMove, EffectState};
 use crate::timers::backoff;
 use crate::{Error, Yard};
-use branchyard_support::time::now_ms;
 
 /// The kind of timer that paces an unknown entry's lookups.
 pub(crate) const LOOKUP_TIMER: &str = "effect_lookup";
@@ -58,8 +57,11 @@ pub struct Reconciled {
 /// gone has no turn running; a store that cannot be read is an error, not
 /// "not running": that would move the effects of a turn still in flight to
 /// `unknown`.
-fn turn_running(yard: &Yard, entry: &EffectEntry, now: u64) -> Result<bool, Error> {
+fn turn_running(yard: &Yard, entry: &EffectEntry) -> Result<bool, Error> {
     let store = yard.store();
+    // Leases are judged on the store's clock, whatever time the caller
+    // reconciles as of.
+    let now = store.backend().clock_ms()?;
     let record = match store.read(&entry.branch) {
         Ok(record) => record,
         Err(Error::UnknownBranch(_)) => return Ok(false),
@@ -81,7 +83,7 @@ pub(crate) fn orphans(yard: &Yard, now: u64) -> Result<Vec<String>, Error> {
     let ledger = yard.store();
     let mut moved = Vec::new();
     for entry in ledger.effects().effects(None)? {
-        if entry.state != EffectState::Begun || turn_running(yard, &entry, now)? {
+        if entry.state != EffectState::Begun || turn_running(yard, &entry)? {
             continue;
         }
         let change = EffectMove::to(EffectState::Unknown).detail(
@@ -232,7 +234,7 @@ fn lookup(yard: &Yard, entry: &EffectEntry) -> Result<Option<EffectMove>, String
     }))
 }
 
-/// [`run`] now.
+/// [`run`] now, by the store's clock.
 pub(crate) fn now(yard: &Yard) -> Result<Reconciled, Error> {
-    run(yard, now_ms())
+    run(yard, yard.store().backend().clock_ms()?)
 }

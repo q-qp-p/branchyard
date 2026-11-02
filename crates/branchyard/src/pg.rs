@@ -570,6 +570,18 @@ impl From<crate::store_codec::CodecError> for Fail {
 
 type R<T> = Result<T, Fail>;
 
+/// The database's clock, in milliseconds since the Unix epoch. Lease
+/// expiry is written and judged by it, so engines on several hosts agree
+/// without synchronized clocks. `clock_timestamp()`, not `now()`: a
+/// transaction retried after a serialization failure reads the time again.
+const CLOCK_SQL: &str = "SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint";
+
+/// [`CLOCK_SQL`] within `tx`.
+fn tx_clock(tx: &mut Transaction<'_>) -> R<u64> {
+    let row = tx.query_one(CLOCK_SQL, &[]).map_err(db("clock"))?;
+    Ok(from_db("clock_ms", row.get(0))?)
+}
+
 /// A database error in `context`, retried when it is a serialization
 /// failure or a deadlock.
 fn db(context: &'static str) -> impl FnOnce(postgres::Error) -> Fail {
@@ -1140,7 +1152,7 @@ impl Postgres {
             }
         }
         let generation = current.map_or(1, |row| row.generation + 1);
-        let now = now_ms();
+        let now = tx_clock(tx)?;
         tx.execute(
             "INSERT INTO by_leases (repo, branch, incarnation, generation, turn, owner, host, \
              pid, pid_start, acquired_ms, expires_ms, deadline_ms) \
@@ -1502,12 +1514,13 @@ impl Backend for Postgres {
     fn renew(&self, fence: &Fence, ttl: Duration) -> Result<(), Error> {
         self.tx(true, |tx| {
             self.check(tx, fence)?;
+            let now = tx_clock(tx)?;
             tx.execute(
                 "UPDATE by_leases SET expires_ms = $3 WHERE repo = $1 AND branch = $2",
                 &[
                     &self.repo,
                     &fence.branch,
-                    &to_db("expires_ms", deadline(now_ms(), ttl))?,
+                    &to_db("expires_ms", deadline(now, ttl))?,
                 ],
             )
             .map_err(db("renew"))?;
@@ -1543,6 +1556,11 @@ impl Backend for Postgres {
         }
     }
 
+    fn clock_ms(&self) -> Result<u64, Error> {
+        let row = self.query(|client| client.query_one(CLOCK_SQL, &[]))?;
+        Ok(from_db("clock_ms", row.get(0))?)
+    }
+
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
         let rows = self.query(|c| {
             c.query(
@@ -1562,7 +1580,7 @@ impl Backend for Postgres {
         ttl: Duration,
     ) -> Result<Option<Fence>, Error> {
         self.tx(true, |tx| {
-            let now = now_ms();
+            let now = tx_clock(tx)?;
             let changed = tx
                 .execute(
                     "UPDATE by_leases SET generation = generation + 1, owner = $4, host = $5, \
@@ -3112,7 +3130,7 @@ impl StorageBackend for Postgres {
             self.check(tx, fence)?;
             let row = tx.query_one("SELECT turn, expires_ms FROM by_leases WHERE repo = $1 AND branch = $2", &[&self.repo, &fence.branch])
                 .map_err(db("capture lease"))?;
-            if from_db("expires_ms", row.get(1))? <= now_ms() {
+            if from_db("expires_ms", row.get(1))? <= tx_clock(tx)? {
                 return Err(fenced(fence, "expired before capture").into());
             }
             let cancelled: bool = tx.query_one("SELECT EXISTS(SELECT 1 FROM by_cancels WHERE incarnation = $1 AND turn = $2)",

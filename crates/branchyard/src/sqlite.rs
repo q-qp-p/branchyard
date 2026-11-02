@@ -1269,6 +1269,10 @@ impl Backend for Sqlite {
         })
     }
 
+    fn clock_ms(&self) -> Result<u64, Error> {
+        Ok(now_ms())
+    }
+
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
         self.query(|conn| {
             let mut statement = conn

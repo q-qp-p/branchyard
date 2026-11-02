@@ -546,6 +546,11 @@ pub(crate) trait Backend: Send + Sync + fmt::Debug {
     ) -> Result<(), Error>;
     /// Every held lease.
     fn leases(&self) -> Result<Vec<LeaseRow>, Error>;
+    /// The store's clock, in milliseconds since the Unix epoch: what lease
+    /// expiry is measured against. SQLite, one host's file, uses this
+    /// host's clock; PostgreSQL uses the database's, so engines on several
+    /// hosts agree on when a lease expired without synchronized clocks.
+    fn clock_ms(&self) -> Result<u64, Error>;
     /// Take over `lease`, as observed, for recovery: a new generation for
     /// the same turn. `None` if it changed meanwhile.
     fn take_over(
@@ -1181,7 +1186,7 @@ impl Store {
     pub fn acquire(&self, record: &Record) -> Result<Taken, Error> {
         match self.backend.acquire(record, &self.owner, LEASE_TTL)? {
             Acquired::Granted(fence) => Ok(Taken::Granted(Lease::new(self.clone(), fence)?)),
-            Acquired::Held(row) => match row.stale(now_ms()) {
+            Acquired::Held(row) => match row.stale(self.backend.clock_ms()?) {
                 Some(_) => Ok(Taken::Stale),
                 None => Err(Error::Running(record.info.name.clone())),
             },

@@ -70,6 +70,7 @@ A merge the caller repeats after it succeeded is still refused with `already_mer
 - While a live owner holds the lease, another `Yard`, in this process or another, gets `Error::Running` for `send`, `merge` and `remove`.
 - Every record write, event append, step and process row of a turn checks that the lease still has the turn's incarnation and generation. Once another engine takes the lease over, the old owner's writes fail with `Error::Fenced` and it writes nothing more; its heartbeat notices within 5 seconds, and the turn stops its harness.
 - A lease is *stale* when its owner is on this host and boot and its process (pid and start time) is gone, or when it expired. Stale leases are what recovery takes over.
+- Expiry is measured on the **store's clock** (`Backend::clock_ms`): a lease's expiry is written as the store's time plus its 30 seconds, on grant, renewal and takeover, and judged against the store's time by recovery, the check that refuses a second engine, [liveness](#liveness), obligations and reconciliation. On SQLite, one host's file, that is the host's clock. On PostgreSQL it is the database's (`clock_timestamp()`, read in the writing transaction), so engines on several hosts agree on when a lease expired without synchronized clocks. A `max_duration` deadline is stored on the same clock, for recovery to say whether it had passed; the engine running the turn enforces it on its own monotonic clock. The heartbeat's own count of how long its lease has gone unrenewed is also monotonic, and needs no shared clock.
 
 A lease cannot stop a process on another host that is still running but partitioned (design §11): fencing makes its writes to the store fail, and nothing more.
 
@@ -93,7 +94,7 @@ A durable timer is a row with a due time, not a sleeping thread: `timers` (`by_t
 - **Set.** Setting a timer again replaces its due time and payload, drops any claim, keeps its attempts and bumps its revision.
 - **Finish.** A claimant deletes the timer by the revision it claimed; if it was set again meanwhile, the delete matches nothing and the later setting stands.
 
-Due times are the callers' clocks for now (see the [design record](superpowers/specs/2026-11-02-durability-primitives-design.md), step 5).
+Due times are whatever clock the caller passes; the reconciler passes the store's (below), so effect lookups are paced on the same clock as leases.
 
 **First user: effect lookups.** An `unknown` effect whose lookup cannot answer (the upstream is down, the gateway refuses) is no longer asked again on every reconciliation sweep. Its `effect_lookup` timer holds the next attempt: 30 seconds after the first failure, doubling, at most an hour apart. A reconciler that finds the timer not yet due reports the entry `unknown` with when it is asked next (`it is asked again at 14:05`); one that finds it claimed reports that another reconciler is asking. A settled entry's timer is finished, and the timer of an entry settled some other way (the audit log, a person) is finished by the next sweep.
 
@@ -201,7 +202,7 @@ A store written by an earlier version with valid values reads unchanged. A row a
 - **Reservations of earlier versions** stay taken; another host's reservation is freed only after 10 minutes.
 - **Old and new versions side by side** on one repository.
 - **The data directory lock on a network file system** is only as good as that file system's `flock`.
-- **A hung worker.** A server that stops renewing its operation claims for the lease (30 seconds) while still alive has its running operations recorded `interrupted` by another worker; its own later outcome is refused, and the branch is what the engine says. Operation leases are on the database's clock; the engine's turn leases are on the engines'.
+- **A hung worker.** A server that stops renewing its operation claims for the lease (30 seconds) while still alive has its running operations recorded `interrupted` by another worker; its own later outcome is refused, and the branch is what the engine says. Operation leases and, on PostgreSQL, the engine's turn leases are both on the database's clock.
 - **Delivery to a server that serves other repositories.** A worker claims only the repositories it serves; an operation for a repository no running worker serves waits in the queue.
 
 ## PostgreSQL
@@ -218,7 +219,7 @@ A store written by an earlier version with valid values reads unchanged. A row a
 | `synchronous=FULL`; `NORMAL` for event appends | `synchronous_commit = on`; `off` for event appends, with the same caveat |
 | JSON as text | JSON as text, so it reads back exactly as written |
 | In-process wakeups; 100 ms polling across processes | The same: waits poll every 100 ms. Nothing listens for `NOTIFY` |
-| Lease expiry from the engines' clocks | The same; engines on several hosts need synchronized clocks |
+| Lease expiry from this host's clock | Lease expiry from the database's clock (`clock_timestamp()`), written and judged in one place; engines on several hosts need no synchronized clocks |
 | Startup and periodic recovery | The same recovery code, over the database's leases |
 | `graph_edges`, `graph_revisions`; a proposal in one `BEGIN IMMEDIATE` transaction | `by_graph_edges`, `by_graph_revisions`, keyed by scope; a proposal in one serializable transaction, retried whole on a conflict |
 
