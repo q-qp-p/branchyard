@@ -26,10 +26,12 @@ microsandbox = ["branchyard-microsandbox/microsandbox"]
 postgres = ["dep:postgres", "dep:tokio"]
 # Derive schemars::JsonSchema on the branch/delegation wire types, for
 # schema/contract.json; see tools/schema-gen.
-schema = ["dep:schemars", "branchyard-provision/schema", "branchyard-harness/schema"]
+schema = ["dep:schemars", "branchyard-provision/schema", "branchyard-harness/schema", "branchyard-container/schema", "branchyard-agent-sandbox/schema"]
 
 [dependencies]
 branchyard-support = { path = "../branchyard-support" }
+branchyard-agent-sandbox = { path = "../branchyard-agent-sandbox" }
+branchyard-container = { path = "../branchyard-container" }
 blake3 = { workspace = true }
 branchyard-bridge = { path = "../branchyard-bridge" }
 branchyard-config = { path = "../branchyard-config" }
