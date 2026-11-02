@@ -1795,3 +1795,34 @@ fn a_pinned_model_is_chosen_among_the_sessions_config_option_values() {
         Err(Rejected::Unsupported(_))
     ));
 }
+
+/// Recorded against DeepSeek Harness 0.2.1-rc.5 with the live probe on 1
+/// November 2026. The agent's `model` option lists `["zai","glm-5.3"]` and
+/// already has it current, so opening on `zai/glm-5.3` sends no
+/// `session/set_config_option`: the replay keeps the recording up to that
+/// request and asserts the session is ready on the listed model. The
+/// recorded request itself (`configId` `model`, the listed value) is checked
+/// for the shape the driver sends when a different model is pinned; no
+/// recording exercises that pinned change yet.
+#[test]
+fn deepseek_harness_acp_pins_the_model_through_its_config_option() {
+    let mut recorded = probe_fixture("deepseek-harness-0.2.1-rc.5-acp-set-config-option.jsonl");
+    let at = recorded
+        .rows
+        .iter()
+        .position(|r| r.frame["method"] == "session/set_config_option")
+        .unwrap();
+    let request = &recorded.rows[at].frame;
+    assert_eq!(request["params"]["configId"], "model");
+    assert_eq!(request["params"]["value"], "[\"zai\",\"glm-5.3\"]");
+    recorded.rows.truncate(at);
+    let (mut driver, opened) = profile_acp("deepseek-harness-acp", Some("zai/glm-5.3"));
+    let replayed = Replay::new(&recorded)
+        .alias("/id")
+        .ignore("/params/clientInfo/version")
+        .run(driver.as_mut(), &opened);
+    assert_eq!(replayed.sent, 2, "initialize, session/new");
+    let events = replayed.events;
+    let ready = events.iter().position(|e| *e == Event::Ready).unwrap();
+    assert!(matches!(&events[ready + 1], Event::SessionStarted { .. }));
+}
