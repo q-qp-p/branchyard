@@ -1,0 +1,126 @@
+{
+  "binary_sha256": "32f73e0fb1069075d471036460b5e6d90f4cd2a9bbf9810b61c7cd2e76be55f7",
+  "cases": [
+    {
+      "case": "gvisor-deny",
+      "cpu_probe": {
+        "cpu_seconds": 1.83,
+        "wall_seconds": 3.034516818,
+        "workers": 4
+      },
+      "exec_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": null
+      },
+      "kernel": "4.19.0-gvisor",
+      "memory_cgroups": null,
+      "memory_exit": 128,
+      "optional_oom_observation": "Pod terminated with reason OOMKilled under 512 MiB limit",
+      "optional_oom_qualified": true,
+      "pid1_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": null
+      },
+      "started_at": "2026-11-02T22:15:01.714Z"
+    },
+    {
+      "case": "gvisor-unrestricted",
+      "cpu_probe": null,
+      "exec_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": null
+      },
+      "kernel": "4.19.0-gvisor",
+      "memory_cgroups": null,
+      "memory_exit": null,
+      "pid1_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": null
+      },
+      "started_at": "2026-11-02T22:16:07.992Z"
+    },
+    {
+      "case": "microvm-deny",
+      "cpu_probe": {
+        "cpu_seconds": 3.07178082,
+        "wall_seconds": 3.0536220640000025,
+        "workers": 4
+      },
+      "exec_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": "0"
+      },
+      "kernel": "6.6.94-g7b99f7ef5fbf",
+      "memory_cgroups": null,
+      "memory_exit": 1,
+      "optional_oom_observation": "ttrpc closed after 8 MiB; no explicit OOM reason captured before cleanup",
+      "optional_oom_qualified": false,
+      "pid1_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": "0"
+      },
+      "started_at": "2026-11-02T22:15:09.529Z"
+    },
+    {
+      "case": "microvm-unrestricted",
+      "cpu_probe": null,
+      "exec_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": "0"
+      },
+      "kernel": "6.6.94-g7b99f7ef5fbf",
+      "memory_cgroups": null,
+      "memory_exit": null,
+      "pid1_security": {
+        "CapEff": "0000000000000000",
+        "NoNewPrivs": "1",
+        "Seccomp": "0",
+        "Seccomp_filters": "0"
+      },
+      "started_at": "2026-11-02T22:16:29.285Z"
+    }
+  ],
+  "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+  "kubectl_client": {
+    "clientVersion": {
+      "buildDate": "2026-10-12T18:03:24Z",
+      "compiler": "gc",
+      "gitCommit": "d834de30684b6c23bd56ad1ff4e12d8026294961",
+      "gitTreeState": "clean",
+      "gitVersion": "v1.35.9-dispatcher",
+      "goVersion": "go1.26.9",
+      "major": "1",
+      "minor": "35+",
+      "platform": "linux/amd64"
+    },
+    "kustomizeVersion": "v5.7.1"
+  },
+  "not_done": [
+    "model calls",
+    "engine or console execution",
+    "active guest seccomp filtering",
+    "IPv6 network probing",
+    "Kata hard-memory OOM reason confirmation"
+  ],
+  "source_commit": "7e96ed06",
+  "source_sha256": {
+    "crates/branchyard-agent-sandbox/examples/gke_conformance.rs": "f884407d82e126c3cf889747974220ca65710dba7221774b9a01534dda348155",
+    "crates/branchyard-agent-sandbox/examples/gke_probe.py": "8551df68293075b5585e2e0c35298d53bf7f3d564ae9939c4d12e36e5c6ee63d",
+    "crates/branchyard-agent-sandbox/examples/gke_resources.py": "bb3a7348d6768fb89e630b70a9de188ea556dfb19e7c68c915d67134d425670b",
+    "crates/branchyard-agent-sandbox/src/kubectl_exec.py": "a9a569dba1cad69ba1ac6a3bb880636dfcc067eed00d5df955c760454fbb57d8"
+  }
+}

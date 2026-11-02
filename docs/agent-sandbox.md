@@ -22,6 +22,15 @@ children share the local transport process group for cancellation and startup
 timeout cleanup. Kubeconfig, credential plugins,
 service-account tokens and Kubernetes sockets stay outside the workload.
 
+Live on 2 November 2026: the real Rust provider passed both managed runtimes in
+deny and unrestricted network modes on GKE `1.37.1-gke.3020000`, with binary
+exec/transfer, cancellation, effective UID/caps/no-new-privileges, metadata
+denial, DNS/HTTPS and owned cleanup recorded in the
+[dated qualification](evidence/gke-native-2026-11-02/README.md). The record also
+preserves the fixed failures and the inconclusive optional Kata OOM stress
+observation. Not done: this record does not qualify model calls, engine/console
+execution, IPv6 probes or active guest seccomp filtering.
+
 ```rust,ignore
 use branchyard_agent_sandbox::{AgentSandboxProvider, Config, Network, Runtime};
 use branchyard_sandbox::{SandboxProvider, SandboxSpec};

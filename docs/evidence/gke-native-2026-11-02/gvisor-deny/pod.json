@@ -1,0 +1,324 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "annotations": {
+      "agents.x-k8s.io/propagated-annotations": "branchyard.io/spec",
+      "agents.x-k8s.io/propagated-labels": "branchyard.io/owner",
+      "branchyard.io/spec": "5dab2cd62a9e0eb9cac0af1c9cf543ca33d793e1cccee6a34095910b66acc5a8",
+      "dev.gvisor.internal.seccomp.runtime": "RuntimeDefault",
+      "dev.gvisor.spec.mount.home.options": "rw,rprivate",
+      "dev.gvisor.spec.mount.home.share": "container",
+      "dev.gvisor.spec.mount.home.type": "bind",
+      "dev.gvisor.spec.mount.tmp.options": "rw,rprivate",
+      "dev.gvisor.spec.mount.tmp.share": "container",
+      "dev.gvisor.spec.mount.tmp.type": "bind",
+      "dev.gvisor.spec.mount.workspace.options": "rw,rprivate",
+      "dev.gvisor.spec.mount.workspace.share": "container",
+      "dev.gvisor.spec.mount.workspace.type": "bind"
+    },
+    "creationTimestamp": "2026-11-02T22:15:04Z",
+    "generation": 1,
+    "labels": {
+      "agents.x-k8s.io/sandbox-name-hash": "8e6edd81",
+      "branchyard.io/owner": "b3513c8ac3a4dfc185ad20bc090892eb",
+      "topology.kubernetes.io/region": "us-central1",
+      "topology.kubernetes.io/zone": "us-central1-a"
+    },
+    "name": "by-059b12188955cab67b43d73b9ee7efa7d8941e1b",
+    "namespace": "branchyard-gvisor",
+    "ownerReferences": [
+      {
+        "apiVersion": "agents.x-k8s.io/v1beta1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Sandbox",
+        "name": "by-059b12188955cab67b43d73b9ee7efa7d8941e1b",
+        "uid": "0c04e953-1c62-4acf-b6c8-ee4fa9592f64"
+      }
+    ],
+    "resourceVersion": "1793657706007055018",
+    "uid": "56db8a70-d2bf-4a01-8b93-a722c3c3b2fa"
+  },
+  "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+      {
+        "command": [
+          "setpriv",
+          "--no-new-privs",
+          "--",
+          "sh",
+          "-c",
+          "exec tail -f /dev/null"
+        ],
+        "env": [
+          {
+            "name": "HOME",
+            "value": "/branchyard/home"
+          },
+          {
+            "name": "PATH",
+            "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          }
+        ],
+        "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "runtime",
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "512Mi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+          {
+            "mountPath": "/workspace",
+            "name": "workspace"
+          },
+          {
+            "mountPath": "/branchyard/home",
+            "name": "home"
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/branchyard-identity",
+            "name": "identity",
+            "readOnly": true
+          }
+        ],
+        "workingDir": "/workspace"
+      }
+    ],
+    "dnsPolicy": "ClusterFirst",
+    "enableServiceLinks": false,
+    "nodeName": "gke-by-v040-qual-202-branchyard-gviso-152cc23a-8bdq",
+    "nodeSelector": {
+      "sandbox.gke.io/runtime": "gvisor"
+    },
+    "preemptionPolicy": "PreemptLowerPriority",
+    "priority": 0,
+    "restartPolicy": "Never",
+    "runtimeClassName": "gvisor",
+    "schedulerName": "default-scheduler",
+    "securityContext": {
+      "fsGroup": 1000,
+      "runAsGroup": 1000,
+      "runAsNonRoot": true,
+      "runAsUser": 1000,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "serviceAccount": "default",
+    "serviceAccountName": "default",
+    "terminationGracePeriodSeconds": 10,
+    "tolerations": [
+      {
+        "effect": "NoSchedule",
+        "key": "sandbox.gke.io/runtime",
+        "operator": "Equal",
+        "value": "gvisor"
+      },
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      },
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      }
+    ],
+    "volumes": [
+      {
+        "emptyDir": {},
+        "name": "workspace"
+      },
+      {
+        "emptyDir": {},
+        "name": "home"
+      },
+      {
+        "emptyDir": {
+          "sizeLimit": "256Mi"
+        },
+        "name": "tmp"
+      },
+      {
+        "downwardAPI": {
+          "defaultMode": 292,
+          "items": [
+            {
+              "fieldRef": {
+                "apiVersion": "v1",
+                "fieldPath": "metadata.uid"
+              },
+              "path": "pod-uid"
+            }
+          ]
+        },
+        "name": "identity"
+      }
+    ]
+  },
+  "status": {
+    "allocatedResources": {
+      "cpu": "1",
+      "memory": "512Mi"
+    },
+    "conditions": [
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:15:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:15:04Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:15:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:15:05Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:15:04Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "allocatedResources": {
+          "cpu": "1",
+          "memory": "512Mi"
+        },
+        "containerID": "containerd://3c3b4b7b7c64af0eb3f2b7c554c9437ce020fa741ea6e974022963fab66cf5a5",
+        "image": "sha256:0bfebfe89ed85eb8466f3048cc3dd1b2f3de12b1bc398ab00c68166ccdbb472c",
+        "imageID": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+        "lastState": {},
+        "name": "runtime",
+        "ready": true,
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "512Mi"
+          }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+          "running": {
+            "startedAt": "2026-11-02T22:15:05Z"
+          }
+        },
+        "user": {
+          "linux": {
+            "gid": 1000,
+            "supplementalGroups": [
+              4,
+              20,
+              24,
+              25,
+              27,
+              29,
+              30,
+              44,
+              46,
+              1000
+            ],
+            "uid": 1000
+          }
+        },
+        "volumeMounts": [
+          {
+            "mountPath": "/workspace",
+            "name": "workspace"
+          },
+          {
+            "mountPath": "/branchyard/home",
+            "name": "home"
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/branchyard-identity",
+            "name": "identity",
+            "readOnly": true,
+            "recursiveReadOnly": "Disabled"
+          }
+        ]
+      }
+    ],
+    "hostIP": "10.128.0.72",
+    "hostIPs": [
+      {
+        "ip": "10.128.0.72"
+      }
+    ],
+    "observedGeneration": 1,
+    "phase": "Running",
+    "podIP": "10.112.1.8",
+    "podIPs": [
+      {
+        "ip": "10.112.1.8"
+      }
+    ],
+    "qosClass": "Guaranteed",
+    "resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "512Mi"
+      },
+      "requests": {
+        "cpu": "1",
+        "memory": "512Mi"
+      }
+    },
+    "startTime": "2026-11-02T22:15:04Z"
+  }
+}
