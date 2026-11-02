@@ -87,8 +87,12 @@ reviewed footprint. Existing machines must carry the matching
 `branchyard-deployment` label and exact configuration fingerprint. An unlabeled,
 foreign, stopped or differently configured machine is refused. The helper
 does not adopt or replace it. Access scopes are part of the fingerprint. A
-worker that Branchyard 0.4.0 or earlier made with a service account has none, so
-it is reused only with `--scopes none`; delete it and apply again for the default.
+worker that Branchyard 0.4.0 or earlier made with a service account has none:
+without `--scopes` it is reused as it is, and `deployment.json` reports
+`access_scopes: []` with an `access_scopes_note` saying that its account cannot
+reach Vertex AI, `gs://` or Cloud KMS; run with another `--name`, or delete it
+and apply again, for a worker with `cloud-platform`. `--scopes none` reuses it
+without the note, and any other `--scopes` refuses it as differently configured.
 
 If a zone has no capacity for the selected machine type, review a different
 `--zone` or a compatible `--machine-type` and repeat the plan. Deployment

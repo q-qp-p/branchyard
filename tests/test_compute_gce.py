@@ -587,6 +587,22 @@ class ComputeGceTests(unittest.TestCase):
         self.assertTrue(any(call["args"][:3] == ["iam", "service-accounts", "describe"] for call in self.calls()))
         self.assertFalse(any("add-iam-policy-binding" in call["args"] for call in self.calls()))
 
+    def test_a_worker_made_without_scopes_is_reused_under_the_default_and_says_so(self):
+        account = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
+        legacy = self.instance(replace(account, scopes="none"))
+        self.state = {"instance": legacy, "desired": legacy}
+        self.save()
+        report = self.apply(account)
+        self.assertEqual(report["access_scopes"], [])
+        self.assertIn("made without access scopes", report["access_scopes_note"])
+        self.assertFalse(any(call["args"][:3] == ["compute", "instances", "create"] for call in self.calls()))
+        # Chosen explicitly, it is simply the configuration: no note.
+        report = self.apply(replace(account, scopes="none"))
+        self.assertNotIn("access_scopes_note", report)
+        # Another explicit choice still refuses the unscoped worker.
+        with self.assertRaisesRegex(gce.SetupError, "differs from the reviewed configuration"):
+            self.apply(replace(account, scopes="storage-ro"))
+
     def test_service_account_gets_cloud_platform_unless_scopes_choose_others(self):
         account = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
         self.assertEqual(gce.plan(account)["access_scopes"], [gce.DEFAULT_SCOPE])
