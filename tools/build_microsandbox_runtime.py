@@ -24,6 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = "tools/microsandbox-runtime-build.json"
 ARCH = "vendor/msb-krun-arch"
+TARGET = "x86_64-unknown-linux-gnu"
 
 
 def digest(path: Path) -> str:
@@ -45,6 +46,8 @@ def read_plan(root: Path = ROOT) -> dict:
     plan = json.loads((root / PLAN).read_text())
     if plan["format"] != 1:
         raise ValueError("unsupported Microsandbox runtime build plan")
+    if plan["platform"] != TARGET:
+        raise ValueError("unsupported Microsandbox runtime target")
     for name, expected in plan["inputs"].items():
         if digest(root / name) != expected:
             raise ValueError(f"{name} differs from the reviewed runtime build plan")
@@ -112,7 +115,7 @@ def build(stage: Path, target: Path, profile: str, fetch: bool = False) -> Path:
     if fetch:
         for manifest in [stage / ".branchyard-patches/msb-krun-arch/Cargo.toml", stage / "Cargo.toml"]:
             subprocess.run(
-                ["cargo", "+1.94.0", "fetch", "--manifest-path", str(manifest), "--locked"],
+                ["cargo", "+1.94.0", "fetch", "--manifest-path", str(manifest), "--target", TARGET, "--locked"],
                 env=env,
                 check=True,
             )
@@ -123,6 +126,8 @@ def build(stage: Path, target: Path, profile: str, fetch: bool = False) -> Path:
             "test",
             "--manifest-path",
             str(stage / ".branchyard-patches/msb-krun-arch/Cargo.toml"),
+            "--target",
+            TARGET,
             "--locked",
             "--offline",
             "x86_64::tests",
@@ -137,6 +142,8 @@ def build(stage: Path, target: Path, profile: str, fetch: bool = False) -> Path:
             "build",
             "--manifest-path",
             str(stage / "Cargo.toml"),
+            "--target",
+            TARGET,
             "-p",
             "microsandbox-cli",
             "--bin",
@@ -152,7 +159,7 @@ def build(stage: Path, target: Path, profile: str, fetch: bool = False) -> Path:
         env=env,
         check=True,
     )
-    return target / ("debug" if profile == "dev" else profile) / "msb"
+    return target / TARGET / ("debug" if profile == "dev" else profile) / "msb"
 
 
 def package(binary: Path, firmware: Path, output: Path, plan: dict, profile: str, notices: Path) -> Path:

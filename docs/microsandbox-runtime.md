@@ -45,6 +45,8 @@ To build locally, follow the pinned-input commands in the
 The default build profile is `release`; `--fetch` only populates dependencies
 before the offline tests and compilation. The driver leaves the input checkout
 and shared Cargo configuration unchanged.
+It selects the supported GNU target explicitly and reads that target's output,
+so an ambient Cargo target cannot cause an older host binary to be packaged.
 
 ## Installation and runtime identity
 
