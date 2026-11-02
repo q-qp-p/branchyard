@@ -2,60 +2,42 @@
 
 Written 30 October 2026.
 
-`by up` brings a repository's configured backends up in one command. It appears in the Start group of `by --help`, beside setup and doctor. It reads `branchyard.toml` and the user file ([configuration](setup.md#configuration)), works out what the repository needs and the state of each piece, does what it can (install a harness the policy allows, start the connector gateway), and lists what only a person can do: a login, a key, a trust decision. `by doctor` ([doctor](doctor.md)) reads and repairs nothing; `by up` is the command that acts.
+`by up` brings a repository's configured backends and dependencies into a ready state in one command. Listed alongside `setup` and `doctor` in the Start group of `by --help`, it reads `branchyard.toml` and your user configuration file ([configuration](setup.md#configuration)), determines what the repository requires, performs any automated steps allowed by policy (such as installing a harness or starting the connector gateway), and lists any remaining steps that require manual action (such as logging in, setting a secret, or trusting a script). Whereas `by doctor` ([doctor](doctor.md)) only inspects and reports, `by up` applies changes.
 
 ```sh
-by up            # install what is allowed, start the gateway, list the rest
-by up --plan     # inspect readiness; apply no install/start actions
-by up --plan --smoke   # also list Substrate workers: one read-only call, no actor, no model
-by up --yes      # confirm the installs the [harnesses] policy would ask about
-by up --json     # the steps as JSON, for a script or the Python SDK
+by up            # install allowed harnesses, start the gateway, and list manual steps
+by up --plan     # inspect readiness without installing or starting anything
+by up --plan --smoke   # also query Substrate workers (one read-only call, no actor or model)
+by up --yes      # auto-confirm harness installs when the [harnesses] policy is "ask"
+by up --json     # emit the plan and readiness checks as JSON for scripts or the Python SDK
 ```
 
-Opening the repository can initialize `.branchyard/` and its store, including with
-`--plan`. The plan applies no install or gateway-start action.
+Opening the repository initializes `.branchyard/` and its SQLite store if they do not exist yet (even with `--plan`), while `--plan` skips all package installation and gateway startup actions.
 
-Outside a git repository it stops before any step, with the fix: ``by: not a git repository: /path. Run `git init` here, or cd into one`` (exit 3, `not_a_repository`).
+If you run `by up` outside a Git repository, it stops immediately with ``by: not a git repository: /path. Run `git init` here, or cd into one`` (exit code `3`, `not_a_repository`).
 
-The same operation is the engine's ([`branchyard::up`](../crates/branchyard/src/up.rs)): `Yard::up_plan`, `Yard::up_apply` and `Yard::up` over a `Machine`, and the Python SDK's `Local.up()` ([SDKs](sdk.md#local-mode)). `by up` is one caller of it.
+Under the hood, `by up` calls the engine's readiness planner ([`branchyard::up`](../crates/branchyard/src/up.rs): `Yard::up_plan`, `Yard::up_apply`, and `Yard::up` over a `Machine`), which is also exposed in the Python SDK as `Local.up()` ([SDKs](sdk.md#local-mode)).
 
-With `[defaults] provider = "substrate"`, `up` and `doctor` authenticate to the
-Control API and inspect the configured bridge template. They create no actor and
-change no cluster resources. They check in stages and stop at the first that
-fails: the bridge key and API token file on this machine, then whether Control
-answers, then whether it accepts the token, then the template. Each failure lands
-on its own [readiness check](#readiness-checks) with a remedy; after fixing it,
-rerun `by up --plan`.
+When `[defaults] provider = "substrate"` is configured, `by up` and `by doctor` authenticate against the Substrate Control API and inspect the configured bridge template without creating actors or modifying cluster resources. They check prerequisites in stages and stop at the first failure:
 
-Remote harnesses come from the actor image, so `up` does not require their binaries
-on the workstation. It checks whether the selected harness's provisioner can use
-the available `[secrets]` sources in a private home. A host OAuth login does not
-transfer to an actor. Antigravity currently needs a provisionable `GEMINI_API_KEY`
-or `GOOGLE_API_KEY`; `AGY_TOKEN` and a host login do not satisfy this check.
-Credential presence means a source is available, not that a model accepted it.
-Template inspection proves neither bridge execution nor model connectivity.
+1. Local bridge key and API token files.
+2. Network reachability of the Control endpoint.
+3. Token acceptance by the Control API.
+4. Bridge template validity.
 
-For a new GCE worker, [`by setup --guided`](setup.md) reviews the VM and SSH
-transport before provisioning. `by compute gce --tunnel-through-iap` offers an
-offline JSON plan and explicit `--apply` for operators who supply the cloud
-settings themselves. IAP uses a dedicated TCP 22 firewall rule, shown in the
-plan. `by up` checks a saved connection; it does not create cloud VMs or change
-their firewall rules. See [GCE worker setup](compute-gce.md) for access and cleanup.
+Each failure maps to a specific [readiness check](#readiness-checks) with a suggested `next` command; after fixing the issue, rerun `by up --plan`.
 
-For Microsandbox, `up` and `doctor` distinguish build support from host readiness.
-On Linux they check read/write access to `/dev/kvm`, with separate remedies for a
-missing device and a login missing the `kvm` group. This does not start or qualify
-a VM. If the runtime reports an overlong Unix socket path, it recommends a short,
-user-owned `MSB_HOME` and initializing the pinned runtime there.
+Because remote Substrate harnesses run inside the actor's container image, `by up` does not require the harness binary to be installed on your workstation. Instead, it checks whether the selected harness's credential provisioner can populate a private home directory using the configured `[secrets]` sources (host OAuth logins do not carry over to remote actors; for example, Antigravity on Substrate requires a provisionable `GEMINI_API_KEY` or `GOOGLE_API_KEY` rather than `AGY_TOKEN` or a host login). Note that verifying credential presence only confirms that a secret source exists locally, not that the upstream model API accepted the key.
 
-On a terminal, progress reports the readiness and apply phases. Piped output and
-`--json` remain deterministic; JSON never prompts. Before installing a harness or starting the connector
-gateway, apply checks again whether another invocation already completed it. Failed
-steps retain their remedies so rerunning `by up` can finish the remaining work.
+For a new GCE worker, [`by setup --guided`](setup.md) reviews the VM and SSH transport settings before provisioning, while `by compute gce --tunnel-through-iap` offers an offline JSON plan and explicit `--apply` for operators who supply cloud flags directly. `by up` verifies an existing saved connection but never creates cloud VMs or modifies firewall rules; see [GCE worker setup](compute-gce.md) for provisioning and cleanup.
+
+For Microsandbox, `by up` and `by doctor` check both whether the binary was compiled with `--features microsandbox` and whether `/dev/kvm` is accessible on Linux, providing distinct remedies for a missing `/dev/kvm` device versus a user missing the `kvm` group. If the Microsandbox runtime reports an overly long Unix socket path, `by up` recommends setting a short, user-owned `MSB_HOME` directory.
+
+In an interactive terminal, `by up` displays progress across the readiness and apply phases, whereas piped output and `--json` remain deterministic and never prompt. Before installing a harness or starting the connector gateway, the apply phase re-checks whether another process has already completed the step.
 
 ## The steps
 
-Each step has a stable dotted name, a state, what was found in one line and, for a step that is not ready, what to do in one line. Rows come in this order.
+Each step has a stable dotted identifier, a status, a one-line summary of what was found, and (when not ready) a one-line remediation command, reported in the following order:
 
 | Step | What it looks at | Planned | Needs you | Blocked |
 |---|---|---|---|---|

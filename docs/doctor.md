@@ -1,44 +1,44 @@
 # Doctor
 
-`by doctor` answers one question: is this machine, and this repository, ready to use Branchyard? It runs a fixed list of checks and prints one row for each: a status (`ok`, `todo`, `warn` or `fail`), what it found in one line, and, for every row that is not `ok`, what to do in one line. A line above the table, `Mode:`, says how this repository runs (below). It reads; it repairs nothing, and it prints no secret.
+`by doctor` checks whether your machine and repository are ready to run Branchyard. It runs a standard suite of checks and prints a table with one row per check: a status (`ok`, `todo`, `warn`, or `fail`), a one-line summary of what it found, and a one-line remediation step for any row that is not `ok`. Above the table, a `Mode:` line shows how the repository is configured to run. `by doctor` is strictly read-only: it modifies nothing and never prints secrets.
 
 ```sh
-by doctor                    # the mode, a table, then what to do about each row that is not ok
-by doctor --json             # the same as JSON, for a script or a CI step
-by doctor --path ~/src/app   # check that repository instead of the one around here
-by doctor --refresh          # ask the harnesses again instead of reading the cached inventory
+by doctor                    # show the mode, check table, and next steps
+by doctor --json             # output JSON for scripts or CI
+by doctor --path ~/src/app   # check a specific repository path
+by doctor --refresh          # re-probe harnesses instead of using the 1-minute cache
 ```
 
-The checks reuse what `by` already knows rather than looking again: the loaders `by config validate` runs, the trust decision `by workspace trust` records, the inventory `by harnesses` shows (kept a minute; `--refresh` detects again), the engine's own provider check, the service registry `by services` lists, and the client `--remote` uses. When a row says something is wrong, a command that depends on it would say the same.
+`by doctor` uses the same underlying checks as the rest of the CLI: the configuration loaders from `by config validate`, the trust state from `by workspace trust`, the harness inventory from `by harnesses` (cached for a minute unless you pass `--refresh`), the engine's sandbox provider check, the service registry from `by services`, and the remote client used by `--remote`. If a row reports a problem, any command that depends on that component will fail for the same reason.
 
-`by up` ([up](up.md)) is the command that acts: it installs the harnesses the configuration names where your user file allows, starts the connector gateway, and lists what only you can do. Run `by doctor` to see where you stand and `by up` to get there.
+While `by doctor` only inspects your setup, `by up` ([up](up.md)) takes action: it installs configured harnesses (when allowed by your user configuration), starts the connector gateway, and lists any remaining manual steps. Run `by doctor` to inspect your environment, and run `by up` to bring it ready.
 
-When Substrate is the provider, or a server is configured (`--remote`, `BRANCHYARD_REMOTE` or `[remote] url`), the report adds the seven [readiness checks](up.md#readiness-checks) under the table, and `readiness` in the JSON. They read the same answers as the rows: the one Substrate Control call behind `provider.default`, the one request behind `server.reachable`. For a server, doctor reads only the repository list, so the installed, capacity and login checks are `unknown` with `by setup --up` (which reads the server's worker inventory) as the next step. Doctor never lists workers or starts an actor: `by up --plan --smoke` and `by substrate check --smoke` do.
+When Substrate is configured as the provider or a remote server is set (`--remote`, `BRANCHYARD_REMOTE`, or `[remote] url`), `by doctor` appends the seven [readiness checks](up.md#readiness-checks) below the main table (and under `readiness` in `--json` output). Those readiness rows reuse the same network responses as `provider.default` and `server.reachable`. Against a remote server, `by doctor` only queries the repository list, so worker-specific checks (installed harnesses, capacity, and logins) are reported as `unknown` with `by setup --up` recommended as the next step. `by doctor` never queries worker inventories or starts test actors; use `by up --plan --smoke` or `by substrate check --smoke` for an active smoke test.
 
 ## Statuses and exit codes
 
 | Status | Means |
 |---|---|
-| `ok` | Nothing to do. Also what a check says when the thing it checks is not configured (`server.reachable: not configured`). |
-| `todo` | A step you have not taken yet, with nothing wrong: Branchyard has not been set up in this repository (`by setup`), or a harness is installed and not logged in yet. Where everyone starts, so it is not a warning. |
-| `warn` | Worth looking at, or a check that could not run. Nothing that stops a command working. |
-| `fail` | A command that needs this would fail. |
+| `ok` | Ready to use, or the feature being checked is not configured (for example, `server.reachable: not configured`). |
+| `todo` | An expected setup step has not been run yet (for example, `by setup` has not been run in this repository, or an installed harness is not logged in). Nothing is broken. |
+| `warn` | Worth reviewing, or a check could not run because an earlier check failed. Does not block basic commands. |
+| `fail` | A required component is misconfigured or unreachable; commands that depend on it will fail. |
 
-`todo` is a status of its own and not a `warn` with a gentler word: a script that treats `warn` as something to read can leave `todo` alone, and `status` in the JSON is `todo` for a report whose worst row is one. The order is `ok`, `todo`, `warn`, `fail`; the report's status is the worst row.
+`todo` is distinct from `warn` so that scripts and CI jobs watching for warnings do not flag a brand-new checkout. Severity increases in the order `ok`, `todo`, `warn`, `fail`, and the overall report `status` in `--json` matches the most severe row.
 
-A check that cannot run because another failed is a `warn` whose detail begins `not checked:` and whose fix names the check to fix first (`fix repository.git first`). It is never an `ok`: the report does not claim what it did not look at. The text output leaves these rows out of its *To do* list, since the failed row above them says what to do.
+If a check cannot run because a prerequisite check failed, it is marked `warn` with a detail line starting with `not checked:` and a fix pointing to the prerequisite (such as `fix repository.git first`). It is never marked `ok`. In text output, those skipped checks are omitted from the *To do* summary at the bottom so you only see the root cause to fix first.
 
 | Exit | When |
 |---|---|
-| 0 | No row failed: the report is `ok`, `todo` or `warn`. A fresh repository exits 0. |
+| 0 | No row failed (the overall status is `ok`, `todo`, or `warn`). A fresh repository exits 0. |
 | 1 | At least one row failed. |
-| 2 | A usage error, as for every `by` command (`by doctor --nonsense`). |
+| 2 | Command-line usage error (for example, `by doctor --nonsense`). |
 
-There is no separate status for "doctor itself could not run". A problem with finding something out is a row (`repository.git` fails when `--path` is not a directory), and the rest of the report still prints. The report is on standard output.
+Even if the target path is not a Git repository (`repository.git` fails), `by doctor` still prints the full report to standard output and exits with code `1`.
 
 ## The mode
 
-The line above the table says how this repository runs, from the same effective configuration the checks read (the user file, `branchyard.toml`, the `BRANCHYARD_*` variables and `--remote`):
+The header line above the table summarizes how the repository is configured to run based on your merged configuration (user config, `branchyard.toml`, `BRANCHYARD_*` environment variables, and `--remote`):
 
 ```
 Mode: local, no isolation · SQLite (.branchyard/state.db) · no server

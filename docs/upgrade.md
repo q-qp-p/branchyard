@@ -1,6 +1,6 @@
 # Upgrading
 
-What to do when a newer Branchyard arrives, and the one step you cannot take back: a repository's store is upgraded in place, and an older `by` cannot read it afterwards. Back it up first if you may need to go back.
+This guide covers how to upgrade Branchyard and the one irreversible step to plan for: a repository's local SQLite store is migrated in place the first time a newer `by` opens it, and an older `by` binary cannot read it afterward. Back up your store before upgrading if you might need to roll back.
 
 ## Before you upgrade
 
