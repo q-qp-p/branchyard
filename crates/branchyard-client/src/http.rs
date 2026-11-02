@@ -4,7 +4,7 @@
 //! socket, such as the one `by --remote ssh://` forwards), a Unix domain
 //! socket.
 //!
-//! Connections are kept alive. A [`Pool`] of idle connections to one
+//! Connections are kept alive. A `Pool` of idle connections to one
 //! endpoint is shared by a `Client` and its clones, and a connection goes
 //! back into it only once a response body was read to its framed end on a
 //! connection the response leaves open (see `Reply::read_body`). A streamed
