@@ -6,8 +6,11 @@
 // Modified for Branchyard: translated from Python to a sans-IO planner.
 // The OAuth credentials file is written from the GEMINI_OAUTH_CREDS secret
 // rather than mounted; Vertex AI takes the project and location from the
-// secrets given, not the container's environment; settings.json is merged
-// key by key and refused, not reset, when it cannot be parsed; telemetry
+// secrets given, not the container's environment, and the region only as
+// GOOGLE_CLOUD_LOCATION (Scion also sets GOOGLE_CLOUD_REGION, which Gemini
+// CLI 0.65.0's bundle reads only to label a Cloud Functions resource);
+// settings.json is merged key by key and refused, not reset, when it
+// cannot be parsed; telemetry
 // goes to the collector the task names and is reconciled only when asked
 // for; the native system prompt (GEMINI_SYSTEM_MD) and GEMINI.md
 // projection are not used, because the ACP driver passes instructions in
@@ -27,6 +30,13 @@ use crate::{
 
 const SETTINGS: &str = ".gemini/settings.json";
 pub(crate) const OAUTH_CREDS: &str = ".gemini/oauth_creds.json";
+
+/// The variable Gemini CLI reads Vertex AI's region from.
+const LOCATION: &str = "GOOGLE_CLOUD_LOCATION";
+
+/// The secrets `vertex-ai` takes the region from, as [`LOCATION`]: its own
+/// name first, then Scion's other one.
+const REGION: [&str; 2] = [LOCATION, "GOOGLE_CLOUD_REGION"];
 
 pub const AUTH: Spec = Spec {
     harness: "gemini-cli",
@@ -115,10 +125,8 @@ impl Provisioner for Gemini {
                         &secret("GOOGLE_CLOUD_PROJECT"),
                         true,
                     );
-                    for name in ["GOOGLE_CLOUD_REGION", "GOOGLE_CLOUD_LOCATION"] {
-                        if let Some(value) = context.secret(name) {
-                            plan.secret_env(name, name, value, true);
-                        }
+                    if let Some(name) = REGION.iter().find(|n| context.secret(n).is_some()) {
+                        plan.secret_env(name, LOCATION, &secret(name), true);
                     }
                 }
                 _ => unreachable!("every method of AUTH is handled"),
@@ -135,7 +143,7 @@ impl Provisioner for Gemini {
             ));
         }
         let mut names = AUTH.names();
-        names.extend(["GOOGLE_CLOUD_REGION", "GOOGLE_CLOUD_LOCATION"]);
+        names.extend(REGION);
         plan.unused_secrets = unused(context, &names);
         if let Some(telemetry) = &context.telemetry {
             let on = telemetry.enabled;

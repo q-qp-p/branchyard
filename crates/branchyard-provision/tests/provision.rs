@@ -24,8 +24,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use branchyard_provision::apply::{apply, installed, remove_credentials};
 use branchyard_provision::permissions::{Fallback, PermissionRule};
 use branchyard_provision::{
-    for_harness, provisioners, Context, Effort, Instructions, McpServer, Permissions, Plan,
-    Protocol, RemoteMcpServer, RemoteTransport, Secret, Telemetry, Via, NOT_PORTED,
+    for_harness, gcloud, provisioners, Context, Delivery, Effort, Instructions, McpServer,
+    Permissions, Plan, Protocol, RemoteMcpServer, RemoteTransport, Secret, Telemetry, Via,
+    NOT_PORTED,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -315,6 +316,15 @@ fn every_secret_says_how_it_reaches_the_harness() {
             Protocol::ClaudeStreamJson,
             &["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"],
         ),
+        (
+            "claude-code",
+            Protocol::Acp,
+            &[
+                "ANTHROPIC_VERTEX_PROJECT_ID",
+                "CLOUD_ML_REGION",
+                "GCLOUD_ADC",
+            ],
+        ),
         ("codex", Protocol::CodexAppServer, &["CODEX_API_KEY"]),
         ("codex", Protocol::Acp, &["CODEX_AUTH"]),
         ("gemini-cli", Protocol::Acp, &["GEMINI_API_KEY"]),
@@ -341,6 +351,7 @@ fn every_secret_says_how_it_reaches_the_harness() {
             &["GOOGLE_API_KEY"],
         ),
         ("oh-my-pi", Protocol::Acp, &["GEMINI_API_KEY"]),
+        ("goose", Protocol::Acp, &["OPENAI_API_KEY", "GCLOUD_ADC"]),
     ];
     for (harness, protocol, names) in cases {
         let mut context = context(harness, *protocol);
@@ -616,6 +627,263 @@ fn claude_credentials_and_oauth_and_vertex() {
 
 fn plan_auth(context: &Context) -> String {
     branchyard_provision::plan(context).unwrap().auth.unwrap()
+}
+
+/// The plan's variables by name, as `(value, secret)`.
+fn env_of(plan: &Plan) -> BTreeMap<&str, (&str, bool)> {
+    plan.env
+        .iter()
+        .map(|e| (e.name.as_str(), (e.value.as_str(), e.secret)))
+        .collect()
+}
+
+/// Claude Code's own names for the Vertex AI project and region are taken,
+/// before the Google Cloud ones; every other method turns off a Vertex AI
+/// switch the harness would otherwise inherit, and no method leaves it be.
+#[test]
+fn claude_vertex_takes_its_own_names_first_and_other_methods_switch_vertex_off() {
+    let mut context = context("claude-code", Protocol::ClaudeStreamJson);
+    context.secrets = secrets(&[
+        ("GOOGLE_CLOUD_PROJECT", "gemini-project"),
+        ("GOOGLE_CLOUD_LOCATION", "global"),
+        ("ANTHROPIC_VERTEX_PROJECT_ID", "claude-project"),
+        ("CLOUD_ML_REGION", "us-east5"),
+    ]);
+    let plan = branchyard_provision::plan(&context).unwrap();
+    assert_eq!(plan.auth.as_deref(), Some("vertex-ai"));
+    let env = env_of(&plan);
+    assert_eq!(env["CLAUDE_CODE_USE_VERTEX"], ("1", false));
+    assert_eq!(env["ANTHROPIC_VERTEX_PROJECT_ID"], ("claude-project", true));
+    assert_eq!(env["CLOUD_ML_REGION"], ("us-east5", true));
+    let delivered: Vec<(&str, &Via)> = plan
+        .secrets
+        .iter()
+        .map(|d| (d.secret.as_str(), &d.via))
+        .collect();
+    assert_eq!(
+        delivered,
+        [
+            (
+                "ANTHROPIC_VERTEX_PROJECT_ID",
+                &Via::Env {
+                    var: "ANTHROPIC_VERTEX_PROJECT_ID".into()
+                }
+            ),
+            (
+                "CLOUD_ML_REGION",
+                &Via::Env {
+                    var: "CLOUD_ML_REGION".into()
+                }
+            ),
+        ]
+    );
+    assert!(plan.unused_secrets.is_empty() && plan.warnings.is_empty());
+
+    for (secret, value, method) in [
+        ("ANTHROPIC_API_KEY", ANTHROPIC_KEY, "api-key"),
+        ("ANTHROPIC_AUTH_TOKEN", "gateway-token", "auth-token"),
+        ("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-token", "oauth-token"),
+        ("CLAUDE_AUTH", r#"{"claudeAiOauth": {}}"#, "auth-file"),
+    ] {
+        context.secrets = secrets(&[(secret, value)]);
+        let plan = branchyard_provision::plan(&context).unwrap();
+        assert_eq!(plan.auth.as_deref(), Some(method));
+        assert_eq!(
+            env_of(&plan)["CLAUDE_CODE_USE_VERTEX"],
+            ("0", false),
+            "{method}"
+        );
+    }
+    context.secrets.clear();
+    let plan = branchyard_provision::plan(&context).unwrap();
+    assert!(!env_of(&plan).contains_key("CLAUDE_CODE_USE_VERTEX"));
+}
+
+/// A project with no region, such as a `GOOGLE_CLOUD_PROJECT` given for
+/// Gemini CLI, does not stop a Claude Code turn: it chooses no method, and
+/// is reported unused with what Vertex AI lacked. Only an explicit
+/// `--auth vertex-ai` is refused, naming the missing secret and how to give
+/// it.
+#[test]
+fn a_claude_project_without_a_region_is_unused_unless_vertex_ai_is_asked_for() {
+    let given = secrets(&[("GOOGLE_CLOUD_PROJECT", "p"), ("GH_TOKEN", "t")]);
+    let mut context = context("claude-code", Protocol::ClaudeStreamJson);
+    context.secrets = given.clone();
+    let plan = branchyard_provision::plan(&context).unwrap();
+    assert_eq!(plan.auth, None);
+    let env = env_of(&plan);
+    for var in [
+        "CLAUDE_CODE_USE_VERTEX",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    ] {
+        assert!(!env.contains_key(var), "{var}");
+    }
+    assert!(plan.secrets.is_empty());
+    assert_eq!(plan.unused_secrets, ["GH_TOKEN", "GOOGLE_CLOUD_PROJECT"]);
+    assert_eq!(
+        plan.warnings,
+        [
+            "claude-code did not use GOOGLE_CLOUD_PROJECT: vertex-ai also needs CLOUD_ML_REGION, \
+          GOOGLE_CLOUD_LOCATION or GOOGLE_CLOUD_REGION"
+        ]
+    );
+
+    // Gemini CLI, given the same, uses it.
+    let mut gemini = self::context("gemini-cli", Protocol::Acp);
+    gemini.secrets = given;
+    let plan = branchyard_provision::plan(&gemini).unwrap();
+    assert_eq!(plan.auth.as_deref(), Some("vertex-ai"));
+    assert_eq!(plan.unused_secrets, ["GH_TOKEN"]);
+    assert!(plan.warnings.is_empty());
+
+    context.auth = Some("vertex-ai".into());
+    let refused = branchyard_provision::plan(&context).unwrap_err().0;
+    assert!(
+        refused.starts_with(
+            "claude-code: auth type \"vertex-ai\" also needs CLOUD_ML_REGION, \
+             GOOGLE_CLOUD_LOCATION or GOOGLE_CLOUD_REGION; give a project"
+        ),
+        "{refused}"
+    );
+    assert!(refused.contains("--secret CLOUD_ML_REGION"), "{refused}");
+
+    // A region alone is the same, the other way round.
+    context.auth = None;
+    context.secrets = secrets(&[("CLOUD_ML_REGION", "us-east5")]);
+    let plan = branchyard_provision::plan(&context).unwrap();
+    assert_eq!(
+        (
+            plan.auth,
+            plan.unused_secrets.as_slice(),
+            plan.warnings.as_slice()
+        ),
+        (
+            None,
+            &["CLOUD_ML_REGION".to_owned()][..],
+            &[
+                "claude-code did not use CLOUD_ML_REGION: vertex-ai also needs \
+               ANTHROPIC_VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT"
+                    .to_owned()
+            ][..]
+        )
+    );
+}
+
+/// Gemini CLI reads Vertex AI's region from `GOOGLE_CLOUD_LOCATION`, so a
+/// region given as `GOOGLE_CLOUD_REGION` reaches it under that name; given
+/// both, `GOOGLE_CLOUD_LOCATION` is the one.
+#[test]
+fn gemini_takes_the_vertex_region_as_google_cloud_location() {
+    let mut context = context("gemini-cli", Protocol::Acp);
+    context.secrets = secrets(&[
+        ("GOOGLE_CLOUD_PROJECT", "p"),
+        ("GOOGLE_CLOUD_REGION", "europe-west4"),
+    ]);
+    let plan = branchyard_provision::plan(&context).unwrap();
+    let env = env_of(&plan);
+    assert_eq!(env["GOOGLE_CLOUD_LOCATION"], ("europe-west4", true));
+    assert!(!env.contains_key("GOOGLE_CLOUD_REGION"));
+    assert!(plan.secrets.contains(&Delivery {
+        secret: "GOOGLE_CLOUD_REGION".into(),
+        via: Via::Env {
+            var: "GOOGLE_CLOUD_LOCATION".into()
+        },
+        tool_env: true,
+    }));
+    assert!(plan.unused_secrets.is_empty());
+
+    context
+        .secrets
+        .push(Secret::new("GOOGLE_CLOUD_LOCATION", "global"));
+    let plan = branchyard_provision::plan(&context).unwrap();
+    assert_eq!(env_of(&plan)["GOOGLE_CLOUD_LOCATION"], ("global", true));
+    assert!(plan.unused_secrets.is_empty());
+}
+
+const ADC: &str = r#"{"type": "authorized_user", "refresh_token": "1//ADC-SECRET-TOKEN"}"#;
+
+/// `GCLOUD_ADC`, gcloud's credentials file, goes into every harness's
+/// private home, 0600, and `GOOGLE_APPLICATION_CREDENTIALS` names it as the
+/// harness sees it, beside whatever else the harness logs in with. A later
+/// turn without it removes the file, and so does removing the branch's
+/// credentials.
+#[test]
+fn gcloud_adc_goes_into_every_private_home_named_for_the_harness() {
+    let cases = [
+        (
+            "claude-code",
+            Protocol::ClaudeStreamJson,
+            secrets(&[("GOOGLE_CLOUD_PROJECT", "p"), ("CLOUD_ML_REGION", "r")]),
+        ),
+        (
+            "gemini-cli",
+            Protocol::Acp,
+            secrets(&[("GOOGLE_CLOUD_PROJECT", "p")]),
+        ),
+        ("opencode", Protocol::Acp, Vec::new()),
+        ("goose", Protocol::Acp, Vec::new()),
+    ];
+    let named = "/branchyard/home/.config/gcloud/application_default_credentials.json";
+    for (harness, protocol, others) in cases {
+        let temp = Temp::new();
+        let mut context = context(harness, protocol);
+        context.secrets = others.clone();
+        context.secrets.push(Secret::new(gcloud::SECRET, ADC));
+        let plan = provision(&temp, &context);
+        assert_eq!(temp.read(gcloud::PATH), ADC, "{harness}");
+        assert_eq!(temp.mode(gcloud::PATH), 0o600, "{harness}");
+        assert_eq!(temp.mode(".config/gcloud"), 0o700, "{harness}");
+        assert_eq!(
+            env_of(&plan)["GOOGLE_APPLICATION_CREDENTIALS"],
+            (named, false),
+            "{harness}"
+        );
+        assert!(plan.secrets.contains(&Delivery {
+            secret: "GCLOUD_ADC".into(),
+            via: Via::File {
+                path: gcloud::PATH.into()
+            },
+            tool_env: false,
+        }));
+        assert!(
+            plan.unused_secrets.is_empty(),
+            "{harness}: {:?}",
+            plan.unused_secrets
+        );
+        assert!(!format!("{plan:?}").contains("ADC-SECRET"), "{harness}");
+        if !others.is_empty() {
+            assert!(plan.auth.is_some(), "{harness}");
+        }
+
+        context.installed = installed(&temp.home());
+        assert!(context
+            .installed
+            .credentials
+            .iter()
+            .any(|c| c.path() == gcloud::PATH));
+        context.secrets = others;
+        let plan = provision(&temp, &context);
+        assert!(!temp.home().join(gcloud::PATH).exists(), "{harness}");
+        assert!(!env_of(&plan).contains_key("GOOGLE_APPLICATION_CREDENTIALS"));
+        assert!(installed(&temp.home())
+            .credentials
+            .iter()
+            .all(|c| c.path() != gcloud::PATH));
+    }
+
+    let temp = Temp::new();
+    let mut context = context("gemini-cli", Protocol::Acp);
+    context.secrets = secrets(&[(gcloud::SECRET, ADC)]);
+    provision(&temp, &context);
+    let removed = remove_credentials(&temp.home()).unwrap();
+    assert!(removed.removed.contains(&gcloud::PATH.to_owned()));
+    assert!(!temp.home().join(gcloud::PATH).exists());
+
+    // Not in a home that is yours.
+    let mut yours = Context::new("gemini-cli", Protocol::Acp, "/home/you", "/w");
+    yours.secrets = secrets(&[(gcloud::SECRET, ADC)]);
+    assert!(branchyard_provision::plan(&yours).is_err());
 }
 
 const USER_CODEX_CONFIG: &str = r#"# My Codex settings.
