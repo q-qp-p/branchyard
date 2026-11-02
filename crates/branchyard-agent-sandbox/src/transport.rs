@@ -22,13 +22,19 @@ pub(crate) struct Transport {
 
 impl ExecTransport for Transport {
     fn command(&self, script: &str, args: &[&str]) -> Command {
-        let mut command = self.control.namespaced();
+        let kubectl = self.control.namespaced();
+        let mut command = Command::new(&self.control.python);
+        command.args(["-c", include_str!("kubectl_exec.py")]);
+        command.arg(kubectl.get_program()).args(kubectl.get_args());
         command.args([
             "exec",
             "-i",
             &self.pod_name,
             "-c",
             "runtime",
+            "--",
+            "setpriv",
+            "--no-new-privs",
             "--",
             "sh",
             "-c",

@@ -32,6 +32,7 @@ impl AgentSandboxProvider {
             control: Control {
                 config,
                 binary: PathBuf::from("kubectl"),
+                python: PathBuf::from("python3"),
             },
             store: Store::new(state_dir.into()),
         })
@@ -237,6 +238,7 @@ impl SandboxProvider for AgentSandboxProvider {
 
     fn ensure(&self, spec: &SandboxSpec) -> Result<SandboxInfo, ProviderError> {
         self.control.config.validate_spec(spec)?;
+        self.control.check_host()?;
         let locked = self.store.lock(&spec.name)?;
         let mut receipt = match self.load(&locked, &spec.name)? {
             Some(receipt) => {

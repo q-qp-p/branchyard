@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -68,9 +66,12 @@ impl Fixture {
     }
 
     fn calls(&self) -> Vec<Value> {
-        fs::read_to_string(self.scratch.join("calls.jsonl"))
-            .unwrap_or_default()
-            .lines()
+        let text = match fs::read_to_string(self.scratch.join("calls.jsonl")) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("read fake kubectl calls: {error}"),
+        };
+        text.lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
@@ -142,8 +143,28 @@ fn ensure_recovers_intent_and_destroy_uses_uid_preconditions() {
         json!(["169.254.169.254/32", "169.254.169.252/32"])
     );
     assert_eq!(
-        policy["spec"]["egress"][1]["to"][0]["podSelector"]["matchLabels"]["k8s-app"],
-        "kube-dns"
+        policy["spec"]["egress"][1]["to"][0]["podSelector"],
+        json!({"matchExpressions":[{"key":"k8s-app","operator":"In","values":["kube-dns","node-local-dns"]}]})
+    );
+    assert_eq!(
+        policy["spec"]["egress"][1]["ports"],
+        json!([{"protocol":"UDP","port":53},{"protocol":"TCP","port":53}])
+    );
+    assert_eq!(
+        policy["spec"]["egress"][1]["to"][0]["namespaceSelector"],
+        json!({"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}})
+    );
+    assert_eq!(
+        fixture.state()["objects"][format!("pod/{}", fixture.name())]["spec"]["containers"][0]
+            ["command"],
+        json!([
+            "setpriv",
+            "--no-new-privs",
+            "--",
+            "sh",
+            "-c",
+            "exec tail -f /dev/null"
+        ])
     );
     assert_eq!(pod["spec"]["automountServiceAccountToken"], false);
     assert_eq!(
@@ -364,6 +385,113 @@ fn piped_exec_preserves_bytes_and_refuses_replacement_before_payload() {
     );
     assert!(result.is_err());
     assert!(!marker.exists());
+}
+
+#[test]
+fn unavailable_host_python_refuses_before_cloud_calls_or_receipts() {
+    let mut fixture = Fixture::new(Network::Deny);
+    fixture.provider.control.python = fixture.scratch.join("missing-python3");
+    assert!(fixture
+        .provider
+        .ensure(&spec())
+        .unwrap_err()
+        .to_string()
+        .contains("Python"));
+    assert!(fixture.calls().is_empty());
+    assert!(!fixture.scratch.join("receipts").exists());
+}
+
+#[test]
+fn nonzero_exec_keeps_binary_stderr_and_guest_trailer_lookalikes() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    for code in [0, 7, 255] {
+        let payload = format!(
+            "printf 'guest\\000bytes\\377command terminated with exit code 7\\ncommand terminated with exit code 7\\n' >&2; exit {code}"
+        );
+        let mut process = fixture
+            .provider
+            .exec(
+                "allocation",
+                &ExecSpec {
+                    argv: vec!["sh".into(), "-c".into(), payload],
+                    cwd: fixture.scratch.path().to_path_buf(),
+                    ..ExecSpec::default()
+                },
+            )
+            .unwrap();
+        drop(process.take_stdin());
+        let mut stderr = Vec::new();
+        process
+            .take_stderr()
+            .unwrap()
+            .read_to_end(&mut stderr)
+            .unwrap();
+        assert_eq!(process.wait().unwrap().code, Some(code));
+        assert_eq!(
+            stderr,
+            b"guest\0bytes\xffcommand terminated with exit code 7\ncommand terminated with exit code 7\n"
+        );
+        assert!(process.teardown().is_empty());
+    }
+}
+
+#[test]
+fn relay_startup_failure_and_timeout_end_local_kubectl_and_plugin_children() {
+    use branchyard_sandbox::exec::{self, ExecGroup, ExecTransport};
+    use branchyard_testkit::wait;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    struct RelayTransport {
+        root: PathBuf,
+        fail: bool,
+    }
+    impl ExecTransport for RelayTransport {
+        fn command(&self, _: &str, _: &[&str]) -> Command {
+            let mut command = Command::new("python3");
+            command.args(["-c", include_str!("kubectl_exec.py"), "python3", "-c", r#"
+import os,subprocess,sys
+from pathlib import Path
+child=subprocess.Popen([sys.executable,'-c','import sys; sys.stdin.buffer.read()'],stdin=subprocess.PIPE)
+Path(sys.argv[1],'kubectl.pid').write_text(str(os.getpid()))
+Path(sys.argv[1],'plugin.pid').write_text(str(child.pid))
+if sys.argv[2]=='failure':
+ sys.stderr.buffer.write(b'by-sandbox-missing\n'); sys.stderr.buffer.flush()
+sys.stdin.buffer.read()
+"#]).arg(&self.root).arg(if self.fail { "failure" } else { "timeout" });
+            command
+        }
+        fn describe(&self) -> String {
+            "owned local relay fixture".into()
+        }
+        fn start_timeout(&self) -> Duration {
+            Duration::from_secs(5)
+        }
+    }
+    for fail in [true, false] {
+        let root = Scratch::new("relay-startup-group");
+        let result = exec::spawn(
+            Arc::new(RelayTransport {
+                root: root.path().to_path_buf(),
+                fail,
+            }),
+            &ExecGroup::new("relay-startup").unwrap(),
+            &ExecSpec {
+                argv: vec!["true".into()],
+                ..ExecSpec::default()
+            },
+        );
+        assert!(result.is_err());
+        for name in ["kubectl.pid", "plugin.pid"] {
+            let pid: u32 = fs::read_to_string(root.join(name))
+                .unwrap()
+                .parse()
+                .unwrap();
+            wait::gone(pid);
+        }
+    }
 }
 
 #[test]

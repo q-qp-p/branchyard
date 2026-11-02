@@ -17,5 +17,6 @@ mod verify;
 pub use config::{Config, Network, Runtime};
 pub use provider::AgentSandboxProvider;
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a panic is the failure report
 #[cfg(test)]
 mod tests;
