@@ -50,6 +50,7 @@ pub mod approvals;
 pub mod auth;
 pub mod connectors;
 pub mod edit;
+pub mod gcloud;
 pub mod instructions;
 pub mod logins;
 pub mod models;
@@ -975,6 +976,9 @@ pub struct Plan {
     pub secrets: Vec<Delivery>,
     /// Secrets given that this harness does not read.
     pub unused_secrets: Vec<String>,
+    /// What the turn's record should warn about: a secret the provisioner
+    /// passed over for want of another, and which.
+    pub warnings: Vec<String>,
     /// The native MCP entries now installed, when the provisioner manages
     /// them; recorded in the home by [`plan`].
     pub installed_mcp_servers: Option<Vec<String>>,
@@ -1196,6 +1200,7 @@ pub fn plan(context: &Context) -> Result<Plan, Refused> {
             plan
         }
     };
+    gcloud::provision(context, &mut plan)?;
     // Secrets given to MCP servers are used, and delivered with them.
     for used in &context.mcp_secrets {
         plan.unused_secrets.retain(|name| name != &used.secret);

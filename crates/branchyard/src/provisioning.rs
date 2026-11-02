@@ -65,6 +65,9 @@ pub(crate) struct Provisioned {
     /// What to record: [`Activity::Provisioned`], on every turn, since it
     /// names the turn's skills whether or not anything else was provisioned.
     pub activity: Activity,
+    /// What to record after it, as [`Activity::Warning`]s: a secret the
+    /// harness's provisioner passed over, and why.
+    pub warnings: Vec<String>,
 }
 
 /// Where per-turn files go, under the state directory.
@@ -495,6 +498,7 @@ pub(crate) fn prepare(
         turn_file,
         scrub,
         activity,
+        warnings: plan.warnings,
     })
 }
 
