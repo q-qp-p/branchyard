@@ -25,55 +25,19 @@
 use branchyard_support::LockExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::{Child, ExitStatus as StdStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use branchyard_sandbox::{
-    Capabilities, ExecSpec, ExitStatus, Operation, Process, ProviderError, SandboxInfo,
-    SandboxProvider, SandboxSpec, SandboxState,
+    Capabilities, ExecSpec, Operation, Process, ProviderError, SandboxInfo, SandboxProvider,
+    SandboxSpec, SandboxState,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::transport::{quote, Transport};
-use crate::{check_variable, parse_result, run, Mode, Payload, Recipe, RecipeResult};
-
-const STARTED: &str = "by-recipe-started";
-const MISSING: &str = "by-recipe-missing";
-
-/// Makes the inner script a process group leader, then runs it.
-const OUTER: &str = r#"p=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
-if [ "$p" != "$$" ] && command -v setsid >/dev/null 2>&1; then exec setsid sh -c "$1"; fi
-exec sh -c "$1""#;
-
-/// Kills every exec recorded for one sandbox: `$1` is its directory.
-const STOP: &str = r#"for f in "$HOME/.branchyard/recipe-exec/$1"/*; do
-  [ -f "$f" ] || continue
-  kill -s KILL -- $(cat "$f") 2>/dev/null
-  rm -f "$f"
-done
-:"#;
-
-/// Names, then kills, what one exec left: `$1` its record.
-const TEARDOWN: &str = r#"f="$HOME/.branchyard/recipe-exec/$1"
-t=$(cat "$f" 2>/dev/null) || exit 0
-case $t in
-  -*) ps -eo pgid=,comm= 2>/dev/null | awk -v g="${t#-}" '$1 == g { print $2 }' ;;
-  *) ps -o comm= -p "$t" 2>/dev/null ;;
-esac
-kill -s KILL -- $t 2>/dev/null
-rm -f "$f"
-:"#;
-
-/// Kills one exec's group: `$1` its record.
-const KILL: &str = r#"t=$(cat "$HOME/.branchyard/recipe-exec/$1" 2>/dev/null) && kill -s KILL -- $t 2>/dev/null
-:"#;
-
-/// Forgets one exec's record: `$1` it.
-const FORGET: &str = r#"rm -f "$HOME/.branchyard/recipe-exec/$1"
-:"#;
+use crate::transport::Transport;
+use crate::{parse_result, run, Mode, Payload, Recipe, RecipeResult};
+use branchyard_sandbox::exec::{self, ExecGroup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,7 +69,6 @@ pub struct RecipeProvider {
     ssh: String,
     state_dir: Option<PathBuf>,
     machines: Mutex<BTreeMap<String, Machine>>,
-    execs: AtomicU64,
 }
 
 impl RecipeProvider {
@@ -116,7 +79,6 @@ impl RecipeProvider {
             ssh: ssh.into(),
             state_dir: None,
             machines: Mutex::new(BTreeMap::new()),
-            execs: AtomicU64::new(0),
         }
     }
 
@@ -219,17 +181,12 @@ impl RecipeProvider {
         }
     }
 
-    /// Run `script` on `name`'s machine and wait for it, with stdin closed.
-    fn remote(&self, name: &str, script: &str, args: &[&str]) -> io::Result<String> {
+    fn stop_execs(&self, name: &str) -> io::Result<()> {
         let Some(transport) = self.transport(name) else {
-            return Ok(String::new());
+            return Ok(());
         };
-        let out = transport
-            .command(script, args)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()?;
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        let group = ExecGroup::new(key(name)).map_err(io::Error::from)?;
+        exec::stop_group(&transport, &group)
     }
 }
 
@@ -344,122 +301,20 @@ impl SandboxProvider for RecipeProvider {
                 )))
             }
         }
-        let Some(program) = spec.argv.first() else {
-            return Err(ProviderError::Invalid(
-                "the argument vector is empty".into(),
-            ));
-        };
-        let cwd = match spec.cwd.as_os_str().is_empty() {
-            true => machine.result.connection.project_root().to_owned(),
-            false => spec.cwd.display().to_string(),
-        };
-        let mut env: BTreeMap<String, String> = machine.result.env.clone();
-        for (name, value) in &spec.env {
-            let (name, value) = (text(name)?, text(value)?);
-            check_variable(&name).map_err(ProviderError::Invalid)?;
-            env.insert(name, value);
+        let mut spec = spec.clone();
+        if spec.cwd.as_os_str().is_empty() {
+            spec.cwd = machine.result.connection.project_root().into();
         }
-        let id = format!(
-            "{}/{}-{}",
-            key(name),
-            std::process::id(),
-            self.execs.fetch_add(1, Ordering::Relaxed)
-        );
-        let mut inner = format!(
-            "d=\"$HOME/.branchyard/recipe-exec/{dir}\"; mkdir -p \"$d\" || exit 125\n\
-             p=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')\n\
-             if [ \"$p\" = \"$$\" ]; then echo \"-$$\" >\"$d/{file}\"; else echo \"$$\" >\"$d/{file}\"; fi\n\
-             cd {cwd} 2>/dev/null || {{ echo \"by-recipe: cannot enter \"{cwd} >&2; exit 125; }}\n",
-            dir = key(name),
-            file = id.rsplit('/').next().unwrap_or_default(),
-            cwd = quote(&cwd),
-        );
-        for (name, value) in &env {
-            inner.push_str(&format!("export {}\n", quote(&format!("{name}={value}"))));
-        }
-        let program = quote(program);
-        inner.push_str(&format!(
-            "case {program} in */*) [ -f {program} ] && [ -x {program} ] ;; \
-             *) command -v {program} >/dev/null 2>&1 ;; esac || \
-             {{ echo {MISSING} >&2; exit 127; }}\n\
-             echo {STARTED} >&2\nexec"
-        ));
-        for arg in &spec.argv {
-            inner.push(' ');
-            inner.push_str(&quote(arg));
-        }
-        let transport = Transport::new(&machine.result.connection, &self.ssh);
-        let mut command = transport.command(OUTER, &[&inner]);
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        // Until the wrapper says the program starts, stderr is the
-        // transport's and the wrapper's; whatever came before the marker is
-        // kept for the caller.
-        let Some(piped) = child.stderr.take() else {
-            branchyard_support::best_effort("kill wrapper", child.kill());
-            branchyard_support::best_effort("reap wrapper", child.wait());
-            return Err(ProviderError::Io(std::io::Error::other(
-                "the wrapper's stderr is not piped",
-            )));
-        };
-        let mut stderr = BufReader::new(piped);
-        let mut before = Vec::new();
-        let mut line = Vec::new();
-        let started = loop {
-            line.clear();
-            match stderr.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break false,
-                Ok(_) => {}
-            }
-            if line.trim_ascii_end() == STARTED.as_bytes() {
-                break true;
-            }
-            before.extend_from_slice(&line);
-        };
-        if !started {
-            let status = child.wait()?;
-            let said = String::from_utf8_lossy(&before);
-            let missing = said.lines().any(|l| l.trim() == MISSING);
-            let said: Vec<&str> = said.lines().filter(|l| l.trim() != MISSING).collect();
-            let why = match missing {
-                true => format!("{} not found on {name}'s machine", spec.argv[0]),
-                false => format!(
-                    "could not start {} on {name}'s machine through {} ({status}): {}",
-                    spec.argv[0],
-                    transport.describe(),
-                    said.join(" / ").trim()
-                ),
-            };
-            let kind = match missing {
-                true => io::ErrorKind::NotFound,
-                false => io::ErrorKind::Other,
-            };
-            return Err(ProviderError::Io(io::Error::new(kind, why)));
-        }
-        let stderr: Box<dyn Read + Send> = Box::new(io::Cursor::new(before).chain(stderr));
-        Ok(Box::new(RemoteProcess {
-            transport,
-            record: id,
-            stdin: child
-                .stdin
-                .take()
-                .map(|w| Box::new(w) as Box<dyn Write + Send>),
-            stdout: child
-                .stdout
-                .take()
-                .map(|r| Box::new(r) as Box<dyn Read + Send>),
-            stderr: Some(stderr),
-            child,
-            status: None,
-            torn_down: false,
-        }))
+        let mut env: BTreeMap<OsString, OsString> = machine
+            .result
+            .env
+            .iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        env.extend(spec.env);
+        spec.env = env;
+        let transport = Arc::new(Transport::new(&machine.result.connection, &self.ssh));
+        exec::spawn(transport, &ExecGroup::new(key(name))?, &spec)
     }
 
     fn stop(&self, name: &str) -> Result<(), ProviderError> {
@@ -467,7 +322,7 @@ impl SandboxProvider for RecipeProvider {
             .machine(name)
             .ok_or_else(|| ProviderError::NotFound(name.to_owned()))?;
         if machine.held == Held::Running {
-            self.remote(name, STOP, &[&key(name)])?;
+            self.stop_execs(name)?;
             machine.held = Held::Stopped;
             self.record(name, Some(machine))?;
         }
@@ -482,7 +337,7 @@ impl SandboxProvider for RecipeProvider {
             // Best effort: the machine is going away regardless.
             branchyard_support::best_effort(
                 "send the command to the remote provider",
-                self.remote(name, STOP, &[&key(name)]),
+                self.stop_execs(name),
             );
         }
         if let Some(destroy) = &self.recipe.destroy {
@@ -525,128 +380,5 @@ impl SandboxProvider for RecipeProvider {
             name: name.to_owned(),
             state: SandboxState::Running,
         })
-    }
-}
-
-fn text(value: &OsString) -> Result<String, ProviderError> {
-    value
-        .to_str()
-        .map(str::to_owned)
-        .ok_or_else(|| ProviderError::Invalid(format!("{value:?} is not UTF-8")))
-}
-
-/// An exec on a recipe's machine.
-struct RemoteProcess {
-    transport: Transport,
-    /// `<sandbox>/<exec>` under `~/.branchyard/recipe-exec` on the machine.
-    record: String,
-    child: Child,
-    stdin: Option<Box<dyn Write + Send>>,
-    stdout: Option<Box<dyn Read + Send>>,
-    stderr: Option<Box<dyn Read + Send>>,
-    status: Option<ExitStatus>,
-    torn_down: bool,
-}
-
-impl RemoteProcess {
-    fn remote(&self, script: &str) -> io::Result<String> {
-        let out = self
-            .transport
-            .command(script, &[&self.record])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()?;
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    }
-
-    fn kill_local(&mut self) {
-        branchyard_support::kill_group(self.child.id());
-        branchyard_support::best_effort("kill child", self.child.kill());
-    }
-}
-
-fn status(status: StdStatus) -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    ExitStatus {
-        code: status.code(),
-        signal: status.signal(),
-    }
-}
-
-impl Process for RemoteProcess {
-    fn id(&self) -> String {
-        format!("{} via {}", self.record, self.transport.describe())
-    }
-
-    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
-        self.stdin.take()
-    }
-
-    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
-        self.stdout.take()
-    }
-
-    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
-        self.stderr.take()
-    }
-
-    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        if self.status.is_none() {
-            self.status = self.child.try_wait()?.map(status);
-        }
-        Ok(self.status)
-    }
-
-    fn wait(&mut self) -> io::Result<ExitStatus> {
-        if let Some(status) = self.status {
-            return Ok(status);
-        }
-        // Closing our end of stdin lets a reader on the machine finish.
-        let waited = status(self.child.wait()?);
-        self.status = Some(waited);
-        Ok(waited)
-    }
-
-    fn kill(&mut self) -> io::Result<()> {
-        self.remote(KILL)?;
-        self.kill_local();
-        Ok(())
-    }
-
-    fn teardown(&mut self) -> Vec<String> {
-        self.torn_down = true;
-        let names = self.remote(TEARDOWN).unwrap_or_default();
-        self.kill_local();
-        branchyard_support::best_effort("check whether the wrapper exited", self.child.try_wait());
-        names
-            .lines()
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(str::to_owned)
-            .collect()
-    }
-}
-
-impl Drop for RemoteProcess {
-    fn drop(&mut self) {
-        if self.torn_down {
-            return;
-        }
-        match self.try_wait() {
-            Ok(Some(_)) => {
-                branchyard_support::best_effort(
-                    "send the command to the remote provider",
-                    self.remote(FORGET),
-                );
-            }
-            _ => {
-                branchyard_support::best_effort(
-                    "send the command to the remote provider",
-                    self.remote(KILL),
-                );
-                let _ = self.teardown();
-                branchyard_support::best_effort("reap child", self.child.wait());
-            }
-        }
     }
 }

@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 branchyard-support = { path = "../branchyard-support" }
+shlex = { workspace = true }
+
+[dev-dependencies]
+branchyard-testkit = { path = "../branchyard-testkit" }
