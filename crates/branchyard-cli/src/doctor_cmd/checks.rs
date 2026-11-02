@@ -887,9 +887,8 @@ impl GoogleCloud<'_> {
             AdcSource::Gcloud(shown) => Check::ok(
                 NAME,
                 adc(&format!(
-                    "{shown}, from `gcloud auth application-default login` (an --isolated \
-                     branch's private HOME hides it unless GOOGLE_APPLICATION_CREDENTIALS names \
-                     it)"
+                    "{shown}, from `gcloud auth application-default login` (isolated and \
+                     sandboxed branches get a copy with [secrets] GCLOUD_ADC = \"@{shown}\")"
                 )),
             ),
             AdcSource::Metadata => Check::ok(
@@ -1665,7 +1664,8 @@ mod tests {
         assert_eq!(gcloud.status, Status::Ok);
         assert!(gcloud.detail.contains(
             "~/.config/gcloud/application_default_credentials.json, from `gcloud auth \
-             application-default login` (an --isolated branch's private HOME hides it"
+             application-default login` (isolated and sandboxed branches get a copy with \
+             [secrets] GCLOUD_ADC = \"@~/.config/gcloud/application_default_credentials.json\")"
         ));
         let moved = google_cloud(
             &[("HOME", "/home/me"), ("CLOUDSDK_CONFIG", "/etc/gcloud")],
