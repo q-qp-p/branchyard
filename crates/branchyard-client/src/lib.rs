@@ -80,9 +80,9 @@ use api::{
     AnswerRequest, AskRequest, BranchEvents, BranchList, CancelRequest, CancelResult, CheckRequest,
     Diff, DiscardRequest, ErrorBody, ErrorResponse, FeedEntry, ForkRequest, GraphRequest,
     HarnessList, IntegrateRequest, InventoryReport, MapList, MapRequest, MapResumeRequest,
-    MergeRequest, Operation, ReincarnateRequest, Removed, RepoEntry, RepoList, ReportRequest,
-    ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest, TaskList,
-    TaskRequest, TextRequest, WaitRequest,
+    MergeRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry, RepoList,
+    ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest,
+    TaskList, TaskRequest, TextRequest, WaitRequest,
 };
 use branchyard_support::time::now_ms;
 use http::{encode, Endpoint, Reply};
@@ -267,6 +267,12 @@ impl Client {
     /// harnesses each one's machine has: `GET /v1/inventory`.
     pub fn inventory(&self) -> Result<InventoryReport, Error> {
         self.get("/v1/inventory")
+    }
+
+    /// What background work could not do that a person can act on, oldest
+    /// first: `GET /v1/problems`. Empty when nothing needs a person.
+    pub fn problems(&self) -> Result<ProblemList, Error> {
+        self.get("/v1/problems")
     }
 
     /// The fleet's services, of `kind` when given (`GET /v1/services`).

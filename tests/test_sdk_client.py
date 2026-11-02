@@ -2475,6 +2475,21 @@ class Fleet(ServerCase):
         self.assertTrue(worker.this)
         self.assertIsNone(worker.inventory)
 
+    def test_problems_are_listed_with_what_to_do(self):
+        problem = {
+            "kind": "trigger",
+            "key": "trg_1",
+            "what": "trigger nightly",
+            "since_ms": 5,
+            "failures": 3,
+            "error": "paused after 3 failed runs in a row",
+            "next": "by trigger enable nightly",
+        }
+        self.fake.answer("GET", "/v1/problems", (200, {"problems": [problem]}), (200, {"problems": []}))
+        (listed,) = self.client.problems()
+        self.assertEqual((listed.kind, listed.failures, listed.next), ("trigger", 3, "by trigger enable nightly"))
+        self.assertEqual(self.client.problems(), [])
+
     def test_admin_routes_without_the_scope_are_denied(self):
         self.fake.answer("POST", "/v1/services/gc", (403, _error("scope_required", "", {"scope": "admin"})))
         with self.assertRaises(bc.DeniedError) as denied:
@@ -3662,6 +3677,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/triggers/{t}/secret": [lambda c, _r: c.set_trigger_secret("t")],
     "/.well-known/branchyard": [lambda c, _r: c.well_known()],
     "/v1/inventory": [lambda c, _r: c.inventory()],
+    "/v1/problems": [lambda c, _r: c.problems()],
     "/v1/services": [lambda c, _r: c.services(), lambda c, _r: c.register_service("model_gateway")],
     "/v1/services/gc": [lambda c, _r: c.reclaim_services()],
     "/v1/services/{id}": [lambda c, _r: c.deregister_service("s1")],

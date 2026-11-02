@@ -58,6 +58,9 @@
     effects: [],
     // What waits for a person, as the server orders it (`GET …/decisions`).
     decisions: [],
+    // What background work could not do, each with the one thing to do
+    // (`GET /v1/problems`), oldest first; empty on a healthy server.
+    problems: [],
     // Which files are in whose hands (`GET …/ground`), with the repository
     // it was read for; null until read.
     ground: null,
@@ -659,6 +662,7 @@
     $('live').hidden = !state.repo;
     const loading = state.repo ? switchRepo(state.repo) : Promise.resolve();
     if (state.source.kind === 'project') loadWorkspaces(state.source.id);
+    loadProblems();
     route();
     await loading;
   }
@@ -1183,12 +1187,6 @@
   // ---------------------------------------------------------------
   // Home: the repository at a glance
 
-  function homeSignature() {
-    const groups = lanes(Array.from(state.branches.values()));
-    return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 30000),
-      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stage, b.awaiting, b.cost_usd, activeAt(b)])), state.inbox.map((m) => m.id), state.steering]);
-  }
-
   // The board's clock: the smallest of these windows that holds the
   // oldest thing it draws, now at the right edge. A yard whose work began
   // minutes ago is drawn over minutes, not lost in an hour. Each window's
@@ -1262,7 +1260,7 @@
     const groups = lanes(Array.from(state.branches.values()));
     return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 15000),
       groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stage, b.awaiting, b.cost_usd, activeAt(b)])), state.inbox.map((m) => m.id), state.steering,
-      Array.from(state.tracks.entries()).map(([k, t]) => [k, t.loading, t.track && t.track.turns.length]), state.answered.length]);
+      Array.from(state.tracks.entries()).map(([k, t]) => [k, t.loading, t.track && t.track.turns.length]), state.answered.length, state.problems]);
   }
 
   // One branch on the clock: its name and what it is doing, its turns on
@@ -1356,6 +1354,18 @@
     return h('li', { class: `tile tile-${key}` }, href ? h('a', { class: 'tile-link', href }, body) : h('div', { class: 'tile-body' }, body));
   }
 
+  // Above the tiles: each problem, how long it has stood, its error and the
+  // one thing to do. A healthy server's page has no strip at all.
+  function problemsStrip() {
+    if (!state.problems.length) return null;
+    return h('section', { class: 'problems', 'aria-label': 'Problems' }, h('ul', {}, state.problems.map((p) =>
+      h('li', { class: 'problem' },
+        h('p', { class: 'problem-head' }, dot('needs'), h('span', { class: 'problem-what', text: p.what }), ' ',
+          h('span', { class: 'problem-meta' }, 'for ', ago(p.since_ms, ''), p.failures != null ? ` · ${plural(p.failures, 'failure')} in a row` : null)),
+        h('p', { class: 'problem-error', text: p.error }),
+        h('p', { class: 'problem-next' }, inline(p.next))))));
+  }
+
   // Under the board: what was decided today, and where the money went,
   // each branch's reported cost as a bar against the largest.
   function homeLower(all, groups) {
@@ -1438,6 +1448,7 @@
       h('header', { class: 'page-head' },
         h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede })),
         state.loaded && all.length && can('run') ? h('a', { class: 'button primary', href: '#/new' }, icon('plus', true), 'New task') : null),
+      problemsStrip(),
       tiles,
       state.loaded && all.length ? h('section', { class: 'board', 'aria-label': 'Every branch on one clock' },
         boardAxis(scale, 'Branch'),
@@ -1566,6 +1577,7 @@
       h('header', { class: 'page-head' }, h('div', {},
         h('h1', { text: project.name }),
         h('p', { class: 'lede', id: 'project-lede' }))),
+      h('div', { id: 'project-problems' }, problemsStrip()),
       h('ul', { class: 'glance', id: 'project-glance', 'aria-label': 'Workspaces by state' }),
       h('section', { class: 'board', id: 'project-board', 'aria-label': 'Everything open in this project on one clock', hidden: true }),
       can('run') ? h('section', { class: 'card new-workspace', 'aria-label': 'New workspace' },
@@ -4318,6 +4330,7 @@
   }
 
   async function loadApprovals() {
+    loadProblems();
     try {
       // Every approval, so the deck can say what was answered today; the
       // ones still open are what the lanes and the deck count.
@@ -4330,6 +4343,17 @@
       state.effects = effects.slice(-50).reverse();
     } catch (_) { return; }
     await loadDecisions();
+  }
+
+  // Read at start-up and again with the approvals, so on the repository's
+  // activity. A failed read keeps the last list.
+  async function loadProblems() {
+    let problems;
+    try { ({ problems } = await api('GET', '/v1/problems')); } catch (_) { return; }
+    state.problems = problems;
+    if (state.route.name === 'home' && state.source.kind === 'repo') redraw(homeSignature(), renderHome);
+    const slot = $('project-problems');
+    if (slot) fill(slot, problemsStrip());
   }
 
   function aboutText(about) {

@@ -2,8 +2,10 @@
 //! a manual clock: schedules fire once when the clock reaches them, signed
 //! webhooks from GitHub, Slack and generic senders become runs once per
 //! event, failures pause a trigger, prechecks skip runs, and a run recorded
-//! by a server that stopped fires after the restart; inbound email from
-//! Mailgun and Postmark is authenticated, allowlisted and fired once. With
+//! by a server that stopped fires after the restart; a trigger that paused
+//! itself is listed in `GET /v1/problems` for its tenant and `admin` until
+//! it is enabled; inbound email from Mailgun and Postmark is
+//! authenticated, allowlisted and fired once. With
 //! the `postgres` feature and `BY_TEST_POSTGRES_URL`, the store's
 //! conformance suite, the email deliveries on PostgreSQL, and two servers
 //! on one database firing a schedule time once.
@@ -18,7 +20,9 @@ use std::time::Duration;
 use base64::Engine;
 use branchyard::tasks::{TaskTrigger, TriggerActor};
 use branchyard::{Activity, LifecycleState};
-use branchyard_client::api::{OperationKind, OperationState, PolicySpec, SendRequest, TaskRequest};
+use branchyard_client::api::{
+    OperationKind, OperationState, PolicySpec, ProblemKind, SendRequest, TaskRequest,
+};
 use branchyard_client::new_key;
 use branchyard_client::triggers::{
     Bots, Busy, Conditions, Deliver, EventSource, Lifecycle, Precheck, RunState, TriggerMode,
@@ -1340,6 +1344,73 @@ fn repeated_failures_pause_a_trigger_until_it_is_enabled() {
         client.trigger("deploys").unwrap_err().code(),
         Some("unknown_trigger")
     );
+}
+
+#[test]
+fn a_trigger_that_paused_itself_is_a_problem_its_tenant_sees_until_it_is_enabled() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    with_clock(&mut config);
+    let appb = f.extra_repo("appb");
+    common::two_tenants(&mut config, appb, None);
+    common::one_admin(&mut config);
+    let server = Server::start(config);
+    let acme = Client::new(&server.url(), common::ACME_TOKEN).unwrap();
+    let globex = Client::new(&server.url(), common::GLOBEX_TOKEN).unwrap();
+    let admin = Client::new(&server.url(), common::GLOBEX_ADMIN_TOKEN).unwrap();
+    assert_eq!(acme.problems().unwrap().problems, []);
+    let taken = run(&acme, &task("WRITE t.txt=x", "taken"));
+    assert_eq!(taken.state, OperationState::Succeeded);
+    let mut s = spec(
+        "deploys",
+        event(EventSource::Generic),
+        "WRITE d.txt={{event.text}}",
+    );
+    s.task.name = Some("taken".into());
+    let created = acme.create_trigger(&s, &new_key()).unwrap();
+    let secret = created.secret.expect("a generated secret, shown once");
+    let id = created.trigger.id;
+    for n in 1..=3 {
+        let body = format!(r#"{{"id":"e-{n}","text":"boom"}}"#);
+        let (status, ack) = deliver(&server, &id, &generic_headers(&secret, &body), &body);
+        assert_eq!(status, 202, "{ack}");
+        runs_when(&acme, "deploys", "the run to fail", |runs| {
+            runs.len() == n && runs.iter().all(|r| r.state == RunState::Failed)
+        });
+    }
+
+    let listed = acme.problems().unwrap().problems;
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let problem = &listed[0];
+    assert_eq!(
+        (problem.kind, problem.key.as_str(), problem.what.as_str()),
+        (ProblemKind::Trigger, id.as_str(), "trigger deploys")
+    );
+    assert_eq!((problem.failures, problem.since_ms), (Some(3), T0));
+    assert_eq!(
+        Some(problem.error.as_str()),
+        acme.trigger("deploys").unwrap().paused_reason.as_deref()
+    );
+    assert!(
+        problem.error.contains("3 failed runs in a row"),
+        "{problem:?}"
+    );
+    assert_eq!(
+        problem.next,
+        "see why with `by trigger runs deploys`, fix it, then `by trigger enable deploys`"
+    );
+    assert_eq!(globex.problems().unwrap().problems, [], "another tenant's");
+    assert_eq!(
+        admin.problems().unwrap().problems,
+        [],
+        "admin does not cross tenants"
+    );
+
+    acme.enable_trigger("deploys", &new_key()).unwrap();
+    assert_eq!(acme.problems().unwrap().problems, []);
+    assert_eq!(admin.problems().unwrap().problems, []);
+    acme.disable_trigger("deploys", &new_key()).unwrap();
+    assert_eq!(acme.problems().unwrap().problems, [], "a person's disable");
 }
 
 #[test]

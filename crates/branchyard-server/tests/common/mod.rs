@@ -207,6 +207,26 @@ pub fn two_tenants(config: &mut Config, appb: PathBuf, tenant_max_running: Optio
     }
 }
 
+pub const GLOBEX_ADMIN_TOKEN: &str = "globex-admin-token-0123456789";
+
+/// After [`two_tenants`]: acme's and globex's principals lose `admin`, and
+/// globex gains a principal holding every scope, `globex-admin`
+/// ([`GLOBEX_ADMIN_TOKEN`]). It differs from globex's other principal only
+/// by `admin`.
+pub fn one_admin(config: &mut Config) {
+    for name in ["acme", "globex"] {
+        let principal = config.principals.get_mut(name).expect("two_tenants first");
+        principal.scopes.remove("admin");
+    }
+    config.tokens.push(Token {
+        name: "globex-admin".into(),
+        secret: GLOBEX_ADMIN_TOKEN.into(),
+    });
+    let mut admin = Principal::default_for("globex-admin");
+    admin.tenant = "globex".into();
+    config.principals.insert("globex-admin".into(), admin);
+}
+
 /// Whether `branch` of `repo` exists and its harness has been sent a
 /// prompt: its turn has started.
 pub fn started(client: &Client, repo: &str, branch: &str) -> bool {

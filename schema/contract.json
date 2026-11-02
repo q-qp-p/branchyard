@@ -47708,6 +47708,220 @@
         }
       }
     },
+    "Problem": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ProblemKind",
+          "description": "Which background work it is about."
+        },
+        "key": {
+          "type": "string",
+          "description": "Stable within its kind: the trigger's ID, the operation's ID,\n`<repo>:<webhook id>`, a hash of the push subscription's endpoint,\n`<repo>/<effect id>`."
+        },
+        "what": {
+          "type": "string",
+          "description": "One line naming it for a person, such as `trigger nightly-triage`."
+        },
+        "since_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The first failure of the current run of failures, or when it\nstarted waiting, in milliseconds since the Unix epoch."
+        },
+        "failures": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Consecutive failures, for kinds that count them."
+        },
+        "error": {
+          "type": "string",
+          "description": "The last error, or why it waits."
+        },
+        "next": {
+          "type": "string",
+          "description": "What a person does about it, one line."
+        }
+      },
+      "required": [
+        "kind",
+        "key",
+        "what",
+        "since_ms",
+        "error",
+        "next"
+      ],
+      "description": "Something background work could not do that a person can act on\n(`GET /v1/problems`).",
+      "title": "Problem",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ProblemKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "trigger",
+              "description": "A trigger that paused itself after `pause_after_failures` failed\nruns in a row."
+            },
+            {
+              "type": "string",
+              "const": "operation",
+              "description": "A queued operation that requires labels no live worker serving its\nrepository carries."
+            },
+            {
+              "type": "string",
+              "const": "webhook",
+              "description": "A configured webhook whose delivery attempts failed three times in\na row on this server."
+            },
+            {
+              "type": "string",
+              "const": "push",
+              "description": "A push subscription whose sends failed three times in a row on\nthis server."
+            },
+            {
+              "type": "string",
+              "const": "effect",
+              "description": "An effect this server's last reconcile pass left `unknown`."
+            }
+          ],
+          "description": "What a [`Problem`] is about."
+        }
+      }
+    },
+    "ProblemKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "trigger",
+          "description": "A trigger that paused itself after `pause_after_failures` failed\nruns in a row."
+        },
+        {
+          "type": "string",
+          "const": "operation",
+          "description": "A queued operation that requires labels no live worker serving its\nrepository carries."
+        },
+        {
+          "type": "string",
+          "const": "webhook",
+          "description": "A configured webhook whose delivery attempts failed three times in\na row on this server."
+        },
+        {
+          "type": "string",
+          "const": "push",
+          "description": "A push subscription whose sends failed three times in a row on\nthis server."
+        },
+        {
+          "type": "string",
+          "const": "effect",
+          "description": "An effect this server's last reconcile pass left `unknown`."
+        }
+      ],
+      "description": "What a [`Problem`] is about.",
+      "title": "ProblemKind",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "ProblemList": {
+      "type": "object",
+      "properties": {
+        "problems": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Problem"
+          },
+          "description": "Sorted by `since_ms`."
+        }
+      },
+      "required": [
+        "problems"
+      ],
+      "description": "`GET /v1/problems`: oldest first, and empty when nothing needs a person.",
+      "title": "ProblemList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "Problem": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ProblemKind",
+              "description": "Which background work it is about."
+            },
+            "key": {
+              "type": "string",
+              "description": "Stable within its kind: the trigger's ID, the operation's ID,\n`<repo>:<webhook id>`, a hash of the push subscription's endpoint,\n`<repo>/<effect id>`."
+            },
+            "what": {
+              "type": "string",
+              "description": "One line naming it for a person, such as `trigger nightly-triage`."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The first failure of the current run of failures, or when it\nstarted waiting, in milliseconds since the Unix epoch."
+            },
+            "failures": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "Consecutive failures, for kinds that count them."
+            },
+            "error": {
+              "type": "string",
+              "description": "The last error, or why it waits."
+            },
+            "next": {
+              "type": "string",
+              "description": "What a person does about it, one line."
+            }
+          },
+          "required": [
+            "kind",
+            "key",
+            "what",
+            "since_ms",
+            "error",
+            "next"
+          ],
+          "description": "Something background work could not do that a person can act on\n(`GET /v1/problems`)."
+        },
+        "ProblemKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "trigger",
+              "description": "A trigger that paused itself after `pause_after_failures` failed\nruns in a row."
+            },
+            {
+              "type": "string",
+              "const": "operation",
+              "description": "A queued operation that requires labels no live worker serving its\nrepository carries."
+            },
+            {
+              "type": "string",
+              "const": "webhook",
+              "description": "A configured webhook whose delivery attempts failed three times in\na row on this server."
+            },
+            {
+              "type": "string",
+              "const": "push",
+              "description": "A push subscription whose sends failed three times in a row on\nthis server."
+            },
+            {
+              "type": "string",
+              "const": "effect",
+              "description": "An effect this server's last reconcile pass left `unknown`."
+            }
+          ],
+          "description": "What a [`Problem`] is about."
+        }
+      }
+    },
     "MergedInfo": {
       "type": "object",
       "properties": {

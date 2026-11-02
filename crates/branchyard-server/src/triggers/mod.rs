@@ -32,12 +32,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use branchyard_client::api::{Problem, ProblemKind};
 use branchyard_client::triggers::{
-    Bots, Conditions, EventSource, Trigger, TriggerEvent, TriggerSpec, When,
+    Bots, Conditions, EventSource, RunState, Trigger, TriggerEvent, TriggerRun, TriggerSpec, When,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Principal, WorkspaceScripts};
+use crate::problems::{Found, Scope};
 
 /// What a server's configuration says about triggers.
 #[derive(Clone, Debug)]
@@ -163,6 +165,61 @@ impl StoredTrigger {
             _ => None,
         }
     }
+
+    /// Whether it paused itself: disabled with at least its
+    /// `pause_after_failures` failed runs in a row. A person who disabled
+    /// it below that chose to.
+    pub fn paused_itself(&self) -> bool {
+        let pause_after = self.spec.policy.pause_after_failures;
+        !self.enabled && pause_after > 0 && self.failures >= pause_after
+    }
+}
+
+/// How many of a paused trigger's latest runs [`problems`] looks through
+/// for the failure that paused it: runs still pending when it paused
+/// finish after it, as skipped.
+const RUNS_SEARCHED: usize = 20;
+
+/// Every tenant's triggers that paused themselves, for
+/// `GET /v1/problems`, each seen by its tenant on its repository. `since_ms` is when the newest
+/// failed run among the latest [`RUNS_SEARCHED`] finished (when it was
+/// recorded, if it has no finish time), which is the run that paused it:
+/// the store keeps no time of the pause itself. Without one it is the
+/// trigger's creation.
+pub(crate) fn problems(store: &dyn store::TriggerStore) -> std::io::Result<Vec<Found>> {
+    let failed = |run: &&TriggerRun| {
+        run.state == RunState::Failed || run.outcome.as_ref().is_some_and(|o| !o.ok)
+    };
+    store
+        .list(None)?
+        .into_iter()
+        .filter(StoredTrigger::paused_itself)
+        .map(|t| {
+            let since_ms = store
+                .runs(&t.id, None, RUNS_SEARCHED)?
+                .iter()
+                .find(failed)
+                .map_or(t.created_at_ms, |r| r.finished_at_ms.unwrap_or(r.at_ms));
+            let name = &t.spec.name;
+            Ok(Found {
+                scope: Scope::Tenant {
+                    tenant: t.tenant.clone(),
+                    repo: Some(t.spec.repo.clone()),
+                },
+                problem: Problem {
+                    kind: ProblemKind::Trigger,
+                    key: t.id.clone(),
+                    what: format!("trigger {name}"),
+                    since_ms,
+                    failures: Some(t.failures),
+                    error: t.paused_reason.clone().unwrap_or_default(),
+                    next: format!(
+                        "see why with `by trigger runs {name}`, fix it, then `by trigger enable {name}`"
+                    ),
+                },
+            })
+        })
+        .collect()
 }
 
 /// `BASE/v1/triggers/ID/fire`.
@@ -875,5 +932,65 @@ mod tests {
         assert_eq!(every.next_after(1_000, 0), Some(60_000));
         assert_eq!(every.next_after(60_000, 0), Some(120_000));
         assert_eq!(every.next_after(10, 500), Some(500));
+    }
+
+    #[test]
+    fn only_a_trigger_that_paused_itself_is_a_problem() {
+        use store::conformance::{run, trigger};
+        use store::TriggerStore as _;
+
+        let store = store::SqliteTriggers::memory();
+        let mut manual = trigger("acme", "manual", false);
+        (manual.enabled, manual.failures) = (false, 2);
+        manual.paused_reason = Some("disabled by tester".into());
+        let mut never = trigger("acme", "never", false);
+        never.spec.policy.pause_after_failures = 0;
+        (never.enabled, never.failures) = (false, 5);
+        let mut running = trigger("acme", "running", false);
+        running.failures = 3;
+        let mut paused = trigger("acme", "paused", false);
+        (paused.enabled, paused.failures) = (false, 3);
+        paused.paused_reason = Some("paused after 3 failed runs in a row; the last: boom".into());
+        let mut elsewhere = paused.clone();
+        (elsewhere.id, elsewhere.tenant) = (new_id("trg"), "globex".into());
+        for t in [&manual, &never, &running, &paused, &elsewhere] {
+            assert!(store.create(t).unwrap());
+        }
+        let mut failed = run(&paused.id, "event:1", RunState::Failed);
+        (failed.at_ms, failed.finished_at_ms) = (40, Some(50));
+        store.record(&failed).unwrap();
+        let mut skipped = run(&paused.id, "event:2", RunState::SkippedDisabled);
+        skipped.at_ms = 60;
+        store.record(&skipped).unwrap();
+
+        let found = problems(&store).unwrap();
+        assert_eq!(found.len(), 2, "only the two that paused themselves");
+        let acme = Scope::Tenant {
+            tenant: "acme".into(),
+            repo: Some("app".into()),
+        };
+        let (mine, theirs): (Vec<_>, Vec<_>) = found.into_iter().partition(|f| f.scope == acme);
+        assert_eq!(mine.len(), 1, "acme's own");
+        let problem = &mine[0].problem;
+        assert_eq!(
+            (problem.kind, problem.key.as_str(), problem.what.as_str()),
+            (ProblemKind::Trigger, paused.id.as_str(), "trigger paused")
+        );
+        assert_eq!((problem.since_ms, problem.failures), (50, Some(3)));
+        assert_eq!(problem.error, paused.paused_reason.clone().unwrap());
+        assert!(
+            problem.next.contains("`by trigger enable paused`"),
+            "{}",
+            problem.next
+        );
+        // Without a failed run to date it, it dates from its creation.
+        assert_eq!(
+            theirs[0].scope,
+            Scope::Tenant {
+                tenant: "globex".into(),
+                repo: Some("app".into())
+            }
+        );
+        assert_eq!(theirs[0].problem.since_ms, 1);
     }
 }

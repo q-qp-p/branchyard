@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use branchyard_client::api::{MergeRequest, OperationState};
-use branchyard_client::new_key;
+use branchyard_client::api::{MergeRequest, OperationState, ProblemKind};
+use branchyard_client::{new_key, Client};
 use branchyard_server::config::WebhookConfig;
 use branchyard_testkit::{wait, MockHttp, Response};
 use common::{await_operation, run, task, Fixture, Server};
@@ -234,6 +234,99 @@ fn a_receiver_that_never_succeeds_is_dead_lettered_and_the_cursor_still_advances
             .map(|d| d.json()["branch"].as_str().unwrap().to_owned())
             .collect();
         seen.contains("one") && seen.contains("two")
+    });
+    server.stop();
+}
+
+/// Every failed attempt counts, retries included: the three attempts of
+/// one dead-lettered delivery (a merge, the only entry the filter wants)
+/// list the webhook in `GET /v1/problems` for an `admin` principal that
+/// may reach its repository, and the next delivered attempt clears it.
+/// Each tenant's token is configured without `scopes`, so each holds
+/// `admin`: globex's still sees nothing of acme's repository, and acme's
+/// principal without `admin` sees nothing either.
+#[test]
+fn a_webhook_failing_three_attempts_in_a_row_is_a_problem_for_its_repositorys_admin_until_one_lands(
+) {
+    const ACME_READER_TOKEN: &str = "acme-reader-token-0123456789";
+    let f = Fixture::new();
+    let receiver = Receiver::start();
+    receiver.fail_next(u32::MAX);
+    let mut config = f.config();
+    let appb = f.extra_repo("appb");
+    common::two_tenants(&mut config, appb, None);
+    assert_eq!(
+        ["acme", "globex"].map(|t| config.tenants[t].repos.clone()),
+        [
+            Some(["app".to_owned()].into()),
+            Some(["appb".to_owned()].into())
+        ],
+        "the tenants own different repositories"
+    );
+    assert!(["acme", "globex"]
+        .iter()
+        .all(|name| config.principals[*name].allows("admin")));
+    config.tokens.push(branchyard_server::config::Token {
+        name: "acme-reader".into(),
+        secret: ACME_READER_TOKEN.into(),
+    });
+    let mut reader = config.principals["acme"].clone();
+    reader.name = "acme-reader".into();
+    reader.scopes.remove("admin");
+    config.principals.insert("acme-reader".into(), reader);
+    config.webhooks = vec![webhook(&receiver.url(), SECRET, &["merge"])];
+    let server = Server::start(config);
+    let acme = Client::new(&server.url(), common::ACME_TOKEN).unwrap();
+    let globex = Client::new(&server.url(), common::GLOBEX_TOKEN).unwrap();
+    let reader = Client::new(&server.url(), ACME_READER_TOKEN).unwrap();
+    let merged = |name: &str, file: &str| {
+        let op = run(&acme, &task(&format!("WRITE {file}=1"), name));
+        assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+        let merge = acme
+            .repo("app")
+            .merge(name, &MergeRequest::default(), &new_key())
+            .unwrap();
+        let merge = await_operation(&acme, &merge.id);
+        assert_eq!(merge.state, OperationState::Succeeded, "{merge:?}");
+    };
+    merged("one", "a.txt");
+
+    let listed = wait::until("the webhook listed", || {
+        let listed = acme.problems().unwrap().problems;
+        (!listed.is_empty()).then_some(listed)
+    });
+    assert_eq!(receiver.deliveries().len(), 3, "one entry, three attempts");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let problem = &listed[0];
+    let url = receiver.url();
+    let id: String = branchyard_server::config::sha256_hex(url.as_bytes())
+        .chars()
+        .take(12)
+        .collect();
+    assert_eq!(
+        (problem.kind, problem.key.clone(), problem.what.clone()),
+        (
+            ProblemKind::Webhook,
+            format!("app:{id}"),
+            format!("webhook {} for app", receiver.mock.url())
+        )
+    );
+    let body = serde_json::to_string(&listed).unwrap();
+    assert!(!body.contains(&url), "the URL's path is left out: {body}");
+    assert_eq!(problem.failures, Some(3), "{problem:?}");
+    assert_eq!(problem.error, "refused with HTTP 500 Internal Server Error");
+    assert!(problem.next.contains("2xx"), "{problem:?}");
+    assert_eq!(
+        globex.problems().unwrap().problems,
+        [],
+        "another tenant's admin token"
+    );
+    assert_eq!(reader.problems().unwrap().problems, [], "not an admin");
+
+    receiver.fail_next(0);
+    merged("two", "b.txt");
+    wait::until("a delivered attempt to clear it", || {
+        acme.problems().unwrap().problems.is_empty()
     });
     server.stop();
 }

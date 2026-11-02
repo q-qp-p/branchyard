@@ -61,6 +61,9 @@ pub struct App {
     /// Triggers and schedules: their store, settings and the dispatcher's
     /// wake-up; see `crate::triggers`.
     pub triggers: Arc<crate::triggers::dispatch::Hub>,
+    /// What this process's webhook delivery tasks and repository pollers
+    /// publish for `GET /v1/problems`; see `crate::problems`.
+    pub(crate) seen: crate::problems::Seen,
     /// The web companion, when the operator turned it on; see
     /// `crate::companion`.
     pub companion: Option<Arc<crate::companion::Companion>>,
@@ -906,7 +909,9 @@ pub fn router(app: Shared) -> Router {
         .merge(crate::console::router())
         .merge(crate::preview::router(app.preview.clone()))
         // The fleet's service registry: `services_routes`.
-        .merge(crate::services_routes::router());
+        .merge(crate::services_routes::router())
+        // What background work could not do: `problems`.
+        .merge(crate::problems::router());
     let v1 = match (app.runtime.get(), app.pull_requests.get()) {
         (Some(runtime), Some(pr)) => v1
             .merge(crate::console_runtime::router(runtime.clone()))

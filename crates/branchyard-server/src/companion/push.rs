@@ -17,11 +17,15 @@
 //! sent by one server. One attempt per notification: a push is a nudge,
 //! and the page shows the same state when opened. A subscription whose push
 //! service answers 404 or 410, or whose credential no longer verifies
-//! (revoked, expired, removed from the configuration), is dropped.
+//! (revoked, expired, removed from the configuration), is dropped. A
+//! subscription whose sends fail three times in a row is listed in
+//! `GET /v1/problems` for its owner's tenant until one is delivered.
 
 use branchyard_support::best_effort;
+use branchyard_support::LockExt as _;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -34,10 +38,12 @@ use ring::{aead, agreement, hkdf};
 use serde::Serialize;
 use tokio::sync::watch;
 
-use super::store::Subscription;
+use super::store::{CompanionStore, Subscription};
 use crate::api::{App, RepoState};
 use crate::config::Principal;
+use crate::problems::{Found, Scope, Streak};
 use crate::store::OperationStore;
+use branchyard_client::api::{Problem, ProblemKind};
 
 /// What a notification can be about, as subscriptions name them.
 pub const KINDS: &[&str] = &[
@@ -611,14 +617,22 @@ pub async fn send(
         Ok(r) if r.status().is_success() => Sent::Delivered,
         Ok(r) if matches!(r.status().as_u16(), 404 | 410) => Sent::Gone,
         Ok(r) => Sent::Failed(format!("the push service answered {}", r.status())),
-        Err(e) => Sent::Failed(format!("could not reach the push service: {e}")),
+        // The endpoint is the subscription's capability: never in a message.
+        Err(e) => Sent::Failed(format!(
+            "could not reach the push service: {}",
+            e.without_url()
+        )),
     }
 }
 
-/// The principal a subscription's credential verifies as now, if any.
-pub(crate) async fn owner(app: &Arc<App>, token_sha256: &str) -> Option<Principal> {
+/// The principal a subscription's credential verifies as now, with the
+/// device a paired token was redeemed on, if any.
+pub(crate) async fn owner(
+    app: &Arc<App>,
+    token_sha256: &str,
+) -> Option<(Principal, Option<String>)> {
     if let Some(principal) = app.credentials.principal_for_hash(token_sha256) {
-        return Some(principal.clone());
+        return Some((principal.clone(), None));
     }
     let companion = app.companion.clone()?;
     let hash = token_sha256.to_owned();
@@ -627,7 +641,86 @@ pub(crate) async fn owner(app: &Arc<App>, token_sha256: &str) -> Option<Principa
         .ok()?
         .ok()??;
     crate::auth::paired_allowed(&app.config, &token, branchyard_support::time::now_ms())
-        .then_some(token.principal)
+        .then_some((token.principal, token.device))
+}
+
+/// Each subscription's run of failed sends, keyed by its endpoint, for
+/// `GET /v1/problems`. Shared because every repository's notifier sends
+/// to every subscription; only [`fan_out`] writes it.
+#[derive(Default)]
+pub(crate) struct Failures(Mutex<HashMap<String, Failing>>);
+
+#[derive(Default)]
+struct Failing {
+    tenant: String,
+    who: String,
+    streak: Streak,
+}
+
+impl Failures {
+    fn failed(&self, endpoint: &str, owner: &Principal, device: Option<&str>, why: &str) {
+        let who = match device {
+            Some(device) => format!("{device} ({})", owner.name),
+            None => owner.name.clone(),
+        };
+        let mut failures = self.0.lock_recovering("push failures");
+        let failing = failures.entry(endpoint.to_owned()).or_default();
+        (failing.tenant, failing.who) = (owner.tenant.clone(), who);
+        failing
+            .streak
+            .failed(branchyard_support::time::now_ms(), why);
+    }
+
+    fn clear(&self, endpoint: &str) {
+        self.0.lock_recovering("push failures").remove(endpoint);
+    }
+
+    /// A `push` problem per subscription still in `store` whose sends
+    /// failed [`crate::problems::FAILURES_BEFORE_PROBLEM`] times in a row,
+    /// seen by its owner's tenant. The key is a hash of the endpoint, which
+    /// is a capability and is never shown. Blocking.
+    pub(crate) fn problems(&self, store: &dyn CompanionStore) -> io::Result<Vec<Found>> {
+        let failing: Vec<(String, Found)> = self
+            .0
+            .lock_recovering("push failures")
+            .iter()
+            .filter_map(|(endpoint, f)| {
+                let (since_ms, failures, error) = f.streak.problem()?;
+                let problem = Problem {
+                    kind: ProblemKind::Push,
+                    key: crate::config::sha256_hex(endpoint.as_bytes())
+                        .chars()
+                        .take(12)
+                        .collect(),
+                    what: format!("push notifications to {}", f.who),
+                    since_ms,
+                    failures: Some(failures),
+                    error: error.to_owned(),
+                    next: "turn notifications off and on again on that device, or remove its \
+                           subscription there; the next notification it receives clears this"
+                        .into(),
+                };
+                let scope = Scope::Tenant {
+                    tenant: f.tenant.clone(),
+                    repo: None,
+                };
+                Some((endpoint.clone(), Found { scope, problem }))
+            })
+            .collect();
+        if failing.is_empty() {
+            return Ok(Vec::new());
+        }
+        let subscribed: HashSet<String> = store
+            .subscriptions()?
+            .into_iter()
+            .map(|s| s.endpoint)
+            .collect();
+        Ok(failing
+            .into_iter()
+            .filter(|(endpoint, _)| subscribed.contains(endpoint))
+            .map(|(_, found)| found)
+            .collect())
+    }
 }
 
 /// Send `notice` to every subscription whose owner may read `notice.repo`
@@ -657,7 +750,7 @@ pub(crate) async fn fan_out(
         if !subscription.kinds.is_empty() && !subscription.kinds.iter().any(|k| k == notice.kind) {
             continue;
         }
-        let Some(principal) = owner(app, &subscription.token_sha256).await else {
+        let Some((principal, device)) = owner(app, &subscription.token_sha256).await else {
             drop_subscription(&companion, &subscription.endpoint).await;
             continue;
         };
@@ -670,13 +763,22 @@ pub(crate) async fn fan_out(
             continue;
         }
         match send(client, vapid, &subscription, notice).await {
-            Sent::Delivered => delivered += 1,
+            Sent::Delivered => {
+                delivered += 1;
+                companion.push_failures.clear(&subscription.endpoint);
+            }
             Sent::Gone => {
                 drop_subscription(&companion, &subscription.endpoint).await;
                 failures.push("a subscription was gone; dropped it".into());
             }
             Sent::Failed(why) => {
                 tracing::warn!(repo = %notice.repo, %why, "companion push not delivered");
+                companion.push_failures.failed(
+                    &subscription.endpoint,
+                    &principal,
+                    device.as_deref(),
+                    &why,
+                );
                 failures.push(why);
             }
         }
@@ -685,6 +787,7 @@ pub(crate) async fn fan_out(
 }
 
 async fn drop_subscription(companion: &super::Companion, endpoint: &str) {
+    companion.push_failures.clear(endpoint);
     let (store, endpoint) = (companion.store.clone(), endpoint.to_owned());
     best_effort(
         "unsubscribe the push subscription",

@@ -2024,6 +2024,14 @@ class Client:
         """The server's triggers (`docs/triggers.md`), as the server lists them."""
         return [Record(t) for t in self.get("/v1/triggers").get("triggers", [])]
 
+    def problems(self) -> list[Record]:
+        """`GET /v1/problems`: what background work could not do that a
+        person can act on, oldest first, each with `kind` (`trigger`,
+        `operation`, `webhook`, `push` or `effect`), `key`, `what`,
+        `since_ms`, `failures` (when counted), `error` and `next`; empty
+        when nothing needs a person."""
+        return [Record(p) for p in self.get("/v1/problems").get("problems", [])]
+
     def trigger(self, name_or_id: str) -> Record:
         """One trigger by name or id."""
         return Record(self.get(f"/v1/triggers/{_q(name_or_id)}"))

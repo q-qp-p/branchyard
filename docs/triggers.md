@@ -241,7 +241,7 @@ A run's `key` is unique per trigger: `event:<event id>`, `schedule:<ms>`, `misse
 
 ### Failures and pausing
 
-A run that **failed**, or a fired run whose task's **outcome** was not ok, counts as a failure; an ok outcome starts the count over; skips, missed times and `lifecycle` notes count neither way. After `policy.pause_after_failures` failures in a row (`--pause-after`, default 3; 0 never) the trigger **disables itself** in the same transaction that recorded the last one, with the reason: `paused after 3 failed runs in a row; the last: branch_exists: …`. A delivery to a disabled trigger is answered `ignored`, and a schedule stops. `by trigger enable` resumes it with the count at zero.
+A run that **failed**, or a fired run whose task's **outcome** was not ok, counts as a failure; an ok outcome starts the count over; skips, missed times and `lifecycle` notes count neither way. After `policy.pause_after_failures` failures in a row (`--pause-after`, default 3; 0 never) the trigger **disables itself** in the same transaction that recorded the last one, with the reason: `paused after 3 failed runs in a row; the last: branch_exists: …`. A delivery to a disabled trigger is answered `ignored`, and a schedule stops. `by trigger enable` resumes it with the count at zero. Until then the server lists it in [`GET /v1/problems`](server.md#problems); a trigger that a person disabled before it reached the count is not listed.
 
 ## Exactly once
 

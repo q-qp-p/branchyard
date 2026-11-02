@@ -55,6 +55,36 @@ A fork's question or escalation now goes to the person. Before, it went to the b
 
 The person answers with `by answer ID "TEXT"` and reads with `by inbox`, outside a harness and without `--as`; in the console's Needs you, which labels the box "Answer"; through `GET /v1/repos/{repo}/inbox` and `POST /v1/repos/{repo}/answer`; or with `Repo::person_inbox` and `Repo::answer_message` in the Rust client and `Repo.person_inbox()` and `Repo.answer_message()` in Python. When the asker's turn has ended, `by answer` and the console say it reads the answer at its next turn and how to start one (`by send NAME "<prompt>"`). Hook lines and notices put such a question to you (`- root asks you #12: "…". Answer: by answer 12 "TEXT"`). Inside a harness started without delegation, `by` still refuses, and the refusal now says how to start a branch that can use it (`by run --delegate`, or a trigger request's `delegation`).
 
+`GET /v1/problems` lists what background work could not do that a person
+can act on: a trigger that paused itself after `pause_after_failures` failed
+runs in a row, a queued operation that requires labels no live worker
+carries once it has waited `unclaimable_after`, a webhook whose last three
+delivery attempts failed (every retry counts), a push subscription whose
+last three sends failed, and an effect the latest recovery pass left
+`unknown`. Each entry has `kind`, `key`, `what`, `since_ms`, `failures`
+where counted, `error` and `next`, the one thing to do; a healthy server
+lists nothing. A caller sees its tenant's push entries, its tenant's
+trigger and operation entries on the repositories it may reach, and the
+effect entries of those repositories, `admin` or not: `admin` never
+crosses tenants, since a credential without `scopes` holds it. Webhook
+entries, which are operator configuration, are seen only by an `admin`
+that may reach the webhook's repository. Trigger and operation entries are derived from the shared store
+and survive a restart; webhook, push and effect entries are what the
+server process saw, start empty when it restarts, and come back after the
+next failures. A push entry never shows the subscription's endpoint, and a
+push send's error no longer carries it either. `Client::problems` and the
+Python SDK's `Client.problems` read it, and the console's home page lists
+the entries above its tiles, each with its error and the one thing to do,
+and shows no strip when there are none. Previously a paused trigger showed
+only in `GET /v1/triggers`, an unclaimable operation only when read by its
+ID, a failing webhook or push only in the server's log, and an unknown
+effect only in the effect ledger without its reason. `/healthz` is
+unchanged. `by doctor` with a configured server adds a `server.problems`
+row: `ok` when the server lists nothing, a warning with the count, the
+oldest entry's `what` and `error` and its `next` as the fix when it lists
+something, and a warning to upgrade a server that answers `404` for the
+route.
+
 ## 0.4.0 - 2026-11-02
 
 The Rust client resumes a response read interrupted by an operating-system

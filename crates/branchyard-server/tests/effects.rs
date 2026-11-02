@@ -15,13 +15,14 @@ mod mock_gateway;
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 use branchyard::connectors::GrantEntry;
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings, EffectState, Layer};
 use branchyard::stage::Lane;
 use branchyard::{BranchStatus, Envelope, Provisioning};
 use branchyard_client::api::{
-    MergeRequest, OperationState, PolicySpec, SendRequest, SpawnRequest, TaskRequest,
+    MergeRequest, OperationState, PolicySpec, ProblemKind, SendRequest, SpawnRequest, TaskRequest,
 };
 use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
 use branchyard_client::new_key;
@@ -66,10 +67,9 @@ fn granted(f: &Fixture, prompt: &str, name: &str) -> TaskRequest {
     }
 }
 
-#[test]
-fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there() {
-    let f = Fixture::new();
-    let mock = MockGateway::start();
+/// Connectors through `mock`, with Slack and GitHub bundles packaged by
+/// the fake Anvil.
+fn connectors(f: &Fixture, mock: &MockGateway) -> ConnectorsConfig {
     let bundles = f.dir.join("bundles");
     for id in ["slack", "github"] {
         fs::create_dir_all(bundles.join(id)).unwrap();
@@ -82,8 +82,7 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
     let anvil = f.dir.join("fake-anvil");
     fs::write(&anvil, FAKE_ANVIL).unwrap();
     fs::set_permissions(&anvil, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut config = f.config();
-    config.connectors = Some(ConnectorsConfig {
+    ConnectorsConfig {
         gateway: mock.url.clone(),
         sandbox_gateway: None,
         issuer: Some("https://by.example".into()),
@@ -97,7 +96,15 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
         effects_proxy: None,
         effects_listen: None,
         effects_sandbox_host: None,
-    });
+    }
+}
+
+#[test]
+fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there() {
+    let f = Fixture::new();
+    let mock = MockGateway::start();
+    let mut config = f.config();
+    config.connectors = Some(connectors(&f, &mock));
     // The administrator asks before any GitHub call and blocks Slack
     // deletions; the principal would allow both.
     config.approvals = ApprovalSettings {
@@ -486,4 +493,81 @@ fn the_person_answers_a_roots_question_through_the_server() {
     );
     let again = repo.answer_message(asked.id, "mysql").unwrap_err();
     assert_eq!(again.code(), Some("denied"), "{again}");
+}
+
+/// A call whose answer the gateway never sent is `unknown`; with no lookup
+/// to ask, the server's recovery pass leaves it so, and `GET /v1/problems`
+/// lists it with the pass's reason until a later pass finds it settled
+/// (here by the gateway's audit log).
+#[test]
+fn an_effect_a_recovery_pass_leaves_unknown_is_a_problem_until_it_settles() {
+    let f = Fixture::new();
+    let mock = MockGateway::start();
+    let mut config = f.config();
+    config.connectors = Some(connectors(&f, &mock));
+    config.approvals = ApprovalSettings {
+        admin: None,
+        person: None,
+        people: [("tester".to_owned(), policy(&[("slack:*", Approval::Allow)]))].into(),
+    };
+    config.recover_interval = Duration::from_millis(100);
+    let audit = config.data_dir.join("gateway/audit.jsonl");
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+
+    mock.hold("slack__chat_post");
+    let op = repo
+        .submit_task(
+            &granted(
+                &f,
+                "SH python3 call.py slack__chat_post '{\"text\": \"hi\"}'",
+                "poster",
+            ),
+            "k-poster",
+        )
+        .unwrap();
+    mock.wait_held();
+    mock.release();
+    await_operation(&client, &op.id);
+    let entry = repo.effects(Some("poster")).unwrap().remove(0);
+    assert_eq!(entry.state, EffectState::Unknown, "{entry:?}");
+    assert!(entry.lookup.is_none(), "{entry:?}");
+
+    let problem = wait::until("the unknown effect listed", || {
+        let listed = client.problems().unwrap().problems;
+        listed.into_iter().find(|p| p.kind == ProblemKind::Effect)
+    });
+    let short = &entry.id[entry.id.len() - 8..];
+    assert_eq!(problem.key, format!("app/{}", entry.id));
+    assert_eq!(
+        problem.what,
+        format!("effect {short} (slack: chat_post) of app/poster")
+    );
+    assert_eq!(
+        problem.error,
+        "its operation declares no lookup; check upstream and decide"
+    );
+    assert_eq!(
+        (problem.since_ms, problem.failures),
+        (entry.updated_ms, None)
+    );
+    assert!(
+        problem.next.contains(&format!("`by effects show {short}`")),
+        "{problem:?}"
+    );
+
+    let line = serde_json::json!({"time": branchyard_support::time::rfc3339(entry.created_ms + 1_000),
+        "by_branch": "app/poster", "by_turn": "1", "sub": "local:me", "connector": "slack",
+        "operation": "slack.chat.post", "decision": "allowed", "upstream_status": 200,
+        "error_code": null, "effect_class": "reversible", "ledger_id": entry.id,
+        "staged_for": null});
+    fs::write(&audit, format!("{line}\n")).unwrap();
+    wait::until("the settled effect no longer listed", || {
+        client.problems().unwrap().problems.is_empty()
+    });
+    assert_eq!(
+        repo.effect(&entry.id).unwrap().entry.state,
+        EffectState::Confirmed
+    );
 }

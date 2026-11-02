@@ -169,6 +169,7 @@ impl Fixture {
             shutdown,
             storage_idem: Default::default(),
             triggers: Arc::new(hub),
+            seen: Default::default(),
             companion: None,
             sync: None,
             runtime: Default::default(),

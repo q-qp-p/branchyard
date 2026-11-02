@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use branchyard_client::api::{
-    ErrorBody, Operation, OperationKind, OperationResult, OperationState,
+    ErrorBody, Operation, OperationKind, OperationResult, OperationState, Problem, ProblemKind,
 };
 use serde_json::Value;
 
@@ -54,6 +54,7 @@ use crate::config::Principal;
 use crate::error::ApiError;
 use crate::metrics;
 use crate::observe::Observability;
+use crate::problems::{Found, Scope};
 use crate::store::{
     Admission, AdmissionQuota, Claim, Idempotency, Lane, OperationStore, Scheduling,
     StoredOperation, Worker,
@@ -473,6 +474,55 @@ impl Registry {
             }
         }
         operation
+    }
+
+    /// Every tenant's queued operations that [`Registry::describe`] says
+    /// wait for a worker: unclaimed, requiring labels no live worker
+    /// serving their repository carries, for at least
+    /// [`Options::unclaimable_after`] since admission. For
+    /// `GET /v1/problems`, each seen by its tenant on its repository.
+    pub(crate) fn problems(&self) -> io::Result<Vec<Found>> {
+        let now = now_ms();
+        let after = self.options.unclaimable_after.as_millis() as u64;
+        let admitted = |q: &crate::store::Queued| u64::try_from(q.enqueued_ms).unwrap_or(0);
+        let waiting: Vec<crate::store::Queued> = self
+            .store
+            .queue()?
+            .into_iter()
+            .filter(|q| {
+                !q.claimed && !q.requires.is_empty() && now.saturating_sub(admitted(q)) >= after
+            })
+            .collect();
+        if waiting.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workers = self.store.workers(BEAT * 3)?;
+        Ok(waiting
+            .into_iter()
+            .filter_map(|q| {
+                let error = crate::store::unclaimable(&q.requires, &q.repo, &workers)?;
+                let labels: Vec<String> = q.requires.iter().map(|l| format!("--label {l}")).collect();
+                Some(Found {
+                    problem: Problem {
+                        kind: ProblemKind::Operation,
+                        what: format!("operation {} on {}", q.id, q.repo),
+                        since_ms: admitted(&q),
+                        failures: None,
+                        error,
+                        next: format!(
+                            "start `by worker` or `by serve` for {} with `{}`; it claims the operation",
+                            q.repo,
+                            labels.join(" ")
+                        ),
+                        key: q.id,
+                    },
+                    scope: Scope::Tenant {
+                        tenant: q.tenant,
+                        repo: Some(q.repo),
+                    },
+                })
+            })
+            .collect())
     }
 
     /// `id`'s operation, only when it belongs to `tenant`: an operation of
