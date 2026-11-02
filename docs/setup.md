@@ -369,6 +369,31 @@ codex login status        # Logged in using ChatGPT
 
 The refresh token in it keeps the login valid from one run to the next without logging in again. Restoring the file serves every branch: those in your own home read it, `by harnesses` and the [inventory default](fleet.md#the-inventory-default) see Codex logged in, and `[secrets] CODEX_AUTH = "@~/.codex/auth.json"` carries it into private homes. If a copy is refused because its refresh token was used up elsewhere (by another copy of the same login), log in once more and store the new file's content.
 
+## Google Cloud
+
+On a Cloud Workstation, a Compute Engine VM or Cloud Shell, Claude Code, Gemini CLI and OpenCode can reach their models through Vertex AI with no API key and no harness login, signed in with Application Default Credentials (ADC). Two Google sign-ins are involved, and they are made apart:
+
+- `gcloud auth login` signs in the `gcloud` command. `by compute gce` and the GKE helpers use it ([compute-gce.md](compute-gce.md), [substrate-gke.md](substrate-gke.md)).
+- ADC is what Vertex AI clients use, and what Branchyard's own `gs://` stores and Cloud KMS keys use ([identity.md](identity.md)). Google's libraries look in order for the file `GOOGLE_APPLICATION_CREDENTIALS` names, then the file `gcloud auth application-default login` writes (`~/.config/gcloud/application_default_credentials.json`, or under `CLOUDSDK_CONFIG`), then a Google VM's metadata server, which answers as the VM's service account. Vertex AI also needs the `aiplatform.googleapis.com` API on the project and the Vertex AI User role (`roles/aiplatform.user`) for the account, and the metadata server's token needs the VM's `cloud-platform` scope (Google's documentation; Branchyard checks none of these).
+
+Each harness has its own switch, read from the installed CLI on 2 November 2026:
+
+| Harness | Switches it to Vertex AI | Project and region | `by harnesses` shows |
+|---|---|---|---|
+| Claude Code 2.1.305 | `CLAUDE_CODE_USE_VERTEX=1` (or `true`, `yes`, `on`), in the environment or `env` of `~/.claude/settings.json` | `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` | `logged in`, from `claude auth status` (`third_party`), with what Vertex AI reads |
+| Gemini CLI 0.65.0 | `security.auth.selectedType` `vertex-ai` in `~/.gemini/settings.json`, or with none `GOOGLE_GENAI_USE_VERTEXAI=true` (exactly `true`) | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | `credentials found` |
+| Gemini CLI 0.65.0, the VM's own account | `selectedType` `compute-default-credentials`, or `GEMINI_CLI_USE_COMPUTE_ADC=true`, or `CLOUD_SHELL=true` | none | `credentials found` |
+| OpenCode 1.18.23 | `GOOGLE_CLOUD_PROJECT` (or `GCP_PROJECT`, `GCLOUD_PROJECT`) set turns on its `google-vertex` providers | `GOOGLE_CLOUD_LOCATION` (or `VERTEX_LOCATION`, default `global`) | `credentials found` |
+
+Detection reads none of the other harnesses' Vertex AI modes (Antigravity's, Hermes's): with no key or login file they show `login not verified` or `unknown`. `by doctor` adds a `harnesses.google_cloud` row that says where ADC comes from and which of these variables are set, by name, and is a `todo` with the `gcloud auth application-default login` fix when a harness is switched to Vertex AI and no ADC is found ([doctor.md](doctor.md)).
+
+A branch run in your own `HOME`, the default, sees all of this as your shell does. Elsewhere, from the code:
+
+- `--isolated` gives the harness a private `HOME` and removes `CLAUDE*` and `ANTHROPIC*` variables, so gcloud's ADC file and Claude Code's Vertex AI switch do not reach it. `GOOGLE_*` variables do, an absolute `GOOGLE_APPLICATION_CREDENTIALS` among them, and so does the metadata server unless a restricted [network policy](egress.md) confines the harness. For Claude Code, give the project and region as secrets (`--secret GOOGLE_CLOUD_PROJECT --secret GOOGLE_CLOUD_LOCATION`), and the provisioner sets Claude Code's Vertex AI variables for the run ([provisioning.md](provisioning.md)).
+- `by compute gce` makes workers with no access scopes ([compute-gce.md](compute-gce.md)), so a worker's service account cannot reach Vertex AI through its metadata server.
+
+Status, 2 November 2026: the rules above were read in the installed CLIs on a Compute Engine VM (a Cloud Workstation whose service account has the `cloud-platform` scope), where `claude auth status` answered `third_party` with `apiProvider: vertex` and `opencode models` listed 55 `google-vertex` models with no key; detection and the doctor row are tested hermetically with fakes and golden cases. Not done: no harness has called a model through Vertex AI under Branchyard, and isolated, sandboxed, Substrate and Compute Engine worker runs on Vertex AI have not been run.
+
 ## Applying
 
 `--apply` recomputes the plan from the answers, then:

@@ -2,6 +2,24 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+/// The Google Cloud variables [`hermetic`] removes: the Vertex AI switches,
+/// projects and regions the login tables and `by doctor` read, and where
+/// Application Default Credentials are.
+const GOOGLE_CLOUD: &[&str] = &[
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLOUDSDK_CONFIG",
+    "CLOUD_ML_REGION",
+    "CLOUD_SHELL",
+    "GCLOUD_PROJECT",
+    "GCP_PROJECT",
+    "GEMINI_CLI_USE_COMPUTE_ADC",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+];
+
 /// `command` without the environment of a Branchyard turn the tests may be
 /// running in. Every test that starts `by`, a Branchyard server or bridge,
 /// or the Python SDK starts it through this (or [`crate::Repo`], which
@@ -12,6 +30,11 @@ use std::process::Command;
 ///   (`BRANCHYARD_DELEGATION`, `BRANCHYARD_BRANCH`), in its yard
 ///   (`BRANCHYARD_ROOT`, `BRANCHYARD_WORKTREE`), or against a remote
 ///   (`BRANCHYARD_REMOTE`, ...). Set the ones a test means after this.
+/// - The variables that point a harness at Vertex AI or say where Google
+///   credentials are (`GOOGLE_CLOUD_PROJECT`, `CLAUDE_CODE_USE_VERTEX`,
+///   `GOOGLE_APPLICATION_CREDENTIALS`, ...) are removed: inherited on a
+///   developer's Google Cloud machine, they change what login detection
+///   and `by doctor` report.
 /// - `GIT_CEILING_DIRECTORIES` is the temporary directory. A turn's
 ///   `TMPDIR` is under its yard's `.branchyard/`, so a [`crate::Scratch`]
 ///   directory that holds no repository would otherwise be inside the
@@ -24,6 +47,9 @@ pub fn hermetic(command: &mut Command) -> &mut Command {
         if name.to_str().is_some_and(|n| n.starts_with("BRANCHYARD_")) {
             command.env_remove(&name);
         }
+    }
+    for name in GOOGLE_CLOUD {
+        command.env_remove(name);
     }
     let tmp = std::env::temp_dir();
     let tmp = std::fs::canonicalize(&tmp).unwrap_or(tmp);
