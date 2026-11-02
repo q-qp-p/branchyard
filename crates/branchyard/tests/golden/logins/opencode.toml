@@ -1,5 +1,6 @@
 # OpenCode: GOOGLE_GENERATIVE_AI_API_KEY is its Google key; GEMINI_API_KEY is
-# not (1.19.4 fails with "Google Generative AI API key is missing").
+# not (1.19.4 fails with "Google Generative AI API key is missing"). A
+# Google Cloud project turns on its Vertex AI providers (1.18.23).
 # Run by crates/branchyard/tests/logins.rs.
 
 [[case]]
@@ -19,7 +20,7 @@ lines = []
 cell = "login not verified"
 state = "logged_out"
 evidence = "likely"
-detail = "no ~/.local/share/opencode/auth.json and no ANTHROPIC_API_KEY or OPENAI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY or ORCAROUTER_API_KEY"
+detail = "no ~/.local/share/opencode/auth.json and no ANTHROPIC_API_KEY or OPENAI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY or ORCAROUTER_API_KEY; for Vertex AI, set GOOGLE_CLOUD_PROJECT (OpenCode's google-vertex providers sign in with Application Default Credentials)"
 
 [[case]]
 name = "its own credential file"
@@ -29,3 +30,30 @@ cell = "credentials found"
 state = "logged_in"
 evidence = "likely"
 detail = "~/.local/share/opencode/auth.json exists"
+
+[[case]]
+name = "a Google Cloud project turns on its Vertex AI providers"
+env = { GOOGLE_CLOUD_PROJECT = "fake-project" }
+lines = ["fact vertex-google-cloud-project"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "GOOGLE_CLOUD_PROJECT is set, which turns on OpenCode's google-vertex providers; they sign in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[case]]
+name = "so does the older GCLOUD_PROJECT"
+env = { GCLOUD_PROJECT = "fake-project" }
+lines = ["fact vertex-gcloud-project"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "GCLOUD_PROJECT is set, which turns on OpenCode's google-vertex providers; they sign in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[case]]
+name = "an empty GOOGLE_CLOUD_PROJECT is not set"
+env = { GOOGLE_CLOUD_PROJECT = "" }
+lines = []
+cell = "login not verified"
+state = "logged_out"
+evidence = "likely"
+detail = "no ~/.local/share/opencode/auth.json and no ANTHROPIC_API_KEY or OPENAI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY or ORCAROUTER_API_KEY; for Vertex AI, set GOOGLE_CLOUD_PROJECT (OpenCode's google-vertex providers sign in with Application Default Credentials)"

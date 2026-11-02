@@ -60,3 +60,31 @@ cell = "unknown"
 state = "unknown"
 evidence = "none"
 detail = "Branchyard cannot read claude's login; a key in ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN would tell"
+
+[[case]]
+name = "Vertex AI, as its status answers it (2.1.305)"
+env = { CLAUDE_CODE_USE_VERTEX = "1", ANTHROPIC_VERTEX_PROJECT_ID = "fake-project", CLOUD_ML_REGION = "us-east5" }
+status = ['{', '  "loggedIn": true,', '  "authMethod": "third_party",', '  "apiProvider": "vertex"', '}']
+lines = ["fact vertex"]
+cell = "logged in"
+state = "logged_in"
+evidence = "verified"
+detail = "claude auth status: logged in (third_party); Vertex AI reads ANTHROPIC_VERTEX_PROJECT_ID and CLOUD_ML_REGION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[case]]
+name = "Vertex AI in settings.json, with no status answer"
+home = { ".claude/settings.json" = '{"env": {"CLAUDE_CODE_USE_VERTEX": "true"}}' }
+lines = ["fact vertex"]
+cell = "credentials found"
+state = "logged_in"
+evidence = "likely"
+detail = "CLAUDE_CODE_USE_VERTEX selects Vertex AI; Vertex AI reads ANTHROPIC_VERTEX_PROJECT_ID and CLOUD_ML_REGION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[case]]
+name = "CLAUDE_CODE_USE_VERTEX=0 is not Vertex AI"
+env = { CLAUDE_CODE_USE_VERTEX = "0" }
+lines = []
+cell = "login not verified"
+state = "logged_out"
+evidence = "likely"
+detail = "no ~/.claude/.credentials.json and no ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN"

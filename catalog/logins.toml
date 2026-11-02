@@ -30,7 +30,8 @@
 #                 when `keychain_on_macos`.
 #   [[probe]]     a look inside a configuration, in order. `kind`:
 #                   grep       a pattern (ERE) in a file is `fact`
-#                   flag       a variable equal to `value` is `fact`
+#                   flag       a variable equal to `value` is `fact`; with
+#                              no `value`, a variable set at all
 #                   provider   the model provider a TOML file selects and the
 #                              variable its table's `env_key` names
 #                   providers  YAML files' providers and the variables their
@@ -69,6 +70,31 @@ args = ["auth", "status"]
 json = "loggedIn"
 method = "authMethod"
 
+# On Vertex AI (2.1.305, 2 November 2026) `claude auth status` answers
+# `loggedIn: true, authMethod: third_party` whether or not a project, a
+# region or Application Default Credentials are there. CLAUDE_CODE_USE_VERTEX
+# counts as true for `1`, `true`, `yes` or `on`, in the environment or in
+# settings.json's `env`; these probes read the two common spellings.
+[[claude-code.probe]]
+kind = "flag"
+var = "CLAUDE_CODE_USE_VERTEX"
+value = "1"
+fact = "vertex"
+login = "CLAUDE_CODE_USE_VERTEX selects Vertex AI"
+note_found = "Vertex AI reads ANTHROPIC_VERTEX_PROJECT_ID and CLOUD_ML_REGION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[claude-code.probe]]
+kind = "flag"
+var = "CLAUDE_CODE_USE_VERTEX"
+value = "true"
+fact = "vertex"
+
+[[claude-code.probe]]
+kind = "grep"
+file = "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+pattern = '"CLAUDE_CODE_USE_VERTEX"[[:space:]]*:[[:space:]]*"(1|true)"'
+fact = "vertex"
+
 # emdash's `checkStatus` runs `codex login status` and reads it with these
 # phrases. Codex sends its requests with CODEX_API_KEY when it is set,
 # whatever the login says. Codex 0.164.0 sends them to the `model_provider`
@@ -96,8 +122,51 @@ status_covers = "the OpenAI login"
 
 # Gemini CLI 0.63.0's headless `gemini -p` refuses an untrusted directory
 # unless GEMINI_CLI_TRUST_WORKSPACE is `true`, whatever the login.
+#
+# Gemini CLI 0.65.0 (its bundle, read 2 November 2026) takes its auth type
+# from `security.auth.selectedType` in settings.json, and with none from
+# the environment: GOOGLE_GENAI_USE_VERTEXAI exactly `true` is Vertex AI,
+# which needs GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION (or
+# GOOGLE_API_KEY), and CLOUD_SHELL or GEMINI_CLI_USE_COMPUTE_ADC exactly
+# `true` is compute-default-credentials, the metadata server's account.
 [gemini-cli]
 files = [{ path = "$HOME/.gemini/oauth_creds.json", shown = "~/.gemini/oauth_creds.json" }]
+logged_out = "no ~/.gemini/oauth_creds.json and no {vars_or}; for Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION"
+
+[[gemini-cli.probe]]
+kind = "grep"
+file = "$HOME/.gemini/settings.json"
+pattern = '"selectedType"[[:space:]]*:[[:space:]]*"vertex-ai"'
+fact = "vertex-ai-selected"
+login = "~/.gemini/settings.json selects Vertex AI, which reads GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[gemini-cli.probe]]
+kind = "grep"
+file = "$HOME/.gemini/settings.json"
+pattern = '"selectedType"[[:space:]]*:[[:space:]]*"compute-default-credentials"'
+fact = "compute-adc-selected"
+login = "~/.gemini/settings.json selects compute-default-credentials, the service account of the Google VM it runs on (not checked)"
+
+[[gemini-cli.probe]]
+kind = "flag"
+var = "GOOGLE_GENAI_USE_VERTEXAI"
+value = "true"
+fact = "vertex-ai-env"
+login = "GOOGLE_GENAI_USE_VERTEXAI=true selects Vertex AI, which reads GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION and signs in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[gemini-cli.probe]]
+kind = "flag"
+var = "GEMINI_CLI_USE_COMPUTE_ADC"
+value = "true"
+fact = "compute-adc-env"
+login = "GEMINI_CLI_USE_COMPUTE_ADC=true selects compute-default-credentials, the service account of the Google VM it runs on (not checked)"
+
+[[gemini-cli.probe]]
+kind = "flag"
+var = "CLOUD_SHELL"
+value = "true"
+fact = "cloud-shell"
+login = "CLOUD_SHELL=true selects compute-default-credentials, Cloud Shell's own sign-in (not checked)"
 
 [[gemini-cli.probe]]
 kind = "flag"
@@ -107,8 +176,32 @@ fact = "trust-workspace"
 note_found = "GEMINI_CLI_TRUST_WORKSPACE=true is set, so headless runs trust the workspace"
 note_missing = "headless runs (gemini -p) refuse an untrusted workspace: set GEMINI_CLI_TRUST_WORKSPACE=true or pass --skip-trust"
 
+# OpenCode 1.18.23 (its binary, read 2 November 2026) turns on its
+# google-vertex and google-vertex-anthropic providers whenever
+# GOOGLE_CLOUD_PROJECT, GCP_PROJECT or GCLOUD_PROJECT is set, and they sign
+# in with Application Default Credentials: on a GCE VM with no key and no
+# auth.json, `opencode models` listed 55 google-vertex models.
 [opencode]
 files = [{ path = "$HOME/.local/share/opencode/auth.json", shown = "~/.local/share/opencode/auth.json" }]
+logged_out = "no ~/.local/share/opencode/auth.json and no {vars_or}; for Vertex AI, set GOOGLE_CLOUD_PROJECT (OpenCode's google-vertex providers sign in with Application Default Credentials)"
+
+[[opencode.probe]]
+kind = "flag"
+var = "GOOGLE_CLOUD_PROJECT"
+fact = "vertex-google-cloud-project"
+login = "GOOGLE_CLOUD_PROJECT is set, which turns on OpenCode's google-vertex providers; they sign in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[opencode.probe]]
+kind = "flag"
+var = "GCP_PROJECT"
+fact = "vertex-gcp-project"
+login = "GCP_PROJECT is set, which turns on OpenCode's google-vertex providers; they sign in with Application Default Credentials (not checked; `by doctor` says where they come from)"
+
+[[opencode.probe]]
+kind = "flag"
+var = "GCLOUD_PROJECT"
+fact = "vertex-gcloud-project"
+login = "GCLOUD_PROJECT is set, which turns on OpenCode's google-vertex providers; they sign in with Application Default Credentials (not checked; `by doctor` says where they come from)"
 
 # Antigravity 1.3.3 reads a key from GEMINI_API_KEY alone (the catalog's
 # `auth_env`; GOOGLE_API_KEY has no effect), and only when its settings.json

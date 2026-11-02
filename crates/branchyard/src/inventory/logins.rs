@@ -125,7 +125,11 @@ fn unsafe_probe(probe: &Probe) -> Option<String> {
             var, value, fact, ..
         } => vec![
             (identifier(var), "variable", var),
-            (plain(value), "value", value),
+            (
+                value.as_deref().is_none_or(plain),
+                "value",
+                value.as_deref().unwrap_or_default(),
+            ),
             (word(fact), "fact", fact),
         ],
         Probe::Provider {
@@ -249,10 +253,13 @@ fn probe_lines(id: &str, probe: &Probe) -> String {
         ),
         Probe::Flag {
             var, value, fact, ..
-        } => format!(
-            "  [ \"${{{var}:-}}\" = {} ] && echo 'fact {id} {fact}'\n",
-            quote(value)
-        ),
+        } => match value {
+            Some(value) => format!(
+                "  [ \"${{{var}:-}}\" = {} ] && echo 'fact {id} {fact}'\n",
+                quote(value)
+            ),
+            None => format!("  [ -n \"${{{var}:-}}\" ] && echo 'fact {id} {fact}'\n"),
+        },
         // The top-level key only (a `[profiles.x]` one is not read), and
         // that provider's own table's key.
         Probe::Provider {

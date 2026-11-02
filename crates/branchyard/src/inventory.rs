@@ -2733,7 +2733,9 @@ mod tests {
         assert_eq!(out.login.state, LoginState::LoggedOut);
         assert_eq!(
             out.login.detail,
-            "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY"
+            "no ~/.gemini/oauth_creds.json and no GEMINI_API_KEY or GOOGLE_API_KEY; for Vertex \
+             AI, set GOOGLE_GENAI_USE_VERTEXAI=true with GOOGLE_CLOUD_PROJECT and \
+             GOOGLE_CLOUD_LOCATION"
         );
         let text = script(&DetectOptions {
             only: Some(vec!["gemini-cli".into()]),
