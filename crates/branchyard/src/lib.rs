@@ -137,6 +137,7 @@ mod map;
 mod map_input;
 pub mod models;
 mod names;
+mod native_options;
 pub mod operations;
 mod ops;
 #[cfg(feature = "postgres")]
@@ -193,6 +194,10 @@ pub use git::current_branch;
 pub use git::hold_writes as hold_git_writes;
 pub use guard::Guard;
 pub use lock::DirLock;
+pub use native_options::{
+    AgentSandboxNetwork, AgentSandboxOptions, AgentSandboxRuntime, ContainerNetwork,
+    ContainerOptions, ContainerRuntime,
+};
 #[cfg(feature = "postgres")]
 pub use pg::postgres_config;
 pub use placement::{HOME as SANDBOX_HOME, WORKSPACE as SANDBOX_WORKSPACE};
