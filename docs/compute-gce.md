@@ -86,6 +86,12 @@ package manager, then installs the exact released `by`, server and bridge into
 executable. This uses Docker for artifact delivery; a local-process task on the
 worker has the worker user's permissions and makes no container isolation claim.
 
+Add `--gvisor` to install the pinned complete runsc bundle and register it with
+Docker through a reload. The flag is part of the deployment fingerprint and can
+coexist with `--backend=microsandbox`. It installs prerequisites and leaves task
+provider selection unchanged. See [the runtime installer](container-runtime.md)
+for the pin, ownership checks, image contract and hermetic evidence.
+
 `--directory` transfers a git bundle of committed `HEAD`; uncommitted and untracked
 files cause a refusal before VM creation. On retry, the remote `HEAD` must match
 the source. The helper never resets existing remote work to a newer source

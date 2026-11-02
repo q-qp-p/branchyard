@@ -52,6 +52,7 @@ class Config:
     internal_ip: bool = False
     tunnel_through_iap: bool = False
     forward_secret: str | None = None
+    gvisor: bool = False
 
     @property
     def remote_path(self) -> str:
@@ -67,6 +68,8 @@ class Config:
         target = asdict(self)
         for key in ("state_dir", "repo", "forward_secret"):
             target.pop(key)
+        if not self.gvisor:
+            target.pop("gvisor")
         if self.tunnel_through_iap:
             target["iap_firewall"] = self.iap_firewall
         else:
@@ -134,6 +137,7 @@ def plan(config: Config) -> dict[str, Any]:
             "Create a dedicated Ubuntu 24.04 VM; refuse foreign or differently configured machines",
             "Install the pinned released Branchyard binaries and extract agy from the published worker image",
             "For microsandbox: enable nested virtualization, install the pinned runtime and import the worker image",
+            "For --gvisor: install the pinned runsc bundle and reload Docker, preserving its default runtime",
             "Transfer only a clean committed HEAD, or initialize an empty remote repository",
             "Write an owned SSH Host entry and one Include line, preserving existing SSH configuration",
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
@@ -142,6 +146,7 @@ def plan(config: Config) -> dict[str, Any]:
         "network": network,
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": firewall_plan(config),
+        "gvisor": {"release": "release-20261026.0", "runtime": "runsc"} if config.gvisor else None,
         "qualification": {"model": "not_checked", "microsandbox_hard_memory_ceiling": "not_qualified"},
         "credential_delivery": {
             "source_variable": config.forward_secret,
@@ -451,6 +456,23 @@ install -m 0644 "$stage/libkrunfw.so.5.6.1" /var/lib/by-msb/lib/libkrunfw.so.5.6
 MSB_HOME=/var/lib/by-msb /var/lib/by-msb/bin/msb context --format json
 sudo docker save {image} | MSB_HOME=/var/lib/by-msb /var/lib/by-msb/bin/msb image load --tag {image}
 """
+    if config.gvisor:
+        # Packaged `python -c` callers supply the same embedded helper; source/guided callers use its sibling.
+        installer = os.environ.get("BRANCHYARD_CONTAINER_RUNTIME_INSTALLER")
+        if installer is None:
+            location = globals().get("__file__")
+            if not location:
+                raise SetupError("the packaged CLI must embed install_container_runtime.py for --gvisor")
+            try:
+                installer = Path(location).with_name("install_container_runtime.py").read_text()
+            except OSError as error:
+                raise SetupError(
+                    "install_container_runtime.py is missing; use a complete checkout or packaged CLI"
+                ) from error
+        if not installer.strip():
+            raise SetupError("the packaged gVisor installer is empty; reinstall this Branchyard release")
+        script += "sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'\n"
+        script += installer + "\nBRANCHYARD_GVISOR_INSTALLER\n"
     script += "/usr/local/bin/by --version\n/usr/local/bin/agy --version\n"
     return script
 
@@ -618,6 +640,7 @@ def apply(config: Config) -> dict[str, Any]:
         )
         if not account or account.get("email") != config.service_account:
             raise SetupError("could not verify the selected existing service account")
+    install_script = bootstrap(config, head)
     instance = inspect_instance(config, run)
     firewall = inspect_iap_firewall(config, run)
     if instance is None:
@@ -690,7 +713,7 @@ def apply(config: Config) -> dict[str, Any]:
                 f"--zone={config.zone}",
             )
             run.run(args + transport(config))
-    run.run(ssh(config, "bash -se"), script=bootstrap(config, head))
+    run.run(ssh(config, "bash -se"), script=install_script)
     run.run(ssh(config, "bash -se"), script=configure_worker(config))
     if secret is not None:
         run.run(
@@ -710,6 +733,7 @@ def apply(config: Config) -> dict[str, Any]:
         "zone": config.zone,
         "name": config.name,
         "backend": config.backend,
+        "gvisor": {"release": "release-20261026.0", "runtime": "runsc"} if config.gvisor else None,
         "remote": f"ssh://{config.alias}{config.remote_path}",
         "remote_command": "/usr/local/bin/by",
         "ssh_config": str(path),
@@ -753,6 +777,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--image", help="defaults to the published worker image matching --version")
     parser.add_argument("--backend", choices=("local", "microsandbox"), default="local")
+    parser.add_argument(
+        "--gvisor", action="store_true", help="install pinned runsc prerequisites; leaves the task provider unchanged"
+    )
     parser.add_argument("--repo", type=Path, help="copy only this repository's clean committed HEAD")
     parser.add_argument("--network", default="default")
     parser.add_argument("--subnet", default="default")
