@@ -86,6 +86,12 @@ sudo python3 tools/install_microsandbox_runtime.py \
 "$MSB_PATH" --version
 ```
 
+The native adapter verifies the SDK-selected runtime pair before creating,
+executing or resuming a guest. The provenance must match the reviewed source,
+patch and layout pins, and both executable and firmware must match its hashes.
+Stock or unidentified runners refuse before allocation or adoption. This check
+also applies when callers bypass the GCE installer or change runtime paths.
+
 Checkpoint references include the actual executable, firmware and memory-layout
 identity. Capturing requires provenance that matches the resolved executable.
 Legacy references and references from another identity refuse restore and
