@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "runtime_version": "0.7.3",
+  "revision": "branchyard-memory1",
+  "platform": "x86_64-unknown-linux-gnu",
+  "upstream_repository": "https://github.com/superradcompany/microsandbox",
+  "upstream_revision": "f9f40e1a341922c0f66da36f10914d2aad0ca8be",
+  "architecture_revision": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+  "architecture_tree_sha256": "0d4066cf8acf06990c153ad021e5f691e05ad556552395be3eb8c35a49dfd5c2",
+  "firmware_member": "libkrunfw.so.5.6.1",
+  "upstream_archive_sha256": "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea",
+  "agentd_sha256": "8d16ab03cccccbd182666c3f1ddac848c20a02a9eecd370deb62475379a87b30",
+  "inputs": {
+    "patches/msb-krun-arch-memory.patch": "c2bad7f5f57e22f1ef423b0e9b4d7c54832c7d78a81c277e7c74d35a105b6f57",
+    "tools/microsandbox-runtime-build.lock": "1282088bb51b5e7c63d4e15859e48bca10a743876666e5dc3dbe18960b427c2e",
+    "tools/microsandbox-arch-tests.lock": "9a03e05e648ce2b8bfabfca0f7d7063988ff189b4458f1ab96ec99055b195589"
+  },
+  "zstd_tree_sha256": "cc020eba2a53780de8fbb838808ed39d863d8fc41b41c4aba79d1b286adb4c08",
+  "build_profile": "release",
+  "runtime_sha256": "a17d3a462371064512d5683ffc336b8c8cdc72d1a595bb92eaad926e5e6a93e8",
+  "firmware_sha256": "ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590",
+  "archive_sha256": "d27b38f1d1be122666c626331126b127f86c9b18c4587fe95835d511346837d4"
+}
