@@ -18,6 +18,11 @@ pattern = '\bfn\s+(percent_decode|percent_encode|uri_decode|url_decode|url_encod
 use = "branchyard_client::http::{encode, decode, decode_form} (built on the percent-encoding crate), or percent_encoding directly where branchyard-client is not a dependency"
 
 [[ban]]
+id = "percent-match"
+pattern = '\(\s*b\x27%\x27\s*,'
+use = "branchyard_client::http::decode (percent-encoding crate)"
+
+[[ban]]
 id = "percent-escape"
 pattern = '''format!\("%\{[A-Za-z_]+:02[xX]\}"\)'''
 use = "percent_encoding::utf8_percent_encode / branchyard_client::http::encode"
