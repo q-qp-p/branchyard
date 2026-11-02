@@ -77,6 +77,16 @@ acknowledgment, default false, plus the server operator's permission.
 
 ## Task options
 
+Native sandbox defaults live in `[container]` or `[agent_sandbox]`, selected by
+`[defaults] provider = "container"` or `provider = "agent_sandbox"`. Both tables
+require a registry digest-pinned `image` and accept `cpus`, `memory_mib` or its
+`memory` alias, and `pass_env` variable names. Container runtimes are `gvisor`
+and `runc`; Agent Sandbox runtimes are `gvisor` and `microvm`. Agent Sandbox also
+requires an operator-controlled `context` and `namespace`. Both default to
+`gvisor` and `network = "deny"`; `unrestricted` must be selected explicitly.
+These tables reject retained allocations, lifecycle scripts and daemon or
+kubeconfig executable overrides. User and project tables merge key by key.
+
 | Option | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
 | Harness, name, base, budget, check | yes | yes | yes | yes | yes | yes, bounded by the envelope |
