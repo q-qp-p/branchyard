@@ -2119,6 +2119,7 @@ mod tests {
             created_at: 0,
             stalled: false,
             awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

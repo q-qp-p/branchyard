@@ -18,8 +18,8 @@ use branchyard::effects::{
     Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectState, Layer, UndoKind,
 };
 use branchyard::{
-    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy,
-    Provisioning, Spawn, TaskOptions,
+    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, ObligationKind,
+    Policy, Provisioning, Spawn, TaskOptions,
 };
 use branchyard_testkit::wait;
 use common::{fake_agent, text, Fixture};
@@ -711,6 +711,82 @@ fn the_turn_after_a_lost_one_is_told_which_calls_it_made() {
         .next_back()
         .unwrap();
     assert!(!last.contains("connector gateway"), "{last}");
+}
+
+#[test]
+fn obligations_list_what_a_branch_owes_until_its_source_settles() {
+    let f = Fixture::new();
+    let (mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    mock.set_deadline(4_102_444_800_000);
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("owes")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("owes")).unwrap();
+    let kinds = |owed: &[branchyard::Obligation]| -> Vec<(ObligationKind, String)> {
+        owed.iter().map(|o| (o.kind, o.branch.clone())).collect()
+    };
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [
+            (ObligationKind::UnknownEffect, "owes".to_owned()),
+            (ObligationKind::UndoWindow, "owes".to_owned()),
+        ],
+        "{owed:?}"
+    );
+    assert_eq!(owed[0].id.as_deref(), Some(ledger[1].id.as_str()));
+    assert_eq!(owed[0].next[0], "by effects reconcile");
+    assert_eq!(owed[1].due_ms, Some(4_102_444_800_000));
+    // Past the deadline the window is no longer owed.
+    let later = f
+        .yard
+        .obligations_at(Some("owes"), 4_102_444_800_001)
+        .unwrap();
+    assert_eq!(
+        kinds(&later),
+        [(ObligationKind::UnknownEffect, "owes".to_owned())]
+    );
+
+    // A lost turn is owed a decision until another turn is sent.
+    common::edit_record(&f.root, "owes", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+        record["info"]["status"] = serde_json::json!({"state": "interrupted"});
+    });
+    let owed = f.yard.obligations(None).unwrap();
+    assert!(
+        owed.iter()
+            .any(|o| o.kind == ObligationKind::LostTurn && o.next[1] == "by send owes --retry"),
+        "{owed:?}"
+    );
+    // Another branch's obligations are not this one's.
+    f.task("WHOAMI").name("clean").run().unwrap();
+    assert!(f.yard.obligations(Some("clean")).unwrap().is_empty());
+    assert!(matches!(
+        f.yard.obligations(Some("nope")),
+        Err(Error::UnknownBranch(name)) if name == "nope"
+    ));
+
+    // Reconciliation settles the unknown call: no longer owed.
+    f.yard.reconcile_effects().unwrap();
+    branch.send("WHOAMI", granted(&f)).unwrap();
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [(ObligationKind::UndoWindow, "owes".to_owned())],
+        "{owed:?}"
+    );
 }
 
 fn short(id: &str) -> &str {

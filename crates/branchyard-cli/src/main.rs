@@ -639,6 +639,9 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Effects(e) => {
             effects_cmd::effects(target, e.branch.as_deref(), e.action.as_ref(), e.json)
         }
+        Command::Obligations { branch, json } => {
+            effects_cmd::obligations(target, branch.as_deref(), json)
+        }
         Command::Undo(u) => effects_cmd::undo(env, target, &u),
         Command::Workspace { json, action } => workspace_cmd::main(env, target, &action, json),
         Command::Recipe { json, action } => recipe_cmd::main(env, target, &action, json),

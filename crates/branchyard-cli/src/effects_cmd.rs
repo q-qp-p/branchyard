@@ -64,6 +64,55 @@ fn answered_text(ask: &ApprovalAsk) -> String {
     }
 }
 
+/// What `by obligations` prints: one block per obligation, what kind and
+/// whose, what is owed, since and until when, and the commands that deal
+/// with it.
+fn obligations_text(owed: &[branchyard::Obligation]) -> String {
+    if owed.is_empty() {
+        return "nothing is owed\n".into();
+    }
+    let mut out = String::new();
+    for o in owed {
+        let id =
+            o.id.as_deref()
+                .map(|id| format!(" {}", short_id(id)))
+                .unwrap_or_default();
+        out.push_str(&format!(
+            "{} {}{id}: {}",
+            o.kind.as_str(),
+            o.branch,
+            o.about
+        ));
+        if let Some(since) = o.since_ms {
+            out.push_str(&format!(", since {}", plan_text::clock(since)));
+        }
+        if let Some(due) = o.due_ms {
+            out.push_str(&format!(", until {}", plan_text::clock(due)));
+        }
+        out.push('\n');
+        for next in &o.next {
+            out.push_str(&format!("  next: {next}\n"));
+        }
+    }
+    out
+}
+
+/// `by obligations [BRANCH] [--json]`: local only for now.
+pub fn obligations(target: &Target, branch: Option<&str>, json: bool) -> Outcome {
+    if let Target::Remote(_) = target {
+        return Err(crate::errors::Report::usage(
+            "`by obligations` runs in local mode only for now",
+        )
+        .next("run it without --remote, in the repository")
+        .next("by --remote effects")
+        .into());
+    }
+    let yard = commands::open()?;
+    emit(json, yard.obligations(branch), |owed| {
+        obligations_text(owed)
+    })
+}
+
 /// `by approvals [ls [--all] | allow ID | deny ID] [--reason TEXT]`.
 pub fn approvals(target: &Target, action: Option<&ApprovalsAction>, json: bool) -> Outcome {
     let (verb, id, branch, reason, all) = match action {
@@ -529,6 +578,27 @@ pub fn summary(events: &[RecordedEvent]) -> Option<(Value, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obligations_print_what_is_owed_and_the_commands_that_deal_with_it() {
+        assert_eq!(obligations_text(&[]), "nothing is owed\n");
+        let owed: Vec<branchyard::Obligation> = serde_json::from_value(json!([
+            {"kind": "unknown_effect", "branch": "pay", "about": "flaky: charge may have happened: its answer was lost",
+             "id": "01HZZZZZZZZZZZZZZZZZABCDEFGH", "since_ms": 3_600_000,
+             "next": ["by effects reconcile", "by effects show ABCDEFGH"]},
+            {"kind": "undo_window", "branch": "post", "about": "slack: chat_post can be undone until its deadline",
+             "due_ms": 7_260_000, "next": ["by undo post --plan"]}
+        ]))
+        .unwrap();
+        assert_eq!(
+            obligations_text(&owed),
+            "unknown_effect pay ABCDEFGH: flaky: charge may have happened: its answer was lost, since 01:00\n\
+             \x20 next: by effects reconcile\n\
+             \x20 next: by effects show ABCDEFGH\n\
+             undo_window post: slack: chat_post can be undone until its deadline, until 02:01\n\
+             \x20 next: by undo post --plan\n"
+        );
+    }
 
     #[test]
     fn a_rewind_says_nothing_when_nothing_happened_upstream() {

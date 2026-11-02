@@ -1595,6 +1595,21 @@ Settle entries whose outcome is unknown through their operation's lookup
 by effects reconcile [OPTIONS]
 ```
 
+## `by obligations`
+
+What branches still owe: unknown or staged effects, approvals, lost turns, children
+
+One list, read from the effect ledger, the asks, the records and the leases, each with the command that deals with it. Nothing is stored: an obligation is gone once its source changes.
+
+```text
+by obligations [OPTIONS] [BRANCH]
+```
+
+| Option | What it does |
+|---|---|
+| `<BRANCH>` | Only this branch and the branches delegated below it |
+| `--json` | Print JSON |
+
 ## `by undo`
 
 Rewind a branch and undo what it did upstream

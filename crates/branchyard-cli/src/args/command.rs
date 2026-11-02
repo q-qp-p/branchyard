@@ -374,6 +374,19 @@ pub enum Command {
     /// Show, promote or reconcile an entry.
     #[command(display_order = 115, after_help = EFFECTS_EXAMPLES)]
     Effects(EffectsArgs),
+    /// What branches still owe: unknown or staged effects, approvals, lost turns, children
+    ///
+    /// One list, read from the effect ledger, the asks, the records and the leases, each with
+    /// the command that deals with it. Nothing is stored: an obligation is gone once its source
+    /// changes.
+    #[command(display_order = 115, after_help = OBLIGATIONS_EXAMPLES)]
+    Obligations {
+        /// Only this branch and the branches delegated below it
+        branch: Option<String>,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Rewind a branch and undo what it did upstream
     ///
     /// Rewinds its files and conversation, and undoes what it did upstream where the

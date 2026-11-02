@@ -88,6 +88,7 @@ Why it is built this way. Some pages describe a target rather than what exists; 
 |---|---|
 | [Architecture](design.md) | What does the SDK own, where do harnesses run, and how do topology, budgets, storage, recovery, and merging work? |
 | [Durable execution](durability.md) | What survives a crash, how leases, journaled steps, cancellation and recovery work, what is never replayed, and how the store maps onto PostgreSQL? |
+| [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |
 | [Branch lifecycle](lifecycle.md) | How are stalled turns detected, how does an operator get webhook notifications, and how does a branch change harness or model by reincarnation? |
 | [Task graphs](graph.md) | How do child branches depend on one another, and how does a branch change its graph of children in one atomic step? |
 | [Effects, approvals and undo](effects.md) | How is every connector call that changes the world written to a ledger before it is made, decided by policy, staged, reconciled after a crash and undone where the upstream allows? |

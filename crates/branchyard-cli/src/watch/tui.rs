@@ -1048,9 +1048,14 @@ fn tone_style(tone: Tone) -> Style {
 pub fn status_look(info: &BranchInfo) -> (&'static str, String, Style) {
     let (text, _) = render::status_text(&info.status);
     let (glyph, style) = status_style(&info.status);
-    let text = match (&info.status, info.stalled) {
-        (BranchStatus::Interrupted, _) => "INTERRUPTED".to_owned(),
-        (_, true) => format!("{text} (stalled)"),
+    let silent = info
+        .liveness
+        .as_ref()
+        .and_then(|l| l.describe(branchyard_support::time::now_ms()));
+    let text = match (&info.status, silent, info.stalled) {
+        (BranchStatus::Interrupted, _, _) => "INTERRUPTED".to_owned(),
+        (_, Some(silent), _) => format!("{text} ({silent})"),
+        (_, None, true) => format!("{text} (stalled)"),
         _ => text,
     };
     (glyph, text, style)
@@ -2158,6 +2163,7 @@ mod tests {
             created_at: 1_000,
             stalled: false,
             awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),
