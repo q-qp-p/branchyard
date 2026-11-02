@@ -46,7 +46,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use branchyard_harness::{Driver, Open};
-use branchyard_recipe::RecipeProvider;
 use branchyard_runtime::{RuntimeError, Session};
 use branchyard_sandbox::{SandboxProvider, SandboxSpec};
 use branchyard_substrate::transfer::{self, Guest, Pushed};
@@ -208,14 +207,22 @@ enum Kind {
 /// (through its bridge) or a recipe's machine (through execs).
 enum Remote {
     Substrate(Box<SubstrateProvider>),
-    Recipe(Arc<RecipeProvider>),
+    Exec {
+        provider: Arc<dyn SandboxProvider>,
+        kind: ExecKind,
+    },
+}
+
+enum ExecKind {
+    Recipe,
+    PerTurn(&'static str),
 }
 
 impl Remote {
     fn provider(&self) -> &dyn SandboxProvider {
         match self {
             Remote::Substrate(provider) => provider.as_ref(),
-            Remote::Recipe(provider) => provider.as_ref(),
+            Remote::Exec { provider, .. } => provider.as_ref(),
         }
     }
 
@@ -223,7 +230,14 @@ impl Remote {
     fn noun(&self) -> &'static str {
         match self {
             Remote::Substrate(_) => "actor",
-            Remote::Recipe(_) => "machine",
+            Remote::Exec {
+                kind: ExecKind::Recipe,
+                ..
+            } => "machine",
+            Remote::Exec {
+                kind: ExecKind::PerTurn(_),
+                ..
+            } => "sandbox",
         }
     }
 
@@ -231,7 +245,14 @@ impl Remote {
     fn kind(&self) -> &'static str {
         match self {
             Remote::Substrate(_) => "substrate",
-            Remote::Recipe(_) => "recipe",
+            Remote::Exec {
+                kind: ExecKind::Recipe,
+                ..
+            } => "recipe",
+            Remote::Exec {
+                kind: ExecKind::PerTurn(kind),
+                ..
+            } => kind,
         }
     }
 
@@ -242,8 +263,20 @@ impl Remote {
                 .endpoint(name)
                 .map(|endpoint| Box::new(endpoint) as Box<dyn Guest>)
                 .map_err(|e| e.to_string()),
-            Remote::Recipe(provider) => Ok(Box::new(transfer::Exec::new(provider.as_ref(), name))),
+            Remote::Exec { provider, .. } => {
+                Ok(Box::new(transfer::Exec::new(provider.as_ref(), name)))
+            }
         }
+    }
+
+    fn destroy_only(&self) -> bool {
+        matches!(
+            self,
+            Remote::Exec {
+                kind: ExecKind::PerTurn(_),
+                ..
+            }
+        )
     }
 }
 
@@ -337,7 +370,11 @@ impl Actor {
         if let Err(error) = self.provider.provider().destroy(&self.name) {
             warnings.push(match &self.provider {
                 Remote::Substrate(_) => format!("could not delete actor {}: {error}", self.name),
-                Remote::Recipe(_) => format!("could not destroy machine {}: {error}", self.name),
+                Remote::Exec { .. } => format!(
+                    "could not destroy {} {}: {error}",
+                    self.provider.noun(),
+                    self.name
+                ),
             });
         }
         warnings
@@ -567,7 +604,10 @@ impl Placement {
             fence,
             plan,
             Copied {
-                remote: Remote::Recipe(recipe_provider(yard, options)),
+                remote: Remote::Exec {
+                    provider: recipe_provider(yard, options),
+                    kind: ExecKind::Recipe,
+                },
                 spec: SandboxSpec::new(sandbox_name(&record.info.name)?),
                 // Journaled before `create` runs, so recovery can destroy it.
                 intent: Box::new(
@@ -576,6 +616,35 @@ impl Placement {
                 workdir,
                 home,
                 pass_env: &options.pass_env,
+            },
+        )
+    }
+
+    pub(crate) fn exec_copied(
+        yard: &Yard,
+        record: &Record,
+        fence: &Fence,
+        plan: &SandboxPlan,
+        provider: Arc<dyn SandboxProvider>,
+        spec: SandboxSpec,
+        pass_env: &[String],
+    ) -> Result<Placement, String> {
+        let kind = providers::of(record.provider.as_ref()).name();
+        Placement::copied(
+            yard,
+            record,
+            fence,
+            plan,
+            Copied {
+                remote: Remote::Exec {
+                    provider,
+                    kind: ExecKind::PerTurn(kind),
+                },
+                spec,
+                intent: Box::new(move |name| json!({"provider":kind,"sandbox":name})),
+                workdir: WORKSPACE.into(),
+                home: HOME.into(),
+                pass_env,
             },
         )
     }
@@ -611,6 +680,21 @@ impl Placement {
             .ok_or("a sandboxed branch has no private home")?;
         let env = sandbox_env(&how.home, how.pass_env)?;
         let (remote, spec) = (how.remote, how.spec);
+        let fresh =
+            SandboxPlan::Fresh("native providers allocate a fresh sandbox for every turn".into());
+        let plan =
+            if remote.destroy_only() {
+                match plan {
+                    SandboxPlan::Default => &fresh,
+                    SandboxPlan::Fresh(_) => plan,
+                    SandboxPlan::Retained | SandboxPlan::Handed { .. } => return Err(
+                        "native per-turn providers cannot resume or branch retained allocations"
+                            .into(),
+                    ),
+                }
+            } else {
+                plan
+            };
         let noun = remote.noun();
         let key = providers::of(record.provider.as_ref()).key();
         let journal = |name: &str| journal_sandbox(yard, fence, name, (how.intent)(name));
@@ -634,8 +718,8 @@ impl Placement {
                         Remote::Substrate(_) => {
                             format!("could not create actor {}: {e}", spec.name)
                         }
-                        Remote::Recipe(_) => {
-                            format!("could not create machine {}: {e}", spec.name)
+                        Remote::Exec { .. } => {
+                            format!("could not create {noun} {}: {e}", spec.name)
                         }
                     })
             }),
@@ -673,7 +757,7 @@ impl Placement {
                     .map(|h| h.uid)
                     .unwrap_or_default()
             }),
-            Remote::Recipe(_) => json!({ "created": acquired.is_ok(), "sandbox": name }),
+            Remote::Exec { .. } => json!({ "created": acquired.is_ok(), "sandbox": name }),
         };
         branchyard_support::best_effort(
             "finish the journal step",
@@ -718,12 +802,23 @@ impl Placement {
             // such as what setup installed, stays), and so does the home,
             // before this host's are sent.
             let cleared = match (&acquired.origin, &actor.provider) {
-                (SandboxOrigin::Fresh { .. }, Remote::Substrate(_)) => Ok(()),
+                (
+                    SandboxOrigin::Fresh { .. },
+                    Remote::Substrate(_)
+                    | Remote::Exec {
+                        kind: ExecKind::PerTurn(_),
+                        ..
+                    },
+                ) => Ok(()),
                 // A recipe may hand out a machine that outlives its
                 // sandboxes (a lab box): an earlier push there goes too.
-                (SandboxOrigin::Fresh { .. }, Remote::Recipe(_)) => {
-                    transfer::clear_previous_push(endpoint.as_ref(), &workdir)
-                }
+                (
+                    SandboxOrigin::Fresh { .. },
+                    Remote::Exec {
+                        kind: ExecKind::Recipe,
+                        ..
+                    },
+                ) => transfer::clear_previous_push(endpoint.as_ref(), &workdir),
                 _ => transfer::clear_for_push(endpoint.as_ref(), &workdir, &guest_home),
             };
             cleared.map_err(|e| format!("could not clear {noun} {name} for this turn: {e}"))?;

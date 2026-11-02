@@ -1575,6 +1575,12 @@ pub enum Provider {
     /// reached over ssh or the recipe's exec command; the worktree and the
     /// private home are copied in and back. See `docs/recipes.md`.
     Recipe(RecipeOptions),
+    /// An owned container per turn with copied workspace/home and a required
+    /// runtime. The whole allocation is destroyed after output capture.
+    Container(ContainerOptions),
+    /// A Kubernetes SIGs Agent Sandbox per turn on managed GKE gVisor or Kata,
+    /// with copied files and whole-allocation destruction after capture.
+    AgentSandbox(AgentSandboxOptions),
 }
 
 /// A sandboxed harness's image, limits and credentials.
