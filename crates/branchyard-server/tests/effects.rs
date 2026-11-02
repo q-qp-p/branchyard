@@ -5,7 +5,7 @@
 //! performed through the API, and `/metrics` counts effects and waiting
 //! approvals. A shell script stands in for Anvil's packaging. The ground
 //! plan reads the open branches' diffs, and the decisions follow each
-//! branch's stage.
+//! branch's stage, a root's question to the person among them.
 
 #![allow(clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
@@ -25,7 +25,7 @@ use branchyard_client::api::{
 };
 use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
 use branchyard_client::new_key;
-use branchyard_server::config::{ConnectorsConfig, MetricsConfig};
+use branchyard_server::config::{ConnectorsConfig, MetricsConfig, Principal, Token};
 use branchyard_testkit::wait;
 use common::{await_operation, get, raw, run, task, Fixture, Server};
 use mock_gateway::MockGateway;
@@ -400,4 +400,90 @@ fn the_decisions_are_the_branches_that_need_you_or_are_ready_once_each() {
 
     repo.cancel("root").unwrap();
     await_operation(&client, &again.id);
+}
+
+/// A root started with delegation asks the person through the server: the
+/// decisions list its question after its turn ended, a token with only the
+/// `read` scope sees it in the person's inbox but may not answer it, and an
+/// answer with the `run` scope reaches the root's inbox, for its next turn,
+/// and takes the question out of the decisions.
+#[test]
+fn the_person_answers_a_roots_question_through_the_server() {
+    const READER: &str = "reader-token-0123456789";
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.allow_delegation = true;
+    config.by_path = Some("/bin/true".into());
+    config.tokens.push(Token {
+        name: "reader".into(),
+        secret: READER.into(),
+    });
+    config.principals.insert(
+        "reader".into(),
+        Principal {
+            origin: Default::default(),
+            name: "reader".into(),
+            tenant: "default".into(),
+            scopes: ["read".to_owned()].into(),
+            repos: None,
+        },
+    );
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+    let root = run(
+        &client,
+        &TaskRequest {
+            delegation: Some(Envelope::depth(1)),
+            ..task("say hi", "root")
+        },
+    );
+    assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
+    let asked = repo.ask("root", "which database?", None).unwrap().message;
+    assert_eq!(
+        (asked.from.as_str(), asked.to.as_str()),
+        ("root", branchyard::PERSON)
+    );
+    let question = |repo: &branchyard_client::Repo| {
+        repo.decisions()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.branch == "root")
+            .map(|d| (d.kind, d.waits, d.question.map(|m| m.id)))
+    };
+    assert_eq!(
+        question(&repo),
+        Some((DecisionKind::Question, Waits::Nobody, Some(asked.id)))
+    );
+
+    let reader = branchyard_client::Client::new(&server.url(), READER)
+        .unwrap()
+        .repo("app");
+    let inbox = reader.person_inbox().unwrap();
+    let listed: Vec<u64> = inbox.messages.iter().map(|m| m.id).collect();
+    assert_eq!(
+        (inbox.branch.as_str(), listed),
+        (branchyard::PERSON, vec![asked.id])
+    );
+    let refused = reader.answer_message(asked.id, "postgres").unwrap_err();
+    assert_eq!(refused.code(), Some("scope_required"), "{refused}");
+    let blank = repo.answer_message(asked.id, " ").unwrap_err();
+    assert_eq!(blank.code(), Some("invalid_request"), "{blank}");
+
+    let answer = repo.answer_message(asked.id, "postgres").unwrap();
+    assert_eq!(
+        (answer.from.as_str(), answer.to.as_str(), answer.in_reply_to),
+        (branchyard::PERSON, "root", Some(asked.id))
+    );
+    assert_eq!(question(&repo), None);
+    let waiting = repo.inbox("root").unwrap();
+    assert!(
+        waiting
+            .messages
+            .iter()
+            .any(|m| m.id == answer.id && !m.delivered),
+        "{waiting:?}"
+    );
+    let again = repo.answer_message(asked.id, "mysql").unwrap_err();
+    assert_eq!(again.code(), Some("denied"), "{again}");
 }

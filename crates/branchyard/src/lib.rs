@@ -253,7 +253,7 @@ pub use graph::{
     GraphProposal, SpawnSpec, MAX_EDITS,
 };
 pub use handoff::{Handoff, HandoffRequest, SourceVersion};
-pub use inbox::{DeliveryHook, SteerDelivery};
+pub use inbox::{DeliveryHook, SteerDelivery, PERSON};
 pub use json_schema::JsonSchema;
 pub use judge::{
     deterministic_scores, harness_judge, parse_verdict, prompt as judge_prompt, HarnessJudge,
@@ -722,7 +722,8 @@ impl Yard {
 
     /// Per branch, the unanswered question or escalation its stage counts
     /// as asking ([`stage::Reason::Question`]): its oldest one, while it
-    /// runs. A branch that asks nothing now has no entry.
+    /// runs, or whatever its status when it asked the person. A branch that
+    /// asks nothing now has no entry.
     pub fn asking(&self) -> Result<HashMap<String, Message>, Error> {
         let questions = self.store().backend().unanswered()?;
         let statuses: HashMap<String, BranchStatus> = self
@@ -732,6 +733,65 @@ impl Yard {
             .map(|record| (record.info.name, record.info.status))
             .collect();
         Ok(stage::asking(&questions, |name| statuses.get(name)))
+    }
+
+    /// The person's inbox: every message addressed to [`PERSON`], oldest
+    /// first. A branch nobody delegated (a root, or a fork) sends its
+    /// questions and escalations here; [`Yard::answer`] answers them.
+    pub fn inbox(&self) -> Result<Inbox, Error> {
+        Ok(Inbox {
+            branch: PERSON.to_owned(),
+            messages: self.store().backend().inbox(PERSON)?,
+            steered_this_turn: Vec::new(),
+        })
+    }
+
+    /// Answer the question or escalation `message_id` with `text`, as
+    /// whoever it was sent to. One sent to [`PERSON`] is answered from the
+    /// person: the answer goes to its sender, steered into the sender's
+    /// running turn, or else given at the start of its next turn, which it
+    /// does not start. One sent to a branch is answered as that branch
+    /// ([`Delegate::answer`]). An unknown id is [`Error::UnknownMessage`];
+    /// a message of another kind, one answered already, and empty text are
+    /// refused.
+    pub fn answer(&self, message_id: u64, text: &str) -> Result<Message, Error> {
+        let message = self
+            .store()
+            .backend()
+            .message(message_id)?
+            .ok_or(Error::UnknownMessage(message_id))?;
+        let asker = &message.from;
+        if !matches!(
+            message.kind,
+            MessageKind::Question | MessageKind::Escalation
+        ) {
+            return Err(Error::Denied(format!(
+                "message #{message_id} is a {}, and only a question or an escalation takes an \
+                 answer; to tell {asker} something, send it a prompt",
+                message.kind
+            )));
+        }
+        if let Some(answer) = self.store().backend().answer_to(message_id)? {
+            return Err(Error::Denied(format!(
+                "message #{message_id} was answered already, by #{}; to tell {asker} more, send \
+                 it a prompt",
+                answer.id
+            )));
+        }
+        if message.to == PERSON {
+            return inbox::send(
+                self,
+                None,
+                PERSON,
+                MessageKind::Answer,
+                asker,
+                text,
+                Some(message_id),
+            );
+        }
+        self.branch(&message.to)?
+            .delegate(TaskOptions::default())?
+            .answer(message_id, text)
     }
 
     /// Merge `branch`'s candidate into the local branch `target`, running the
@@ -3132,7 +3192,9 @@ pub enum SteerState {
 /// `report` go to the sender's parent; an `escalation` goes to the parent
 /// too, or further up an ancestor its rig seat's `escalates_to` names; an
 /// `answer` goes from a branch to one of its own descendants, and normally
-/// carries `in_reply_to` a question's id.
+/// carries `in_reply_to` a question's id. A branch nobody delegated (a
+/// root, or a fork) sends its questions and escalations to the person,
+/// `@person`, whose answers carry `in_reply_to`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

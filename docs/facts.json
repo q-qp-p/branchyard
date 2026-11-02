@@ -69,11 +69,11 @@
     }
   },
   "tests": {
-    "total": 3262,
+    "total": 3276,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
-        "tests": 1001,
+        "tests": 1010,
         "ignored": 17
       },
       "branchyard-bridge": {
@@ -81,7 +81,7 @@
         "ignored": 0
       },
       "branchyard-cli": {
-        "tests": 760,
+        "tests": 764,
         "ignored": 3
       },
       "branchyard-client": {
@@ -133,7 +133,7 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 478,
+        "tests": 479,
         "ignored": 1
       },
       "branchyard-setup": {
@@ -167,7 +167,7 @@
     }
   },
   "http": {
-    "route_count": 129,
+    "route_count": 131,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -191,6 +191,7 @@
       "/v1/projects/{project}",
       "/v1/projects/{project}/decisions",
       "/v1/repos",
+      "/v1/repos/{repo}/answer",
       "/v1/repos/{repo}/approvals",
       "/v1/repos/{repo}/approvals/{id}/allow",
       "/v1/repos/{repo}/approvals/{id}/deny",
@@ -242,6 +243,7 @@
       "/v1/repos/{repo}/effects/{id}/promote",
       "/v1/repos/{repo}/events/stream",
       "/v1/repos/{repo}/ground",
+      "/v1/repos/{repo}/inbox",
       "/v1/repos/{repo}/knowledge",
       "/v1/repos/{repo}/knowledge/export",
       "/v1/repos/{repo}/knowledge/{id}",
@@ -677,7 +679,7 @@
     {
       "reason": "question",
       "lane": "needs_you",
-      "condition": "It is running and has sent a question or escalation that nobody has answered."
+      "condition": "It sent a question or escalation that nobody has answered, and it is running or it asked you."
     },
     {
       "reason": "stalled",

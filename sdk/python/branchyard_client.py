@@ -2910,8 +2910,8 @@ class Repo:
         return Message(self.client.post(self._branch(source, "/handoff"), body, key=new_key()))
 
     def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None) -> Record:
-        """Ask `branch`'s parent a question, as `branch`. With `wait_seconds` (capped at 120 on the server) it waits for
-        the answer, `answer` being None when none came."""
+        """Ask `branch`'s parent (the person, if it has none) a question, as `branch`. With `wait_seconds` (capped at
+        120 on the server) it waits for the answer, `answer` being None when none came."""
         return Record(
             self.client.post(self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds}))
         )
@@ -2927,7 +2927,8 @@ class Repo:
         return Message(self.client.post(self._branch(branch, "/report"), body))
 
     def escalate(self, branch: str, text: str) -> Message:
-        """Escalate `text` as `branch` to its parent, or further up if its rig seat allows."""
+        """Escalate `text` as `branch` to its parent (the person, if it has none), or further up if its rig seat
+        allows."""
         return Message(self.client.post(self._branch(branch, "/escalate"), {"text": text}))
 
     def report_status(
@@ -2953,6 +2954,21 @@ class Repo:
     def answer(self, branch: str, message_id: int, text: str) -> Message:
         """Answer one of `branch`'s descendants' messages, as `branch`."""
         return Message(self.client.post(self._branch(branch, "/answer"), {"message_id": message_id, "text": text}))
+
+    # -- the inbox, as the person ------------------------------------------
+
+    def person_inbox(self) -> list[Message]:
+        """The person's inbox, as `Message`s: the questions and escalations
+        of branches nobody delegated (a root started with delegation, or a
+        fork), oldest first; like `by inbox` outside a harness."""
+        return [Message(m) for m in self.client.get(f"{self._base}/inbox").get("messages", [])]
+
+    def answer_message(self, message_id: int, text: str) -> Message:
+        """Answer question or escalation `message_id` as whoever it was sent
+        to: the person, or the branch it went to; like `by answer ID TEXT`
+        outside a harness. Needs the `run` scope. An asker whose turn ended
+        reads the answer when its next turn starts; `send` starts one."""
+        return Message(self.client.post(f"{self._base}/answer", {"message_id": message_id, "text": text}))
 
     # -- plans -------------------------------------------------------------
 

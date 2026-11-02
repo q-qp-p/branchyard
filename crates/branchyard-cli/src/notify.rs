@@ -76,7 +76,7 @@ pub struct Tracker {
     /// blocked or failure report is not said twice.
     reported: HashMap<String, (branchyard::ReportedState, String)>,
     /// The escalations a blocked or failure report sent to the parent's
-    /// inbox, as `branch\ntext`: the report was noticed, so its message is
+    /// or the person's inbox, as `branch\ntext`: the report was noticed, so its message is
     /// not noticed again as a question.
     escalated: HashSet<String>,
 }
@@ -127,16 +127,17 @@ impl Tracker {
                     MessageKind::Question => "asks",
                     _ => "escalates to",
                 };
+                let whom = match message.to.as_str() {
+                    branchyard::PERSON => "you",
+                    to => to,
+                };
                 notice(
                     Kind::Question,
-                    short(&format!(
-                        "{} {verb} {}: {}",
-                        message.from, message.to, message.text
-                    )),
+                    short(&format!("{} {verb} {whom}: {}", message.from, message.text)),
                 )
             }
             // What a branch says of itself: only a call for attention is
-            // news. A delegated child's also reaches its parent's inbox as an
+            // news. It also reaches its parent's inbox, or the person's, as an
             // escalation, which is not said a second time.
             Activity::StatusReport {
                 state,
@@ -567,17 +568,17 @@ mod tests {
     }
 
     /// Only a call for attention is news, and each is said once; the
-    /// escalation it sent to the parent is not said again as a question,
-    /// though anyone else's escalation is.
+    /// escalation it sent to the parent or the person is not said again as
+    /// a question, though anyone else's escalation is.
     #[test]
     fn a_blocked_or_failed_report_is_noticed_once_with_its_escalation() {
         use branchyard::ReportedState::{Blocked, Complete, Failure, Idle, Working};
-        let escalation = |id, text: &str| {
+        let to = |from: &str, to: &str, kind, id, text: &str| {
             Activity::Message(Message {
                 id,
-                from: "impl".into(),
-                to: "lead".into(),
-                kind: MessageKind::Escalation,
+                from: from.into(),
+                to: to.into(),
+                kind,
                 text: text.into(),
                 in_reply_to: None,
                 at_ms: 0,
@@ -586,6 +587,7 @@ mod tests {
                 next_turn: false,
             })
         };
+        let escalation = |id, text: &str| to("impl", "lead", MessageKind::Escalation, id, text);
         let mut t = Tracker::default();
         let events = [
             ("impl", said(Working, "reading the test")),
@@ -603,8 +605,39 @@ mod tests {
             ("impl", said(Working, "retrying")),
             ("impl", said(Blocked, "needs the\nAPI key")),
             ("impl", said(Failure, "gave up")),
-            // A branch with no parent has no escalation to follow.
+            // A branch nobody delegated escalates to the person, on its own
+            // log only; its own questions are put to you.
             ("root", said(Blocked, "needs a decision")),
+            (
+                "root",
+                to(
+                    "root",
+                    branchyard::PERSON,
+                    MessageKind::Escalation,
+                    3,
+                    "status blocked: needs a decision",
+                ),
+            ),
+            (
+                "root",
+                to(
+                    "root",
+                    branchyard::PERSON,
+                    MessageKind::Question,
+                    4,
+                    "which database?",
+                ),
+            ),
+            (
+                "root",
+                to(
+                    "root",
+                    branchyard::PERSON,
+                    MessageKind::Escalation,
+                    5,
+                    "may I drop it?",
+                ),
+            ),
         ];
         assert_eq!(
             texts(&mut t, &events),
@@ -614,6 +647,8 @@ mod tests {
                 "impl reports it is blocked: needs the API key",
                 "impl reports failure: gave up",
                 "root reports it is blocked: needs a decision",
+                "root asks you: which database?",
+                "root escalates to you: may I drop it?",
             ]
         );
         let kinds: Vec<Kind> = [said(Blocked, "other"), said(Failure, "other")]

@@ -119,7 +119,8 @@ pub struct Decision {
     /// For an `approval`: the ask, as `GET …/approvals` lists it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalAsk>,
-    /// For a `question`: the message, as the asker's parent's inbox holds it.
+    /// For a `question`: the message, as the inbox it was sent to holds it
+    /// (the asker's parent's, or the person's, `GET …/inbox`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<Message>,
     /// For an `output` or a `session` decision: the workspace's id.

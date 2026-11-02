@@ -525,7 +525,8 @@ Code integration still uses `by check` and `by integrate`.
 ## Sharing results and asking your parent
 
 Every child, even one that cannot delegate further, can publish files and
-message you, and you can do the same with your own parent:
+message you, and you can do the same with your own parent (the person, if
+you have none):
 
 ```sh
 by artifact publish results.json --name results --media-type application/json

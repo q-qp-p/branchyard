@@ -69,7 +69,7 @@ One function in the engine classifies every branch for the console, `GET …/dec
 | Reason | Lane | Condition |
 |---|---|---|
 | `approval` | `needs_you` | Its running turn is parked on an approval ask. It moves only when you allow or deny it. |
-| `question` | `needs_you` | It is running and has sent a question or escalation that nobody has answered. |
+| `question` | `needs_you` | It sent a question or escalation that nobody has answered, and it is running or it asked you. |
 | `stalled` | `needs_you` | It is running, and its harness has been silent for its stall window. |
 | `parent` | `running` | It is a delegated child that settled without being merged or discarded, and its parent still runs or waits. Its parent decides what comes next. |
 | `awaiting_plan_approval` | `needs_you` | Its plan waits for you to approve, edit or reject it. |

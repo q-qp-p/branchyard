@@ -556,8 +556,8 @@ class StatusReport:
 class Reported:
     report: StatusReport
     # The escalation a "blocked" or "failure" report sent to the parent's
-    # inbox; None for the other states, for a branch with no parent, and for
-    # a report that repeats the one before it exactly.
+    # inbox (the person's, for a branch with no parent); None for the other
+    # states and for a report that repeats the one before it exactly.
     escalation: Optional[Message] = None
 
 
@@ -1021,7 +1021,8 @@ def children() -> Children:
 
 
 def ask(text: str, wait: Optional[float] = None) -> Asked:
-    """Ask your parent a question. Without `wait`, returns once it is sent.
+    """Ask your parent (the person, if you have none) a question. Without
+    `wait`, returns once it is sent.
 
     With `wait`, blocks on `by`'s side for up to that many seconds for an
     answer; a wait that passes with no answer yet is not an error, `answer`
@@ -1074,8 +1075,8 @@ def report(text: str, result: Optional[Any] = None) -> Message:
 
 
 def escalate(text: str) -> Message:
-    """Escalate to your parent, or, if your rig seat's `escalates_to`
-    allows it, an ancestor further up."""
+    """Escalate to your parent (the person, if you have none), or, if your
+    rig seat's `escalates_to` allows it, an ancestor further up."""
     return _message(_run(["escalate", "--", text]))
 
 
@@ -1089,8 +1090,8 @@ def report_status(
     `ttl_seconds` an optional time-to-live (whole seconds, 1 to 604800)
     after which the report is shown as stale. It is a claim and changes
     nothing about your branch, and it is not a message: use `report` for
-    that. "blocked" and "failure" are also escalated to your parent's
-    inbox, and the result's `escalation` is that message. Your parent sees
+    that. "blocked" and "failure" are also escalated as `escalate` does,
+    and the result's `escalation` is that message. Your parent sees
     the latest report as `inspect(...).reported`.
     """
     args = ["report-status"]

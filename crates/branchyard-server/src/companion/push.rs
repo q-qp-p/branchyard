@@ -149,9 +149,13 @@ impl Tracker {
                     MessageKind::Question => "asks",
                     _ => "escalates to",
                 };
+                let whom = match message.to.as_str() {
+                    branchyard::PERSON => "you",
+                    to => to,
+                };
                 (
                     "question",
-                    format!("{} {verb} {}: {}", message.from, message.to, message.text),
+                    format!("{} {verb} {whom}: {}", message.from, message.text),
                 )
             }
             Activity::Effect(effect) => match effect.as_ref() {
@@ -214,7 +218,7 @@ impl Tracker {
             _ => return None,
         };
         let target = match activity {
-            Activity::Message(message) => message.to.clone(),
+            Activity::Message(message) if message.to != branchyard::PERSON => message.to.clone(),
             _ => branch.to_owned(),
         };
         Some(Notice {
@@ -1091,6 +1095,24 @@ mod tests {
         assert_eq!(question.body, "child escalates to parent: need a decision");
         // Recorded on both branches' logs: one notice.
         assert_eq!(t.observe("app", "parent", &message), None);
+        // A question to the person is put to you, about its asker.
+        let to_you = Activity::Message(branchyard::Message {
+            id: 10,
+            from: "root".into(),
+            to: branchyard::PERSON.into(),
+            kind: MessageKind::Question,
+            text: "which database?".into(),
+            in_reply_to: None,
+            at_ms: 1,
+            delivered: false,
+            handoff: None,
+            next_turn: false,
+        });
+        let question = t.observe("app", "root", &to_you).unwrap();
+        assert_eq!(
+            (question.body.as_str(), question.title.as_str()),
+            ("root asks you: which database?", "app: root")
+        );
         // An approval a turn waits on, once.
         let asked = Activity::Effect(Box::new(branchyard::effects::EffectActivity::Asked {
             ask: "01ASK".into(),

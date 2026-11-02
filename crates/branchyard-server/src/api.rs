@@ -877,6 +877,11 @@ pub fn router(app: Shared) -> Router {
             "/v1/repos/{repo}/branches/{branch}/answer",
             axum::routing::post(post_answer),
         )
+        .route("/v1/repos/{repo}/inbox", get(person_inbox))
+        .route(
+            "/v1/repos/{repo}/answer",
+            axum::routing::post(post_person_answer),
+        )
         .route("/v1/repos/{repo}/branches/{branch}/diff", get(diff))
         .route("/v1/repos/{repo}/branches/{branch}/events", get(events))
         .route("/v1/repos/{repo}/events/stream", get(stream_events))
@@ -2702,6 +2707,38 @@ async fn post_answer(
     })
     .await
     .map(Json)
+}
+
+/// The person's inbox ([`branchyard::Yard::inbox`]), with the `read` scope.
+async fn person_inbox(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<branchyard::Inbox>, ApiError> {
+    let yard = app.authorized_repo(&caller, &repo, "read")?.yard.clone();
+    blocking(move || yard.inbox())
+        .await?
+        .map(Json)
+        .map_err(|e| error::sdk(&e))
+}
+
+/// Answer a question or escalation as whoever it was sent to
+/// ([`branchyard::Yard::answer`]): the person, whom a caller with the `run`
+/// scope stands for.
+async fn post_person_answer(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(request, _): JsonBody<branchyard_client::api::AnswerRequest>,
+) -> Result<Json<branchyard::Message>, ApiError> {
+    if request.text.trim().is_empty() {
+        return Err(ApiError::bad_request("text is empty"));
+    }
+    let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
+    blocking(move || yard.answer(request.message_id, &request.text))
+        .await?
+        .map(Json)
+        .map_err(|e| error::sdk(&e))
 }
 
 async fn branches(

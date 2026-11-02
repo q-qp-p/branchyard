@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->129<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->131<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -225,6 +225,7 @@ Every command that takes a branch or prints a result takes `--json`. This round 
 | Surface | Before | Now |
 |---|---|---|
 | `Delegate::{ask, report, escalate, answer, inbox, send_and_wait}`, `Branch::send_and_wait`, `by ask/report/escalate/answer/inbox`, `by send --wait`, the MCP tools, `POST …/{ask,report,escalate,answer}`, `GET …/inbox`, the client and Python functions | none | parent/descendant messages ([delegation](delegation.md#inbox)) |
+| `Yard::inbox`, `Yard::answer`, `by inbox` and `by answer ID "TEXT"` outside a harness without `--as`, `GET …/inbox` and `POST …/answer` on a repository, `Repo::person_inbox`/`answer_message` in the client and `Repo.person_inbox`/`answer_message` in Python | `--as <branch>` needed; a branch nobody delegated could not ask | the person's inbox: a branch nobody delegated asks and escalates to `@person`, and the person answers ([delegation](delegation.md#the-persons-inbox)) |
 | `Activity` | no messages | `message` (the `Message`) on the sender's and recipient's logs; `messages_delivered` (`ids`, `via`: `{"path": "steer", "steer"}` or `{"path": "turn_start"}`) on the recipient's |
 | `DeliveryHook`, `Yard::set_delivery_hook`/`clear_delivery_hook`, `SteerDelivery` | none | every `Yard` steers a message into its recipient's running turn by default ([delegation](delegation.md#delivery)) |
 | Stall detection | children and permission answers excluded | a turn blocked in `ask --wait` is excluded too ([lifecycle](lifecycle.md#stall-detection)) |

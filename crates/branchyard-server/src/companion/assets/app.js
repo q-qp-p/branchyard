@@ -346,6 +346,8 @@
   }
 
   const can = (scope) => !!(state.me && state.me.scopes.includes(scope));
+  // Where a branch nobody delegated sends its questions: the person.
+  const PERSON = '@person';
   const repoPath = (repo) => `/v1/repos/${enc(repo || state.repo)}`;
   const branchPath = (branch, repo) => `${repoPath(repo)}/branches/${enc(branch)}`;
 
@@ -504,7 +506,7 @@
       state.seen.add(k);
       kind = 'question';
       target = a.message.to;
-      text = `${a.message.from} ${a.message.kind === 'question' ? 'asks' : 'escalates to'} ${a.message.to}: ${a.message.text}`;
+      text = `${a.message.from} ${a.message.kind === 'question' ? 'asks' : 'escalates to'} ${a.message.to === PERSON ? 'you' : a.message.to}: ${a.message.text}`;
     } else if (a.effect && a.effect.kind === 'asked') {
       const k = `approval:${a.effect.ask}`;
       if (state.seen.has(k)) return null;
@@ -4340,6 +4342,7 @@
   }
 
   function answerForm(m) {
+    const toYou = m.to === PERSON;
     const id = nextId('answer');
     const area = h('textarea', { id, rows: '2', 'data-draft': `answer:${m.id}`, placeholder: m.kind === 'escalation' ? 'Optional note' : 'Your answer (Enter sends, Shift+Enter adds a line)' });
     const disabled = !can('run');
@@ -4348,8 +4351,10 @@
       const text = prefix ? (note ? `${prefix} ${note}` : prefix) : note;
       if (!text) { area.focus(); return; }
       try {
-        await api('POST', `${branchPath(m.to)}/answer`, { message_id: m.id, text });
-        toast(`Answered ${m.from}.`);
+        await api('POST', toYou ? `${repoPath()}/answer` : `${branchPath(m.to)}/answer`, { message_id: m.id, text });
+        const asker = state.branches.get(m.from);
+        if (asker && asker.status.state !== 'running') toast(`Answered ${m.from}. Its turn has ended: it reads the answer when its next turn starts. Follow up to start one.`, branchHref(m.from));
+        else toast(`Answered ${m.from}.`);
         loadApprovals();
       } catch (e) {
         toast(`Could not answer: ${e.message}`);
@@ -4365,7 +4370,7 @@
       });
     }
     return h('div', { class: 'reply' },
-      h('label', { class: 'block', for: id, text: `Answer as ${m.to}` }), area,
+      h('label', { class: 'block', for: id, text: toYou ? 'Answer' : `Answer as ${m.to}` }), area,
       h('div', { class: 'row' },
         m.kind === 'escalation'
           ? [h('button', { type: 'button', class: 'primary', disabled, text: 'Approve', onclick: () => send('Approved.') }),
@@ -4681,7 +4686,7 @@
     } else if (d.kind === 'question') {
       const m = d.question;
       title = [m.from, m.kind === 'escalation' ? ' escalates: ' : ' asks: ', m.text];
-      body = [h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · to ${m.to}` })), answerForm(m)];
+      body = [h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · to ${m.to === PERSON ? 'you' : m.to}` })), answerForm(m)];
     } else if (d.kind === 'plan') {
       // The console cannot approve a plan yet: the card says how, and opens the branch.
       title = [d.branch, ': its plan waits for your approval'];

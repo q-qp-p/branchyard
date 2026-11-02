@@ -166,7 +166,7 @@ Inside a delegating harness, each command acts as the harness's branch, on its d
 | `by plan approve <child> [--file FILE]`, `by plan reject <child> [--reason TEXT] [--replan]`, `by approvals allow <id>` | Answer a descendant's plan, or an approval its turn waits on ([effects](effects.md)) | A person answers any branch's |
 | `by artifact publish FILE [--name N] [--media-type TYPE] [--label K=V]`, `by artifact list`, `by artifact get ID --out PATH`, `by artifact share ID --to BRANCH` | Every delegated branch, a leaf included, as itself ([storage](storage.md)) | Needs `--branch <branch>` |
 | `by scratch create NAME`, `by scratch list`, `by scratch lock NAME`, `by scratch unlock NAME`, `by scratch share NAME --to BRANCH` | The same | Needs `--branch <branch>` |
-| `by ask`, `by report [--result JSON \| --result-file PATH]`, `by escalate`, `by answer`, `by inbox` | Message the parent, or answer a descendant ([below](#inbox)); every delegated branch may ask, report, escalate and read its inbox | Needs `--as <branch>` |
+| `by ask`, `by report [--result JSON \| --result-file PATH]`, `by escalate`, `by answer`, `by inbox` | Message the parent (or the person), or answer a descendant ([below](#inbox)); every delegated branch may ask, report, escalate and read its inbox | Needs `--as <branch>`, except `by answer ID "TEXT"` and `by inbox`, which act as the person without it ([below](#the-persons-inbox)) |
 | `by report-status <state> <summary> [--link URL]` | State this branch's own status in one line, beside the one the protocol gives ([below](#self-reported-status)); every delegated branch may | Needs `--as <branch>`; with `--remote`, `POST …/report-status` ([below](#self-reported-status)) |
 
 `by <command> --help` marks each flag a harness may not pass, with the reason, and says which commands a server does not offer yet.
@@ -264,15 +264,16 @@ me.integrate_all(&["tokenizer", "formatter"])?;
 
 ## Inbox
 
-A branch can message another branch it has authority over, not only inspect it: a running turn can ask its parent a question, report progress, escalate a problem, and a parent can answer. Every message is durable in the store (both SQLite and PostgreSQL), typed `{id, from, to, kind, text, in_reply_to, at}` where `kind` is `question`, `report`, `escalation` or `answer`, and is also an event (`Activity::Message`) on both the sending and the receiving branch's log, so `by events`/`log` show it.
+A branch can message another branch it has authority over, not only inspect it: a running turn can ask its parent a question, report progress, escalate a problem, and a parent can answer. A branch nobody delegated asks and escalates to the person instead ([below](#the-persons-inbox)). Every message is durable in the store (both SQLite and PostgreSQL), typed `{id, from, to, kind, text, in_reply_to, at}` where `kind` is `question`, `report`, `escalation` or `answer`, and is also an event (`Activity::Message`) on both the sending and the receiving branch's log, so `by events`/`log` show it.
 
 Authority follows the delegation tree, checked the same way spawning is:
 
 | `kind` | May go to |
 |---|---|
-| `question`, `report` | Only the sender's own parent |
-| `escalation` | The sender's parent, always; further up an ancestor only if the sender is in a [rig](rigs.md) and its seat's `escalates_to` names that ancestor's seat |
-| `answer` | From a branch to any of its own descendants, not only a direct child |
+| `question` | The sender's own parent; the person, `@person`, for a branch nobody delegated (a root, or a fork) |
+| `report` | Only the sender's own parent |
+| `escalation` | The sender's parent (the person, for a branch nobody delegated), always; further up an ancestor only if the sender is in a [rig](rigs.md) and its seat's `escalates_to` names that ancestor's seat |
+| `answer` | From a branch to any of its own descendants, not only a direct child; from the person, only to a question or escalation sent to the person |
 
 A `blocked` or `failure` [self-reported status](#self-reported-status) is also an `escalation`, sent for the branch by the engine. A leaf branch (`max_depth` 0, such as a leaf rig seat) asks, reports, escalates and reads its inbox like any other: messaging is a capability of every delegated branch, not of depth. It cannot `answer` (it has no descendants) or spawn. A parent answers a leaf's question with `by answer`, and the leaf's `by ask --wait SECS` returns with the answer.
 
@@ -280,13 +281,27 @@ Every surface reaches the same five operations, with the same authority and the 
 
 | Command | Tool / Python / Rust | What |
 |---|---|---|
-| `by ask "<text>" [--wait SECS]` | `ask` / `branchyard.ask(text, wait=None)` / `Delegate::ask` | Ask your parent a question. Without a wait, returns once it is sent (`Asked{message, answer: None}`). With one, blocks — in the process running your turn, so across processes when reached through the broker — for up to that long for an answer; a wait that passes with no answer yet is not an error, `answer` is `None`. |
+| `by ask "<text>" [--wait SECS]` | `ask` / `branchyard.ask(text, wait=None)` / `Delegate::ask` | Ask your parent (the person, if you have none) a question. Without a wait, returns once it is sent (`Asked{message, answer: None}`). With one, blocks — in the process running your turn, so across processes when reached through the broker — for up to that long for an answer; a wait that passes with no answer yet is not an error, `answer` is `None`. |
 | `by report "<text>" [--result JSON \| --result-file PATH]` | `report` / `branchyard.report(text, result=None)` / `Delegate::report`, `Delegate::report_result` | Report to your parent; no answer is expected. With a `result`, a JSON value, it is also checked against the branch's [result contract](#result-contract) and recorded as the branch's result. |
-| `by escalate "<text>"` | `escalate` / `branchyard.escalate` / `Delegate::escalate` | Escalate to your parent, or, in a rig, further up if your seat's `escalates_to` allows it. |
+| `by escalate "<text>"` | `escalate` / `branchyard.escalate` / `Delegate::escalate` | Escalate to your parent (the person, if you have none), or, in a rig, further up if your seat's `escalates_to` allows it. |
 | `by answer <message-id> "<text>"` | `answer` / `branchyard.answer` / `Delegate::answer` | Answer one of your own descendants' messages (usually a question), addressed back to whoever sent it. |
 | `by inbox [--unread]` | `inbox` / `branchyard.inbox(unread=False)` / `Delegate::inbox` | Every message addressed to you, oldest first; `--unread` for only what has not yet been delivered to a turn. A message steered into your running turn counts as unread in that turn until it ends (the JSON lists its id in `steered_this_turn`): the harness takes steered input only at its next step, so an `--unread` made in between would otherwise miss it. A message is durable before `by ask`, `report` or `escalate` returns; a child's text saying it asked, written before it ran the command, may come first. |
 
-Outside a harness, each of these needs `--as <branch>` (there is no other way to say who is asking); a person then acts with their own authority, bounded the same way. `by --remote` reaches the same operations over HTTP (`GET …/inbox`, `POST …/ask|report|escalate|answer|report-status`), with the same JSON and the same refusals; `by ask --remote --wait` blocks on the server, capped at 120 seconds so one request cannot tie up a worker indefinitely — poll `inbox` for a longer wait.
+Outside a harness, each of these needs `--as <branch>` (there is no other way to say who is asking); a person then acts with their own authority, bounded the same way. `by answer ID "TEXT"` and `by inbox` without it act as the person ([below](#the-persons-inbox)). `by --remote` reaches the same operations over HTTP (`GET …/inbox`, `POST …/ask|report|escalate|answer|report-status`), with the same JSON and the same refusals; `by ask --remote --wait` blocks on the server, capped at 120 seconds so one request cannot tie up a worker indefinitely — poll `inbox` for a longer wait.
+
+### The person's inbox
+
+A branch nobody delegated, a root started with delegation or a fork, has no parent to ask, so its questions and escalations go to the person who runs the repository, addressed `@person`, a name no branch can have. The person is whoever acts outside a harness: locally, anyone running `by` there; on a server, a caller with the `run` scope on the repository. A `blocked` or `failure` [self-reported status](#self-reported-status) of such a branch reaches the person the same way. The question shows wherever a branch needs you, until it is answered or its asker is merged or discarded, whether or not its turn still runs: in the console's **Needs you** and `GET …/decisions`, in the session hook's lines (`- root asks you #12: "…". Answer: by answer 12 "TEXT"`, [harness hooks](harness-hooks.md)), in the status line's count, and in the desktop and push notices (`root asks you: …`).
+
+The person answers in any of three ways, each as whoever the message was sent to (the person, or the parent branch it went to):
+
+- `by answer ID "TEXT"` outside a harness, without `--as`; `by inbox` lists the person's messages. With `--remote`, `POST /v1/repos/{repo}/answer` (`{message_id, text}`, the `run` scope) and `GET /v1/repos/{repo}/inbox` (the `read` scope).
+- The console's **Needs you**: the question's card answers it, and an escalation's card has **Approve** and **Deny** ([console](companion.md)).
+- `branchyard_client`'s `Repo::answer_message` and `Repo::person_inbox`, and Python's `Repo.answer_message(message_id, text)` and `Repo.person_inbox()`.
+
+An answer reaches a turn that still runs by steering, and returns from a `by ask --wait` that waits for it. An answer to a branch whose turn has ended does not start a turn: the branch reads it when its next turn starts, and `by answer` and the console say so; `by send NAME "<prompt>"` starts one.
+
+A root can ask the person only when it runs with delegation: `by run --delegate`, or, for a [trigger](triggers.md), a request that carries `delegation`. A harness started without delegation has no token, and `by` inside it refuses every command, saying how to start a branch that can use it.
 
 ### Delivery
 
@@ -321,7 +336,7 @@ Where it shows:
 
 **Staleness.** A report goes stale, and is judged so each time it is read, never stored: `stale_because` is `ended` when the branch failed, merged or was discarded after it; `later_turn` when a later turn started after it and finished without a new report (a turn still running leaves it current, and so does the end of the turn it was made in); and `expired` when it has a time-to-live and `at_ms + ttl_seconds·1000` has passed. They are checked in that order. A stale report is still returned and shown, marked: `by show` prints `blocked: needs the API key (stale, 14m old)`, `by inspect` and the `by watch` detail pane dim it with `(stale)`, and `by watch` no longer shows it as what the branch is doing. A report after the stale one is current again, and a `blocked` or `failure` report that repeats a stale one is escalated again, since the parent may have stopped waiting on it.
 
-`blocked` and `failure` also ask for attention. For a branch with a parent, the engine sends the parent an `escalation` from the branch, `status blocked: needs the API key (https://…)`, which reaches its inbox and running turn like any escalation ([above](#inbox)); `by watch` and the desktop notices say it once. The other states send nothing. A report identical to the one before it is recorded but not escalated again. A branch with no parent has no inbox to escalate to: the report is recorded and shown, and a person watching sees it in `by watch`.
+`blocked` and `failure` also ask for attention. The engine sends an `escalation` from the branch, `status blocked: needs the API key (https://…)`, where `escalate` sends: to its parent, which reaches the parent's inbox and running turn like any escalation ([above](#inbox)), or, for a branch nobody delegated, such as a root, to the person, who sees it in Needs you ([the person's inbox](#the-persons-inbox)); `by watch` and the desktop notices say it once. The other states send nothing. A report identical to the one before it is recorded but not escalated again.
 
 Through a server, `by --remote report-status --as BRANCH`, `branchyard_client`'s `report_status` and `POST …/report-status` ([the server reference](server.md#requests)) state a branch's status as a person or a surface acting for it, with the same rules and the same `Reported`. A field that breaks a rule is `400 invalid_request` whose `detail.field` names it (`state`, `summary`, `link` or `ttl_seconds`), not the `denied` the tool reports; the route needs the `run` scope, as `escalate` does. A harness the server runs states its own status through the broker, like any other tool, and does not use the route.
 

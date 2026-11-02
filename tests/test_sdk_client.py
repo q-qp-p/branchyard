@@ -2165,6 +2165,18 @@ class Approvals(ServerCase):
         self.assertEqual(decisions[0].approval["id"], "ap1")
         self.assertEqual(decisions[1].candidate["commit"], "abc")
 
+    def test_the_person_reads_and_answers_their_own_inbox(self):
+        question = {"id": 7, "from": "root", "to": "@person", "kind": "question", "text": "which db?", "at_ms": 1}
+        answer = {"id": 8, "from": "@person", "to": "root", "kind": "answer", "text": "postgres", "in_reply_to": 7}
+        self.fake.answer("GET", f"{REPO}/inbox", (200, {"branch": "@person", "messages": [question]}))
+        self.fake.answer("POST", f"{REPO}/answer", (200, answer))
+        inbox = self.app.person_inbox()
+        self.assertEqual([(m.id, m["from"], m.text) for m in inbox], [(7, "root", "which db?")])
+        sent = self.app.answer_message(7, "postgres")
+        self.assertEqual((sent.id, sent.to, sent.in_reply_to), (8, "root", 7))
+        [(_, _, _, body)] = self.requests("POST", f"{REPO}/answer")
+        self.assertEqual(body, {"message_id": 7, "text": "postgres"})
+
     def test_the_ground_names_the_branches_that_share_a_file(self):
         ready = {"state": "ready"}
         ground = {
@@ -3566,6 +3578,8 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/operations/{id}": [lambda c, _r: c.operation("op1")],
     "/v1/repos": [lambda c, _r: c.repos()],
     "/v1/repos/{repo}/decisions": [lambda _c, r: r.decisions()],
+    "/v1/repos/{repo}/inbox": [lambda _c, r: r.person_inbox()],
+    "/v1/repos/{repo}/answer": [lambda _c, r: r.answer_message(1, "yes")],
     "/v1/repos/{repo}/ground": [lambda _c, r: r.ground()],
     "/v1/repos/{repo}/approvals": [lambda _c, r: r.approvals()],
     "/v1/repos/{repo}/approvals/{id}/allow": [lambda _c, r: r.allow("ap1")],

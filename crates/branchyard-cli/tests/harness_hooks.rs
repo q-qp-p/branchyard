@@ -145,6 +145,40 @@ fn a_turn_parked_on_an_approval_is_named_with_its_ask() {
     assert!(out.status.success(), "{out:?}");
 }
 
+/// A root started with `--delegate` that asked the person from its own
+/// turn is put to you on a session's first call (`<event>-asks-you.out`,
+/// the message's id as `@ID@`), whatever its turn's state, and counted as
+/// asking until you answer it with `by answer ID` and no `--as`.
+#[test]
+fn a_roots_question_to_you_is_put_to_you_until_you_answer_it() {
+    let repo = branchyard_testkit::repo!();
+    let out = repo.by_agent(&[
+        "run",
+        "SH by ask 'Which database?'",
+        "--name",
+        "root",
+        "--delegate",
+        "--yes",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let inbox = repo.json(&["inbox", "--json"]);
+    let id = inbox["messages"][0]["id"].to_string();
+    let dir = fixtures().join("claude-code");
+    let input = payload(&repo, &dir.join("user-prompt-submit-asks-you.json"));
+    let expected = std::fs::read_to_string(dir.join("user-prompt-submit-asks-you.out"))
+        .unwrap()
+        .replace("@ID@", &id);
+    let args = ["hook", "--harness", "claude-code", "user-prompt-submit"];
+    assert_eq!(stdout(&run(&repo, &args, &input)), expected);
+    let line = serde_json::json!({"workspace": {"current_dir": repo.root}}).to_string();
+    assert_eq!(
+        stdout(&run(&repo, &["statusline"], &line)),
+        "by: 1 asking\n"
+    );
+    repo.ok(&["answer", &id, "Postgres"]);
+    assert_eq!(stdout(&run(&repo, &["statusline"], &line)), "by: idle\n");
+}
+
 /// A running branch whose harness goes silent past its stall window is
 /// named once it changes (`<event>-stalled.out`), after a first call that
 /// told the session of the ready branch.

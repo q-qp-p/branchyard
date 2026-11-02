@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{wake, BranchInfo, BranchStatus, Message, MessageKind};
+use crate::{wake, BranchInfo, BranchStatus, Message, MessageKind, PERSON};
 
 /// The column of the console a branch sits in.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -33,7 +33,8 @@ pub enum Lane {
 pub enum Reason {
     /// Its running turn is parked on an approval ask.
     Approval,
-    /// It is running and has asked a question nobody has answered.
+    /// It sent a question or escalation nobody has answered, and it is
+    /// running or it asked the person.
     Question,
     /// It is running, and its harness has gone silent.
     Stalled,
@@ -76,7 +77,8 @@ pub const STAGES: [(Reason, Lane, &str); 16] = [
     (
         Reason::Question,
         Lane::NeedsYou,
-        "It is running and has sent a question or escalation that nobody has answered.",
+        "It sent a question or escalation that nobody has answered, and it is running or it \
+         asked you.",
     ),
     (
         Reason::Stalled,
@@ -230,12 +232,18 @@ pub(crate) fn classify(facts: &Facts<'_>) -> Stage {
 }
 
 /// Whether an unanswered `message` from a branch in `asker` status asks
-/// for an answer now: a question or escalation, while its asker runs.
+/// for an answer now: a question or escalation, while its asker runs, or,
+/// when it went to the person, until its asker is merged or discarded,
+/// since nobody else will answer it.
 pub(crate) fn counts_as_asking(message: &Message, asker: &BranchStatus) -> bool {
+    let set_aside = matches!(
+        asker,
+        BranchStatus::Merged { .. } | BranchStatus::Discarded { .. }
+    );
     matches!(
         message.kind,
         MessageKind::Question | MessageKind::Escalation
-    ) && *asker == BranchStatus::Running
+    ) && ((message.to == PERSON && !set_aside) || *asker == BranchStatus::Running)
 }
 
 /// Per asker, the first of the unanswered `questions` (oldest first) that
@@ -485,6 +493,29 @@ mod tests {
         ] {
             assert!(!counts_as_asking(&message(MessageKind::Question), &settled));
         }
+    }
+
+    #[test]
+    fn a_settled_branch_asks_only_when_it_asked_the_person() {
+        let to_person = Message {
+            to: PERSON.into(),
+            ..message(MessageKind::Question)
+        };
+        let root = staged(
+            vec![info(BranchStatus::Interrupted)],
+            std::slice::from_ref(&to_person),
+        );
+        assert_eq!(root[0].stage.map(|s| s.reason), Some(Reason::Question));
+        let discarded = BranchStatus::Discarded {
+            reason: "not needed".into(),
+        };
+        let root = staged(vec![info(discarded)], &[to_person]);
+        assert_eq!(root[0].stage.map(|s| s.reason), Some(Reason::Discarded));
+        let kid = staged(
+            vec![child(BranchStatus::Ready)],
+            &[message(MessageKind::Question)],
+        );
+        assert_eq!(kid[0].stage.map(|s| s.reason), Some(Reason::Ready));
     }
 
     #[test]

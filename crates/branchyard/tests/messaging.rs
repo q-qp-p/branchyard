@@ -10,7 +10,7 @@ use std::time::Duration;
 use branchyard::stage::Reason;
 use branchyard::{
     Activity, BranchStatus, Budget, DeliveredVia, Envelope, Error, MessageKind, Policy,
-    ReportedState, Spawn, TaskOptions,
+    ReportedState, Spawn, TaskOptions, PERSON,
 };
 use branchyard_testkit::wait;
 use common::{fake_agent, text, Fixture};
@@ -41,11 +41,12 @@ fn wait_for_own_prompt(f: &Fixture, branch: &str) {
     wait::until(&format!("{branch} to record its own prompt"), || {
         f.yard
             .branch(branch)
-            .unwrap()
-            .events()
-            .unwrap()
-            .iter()
-            .any(|e| matches!(e.activity, Activity::Prompt(_)))
+            .and_then(|b| b.events())
+            .is_ok_and(|events| {
+                events
+                    .iter()
+                    .any(|e| matches!(e.activity, Activity::Prompt(_)))
+            })
     });
 }
 
@@ -632,10 +633,10 @@ fn a_blocked_or_failed_report_is_escalated_to_the_parent_once() {
 }
 
 /// A bad summary or link is refused with the usual denial and recorded
-/// nowhere; a branch with no parent has nobody to escalate to and is not
-/// refused for it.
+/// nowhere; a root's blocked report, like its `escalate`, reaches the
+/// person.
 #[test]
-fn a_bad_status_report_is_refused_and_a_root_has_no_one_to_escalate_to() {
+fn a_bad_status_report_is_refused_and_a_root_escalates_to_the_person() {
     let f = Fixture::new();
     let options = delegating(&f, Envelope::depth(2));
     let kid = parent_and_child(&f, &options);
@@ -688,9 +689,248 @@ fn a_bad_status_report_is_refused_and_a_root_has_no_one_to_escalate_to() {
     let said = root
         .report_status(ReportedState::Blocked, "needs a decision", None, None)
         .unwrap();
-    assert!(said.escalation.is_none(), "root has no parent");
+    let escalation = said.escalation.expect("the person hears of it");
+    assert_eq!(
+        (
+            escalation.from.as_str(),
+            escalation.to.as_str(),
+            escalation.kind
+        ),
+        ("root", PERSON, MessageKind::Escalation)
+    );
     assert_eq!(
         root.inspect("root").unwrap().reported.unwrap().state,
         ReportedState::Blocked
     );
+    let escalated = root.escalate("postgres or sqlite?").unwrap();
+    assert_eq!(escalated.to, PERSON);
+    let inbox = f.yard.inbox().unwrap();
+    assert_eq!(inbox.branch, PERSON);
+    assert_eq!(
+        inbox.messages.iter().map(|m| m.id).collect::<Vec<_>>(),
+        [escalation.id, escalated.id]
+    );
+    assert_eq!(reason(&f, "root"), Some(Reason::Question));
+}
+
+fn reason(f: &Fixture, name: &str) -> Option<Reason> {
+    f.yard
+        .branch(name)
+        .unwrap()
+        .info()
+        .stage
+        .map(|stage| stage.reason)
+}
+
+/// A root started with delegation was delegated by nobody, so its question
+/// goes to the person. It stays in Needs you while it runs, and after its
+/// turn ends, until someone answers.
+#[test]
+fn a_root_asks_the_person_and_still_asks_after_its_turn_ends() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let turn = {
+        let task = f.yard.task("HANG").options(options.clone()).name("root");
+        std::thread::spawn(move || task.run())
+    };
+    wait_for_own_prompt(&f, "root");
+    let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
+
+    let asked = root.ask("which database?", None).unwrap().message;
+    assert_eq!((asked.from.as_str(), asked.to.as_str()), ("root", PERSON));
+    assert!(events(&f, "root")
+        .iter()
+        .any(|e| matches!(&e.activity, Activity::Message(m) if m.id == asked.id)));
+    assert_eq!(
+        f.yard.inbox().unwrap().messages,
+        std::slice::from_ref(&asked)
+    );
+    assert_eq!(reason(&f, "root"), Some(Reason::Question));
+
+    assert!(!f.yard.cancel("root").unwrap().is_empty());
+    let ended = turn.join().unwrap().unwrap();
+    assert_eq!(ended.info().status, BranchStatus::Interrupted);
+    assert_eq!(reason(&f, "root"), Some(Reason::Question));
+}
+
+/// A fork's `parent` is the branch it was forked from, which did not give
+/// it its task and cannot answer it, so its question goes to the person. A
+/// delegated child still asks its parent.
+#[test]
+fn a_fork_asks_the_person_and_a_delegated_child_its_parent() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let source = f
+        .yard
+        .task("WRITE a.txt=1")
+        .options(options.clone())
+        .name("source")
+        .run()
+        .unwrap();
+    let fork = source
+        .fork(
+            "say hi",
+            true,
+            TaskOptions {
+                name: Some("fork".into()),
+                ..options.clone()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (fork.info().parent.as_deref(), fork.info().depth),
+        (Some("source"), 0)
+    );
+    let asked = fork
+        .delegate(options.clone())
+        .unwrap()
+        .ask("which way?", None);
+    assert_eq!(asked.unwrap().message.to, PERSON);
+
+    source
+        .delegate(options.clone())
+        .unwrap()
+        .spawn(spawn("say hi", "kid"))
+        .unwrap();
+    wait::until("kid's turn to end", || {
+        f.yard.branch("kid").unwrap().info().status != BranchStatus::Running
+    });
+    let kid = f.yard.branch("kid").unwrap().delegate(options).unwrap();
+    assert_eq!(kid.ask("which way?", None).unwrap().message.to, "source");
+}
+
+/// The person's answer reaches a root blocked in `ask` with a wait, and is
+/// steered into its running turn.
+#[test]
+fn the_persons_answer_reaches_a_root_waiting_in_ask() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let turn = {
+        let task = f.yard.task("HANG").options(options.clone()).name("root");
+        std::thread::spawn(move || task.run())
+    };
+    wait_for_own_prompt(&f, "root");
+    let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
+    let asking =
+        std::thread::spawn(move || root.ask("which database?", Some(Duration::from_secs(30))));
+    wait::until("the question to reach the person", || {
+        !f.yard.inbox().unwrap().messages.is_empty()
+    });
+    let question = f.yard.inbox().unwrap().messages.remove(0);
+
+    let answer = f.yard.answer(question.id, "postgres").unwrap();
+    assert_eq!(
+        (answer.from.as_str(), answer.to.as_str(), answer.kind),
+        (PERSON, "root", MessageKind::Answer)
+    );
+    assert_eq!(answer.in_reply_to, Some(question.id));
+    let asked = asking.join().unwrap().unwrap();
+    let waited = asked.answer.expect("the wait sees the person's answer");
+    assert_eq!(
+        (waited.id, waited.from.as_str(), waited.text.as_str()),
+        (answer.id, PERSON, "postgres")
+    );
+    assert_eq!(reason(&f, "root"), Some(Reason::Running));
+    wait::until("the answer to be steered into root's turn", || {
+        delivered(&events(&f, "root"))
+            .iter()
+            .any(|(ids, via)| ids == &[answer.id] && matches!(via, DeliveredVia::Steer { .. }))
+    });
+
+    assert!(!f.yard.cancel("root").unwrap().is_empty());
+    turn.join().unwrap().unwrap();
+}
+
+/// An answer to a root whose turn ended starts no turn: it waits, and is
+/// given at the start of the root's next turn.
+#[test]
+fn the_persons_answer_to_a_root_whose_turn_ended_waits_for_its_next_turn() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let root = f
+        .yard
+        .task("say hi")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap();
+    let delegate = root.delegate(options.clone()).unwrap();
+    let question = delegate.ask("which database?", None).unwrap().message;
+    assert_eq!(reason(&f, "root"), Some(Reason::Question));
+
+    let answer = f.yard.answer(question.id, "postgres").unwrap();
+    assert_ne!(reason(&f, "root"), Some(Reason::Question));
+    let root = f.yard.branch("root").unwrap();
+    assert_eq!(root.info().turns, 1, "the answer started no turn");
+    let pending: Vec<(u64, bool)> = delegate
+        .inbox()
+        .unwrap()
+        .messages
+        .iter()
+        .map(|m| (m.id, m.delivered))
+        .collect();
+    assert_eq!(pending, [(answer.id, false)]);
+
+    let root = root.send("WHOAMI", options).unwrap();
+    let log = root.events().unwrap();
+    let last = prompts(&log).pop().unwrap();
+    assert!(
+        last.contains(&format!("[#{}] answer from {PERSON}: postgres", answer.id)),
+        "{last}"
+    );
+    assert_eq!(
+        delivered(&log),
+        [(
+            vec![answer.id],
+            DeliveredVia::TurnStart {
+                boundary: "turn_start".to_owned()
+            }
+        )]
+    );
+}
+
+/// The person answers a question or an escalation once, with text, and
+/// nothing else; one sent to a branch is answered as that branch.
+#[test]
+fn the_person_answers_each_question_once_and_nothing_else() {
+    let f = Fixture::new();
+    let options = delegating(&f, Envelope::depth(2));
+    let kid = parent_and_child(&f, &options);
+    let report = kid.report("tests pass").unwrap();
+    let to_root = kid.ask("rename it?", None).unwrap().message;
+    let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
+    let to_person = root.ask("which database?", None).unwrap().message;
+    let denied = |id: u64, text: &str| match f.yard.answer(id, text) {
+        Err(Error::Denied(why)) => why,
+        other => panic!("expected a denial, got {other:?}"),
+    };
+
+    let why = denied(report.id, "thanks");
+    assert!(why.contains("only a question or an escalation"), "{why}");
+    assert!(denied(to_person.id, "  ").contains("needs text"));
+    assert!(matches!(
+        f.yard.answer(9999, "yes"),
+        Err(Error::UnknownMessage(9999))
+    ));
+
+    let answer = f.yard.answer(to_person.id, "postgres").unwrap();
+    assert_eq!((answer.from.as_str(), answer.to.as_str()), (PERSON, "root"));
+    let why = denied(to_person.id, "sqlite");
+    assert!(why.contains("answered already"), "{why}");
+
+    let as_root = f.yard.answer(to_root.id, "yes").unwrap();
+    assert_eq!(
+        (as_root.from.as_str(), as_root.to.as_str()),
+        ("root", "kid")
+    );
+    assert_eq!(as_root.in_reply_to, Some(to_root.id));
+    let inbox: Vec<u64> = f
+        .yard
+        .inbox()
+        .unwrap()
+        .messages
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(inbox, [to_person.id]);
 }

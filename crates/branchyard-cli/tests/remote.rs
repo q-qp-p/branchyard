@@ -1394,6 +1394,29 @@ fn delegation_commands_print_what_local_ones_do() {
     ]);
     same_json(&["inbox", "--as", "root", "--json"]);
 
+    // A root asks the person, who reads and answers it without --as; its
+    // turn has ended, so the answer says how to start the next.
+    let asked = same_json(&["ask", "Which database?", "--as", "root", "--json"]);
+    assert_eq!(asked["message"]["to"], "@person", "{asked}");
+    same_json(&["inbox", "--json"]);
+    same_text(&["inbox"]);
+    let id = asked["message"]["id"].to_string();
+    let (l, r) = both(&["answer", &id, "Postgres"]);
+    assert!(
+        l.status.success() && r.status.success(),
+        "{}",
+        text(&r.stderr)
+    );
+    assert_eq!(
+        normalize(&text(&l.stdout), &here),
+        normalize(&text(&r.stdout), &there)
+    );
+    assert!(
+        text(&r.stdout).contains("root reads it when its next turn starts"),
+        "{}",
+        text(&r.stdout)
+    );
+
     let merged = same_json(&["integrate", "kid", "--json"]);
     assert_eq!(merged["target"], "by/root");
     assert_eq!(
@@ -3081,6 +3104,63 @@ fn a_session_hook_and_status_line_ask_the_server() {
     assert_eq!(
         session(&here, &["statusline"], &line, &[]).0,
         "by: 1 ready\n"
+    );
+}
+
+/// A root on the server that asked the person is put to the session and
+/// counted as asking; `by inbox` and `by answer ID` without `--as` reach the
+/// person's inbox on the server, and once it is answered the hook and the
+/// status line drop the question.
+#[test]
+fn a_session_hook_hears_a_question_to_you_from_the_server() {
+    let dir = Dir::new();
+    let there = dir.repo("there");
+    let here = dir.repo("here");
+    let server = Served::start(
+        &dir.0,
+        &[("app", &there)],
+        &["--allow-client-commands", "--allow-delegation"],
+    );
+    let env = [
+        ("BRANCHYARD_REMOTE", server.url.clone()),
+        (
+            "BRANCHYARD_TOKEN_FILE",
+            server.token_file.display().to_string(),
+        ),
+    ];
+    let args = with_agent(&["run", "say hi", "--name", "root", "--delegate", "--yes"]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = server.by(&here, &args);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let asked = server.by(&here, &["ask", "Which database?", "--as", "root", "--json"]);
+    assert!(asked.status.success(), "{}", text(&asked.stderr));
+    let id = json(&asked.stdout, &there)["message"]["id"].to_string();
+
+    let input = serde_json::json!({"session_id": "s1", "cwd": here, "prompt": "go"});
+    let hook = |event: &str| context(&session(&here, &["hook", event], &input, &env).0);
+    let said = hook("session-start").unwrap();
+    assert!(
+        said.contains(&format!(
+            "- root asks you #{id}: \"Which database?\". Answer: by answer {id} \"TEXT\""
+        )),
+        "{said}"
+    );
+    let line = serde_json::json!({"workspace": {"current_dir": here}});
+    let status = || session(&here, &["statusline"], &line, &env).0;
+    assert_eq!(status(), "by: 1 asking\n");
+
+    let listed = server.by(&here, &["inbox"]);
+    assert!(
+        text(&listed.stdout).starts_with(&format!("#{id} question from root")),
+        "{}",
+        text(&listed.stdout)
+    );
+    let answered = server.by(&here, &["answer", &id, "Postgres"]);
+    assert!(answered.status.success(), "{}", text(&answered.stderr));
+    assert!(!status().contains("asking"), "{}", status());
+    assert!(
+        hook("user-prompt-submit").is_none_or(|said| !said.contains("asks you")),
+        "the answered question is told again"
     );
 }
 

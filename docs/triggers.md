@@ -126,6 +126,8 @@ A trigger's `task` is a [`TaskRequest`](server.md#requests): `prompt`, `harness`
 | `{{trigger.name}}`, `{{trigger.id}}`, `{{trigger.repo}}`, `{{run.id}}` | The trigger's and the run's |
 | `{{scheduled_at}}` | The scheduled time, or the arrival time for an event, RFC 3339 in UTC |
 
+A trigger's run can ask the person a question (`by ask`, [the person's inbox](delegation.md#the-persons-inbox)) only when its request carries `delegation`; without it, `by` in the harness refuses to act.
+
 An unknown placeholder, an unclosed `{{`, or an `event.*` one on a schedule is refused at creation. The branch name is the rendered `name`, reduced to `a-z`, `0-9` and `-`; without one it is `<trigger>-<number>-<6 hex of the event ID>` for an event with a number, `<trigger>-<8 hex>` for one without, and `<trigger>-<yyyymmdd>-<hhmm>` (UTC) for a schedule. A name the repository already has makes that run fail (`branch_exists`), which counts toward [pausing](#failures-and-pausing). For the issue-prompt shape `by run --issue` uses, see [pull requests](pull-requests.md#starting-from-an-issue).
 
 **Routing.** `"route": {"kind": "bugfix"}` (`--auto [--kind K]`) names no harness: when the trigger fires, the server routes the rendered prompt through the repository's `[fleet]` table in `branchyard.toml` as `by run --auto` does ([fleet](fleet.md)), seeded from the run's key so a run fired again picks the same, and sets the chosen harness, model and effort on the task. A candidate's `command` is not used (the server's `harness_commands` are). There is no failover: the server does not fail a routed branch over to the next candidate, as it does not for any remote task.

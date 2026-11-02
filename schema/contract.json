@@ -8548,7 +8548,7 @@
                   "type": "null"
                 }
               ],
-              "description": "For a `question`: the message, as the asker's parent's inbox holds it."
+              "description": "For a `question`: the message, as the inbox it was sent to holds it\n(the asker's parent's, or the person's, `GET …/inbox`)."
             },
             "workspace": {
               "type": [
@@ -9249,7 +9249,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -19154,7 +19154,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -21297,7 +21297,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -23326,7 +23326,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -25386,7 +25386,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -29969,7 +29969,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -35198,7 +35198,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -40817,7 +40817,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -44671,7 +44671,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -45561,7 +45561,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -48082,7 +48082,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -49745,7 +49745,7 @@
             {
               "type": "string",
               "const": "question",
-              "description": "It is running and has asked a question nobody has answered."
+              "description": "It sent a question or escalation nobody has answered, and it is\nrunning or it asked the person."
             },
             {
               "type": "string",
@@ -52160,7 +52160,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -55555,7 +55555,7 @@
         "branch",
         "messages"
       ],
-      "description": "A branch's own inbox: every message addressed to it.",
+      "description": "A branch's own inbox, or the person's: every message addressed to it.",
       "title": "Inbox",
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$defs": {
@@ -55634,7 +55634,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -55836,7 +55836,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",
@@ -56061,7 +56061,7 @@
             "escalation",
             "answer"
           ],
-          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
         "Handoff": {
           "type": "object",

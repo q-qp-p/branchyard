@@ -10,6 +10,14 @@ Every surface now places a branch with one table: its `stage` in branch JSON (`{
 
 The hook lines name a branch whose turn is parked on an approval, with `by approvals allow ID` and `by approvals deny ID`, and a running branch whose harness went silent past its stall window, with `by log NAME -f`. The status line and bare `by` count the first as asking and show a `stalled` count for the second.
 
+A branch nobody delegated (a root started with delegation, or a fork of one) can now `ask` and `escalate`, and its message goes to the person, `@person`. Its question keeps it in Needs you, with stage `question`, until someone answers it, also after its turn ends. `Yard::inbox` lists the person's messages and `Yard::answer` answers one. An answer to a branch whose turn ended does not start a turn; the branch gets it at the start of its next turn.
+
+A root's `report-status blocked` or `failure` is now escalated to the person. Before, it was only recorded.
+
+A fork's question or escalation now goes to the person. Before, it went to the branch it was forked from, which could not answer it.
+
+The person answers with `by answer ID "TEXT"` and reads with `by inbox`, outside a harness and without `--as`; in the console's Needs you, which labels the box "Answer"; through `GET /v1/repos/{repo}/inbox` and `POST /v1/repos/{repo}/answer`; or with `Repo::person_inbox` and `Repo::answer_message` in the Rust client and `Repo.person_inbox()` and `Repo.answer_message()` in Python. When the asker's turn has ended, `by answer` and the console say it reads the answer at its next turn and how to start one (`by send NAME "<prompt>"`). Hook lines and notices put such a question to you (`- root asks you #12: "…". Answer: by answer 12 "TEXT"`). Inside a harness started without delegation, `by` still refuses, and the refusal now says how to start a branch that can use it (`by run --delegate`, or a trigger request's `delegation`).
+
 ## 0.4.0 - 2026-11-02
 
 The Rust client resumes a response read interrupted by an operating-system

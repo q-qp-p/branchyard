@@ -535,8 +535,9 @@ fn look(source: &Source, inbox_of: Option<&str>) -> Result<Option<Glance>, Strin
 
 /// The glance a server gives: its branches, the inboxes that hold the
 /// running branches' questions (their parents') and answers (their own),
-/// and `inbox_of`'s. Each request is given [`REQUEST_WAIT`]; any failure
-/// is the whole glance's.
+/// the person's inbox and the answers to what a branch asks the person (in
+/// its own), and `inbox_of`'s. Each request is given [`REQUEST_WAIT`]; any
+/// failure is the whole glance's.
 fn ask_server(root: &Path, globals: &Globals, inbox_of: Option<&str>) -> Result<Glance, String> {
     let url = globals.remote.as_deref().unwrap_or_default();
     if crate::ssh_remote::is_ssh(url) {
@@ -563,10 +564,27 @@ fn ask_server(root: &Path, globals: &Globals, inbox_of: Option<&str>) -> Result<
     };
     let repo = client.repo(&name);
     let branches = repo.branches().map_err(|e| e.to_string())?;
+    // Only a branch the server stages as asking still waits on you; the
+    // answers to the rest are in inboxes this does not read.
+    let asking = |name: &str| {
+        branches
+            .iter()
+            .any(|b| b.name == name && b.stage.is_some_and(|s| s.reason == Reason::Question))
+    };
+    let to_you: Vec<Message> = repo
+        .person_inbox()
+        .map_err(|e| format!("your inbox: {e}"))?
+        .messages
+        .into_iter()
+        .filter(|m| asking(&m.from))
+        .collect();
     let mut inboxes: BTreeSet<&str> = inbox_of.into_iter().collect();
     for info in &branches {
         if let (BranchStatus::Running, Some(parent)) = (&info.status, &info.parent) {
             inboxes.insert(parent);
+            inboxes.insert(&info.name);
+        }
+        if to_you.iter().any(|m| m.from == info.name) {
             inboxes.insert(&info.name);
         }
     }
@@ -597,7 +615,7 @@ fn ask_server(root: &Path, globals: &Globals, inbox_of: Option<&str>) -> Result<
             })
             .collect()
     });
-    let mut messages = Vec::new();
+    let mut messages = to_you;
     let mut unread = Vec::new();
     for (branch, inbox) in read {
         let inbox = inbox.map_err(|e| format!("{branch}'s inbox: {e}"))?;
@@ -886,11 +904,24 @@ fn notable(info: &BranchInfo, asking: Option<&Message>) -> Option<Label> {
             );
         }
         (Some(Reason::Question), _, Some(message)) => {
-            let verb = match message.kind {
-                MessageKind::Escalation => "escalates",
-                _ => "asks",
-            };
+            let escalates = message.kind == MessageKind::Escalation;
             let (id, to) = (message.id, &message.to);
+            let (head, answer) = match to.as_str() {
+                branchyard::PERSON => (
+                    format!(
+                        "- {name} {} you #{id}: \"",
+                        if escalates { "escalates to" } else { "asks" }
+                    ),
+                    format!("by answer {id}"),
+                ),
+                _ => (
+                    format!(
+                        "- {name} (under {to}): {} #{id}: \"",
+                        if escalates { "escalates" } else { "asks" }
+                    ),
+                    format!("by answer --as {to} {id}"),
+                ),
+            };
             return label(
                 format!(
                     "asking (#{} {}): {}",
@@ -899,9 +930,9 @@ fn notable(info: &BranchInfo, asking: Option<&Message>) -> Option<Label> {
                 true,
                 Group::Other,
                 fitted(
-                    &format!("- {name} (under {to}): {verb} #{id}: \""),
+                    &head,
                     &message.text,
-                    &format!("\". Answer: by answer --as {to} {id} \"TEXT\""),
+                    &format!("\". Answer: {answer} \"TEXT\""),
                 ),
             );
         }
@@ -1296,6 +1327,50 @@ mod tests {
              Answer: by answer --as root 4 \"TEXT\""
         );
         assert_commands_parse(&lines[1], &["by answer --as root 4 TEXT"]);
+    }
+
+    /// A branch nobody delegated asks the person, whatever its state: the
+    /// line puts it to you and answers without `--as`, and a long question
+    /// gives way so the command is never cut off.
+    #[test]
+    fn a_question_to_the_person_is_put_to_you() {
+        let long = "Which database should the new service use, given the load? ".repeat(6);
+        let infos = vec![
+            branch("root", None, BranchStatus::NoChanges, 0),
+            branch("lead", None, BranchStatus::Running, 0),
+        ];
+        let asking = vec![
+            question(12, "root", branchyard::PERSON, MessageKind::Question, &long),
+            question(
+                13,
+                "lead",
+                branchyard::PERSON,
+                MessageKind::Escalation,
+                "May I drop the table?",
+            ),
+        ];
+        let (lines, _) = change_lines(&glance_of(infos, asking), None);
+        let asks = &lines[1];
+        assert!(
+            asks.starts_with("- root asks you #12: \"Which database should"),
+            "{asks}"
+        );
+        assert!(
+            asks.ends_with("...\". Answer: by answer 12 \"TEXT\""),
+            "{asks}"
+        );
+        assert_eq!(asks.chars().count(), MAX_LINE, "{asks}");
+        assert_commands_parse(asks, &["by answer 12 TEXT"]);
+        assert_eq!(
+            lines[2],
+            "- lead escalates to you #13: \"May I drop the table?\". Answer: by answer 13 \"TEXT\""
+        );
+        assert_commands_parse(&lines[2], &["by answer 13 TEXT"]);
+        let doc = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/harness-hooks.md"),
+        )
+        .unwrap();
+        assert!(doc.contains(lines[2].as_str()), "{}", lines[2]);
     }
 
     #[test]
