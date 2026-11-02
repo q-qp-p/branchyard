@@ -876,7 +876,8 @@ pub(crate) trait PoolBackend: Send + Sync + fmt::Debug {
 /// ([`crate::fleet::OutcomeBackend`]), the knowledge store
 /// ([`crate::knowledge::KnowledgeBackend`]), pool slots ([`PoolBackend`])
 /// the model usage store ([`crate::models::UsageBackend`]) and the effect
-/// ledger ([`crate::effects::EffectBackend`]) together,
+/// ledger ([`crate::effects::EffectBackend`]) and durable timers
+/// ([`crate::timers::TimerBackend`]) together,
 /// so a [`Store`] holds one trait object for them.
 pub(crate) trait Extras:
     PortBackend
@@ -886,6 +887,7 @@ pub(crate) trait Extras:
     + PoolBackend
     + crate::models::UsageBackend
     + crate::effects::EffectBackend
+    + crate::timers::TimerBackend
 {
 }
 
@@ -896,7 +898,8 @@ impl<
             + crate::knowledge::KnowledgeBackend
             + PoolBackend
             + crate::models::UsageBackend
-            + crate::effects::EffectBackend,
+            + crate::effects::EffectBackend
+            + crate::timers::TimerBackend,
     > Extras for T
 {
 }
@@ -1059,6 +1062,11 @@ impl Store {
     /// The effect ledger and approval asks; see
     /// [`crate::effects::EffectBackend`].
     pub fn effects(&self) -> &dyn crate::effects::EffectBackend {
+        self.extras.as_ref()
+    }
+
+    /// Durable timers; see [`crate::timers::TimerBackend`].
+    pub fn timers(&self) -> &dyn crate::timers::TimerBackend {
         self.extras.as_ref()
     }
 

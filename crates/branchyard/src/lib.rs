@@ -173,6 +173,7 @@ mod storage;
 pub mod store_codec;
 mod tarball;
 pub mod tasks;
+mod timers;
 pub mod up;
 mod wake;
 mod workspace;
@@ -312,6 +313,7 @@ pub use snapshots::{
 pub use spotlight::{TryEntry, TryFile, TryState};
 use std::collections::{BTreeMap, HashMap};
 pub use storage::{ArtifactRef, ScratchArea, ScratchLock, DEFAULT_ARTIFACT_LIMIT};
+pub use timers::Timer;
 pub use workspace::{
     check_glob as check_workspace_glob, RanIn, WorkspaceInfo, WorkspacePhase, WorkspaceReport,
     WorkspaceSpec, ENV_PORT, ENV_WORKTREE, OUTPUT_TAIL as WORKSPACE_OUTPUT_TAIL,

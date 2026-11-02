@@ -56,6 +56,8 @@ struct State {
     next: u64,
     deadline_ms: u64,
     fail_inverse: bool,
+    /// Lookups answer `unavailable`: the call's fate cannot be told.
+    fail_lookups: bool,
     no_compensation: bool,
     /// Tools held until released, and whether they are held now.
     hold: HashSet<String>,
@@ -185,6 +187,11 @@ impl MockGateway {
     /// fail.
     pub fn fail_inverses(&self) {
         self.lock().fail_inverse = true;
+    }
+
+    /// Make every lookup answer `unavailable`, or answer again.
+    pub fn fail_lookups(&self, fail: bool) {
+        self.lock().fail_lookups = fail;
     }
 
     /// Hold calls to `tool` once they have done their effect, until
@@ -574,6 +581,9 @@ fn perform(
                 json!({"kind": "charge"}),
             );
             Outcome::ok(json!("charged"), effect)
+        }
+        "gmail__sent_lookup" | "flaky__charge_lookup" if state.fail_lookups => {
+            Outcome::error("unavailable", "the upstream is down", None)
         }
         "gmail__sent_lookup" | "flaky__charge_lookup" => {
             let asked = arguments["key"].as_str().unwrap_or("");

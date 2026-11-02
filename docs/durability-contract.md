@@ -49,7 +49,7 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 |---|---|---|
 | S1 | A signal (cancel, steered input, an approval's answer) is a durable row bound to the turn it was meant for, never a flag in memory | `cancels`, `steers`, the asks |
 | S2 | A deadline is stored with what it limits | `max_duration` with the lease |
-| S3 | *Planned.* A timer is a row with a due time and a revision; due timers are claimed by revision and delivered at least once to an idempotent handler | design record, step 1 |
+| S3 | A timer is a row with a due time and a revision; a due timer is claimed for a lease, delivered at least once to an idempotent handler, and finished only by the revision claimed | `timers` / `by_timers`; [timers](durability.md#timers); its first user paces effect lookups |
 
 ## 5. Obligations
 
@@ -73,4 +73,6 @@ Each is a scenario either implementation can run against its own store; the Bran
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |
 | A write after losing the lease is refused | O3 | `tests/durable.rs` `an_event_of_a_turn_that_lost_its_lease_is_refused` |
 | A held turn reads live from another owner; a dead owner's turn reads lost before recovery | O4 | `tests/durable.rs` (the two tests above); `liveness.rs` unit tests |
+| A timer claimed by one holder is not claimed by another until its lease lapses; a finish naming a stale revision deletes nothing | S3 | `conformance.rs` `timers`, both backends |
+| A lookup that cannot answer is asked again only after its backoff, and never again once settled | E3, S3 | `tests/effects.rs` `a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff` |
 | What a branch owes appears, and disappears when its source settles | B1, B2 | `tests/effects.rs` `obligations_list_what_a_branch_owes_until_its_source_settles` |

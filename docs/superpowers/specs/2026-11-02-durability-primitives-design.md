@@ -35,7 +35,7 @@ Considered and not changed: making a repeated `by merge` return the recorded mer
 
 Each is a change of its own, with its tests and docs.
 
-1. **Durable timers.** One due time per entity in a `timers` table on both backends, claimed with a revision as Durable Actors' alarms are (`claim_due`, `finish`), at-least-once to an idempotent handler. First consumers: per-entry reconciliation backoff for unknown effects (today one 30-second sweep), and waking a branch at a time. Replaces some of the fixed polling the durability page lists.
+1. **Durable timers.** *Built.* One due time per `(kind, key)` in `timers` / `by_timers`, claimed for a lease and finished by revision, as Durable Actors' alarms are; its first user backs off the lookups of unknown effects instead of repeating them every sweep ([timers](../../durability.md#timers)). Not done: a batch claim for a dispatcher (`FOR UPDATE SKIP LOCKED`), which waits for a user that needs it, and waking a branch at a time.
 2. **Decision keys for effects.** Let a call carry a key the agent states for the decision (Tape's `business_key`), journaled before the call, so a repeat in a later turn reaches the upstream with the same key. Needs the gateway contract (Anvil) to carry it.
 3. **Safety when a tool is built.** An operation that declares no class, lookup, key or compensation is irreversible with no way to settle an unknown. Tape refuses to build such a tool; Branchyard can stage it behind an approval by default, which the outbox already supports.
 4. **Sealed drain.** On SIGTERM or a deploy, end each turn at its next tool-call boundary and seal the branch, so it resumes rather than ending `interrupted`; only an unsealed owner is fenced and killed (Durable Actors' sealed versus unsealed activation).

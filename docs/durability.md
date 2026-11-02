@@ -85,6 +85,18 @@ A branch's record says `running` from the moment a turn takes its lease until th
 
 It also carries `heard_ms`, when the engine last renewed (the lease's expiry less its 30 seconds), and `known_until_ms`, the expiry itself. `by ls` and `by watch` print a running branch that is not `live` as `running (no heartbeat for 14s)` or `running (engine lost: …)`; `--json` and the server's `BranchInfo` carry the object. This is the effect ledger's `unknown` applied to the engine itself: the record does not guess, it says what is known and until when.
 
+## Timers
+
+A durable timer is a row with a due time, not a sleeping thread: `timers` (`by_timers` on PostgreSQL), keyed by `(kind, key)`, with `due_ms`, `revision`, `attempts`, `claimed_until_ms` and a JSON `payload` ([`timers.rs`](../crates/branchyard/src/timers.rs)). It survives a restart and is shared by every engine and server on the store.
+
+- **Claim.** A due timer whose claim has lapsed is claimed for a lease, in one transaction (on PostgreSQL the row is locked `FOR UPDATE`), so of any number of claimants one acts; one that dies lets the lease lapse and the timer is claimed again. Delivery is at least once, so what a timer triggers is idempotent. Claiming a missing timer creates it, due now.
+- **Set.** Setting a timer again replaces its due time and payload, drops any claim, keeps its attempts and bumps its revision.
+- **Finish.** A claimant deletes the timer by the revision it claimed; if it was set again meanwhile, the delete matches nothing and the later setting stands.
+
+Due times are the callers' clocks for now (see the [design record](superpowers/specs/2026-11-02-durability-primitives-design.md), step 5).
+
+**First user: effect lookups.** An `unknown` effect whose lookup cannot answer (the upstream is down, the gateway refuses) is no longer asked again on every reconciliation sweep. Its `effect_lookup` timer holds the next attempt: 30 seconds after the first failure, doubling, at most an hour apart. A reconciler that finds the timer not yet due reports the entry `unknown` with when it is asked next (`it is asked again at 14:05`); one that finds it claimed reports that another reconciler is asking. A settled entry's timer is finished, and the timer of an entry settled some other way (the audit log, a person) is finished by the next sweep.
+
 ## Cancellation and deadlines
 
 `Yard::cancel(branch)`, `Branch::cancel()`, `by cancel`, `POST /v1/repos/{repo}/branches/{branch}/cancel` and `by --remote … cancel` all record a cancel request for the branch's running turn and for every running turn delegated below it (the delegation subtree, as `cancel_tree` computes it). The request names who asked (`Yard::cancel_as`). The engine running the turn, in any process using the repository, reads it every 100 ms, interrupts the harness like a budget stop, and ends the branch `interrupted` with a `cancelled by …` warning. A request is bound to the turn it was asked of, so it never stops a later turn. It returns the branches that were running; a branch with no running turn is not an error.
@@ -244,6 +256,7 @@ As any other user, drop `runuser -u nobody --`. The CI job `postgres` in [`check
 | [`engine.rs`](../crates/branchyard/src/engine.rs), [`run.rs`](../crates/branchyard/src/run.rs), [`ops.rs`](../crates/branchyard/src/ops.rs) | Journaled steps of a turn, of branch creation, merge and removal |
 | [`recover.rs`](../crates/branchyard/src/recover.rs), [`proc.rs`](../crates/branchyard/src/proc.rs) | Recovery and process identity, the spawn marker |
 | [`lock.rs`](../crates/branchyard/src/lock.rs) | The data directory lock |
+| [`timers.rs`](../crates/branchyard/src/timers.rs), `effects/reconcile.rs` | Durable timers and the backoff; the conformance check `timers` (claim, a held claim, set bumping the revision, a stale finish refused, listing) on both backends; `tests/effects.rs` `a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff` |
 | [`liveness.rs`](../crates/branchyard/src/liveness.rs) | Liveness from a lease row: renewed, silent and expired leases, a released one, an engine gone from this host; `tests/durable.rs` checks a held turn reads `live` from another yard and a dead engine's `lost` before recovery |
 | [`tests/durable.rs`](../crates/branchyard/tests/durable.rs) | A killed engine recovered (orphaned harness and its child killed, prompt received once, session continued), a crash before submit, a harness whose pid was never recorded found by its marker, stale reservations freed and live ones kept, a Microsandbox sandbox that this build cannot destroy reported, two yards, a superseded lease, a replayed snapshot, a merge cut short, cursors and waits, the import; input steered from this process into a turn a child process runs, delivered and recorded with its sender, an agent without the steering extension refusing it while the turn goes on, and a profile that cannot steer refused up front |
 | [`tests/substrate.rs`](../crates/branchyard/tests/substrate.rs) | A killed engine's work brought back from its actor and in the recovered candidate; not applied over a worktree changed since |

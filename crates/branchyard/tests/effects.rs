@@ -794,6 +794,54 @@ fn short(id: &str) -> &str {
 }
 
 #[test]
+fn a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff() {
+    let f = Fixture::new();
+    let (mock, script) = setup(&f, person(&[("flaky:*", Approval::Allow)]));
+    f.task(&calls(&script, &[("flaky__charge", r#"{"amount": 5}"#)]))
+        .options(granted(&f))
+        .name("paced")
+        .run()
+        .unwrap();
+    let entry = f.yard.effects(Some("paced")).unwrap().remove(0);
+    assert_eq!(entry.state, EffectState::Unknown);
+    let lookups = || mock.calls_to("flaky__charge_lookup").len();
+    let t0 = branchyard_support::time::now_ms();
+
+    // The upstream cannot tell: the entry stays unknown, with when it is
+    // asked next.
+    mock.fail_lookups(true);
+    let report = f.yard.reconcile_effects_at(t0).unwrap();
+    assert!(report.settled.is_empty());
+    assert_eq!(report.unknown.len(), 1);
+    assert!(
+        report.unknown[0].1.contains("is asked again at"),
+        "{report:?}"
+    );
+    assert_eq!(lookups(), 1);
+    // A sweep before the backoff does not ask again.
+    let report = f.yard.reconcile_effects_at(t0 + 29_999).unwrap();
+    assert!(
+        report.unknown[0].1.contains("could not answer before"),
+        "{report:?}"
+    );
+    assert_eq!(lookups(), 1);
+    // After it, it is asked again; the second failure waits twice as long.
+    f.yard.reconcile_effects_at(t0 + 30_000).unwrap();
+    assert_eq!(lookups(), 2);
+    f.yard.reconcile_effects_at(t0 + 30_000 + 59_999).unwrap();
+    assert_eq!(lookups(), 2);
+    // Once the upstream answers, the entry settles and is not asked again.
+    mock.fail_lookups(false);
+    let report = f.yard.reconcile_effects_at(t0 + 30_000 + 60_000).unwrap();
+    assert_eq!(report.settled, [(entry.id.clone(), EffectState::Confirmed)]);
+    assert_eq!(lookups(), 3);
+    f.yard.reconcile_effects_at(t0 + 200_000).unwrap();
+    assert_eq!(lookups(), 3);
+    // The charge itself was never made again.
+    assert_eq!(mock.calls_to("flaky__charge").len(), 1);
+}
+
+#[test]
 fn an_irreversible_call_is_staged_as_a_draft_or_held_then_promoted() {
     let f = Fixture::new();
     let (mock, script) = setup(&f, ApprovalSettings::default());
