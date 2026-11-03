@@ -861,9 +861,19 @@
   }
 
   const refreshing = new Map();
-  function refreshBranch(name) {
-    if (refreshing.has(name)) return;
-    refreshing.set(name, setTimeout(async () => {
+  // Read a branch's record again, `soon` (within 250 ms: its status, stage
+  // or candidate may have changed) or later (within 2 s: a tool call or a
+  // usage report moves only its cost and its last activity). A busy branch
+  // is read at most every 2 s, and a change that matters is never held
+  // behind it.
+  const REFRESH_SOON = 250;
+  const REFRESH_LATER = 2000;
+  function refreshBranch(name, soon = true) {
+    const delay = soon ? REFRESH_SOON : REFRESH_LATER;
+    const pending = refreshing.get(name);
+    if (pending && pending.due <= Date.now() + delay) return;
+    if (pending) clearTimeout(pending.timer);
+    const timer = setTimeout(async () => {
       refreshing.delete(name);
       try {
         const info = await api('GET', branchPath(name));
@@ -872,7 +882,8 @@
         if (e.status === 404) state.branches.delete(name);
       }
       branchesChanged();
-    }, 250));
+    }, delay);
+    refreshing.set(name, { timer, due: Date.now() + delay });
   }
 
   function openStream() {
@@ -957,6 +968,7 @@
   function onActivity(entry) {
     const a = entry.activity || {};
     state.lastActive.set(entry.branch, entry.at_ms);
+    trackActivity(entry.branch, a, entry.at_ms);
     if (a.harness && a.harness.type === 'permission_requested') {
       state.permissions.unshift({ branch: entry.branch, tool: a.harness.request.tool, at_ms: entry.at_ms, decision: null });
       state.permissions.length = Math.min(state.permissions.length, 50);
@@ -973,7 +985,12 @@
         try { new Notification(`${state.repo}: ${n.text}`, { tag: n.href }); } catch (_) { /* page notifications unavailable */ }
       }
     }
-    refreshBranch(entry.branch);
+    const ev = a.harness ? a.harness.type : null;
+    // Soon for what moves the record's status, stage, `awaiting`, `stalled`
+    // or candidate; later for the rest. `resumed` is recorded as a bare string.
+    refreshBranch(entry.branch, !!(a.status || a.snapshot || a.prompt != null || a.steered || a.turn_cost || a.decision
+      || a.checkpoint || a.effect || a.stalled || entry.activity === 'resumed'
+      || ev === 'permission_requested' || ev === 'turn_ended'));
     // A child's stage reads its parent's status, which no event of its own announces.
     if (a.status) for (const child of (state.branches.get(entry.branch) || {}).children || []) refreshBranch(child);
     if (view && view.name === entry.branch) refreshTimeline(view);
@@ -1220,17 +1237,75 @@
   // and when the branch merged. The server reads the whole log for it, so
   // a long branch keeps its first turns and the board reads no content.
   function trackOf(timeline) {
-    return {
-      turns: (timeline.turns || []).map((t) => ({
-        start: t.started_at_ms,
-        end: t.ended_at_ms == null ? null : t.ended_at_ms,
-        tools: (t.tools || []).map((c) => c.at_ms),
-        names: (t.tools || []).map((c) => c.name),
-        cost: t.cost_usd == null ? null : t.cost_usd,
-        outcome: t.outcome || null,
-      })),
-      merged: timeline.merged_at_ms == null ? null : timeline.merged_at_ms,
-    };
+    const track = { turns: [], merged: timeline.merged_at_ms == null ? null : timeline.merged_at_ms };
+    for (const t of timeline.turns || []) {
+      const turn = openTurn(track, t.started_at_ms);
+      turn.end = t.ended_at_ms == null ? null : t.ended_at_ms;
+      turn.cost = t.cost_usd == null ? null : t.cost_usd;
+      turn.outcome = t.outcome || null;
+      for (const c of t.tools || []) addCall(turn, c.at_ms, c.name, c.call_id);
+    }
+    return track;
+  }
+  function openTurn(track, ms) {
+    const turn = { start: ms, end: null, tools: [], names: [], seen: new Set(), cost: null, outcome: null };
+    track.turns.push(turn);
+    return turn;
+  }
+  // A call is its ID at its time: the same call read twice is drawn once.
+  function addCall(turn, ms, name, id) {
+    const key = `${id}@${ms}`;
+    if (turn.seen.has(key)) return;
+    turn.seen.add(key);
+    turn.tools.push(ms);
+    turn.names.push(name);
+  }
+
+  // Keep a loaded track current from the event stream, by the rules the
+  // server's `Timeline::of` reads the log with, so the board never reads a
+  // timeline twice. Every step is idempotent: an event the timeline
+  // already held (it arrived while the timeline was read) changes nothing.
+  function foldActivity(track, a, ms) {
+    const last = track.turns[track.turns.length - 1];
+    const open = last && last.end == null;
+    const ev = a.harness || {};
+    if (a.prompt != null || (a.steered && !open)) {
+      if (!track.turns.some((t) => t.start === ms)) openTurn(track, ms);
+    } else if (ev.type === 'tool_started') {
+      addCall(open ? last : openTurn(track, ms), ms, ev.name, ev.call_id);
+    } else if (a.turn_cost && last) {
+      last.cost = a.turn_cost.cost_usd;
+    } else if (a.status) {
+      if (a.status.state === 'merged') track.merged = ms;
+      if (open && !['running', 'waiting'].includes(a.status.state)) { last.end = ms; last.outcome = a.status; }
+    }
+  }
+
+  // A turn's calls as ticks the rail can show: calls that fall within the
+  // same quarter of a percent of the rail (about two pixels on a desktop)
+  // share one tick, whose title counts them and names the first few. The
+  // board then draws as many ticks as it has room for, however many calls
+  // a busy agent makes.
+  const TICK_BUCKETS = 400;
+  function callTicks(t, scale) {
+    const ticks = [];
+    let tick = null;
+    t.tools.forEach((ms, k) => {
+      const bucket = Math.round(scale.x(ms) / 100 * TICK_BUCKETS);
+      if (!tick || tick.bucket !== bucket) {
+        tick = { bucket, at: ms, last: ms, n: 0, names: [] };
+        ticks.push(tick);
+      }
+      tick.n += 1;
+      tick.last = ms;
+      if (tick.names.length < 3 && t.names[k]) tick.names.push(t.names[k]);
+    });
+    for (const x of ticks) {
+      x.title = x.n === 1
+        ? `${x.names[0] || 'a call'} · ${clock(x.at)}`
+        : `${x.n} calls · ${clock(x.at)}–${clock(x.last)}: ${x.names.join(', ')}${x.n > x.names.length ? ', …' : ''}`;
+    }
+    return ticks;
   }
 
   // What hovering or focusing a turn's bar says: when it ran, how many
@@ -1242,25 +1317,37 @@
     return [`turn ${i + 1}: ${span}`, plural(t.tools.length, 'call'), t.cost != null ? cents(t.cost) : null, ended].filter(Boolean).join(' · ');
   }
 
-  // Read the tracks the board draws, each once per change of its branch:
-  // a branch's activity marks its track stale, and the next home redraw
-  // reads it again.
-  const trackKey = (b) => JSON.stringify([b.status, b.turns, activeAt(b)]);
+  // Each branch's track is read once (`GET …/timeline`) and then kept
+  // current from the event stream (`foldActivity`). Events that arrive
+  // while it is read are held and folded in after. A busy branch costs one
+  // small request, not one per event.
   function trackFor(b) {
-    const key = trackKey(b);
     const found = state.tracks.get(b.name);
-    if (found && (found.key === key || found.loading)) return found.track;
-    const entry = { key, loading: true, track: found ? found.track : null };
+    if (found) return found.track;
+    const entry = { loading: true, track: null, held: [] };
     state.tracks.set(b.name, entry);
     const repo = state.repo;
     api('GET', `${branchPath(b.name)}/timeline`)
-      .then((timeline) => { entry.track = trackOf(timeline); })
-      .catch(() => {})
+      .then((timeline) => {
+        const track = trackOf(timeline);
+        for (const [a, ms] of entry.held) foldActivity(track, a, ms);
+        entry.track = track;
+      })
+      .catch(() => { if (state.tracks.get(b.name) === entry) state.tracks.delete(b.name); })
       .finally(() => {
         entry.loading = false;
+        entry.held = null;
         if (repo === state.repo) branchesChanged();
       });
     return entry.track;
+  }
+  function trackActivity(branch, a, ms) {
+    const entry = state.tracks.get(branch);
+    if (!entry) return;
+    // A rewind or a recovery rewrites what the turns were: read it again.
+    if (a.rewound || a.recovered) { if (!entry.loading) state.tracks.delete(branch); return; }
+    if (entry.loading) entry.held.push([a, ms]);
+    else if (entry.track) foldActivity(entry.track, a, ms);
   }
 
   function homeSignature() {
@@ -1288,7 +1375,7 @@
       const end = t.end != null ? t.end : (open && last ? now : activeAt(b));
       const failed = t.outcome && ['failed', 'interrupted', 'budget_exceeded'].includes(t.outcome.state);
       rail.append(place(h('i', { class: `seg seg-${lane.key}${t.end == null && open && last ? ' seg-live' : ''}${failed ? ' seg-failed' : ''}`, title: turnTitle(t, i) }), scale, t.start, end));
-      t.tools.forEach((ms, k) => rail.append(at(h('i', { class: 'call', title: t.names && t.names[k] ? `${t.names[k]} · ${clock(ms)}` : clock(ms) }), scale, ms)));
+      for (const tick of callTicks(t, scale)) rail.append(at(h('i', { class: tick.n > 1 ? 'call call-many' : 'call', title: tick.title }), scale, tick.at));
     });
     for (const a of state.answered.filter((x) => x.branch === b.name && x.answer)) {
       rail.append(place(h('i', { class: 'wait wait-past', title: `waited on you ${clock(a.created_ms)}–${clock(a.answer.at_ms)}, ${a.answer.allow ? 'allowed' : 'denied'}` }), scale, a.created_ms, a.answer.at_ms));

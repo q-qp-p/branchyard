@@ -2871,7 +2871,7 @@ class Repo:
     def timeline(self, branch: str) -> Record:
         """`Timeline`: the shape of `branch`'s work with none of its
         content: each turn's `started_at_ms`, `ended_at_ms`, `outcome`,
-        `cost_usd` and `tools` (each `at_ms` and `name`), and
+        `cost_usd` and `tools` (each `at_ms`, `name` and `call_id`), and
         `merged_at_ms`, read from its whole log (`docs/server.md`,
         "Reading a branch")."""
         return Record(self.client.get(self._branch(branch, "/timeline")))

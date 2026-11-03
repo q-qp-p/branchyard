@@ -60,6 +60,10 @@ pub struct TimelineTool {
     pub at_ms: u64,
     /// The tool's name, as the harness reported it.
     pub name: String,
+    /// The harness's ID for the call. With [`TimelineTool::at_ms`] it
+    /// names the call, so a client that keeps a timeline current from the
+    /// event stream can tell a call it already has from a new one.
+    pub call_id: String,
 }
 
 impl Timeline {
@@ -83,7 +87,7 @@ impl Timeline {
                     timeline.turns.push(TimelineTurn::starting(at));
                     open = true;
                 }
-                Activity::Harness(Event::ToolStarted { name, .. }) => {
+                Activity::Harness(Event::ToolStarted { name, call_id, .. }) => {
                     if !open {
                         timeline.turns.push(TimelineTurn::starting(at));
                         open = true;
@@ -92,6 +96,7 @@ impl Timeline {
                         turn.tools.push(TimelineTool {
                             at_ms: at,
                             name: name.clone(),
+                            call_id: call_id.clone(),
                         });
                     }
                 }
@@ -170,6 +175,7 @@ mod tests {
             .map(|t| (t.at_ms, t.name.as_str()))
             .collect();
         assert_eq!(names, [(12, "Read"), (13, "Edit")]);
+        assert_eq!(first.tools[0].call_id, "Read-1");
         let second = &timeline.turns[1];
         assert_eq!(
             (second.started_at_ms, second.ended_at_ms),

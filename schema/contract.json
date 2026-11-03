@@ -19740,11 +19740,16 @@
             "name": {
               "type": "string",
               "description": "The tool's name, as the harness reported it."
+            },
+            "call_id": {
+              "type": "string",
+              "description": "The harness's ID for the call. With [`TimelineTool::at_ms`] it\nnames the call, so a client that keeps a timeline current from the\nevent stream can tell a call it already has from a new one."
             }
           },
           "required": [
             "at_ms",
-            "name"
+            "name",
+            "call_id"
           ],
           "description": "A tool call's start."
         }
