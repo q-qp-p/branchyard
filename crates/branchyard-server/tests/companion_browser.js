@@ -258,10 +258,10 @@ const shots = process.env.BY_SCREENSHOTS;
   await nextLine();
   await go('#/b/app/costly');
   const receipts = page.locator('#convo .turn .outcome');
-  await receipts.filter({ hasText: '$0.2500' }).waitFor({ timeout: 60000 });
-  await receipts.filter({ hasText: '$0.5000' }).waitFor({ timeout: 60000 });
-  if (await receipts.filter({ hasText: '$0.7500' }).count()) throw new Error('a receipt shows the session total, not its turn');
-  await page.locator('.strip-meta', { hasText: '$0.7500' }).waitFor();
+  await receipts.filter({ hasText: '$0.25' }).waitFor({ timeout: 60000 });
+  await receipts.filter({ hasText: '$0.50' }).waitFor({ timeout: 60000 });
+  if (await receipts.filter({ hasText: '$0.75' }).count()) throw new Error('a receipt shows the session total, not its turn');
+  await page.locator('.strip-meta', { hasText: '$0.75' }).waitFor();
   say('COSTED');
 
   // A turn parked on an approval: the branch itself says so on the board
