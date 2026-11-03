@@ -182,13 +182,18 @@ pub enum Subject<'a> {
     Tool(&'a str),
     /// A connector operation: the connector id, the operation (the
     /// gateway's tool name, and the AIR operation id when declared), its
-    /// class and whether it deletes.
+    /// class, whether it deletes, and whether a lost answer could be
+    /// settled (its contract declares a lookup).
     Operation {
         connector: &'a str,
         operation: &'a str,
         alias: Option<&'a str>,
         class: EffectClass,
         deletion: bool,
+        /// Whether a lost answer could be settled: the operation's contract
+        /// declares a lookup. An irreversible one that cannot be is asked
+        /// about rather than allowed ([`Layer::Unsettleable`]).
+        settleable: bool,
     },
 }
 
@@ -209,6 +214,10 @@ pub enum Layer {
     Default,
     /// A deletion, asked about whatever the policy said.
     Deletion,
+    /// An irreversible operation that declares no lookup, asked about
+    /// whatever the policy allowed: if its answer were lost, nothing could
+    /// tell whether it happened.
+    Unsettleable,
 }
 
 impl Layer {
@@ -220,6 +229,7 @@ impl Layer {
             Layer::Preset => "preset",
             Layer::Default => "default",
             Layer::Deletion => "deletion",
+            Layer::Unsettleable => "unsettleable",
         }
     }
 }
@@ -446,6 +456,29 @@ pub fn resolve(layers: &Layers<'_>, subject: &Subject<'_>) -> Option<Resolved> {
             None => {}
         }
     }
+    // An irreversible operation whose answer, if lost, nothing could
+    // settle is never performed on a policy's say-so alone: an `allow` is
+    // asked about, as a deletion is. Staging, asking and blocking already
+    // keep a person in front of it, and stand.
+    let unsettleable = matches!(
+        subject,
+        Subject::Operation {
+            class: EffectClass::Irreversible,
+            settleable: false,
+            ..
+        }
+    );
+    if unsettleable
+        && resolved
+            .as_ref()
+            .is_none_or(|r| r.approval == Approval::Allow)
+    {
+        resolved = Some(Resolved {
+            approval: Approval::Ask,
+            layer: Layer::Unsettleable,
+            rule: None,
+        });
+    }
     // The administrator's floor.
     if let Some((approval, rule)) = layers.admin.and_then(|a| a.decide(subject)) {
         let looser = resolved
@@ -534,6 +567,7 @@ mod tests {
             alias: None,
             class,
             deletion: is_deletion_name(operation),
+            settleable: true,
         }
     }
 
@@ -652,6 +686,60 @@ mod tests {
             approval(&layers, &op("a", "x", EffectClass::Reversible)),
             Approval::Ask
         );
+    }
+
+    #[test]
+    fn an_irreversible_operation_nothing_could_settle_is_asked_about_when_allowed() {
+        let person = policy(&[("bank:*", Approval::Allow)]);
+        let layers = Layers {
+            person: Some(&person),
+            ..Layers::default()
+        };
+        let wire = Subject::Operation {
+            connector: "bank",
+            operation: "wire",
+            alias: None,
+            class: EffectClass::Irreversible,
+            deletion: false,
+            settleable: false,
+        };
+        assert_eq!(
+            resolve(&layers, &wire),
+            Some(Resolved {
+                approval: Approval::Ask,
+                layer: Layer::Unsettleable,
+                rule: None
+            })
+        );
+        // With a lookup the person's allow stands.
+        let settled = op("bank", "wire", EffectClass::Irreversible);
+        assert_eq!(approval(&layers, &settled), Approval::Allow);
+        // A reversible operation without a lookup is not affected.
+        let post = Subject::Operation {
+            connector: "bank",
+            operation: "note",
+            alias: None,
+            class: EffectClass::Reversible,
+            deletion: false,
+            settleable: false,
+        };
+        assert_eq!(approval(&layers, &post), Approval::Allow);
+        // Stricter decisions stand: the default stage, and a block.
+        assert_eq!(approval(&Layers::default(), &wire), Approval::Stage);
+        let strict = policy(&[("bank:*", Approval::Block)]);
+        let layers = Layers {
+            person: Some(&strict),
+            ..Layers::default()
+        };
+        assert_eq!(approval(&layers, &wire), Approval::Block);
+        // An administrator's allow cannot loosen it: the floor only tightens.
+        let admin = policy(&[("bank:*", Approval::Allow)]);
+        let layers = Layers {
+            admin: Some(&admin),
+            person: Some(&person),
+            ..Layers::default()
+        };
+        assert_eq!(approval(&layers, &wire), Approval::Ask);
     }
 
     #[test]

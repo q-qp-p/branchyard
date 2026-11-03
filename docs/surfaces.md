@@ -1051,4 +1051,5 @@ A running branch says whether its engine is still heard from ([durability](durab
 
 | Surface | Before | Now |
 |---|---|---|
+| `Resolved::layer` (`Layer::Unsettleable`, `unsettleable`) | none | the layer an ask carries when a policy allowed an irreversible operation that declares no lookup and it was asked about instead; in `by approvals`, the ledger's `decided`, `schema/contract.json` |
 | `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for a running branch whose lease is held, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |

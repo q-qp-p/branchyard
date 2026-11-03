@@ -31,7 +31,7 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 | E4 | Every effect has a class (`reversible`, `compensable`, `irreversible`, `read`), declared by the operation, never guessed; one that declares nothing is `irreversible` | `EffectClass`; [effects](effects.md#effect-classes) |
 | E5 | An undo is recorded on the original entry, with its deadline | `Undo::deadline_ms` |
 | E6 | *Planned.* A key may name the decision rather than the call, so a repeat in a later turn reaches the upstream with the same key | design record, step 2 |
-| E7 | *Planned.* An operation with no lookup, no key and no compensation is staged behind an approval by default | design record, step 3 |
+| E7 | An irreversible operation whose fate nothing could settle (no lookup) is never performed on a policy's say-so alone: it is staged by default, and an `allow` becomes an `ask` | `Layer::Unsettleable` in `resolve`; [approvals](effects.md#approvals) |
 
 ## 3. Ownership
 
@@ -76,7 +76,7 @@ Each is a scenario either implementation can run against its own store; the Bran
 | The turn after a lost one is told which calls it made and what is known of each | T3 | `tests/effects.rs` `the_turn_after_a_lost_one_is_told_which_calls_it_made` |
 | A recorded step is used, not taken again | T4 | `tests/durable.rs` `a_recorded_snapshot_is_used_when_recovery_finishes_a_turn` |
 | A lost answer is unknown, never retried, and settled by the lookup | E1–E3 | `tests/effects.rs` `a_lost_answer_is_unknown_until_the_lookup_settles_it` |
-| A call the gateway describes nothing about is irreversible | E4 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
+| A call the gateway describes nothing about is irreversible, and, though a policy allows it, is asked about first | E4, E7 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |
 | A write after losing the lease is refused | O3 | `tests/durable.rs` `an_event_of_a_turn_that_lost_its_lease_is_refused` |
 | A lease's expiry is the store's clock plus its time to live, on grant and on renewal | O6 | `conformance.rs` `clock`, both backends |

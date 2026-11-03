@@ -243,12 +243,13 @@ fn a_tasks_record_carries_its_attempts_ledger() {
 fn a_call_the_gateway_describes_nothing_about_is_irreversible() {
     let f = Fixture::new();
     let (mock, script) = setup(&f, person(&[("legacy:*", Approval::Allow)]));
-    let branch = f
-        .task(&calls(&script, &[("legacy__do", "{}")]))
-        .options(granted(&f))
-        .name("legacy")
-        .run()
-        .unwrap();
+    let (branch, asks) = allowing_asks(&f, || {
+        f.task(&calls(&script, &[("legacy__do", "{}")]))
+            .options(granted(&f))
+            .name("legacy")
+            .run()
+            .unwrap()
+    });
     assert!(text(&branch.events().unwrap()).contains("call legacy__do: done"));
     let entry = &f.yard.effects(Some("legacy")).unwrap()[0];
     assert_eq!(entry.state, EffectState::Confirmed);
@@ -260,9 +261,53 @@ fn a_call_the_gateway_describes_nothing_about_is_irreversible() {
         .as_deref()
         .unwrap()
         .contains("described no effect"));
-    // Its default would have staged it: the person's rule allowed it.
-    assert_eq!(entry.decided.as_ref().unwrap().layer, Layer::Person);
+    // The person's rule allowed it, but nothing could settle it if its
+    // answer were lost (it declares no lookup): it was asked about first.
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].resolved.as_ref().unwrap().layer,
+        Layer::Unsettleable
+    );
+    assert_eq!(entry.decided.as_ref().unwrap().layer, Layer::Unsettleable);
+    assert_eq!(entry.approval.as_ref().unwrap().by, "ana");
     assert_eq!(mock.calls_to("legacy__do").len(), 1);
+}
+
+/// Run `work` on another thread, allowing as `ana` each ask it opens
+/// because a call nothing could settle was allowed (`Layer::Unsettleable`);
+/// other asks, such as a staged call's, are left. What it returned, and
+/// the asks answered, in order.
+fn allowing_asks<T: Send>(
+    f: &Fixture,
+    work: impl FnOnce() -> T + Send,
+) -> (T, Vec<branchyard::effects::ApprovalAsk>) {
+    std::thread::scope(|scope| {
+        let run = scope.spawn(work);
+        let mut answered = Vec::new();
+        loop {
+            let next = wait::until("an ask, or the work to end", || {
+                if run.is_finished() {
+                    return Some(None);
+                }
+                f.yard
+                    .approvals(true)
+                    .unwrap()
+                    .into_iter()
+                    .find(|ask| {
+                        ask.resolved
+                            .as_ref()
+                            .is_some_and(|r| r.layer == Layer::Unsettleable)
+                    })
+                    .map(Some)
+            });
+            let Some(ask) = next else { break };
+            f.yard
+                .answer_approval(&ask.id, true, "ana", "api", None)
+                .unwrap();
+            answered.push(ask);
+        }
+        (run.join().unwrap(), answered)
+    })
 }
 
 #[test]
@@ -930,23 +975,26 @@ fn undo_plans_by_what_the_upstream_supports_and_undoes_what_was_chosen() {
         .name("board")
         .run()
         .unwrap();
-    let branch = first
-        .send(
-            &calls(
-                &script,
-                &[
-                    ("slack__chat_post", r#"{"channel": "board"}"#),
-                    ("github__issues_create", r#"{"title": "prep"}"#),
-                    ("legacy__do", "{}"),
-                    ("webhook__fire", "{}"),
-                ],
-            ),
-            TaskOptions {
-                policy: Policy::allow_all(),
-                ..TaskOptions::default()
-            },
-        )
-        .unwrap();
+    // `legacy__do` declares nothing: allowed, it is still asked about.
+    let (branch, _) = allowing_asks(&f, || {
+        first
+            .send(
+                &calls(
+                    &script,
+                    &[
+                        ("slack__chat_post", r#"{"channel": "board"}"#),
+                        ("github__issues_create", r#"{"title": "prep"}"#),
+                        ("legacy__do", "{}"),
+                        ("webhook__fire", "{}"),
+                    ],
+                ),
+                TaskOptions {
+                    policy: Policy::allow_all(),
+                    ..TaskOptions::default()
+                },
+            )
+            .unwrap()
+    });
     let ledger = f.yard.effects(Some("board")).unwrap();
     assert_eq!(ledger.len(), 5, "{ledger:?}");
     // Back to turn 1: the first post stays out of the plan.

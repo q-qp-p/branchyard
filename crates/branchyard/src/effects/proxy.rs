@@ -672,6 +672,7 @@ fn handle(stream: TcpStream, state: &ProxyState) {
         alias: decl.operation.as_deref(),
         class,
         deletion,
+        settleable: decl.lookup.is_some(),
     };
     let resolved = super::resolve(&state.layers(), &subject).unwrap_or(Resolved {
         approval: class.default_approval(),
