@@ -752,9 +752,11 @@ pub enum Binding {
 /// [`Binding`] and how it is achieved, or why it is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Composition {
+    /// Where Branchyard's restrictions bind against the harness's own
+    /// permissions.
     pub binding: Binding,
     /// How the binding is achieved and on what evidence, or why it is not:
-    /// the text a refusal and `docs/compatibility.md` show.
+    /// the reason a refusal gives.
     pub how: &'static str,
 }
 
