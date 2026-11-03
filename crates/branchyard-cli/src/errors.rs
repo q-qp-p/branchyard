@@ -970,11 +970,11 @@ mod tests {
         );
         // The same report from a server's kind and detail alone.
         let remote = sdk(
-            &remote(
-                "unsupported",
-                "unsupported: anything",
-                report.detail.clone().unwrap(),
-            ),
+            &Error::Remote {
+                kind: "unsupported".into(),
+                message: "unsupported: anything".into(),
+                detail: report.detail.clone().map(Box::new),
+            },
             None,
         );
         assert_eq!((remote.message, remote.next), (report.message, report.next));

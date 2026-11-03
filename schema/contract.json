@@ -35088,7 +35088,7 @@
                       }
                     },
                     "managed": {
-                      "description": "The managed settings written into a sandbox for a Claude Code\nturn, before the harness started, when the turn's sandbox took\nthem; see `docs/provisioning.md#managed-settings`. Names and\nflags only.",
+                      "description": "The managed settings a sandboxed Claude Code turn wrote before 3\nNovember 2026, kept so those turns' records read back; no turn\nwrites them now (`docs/provisioning.md#managed-settings`). Names\nand flags only.",
                       "anyOf": [
                         {
                           "$ref": "#/$defs/ManagedWritten"
@@ -40712,7 +40712,7 @@
                       }
                     },
                     "managed": {
-                      "description": "The managed settings written into a sandbox for a Claude Code\nturn, before the harness started, when the turn's sandbox took\nthem; see `docs/provisioning.md#managed-settings`. Names and\nflags only.",
+                      "description": "The managed settings a sandboxed Claude Code turn wrote before 3\nNovember 2026, kept so those turns' records read back; no turn\nwrites them now (`docs/provisioning.md#managed-settings`). Names\nand flags only.",
                       "anyOf": [
                         {
                           "$ref": "#/$defs/ManagedWritten"
@@ -52534,7 +52534,7 @@
                       }
                     },
                     "managed": {
-                      "description": "The managed settings written into a sandbox for a Claude Code\nturn, before the harness started, when the turn's sandbox took\nthem; see `docs/provisioning.md#managed-settings`. Names and\nflags only.",
+                      "description": "The managed settings a sandboxed Claude Code turn wrote before 3\nNovember 2026, kept so those turns' records read back; no turn\nwrites them now (`docs/provisioning.md#managed-settings`). Names\nand flags only.",
                       "anyOf": [
                         {
                           "$ref": "#/$defs/ManagedWritten"
