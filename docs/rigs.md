@@ -206,6 +206,6 @@ that workflow needs checks.
 
 ## Not guaranteed
 
-- A provisioning request a harness cannot take (a reasoning effort for Claude Code, instructions for Pi or Amp) is refused when that seat's first turn is provisioned, not at plan time: the planner does not run the per-harness provisioners.
+- A provisioning request a harness cannot take (a reasoning effort for Gemini CLI, instructions for Pi or Amp) is refused when that seat's first turn is provisioned, not at plan time: the planner does not run the per-harness provisioners.
 - Everything [delegation](delegation.md#not-guaranteed) does not guarantee: cost limits for harnesses that report no cost, isolation in local mode, and sandboxed seats, which get no delegation tools.
 - Any real harness running a rig.

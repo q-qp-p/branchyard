@@ -140,6 +140,11 @@ pub struct Open {
     /// supports them (Claude Code's stream-json, and ACP agents that
     /// advertise them); every other driver refuses them.
     pub remote_mcp_servers: Vec<RemoteMcpServer>,
+    /// The name of a permission profile Branchyard prepared in the
+    /// harness's home for this session, for a driver whose harness selects
+    /// one by name (Codex's `default_permissions`). The driver then lets the
+    /// profile set the sandbox and checks that the session reports it.
+    pub permission_profile: Option<String>,
 }
 
 impl Open {
@@ -154,6 +159,7 @@ impl Open {
             instructions: None,
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
+            permission_profile: None,
         }
     }
 }
@@ -715,6 +721,51 @@ pub struct Capabilities {
     /// A spending limit the harness enforces itself, stopping before it
     /// goes over ([`Open::max_budget_usd`]).
     pub budget: bool,
+}
+
+/// When a profile can make Branchyard's permission decisions binding on a
+/// harness that has a permission system of its own. Two rules hold where it
+/// can: a Branchyard approval never overrides the harness's own denial (its
+/// deny rules, hooks and administrator policy refuse first), and the
+/// harness's own approval never bypasses Branchyard's restriction (an allow
+/// rule, a permission mode or a sandbox's auto-approval in its
+/// configuration cannot run a call Branchyard would refuse). Where a
+/// profile cannot keep both, a run whose policy restricts anything is
+/// refused unless the task lets the harness's own permissions decide
+/// (`unapproved_tools`). See `docs/harness-integration.md`, "Composing
+/// with a harness's own permissions".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// Both rules hold whatever the harness's own configuration says, in a
+    /// home Branchyard prepares or in the user's own.
+    Always,
+    /// Both rules hold only in a home Branchyard prepares (`--isolated`, or
+    /// a sandbox): in the user's own home, its configuration could approve
+    /// calls Branchyard never sees.
+    PrivateHome,
+    /// Not shown: no mechanism is verified against the harness, or none
+    /// exists. A restricting policy is refused.
+    Unverified,
+}
+
+/// How a profile composes with its harness's own permission system: the
+/// [`Binding`] and how it is achieved, or why it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Composition {
+    pub binding: Binding,
+    /// How the binding is achieved and on what evidence, or why it is not:
+    /// the text a refusal and `docs/compatibility.md` show.
+    pub how: &'static str,
+}
+
+impl Composition {
+    /// Not shown, for the reason `why`.
+    pub const fn unverified(why: &'static str) -> Self {
+        Composition {
+            binding: Binding::Unverified,
+            how: why,
+        }
+    }
 }
 
 /// What a task needs from its harness. Unset fields are not required.

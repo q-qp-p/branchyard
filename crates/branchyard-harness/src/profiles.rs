@@ -14,7 +14,7 @@ use crate::antigravity::Antigravity;
 use crate::claude_code::ClaudeCode;
 use crate::codex::Codex;
 use crate::pi::Pi;
-use crate::Driver;
+use crate::{Binding, Composition, Driver};
 
 /// The wire protocol a profile uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +71,12 @@ pub struct Profile {
     /// saw it run a tool without asking ([`Acp::with_approvals_caveat`]).
     /// The compatibility matrix and the qualification runner read it.
     pub acp_approvals_caveat: Option<&'static str>,
+    /// ACP only: the session modes the agent asks its client in; any other
+    /// is refused ([`Acp::with_modes`]).
+    pub acp_modes: Option<&'static [&'static str]>,
+    /// How this profile composes with the harness's own permission system
+    /// ([`Composition`]): when Branchyard's restrictions bind and why.
+    pub composition: Composition,
 }
 
 impl Profile {
@@ -110,6 +116,9 @@ impl Profile {
                 if let Some(caveat) = self.acp_approvals_caveat {
                     driver = driver.with_approvals_caveat(caveat);
                 }
+                if let Some(modes) = self.acp_modes {
+                    driver = driver.with_modes(modes);
+                }
                 Box::new(driver)
             }
         }
@@ -129,8 +138,16 @@ const fn acp(id: &'static str, harness: &'static str, command: &'static [&'stati
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition::unverified(ACP_UNVERIFIED),
     }
 }
+
+/// Why an ACP profile's binding is not shown until a mechanism is verified
+/// for it: ACP lets the agent ask or not, and an agent's own allow rules or
+/// mode approve calls its client never sees.
+const ACP_UNVERIFIED: &str = "the agent decides which calls to ask its client about, and no \
+     setting that makes it ask about every call Branchyard would refuse is verified for it";
 
 /// DeepSeek Harness confines its shell itself (`workspace-write` unless
 /// `DSH_PERMISSION_MODE` says otherwise) and asks its client only for a
@@ -153,6 +170,44 @@ const HERMES_APPROVALS: &str =
 const CLAUDE_ACP_NO_BYPASS: &str =
     r#"{"claudeCode":{"options":{"allowDangerouslySkipPermissions":false}}}"#;
 
+/// How Claude Code's stream-json profile keeps both rules of a
+/// [`Composition`], verified against Claude Code 2.1.317 on 3 November 2026
+/// with a scripted stand-in for the Messages API (no model; the recorded
+/// session is `tests/fixtures/claude-code-2.1.317-hook-routes-allowed-call.jsonl`).
+const CLAUDE_STREAM_JSON_COMPOSITION: &str = "every tool call reaches Branchyard: a PreToolUse \
+     hook registered at initialize answers ask, so an allow rule in the user's or the repository's \
+     settings no longer approves a call on its own, and --permission-mode default overrides a \
+     configured mode (the session's reported mode is checked); deny rules, other hooks' denials and \
+     administrator policy still refuse first, and Branchyard writes no administrator file";
+
+/// How Codex's app-server profile keeps both sets of rules, verified with
+/// codex-cli 0.166.0 (3 November 2026). It needs a private `CODEX_HOME`.
+const CODEX_COMPOSITION: &str = "in a private CODEX_HOME, Branchyard's permission profile is the \
+     default, so an approved command that meets the sandbox is not run again outside it; the \
+     working tree is an untrusted project, so its rules and hooks do not load; approvals go to the \
+     user under untrusted, web search is off unless the policy allows everything, and the thread's \
+     reported policy, reviewer and profile are checked; read-only commands Codex knows as safe run \
+     inside the sandbox without asking";
+
+/// How Gemini CLI's ACP profile keeps both sets of rules, verified with
+/// Gemini CLI 0.66.0 (3 November 2026). It needs a private home.
+const GEMINI_COMPOSITION: &str = "it runs with --approval-mode default and, in a home Branchyard \
+     prepares, --policy naming one rule that sends every tool call to Branchyard above every \
+     user-tier rule; --policy replaces the home's own policies; the session's reported mode is \
+     checked; an administrator's policy rules still decide first";
+
+/// How Qwen Code's ACP profile keeps both sets of rules, verified with
+/// Qwen Code 0.26.6 (3 November 2026). It needs a private home.
+const QWEN_COMPOSITION: &str = "it runs with --approval-mode default (its default, auto, lets a \
+     classifier approve), and in a home Branchyard prepares a system defaults file asks about each \
+     tool it names, which outranks an allow rule in any settings file; deny rules still refuse \
+     first; the session's reported mode is checked; a tool a later release adds is not on the list";
+
+/// A profile that routes no tool approvals at all: its harness's own
+/// configuration decides every call.
+const UNROUTED: &str = "the harness routes no tool approvals to Branchyard, so its own \
+     configuration decides every call";
+
 /// Implemented profiles. The first profile for a harness is its default.
 pub const PROFILES: &[Profile] = &[
     Profile {
@@ -167,6 +222,11 @@ pub const PROFILES: &[Profile] = &[
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition {
+            binding: Binding::Always,
+            how: CLAUDE_STREAM_JSON_COMPOSITION,
+        },
     },
     Profile {
         checked_against: Some("claude-agent-acp 0.81.2"),
@@ -185,6 +245,11 @@ pub const PROFILES: &[Profile] = &[
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition {
+            binding: Binding::PrivateHome,
+            how: CODEX_COMPOSITION,
+        },
     },
     acp("codex-acp", "codex", &["codex-acp"]),
     // `agy acp` (Antigravity CLI 1.4.12) speaks ACP v1 and carries what
@@ -212,6 +277,8 @@ pub const PROFILES: &[Profile] = &[
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition::unverified(UNROUTED),
     },
     // The probe (1 November 2026, Oh My Pi 18.15.0) saw per-turn usage on
     // each prompt response; no `models` in `session/new`.
@@ -235,6 +302,11 @@ pub const PROFILES: &[Profile] = &[
         // settings choose no auth type; `session/load` does not, and answers
         // `auth_required` until `authenticate` has chosen one.
         acp_auth_method: Some("gemini-api-key"),
+        acp_modes: Some(&["default"]),
+        composition: Composition {
+            binding: Binding::PrivateHome,
+            how: GEMINI_COMPOSITION,
+        },
         // `--acp`; 0.65.0's `--help` calls `--experimental-acp` deprecated
         // (it still starts ACP mode, and `--command` can still pass it to a
         // release from before `--acp`).
@@ -258,6 +330,8 @@ pub const PROFILES: &[Profile] = &[
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition::unverified(UNROUTED),
     },
     acp("goose-acp", "goose", &["goose", "acp"]),
     acp("cursor-acp", "cursor", &["agent", "acp"]),
@@ -278,8 +352,17 @@ pub const PROFILES: &[Profile] = &[
         acp_usage: false,
         acp_config_model: false,
         acp_approvals_caveat: None,
+        acp_modes: None,
+        composition: Composition::unverified(UNROUTED),
     },
-    acp("qwen-code-acp", "qwen-code", &["qwen", "--acp"]),
+    Profile {
+        acp_modes: Some(&["default"]),
+        composition: Composition {
+            binding: Binding::PrivateHome,
+            how: QWEN_COMPOSITION,
+        },
+        ..acp("qwen-code-acp", "qwen-code", &["qwen", "--acp"])
+    },
     acp("kimi-cli-acp", "kimi-cli", &["kimi", "acp"]),
     // The probe (1 November 2026, Hermes 0.19.0) listed `models` in
     // `session/new`, took `session/set_model` (answered `{}`), and saw

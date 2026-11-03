@@ -47,23 +47,6 @@ pub(crate) fn decide(
     }
 }
 
-/// The tool names `policy` denies that a harness's own permission rules can
-/// name: its deny rules, except one scoped to delegation commands and a
-/// `*` wildcard, which a harness cannot express. Sorted, without repeats.
-/// A sandboxed Claude Code turn writes these into its managed settings
-/// (`docs/provisioning.md#managed-settings`).
-pub(crate) fn denied_tools(policy: &Policy) -> Vec<String> {
-    let mut tools: Vec<String> = policy
-        .rules
-        .iter()
-        .filter(|rule| !rule.allow && rule.delegation_by.is_none() && !rule.tool.ends_with('*'))
-        .map(|rule| rule.tool.clone())
-        .collect();
-    tools.sort();
-    tools.dedup();
-    tools
-}
-
 /// `policy` as data, for a harness that enforces its own permission rules
 /// instead of asking Branchyard (Antigravity's CLI): its rules in order and
 /// its fallback, with an asking fallback kept as asking, which such a
@@ -370,41 +353,7 @@ mod tests {
     }
 
     /// Each preset's denials are the names its rules list, sorted and
-    /// without repeats; `full` denies none. `claude.rs` writes the Claude
-    /// Code names of these same lists into managed settings.
-    #[test]
-    fn a_preset_denies_by_the_names_its_rules_list() {
-        for preset in PolicyPreset::ALL {
-            let mut listed: Vec<String> =
-                preset.rules().deny.iter().map(|t| t.to_string()).collect();
-            listed.sort();
-            listed.dedup();
-            assert_eq!(denied_tools(&preset.policy()), listed, "{}", preset.name());
-        }
-        assert!(denied_tools(&PolicyPreset::Full.policy()).is_empty());
-        let worktree = denied_tools(&PolicyPreset::EditWorktree.policy());
-        assert!(worktree.contains(&"Bash".to_owned()));
-        assert!(!worktree.contains(&"Write".to_owned()));
-    }
-
-    /// An allowance, a delegation-scoped rule and a wildcard are not names a
-    /// harness can deny; a repeated denial is written once.
-    #[test]
-    fn denied_names_skip_allowances_delegation_scopes_and_wildcards() {
-        let policy = Policy::allow_all()
-            .deny("Bash")
-            .deny("mcp__*")
-            .deny("Bash")
-            .allow("Read");
-        assert_eq!(denied_tools(&policy), ["Bash"]);
-        let scoped = Policy::deny_all().allow_delegation_commands("/opt/by/bin/by");
-        assert!(denied_tools(&scoped).is_empty());
-    }
-
-    /// The policy as data decides as the policy does without asking:
-    /// Antigravity's shell (`run_command`) and file writes under each
-    /// preset, an asking fallback kept as asking, and the delegation rule
-    /// with the `by` it names.
+    /// without repeats; `full` denies none.
     #[test]
     fn a_policy_as_data_decides_as_the_policy_does() {
         let decide = |policy: &Policy, tool: &str| permissions(policy, None).decide(tool);

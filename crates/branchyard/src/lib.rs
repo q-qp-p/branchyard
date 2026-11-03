@@ -2714,6 +2714,13 @@ impl Default for Policy {
 }
 
 impl Policy {
+    /// Whether this policy refuses or asks about anything: a deny rule, or
+    /// a fallback that is not allow. A policy that allows every call needs
+    /// no harness to keep a restriction for it.
+    pub fn restricts(&self) -> bool {
+        !matches!(self.fallback, Fallback::Allow) || self.rules.iter().any(|rule| !rule.allow)
+    }
+
     /// One line saying what the rules allow and deny, and what happens to
     /// everything else: a task's record of the policy it ran under.
     pub fn summary(&self) -> String {
@@ -2950,10 +2957,10 @@ pub enum Activity {
         /// See `docs/knowledge-skills.md`.
         #[serde(default)]
         skills: skills::SkillSet,
-        /// The managed settings written into a sandbox for a Claude Code
-        /// turn, before the harness started, when the turn's sandbox took
-        /// them; see `docs/provisioning.md#managed-settings`. Names and
-        /// flags only.
+        /// The managed settings a sandboxed Claude Code turn wrote before 3
+        /// November 2026, kept so those turns' records read back; no turn
+        /// writes them now (`docs/provisioning.md#managed-settings`). Names
+        /// and flags only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         managed: Option<branchyard_provision::ManagedWritten>,
         /// The permission rules written into the harness's own settings,
@@ -3569,6 +3576,22 @@ pub enum Error {
         /// The profile refused, as `--harness` names it (`pi-rpc`).
         profile: String,
     },
+    /// The profile cannot make the task's restrictions binding on its
+    /// harness's own permission system ([`branchyard_harness::Composition`]):
+    /// the harness's configuration could approve a call the policy refuses,
+    /// without asking. Refused unless the task lets the harness's own
+    /// permissions decide ([`TaskOptions::unapproved_tools`]). Its kind is
+    /// `unsupported`; its detail names `unbound_policy`, the profile, the
+    /// reason and whether a private home would bind it.
+    UnboundPolicy {
+        /// The profile refused (`gemini-cli-acp`).
+        profile: String,
+        /// Why the profile cannot bind the restrictions here.
+        reason: String,
+        /// Whether a home Branchyard prepares (`--isolated`, or a sandbox)
+        /// would bind them.
+        private_home_binds: bool,
+    },
     /// A configuration file, or a section of one, that describes nothing
     /// usable: its message names the file and line, or the section
     /// (`[models]`) or key (`defaults.check`).
@@ -3719,6 +3742,18 @@ impl fmt::Display for Error {
                  (--allow-unapproved-tools, TaskOptions::unapproved_tools) or choose another \
                  profile"
             ),
+            Error::UnboundPolicy {
+                profile,
+                reason,
+                private_home_binds,
+            } => write!(
+                f,
+                "unsupported: {profile} cannot keep your policy's restrictions{}: {reason}; {}allow \
+                 its own permissions to decide (--allow-unapproved-tools, \
+                 TaskOptions::unapproved_tools) or choose another profile",
+                if *private_home_binds { " in your own home" } else { "" },
+                if *private_home_binds { "run it with --isolated, " } else { "" }
+            ),
             Error::Config(what) => f.write_str(what),
             Error::NoCandidate(name) => write!(f, "branch {name} has no candidate"),
             Error::TargetMoved {
@@ -3851,7 +3886,9 @@ impl Error {
             Error::InvalidName { .. } => "invalid_name",
             Error::UnknownHarness(_) => "unknown_harness",
             Error::HarnessUnavailable { .. } => "harness_unavailable",
-            Error::Unsupported(_) | Error::UnroutedApprovals { .. } => "unsupported",
+            Error::Unsupported(_)
+            | Error::UnroutedApprovals { .. }
+            | Error::UnboundPolicy { .. } => "unsupported",
             Error::Config(_) => "config",
             Error::NoCandidate(_) => "no_candidate",
             Error::TargetMoved { .. } => "target_moved",
@@ -3933,6 +3970,16 @@ impl Error {
             Error::UnroutedApprovals { profile } => Some(serde_json::json!({
                 "unsupported": "unrouted_approvals",
                 "profile": profile,
+            })),
+            Error::UnboundPolicy {
+                profile,
+                reason,
+                private_home_binds,
+            } => Some(serde_json::json!({
+                "unsupported": "unbound_policy",
+                "profile": profile,
+                "reason": reason,
+                "private_home_binds": private_home_binds,
             })),
             _ => None,
         }

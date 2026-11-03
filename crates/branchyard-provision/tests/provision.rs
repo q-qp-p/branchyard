@@ -441,7 +441,9 @@ fn a_secret_given_to_an_mcp_server_is_used_and_delivered_with_it() {
             tool_env: false,
         }]
     );
-    assert!(plan.env.is_empty() && plan.files.is_empty());
+    // The secret reaches the server alone: no variable, no secret file.
+    assert!(plan.env.iter().all(|v| v.name != "DOCS_TOKEN"));
+    assert!(plan.files.iter().all(|f| !f.secret));
 }
 
 fn remote(name: &str) -> RemoteMcpServer {

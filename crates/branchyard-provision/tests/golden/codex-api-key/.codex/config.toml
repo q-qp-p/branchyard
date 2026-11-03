@@ -1,12 +1,14 @@
 # My Codex settings.
 model = "gpt-5.5"
 model_reasoning_effort = "high"
+default_permissions = "branchyard"
+web_search = "disabled"
 
 [features]
 hooks = true
 
 [projects."/workspace"]
-trust_level = "trusted"
+trust_level = "untrusted"
 
 [otel]
 environment = "production"
@@ -14,3 +16,8 @@ log_user_prompt = false
 metrics_exporter."otlp-grpc".endpoint = "http://127.0.0.1:14317"
 exporter."otlp-grpc".endpoint = "http://127.0.0.1:14317"
 trace_exporter."otlp-grpc".endpoint = "http://127.0.0.1:14317"
+
+[permissions.branchyard.filesystem]
+":root" = "read"
+":workspace_roots" = "write"
+"/workspace/.branchyard-no-read" = "deny"

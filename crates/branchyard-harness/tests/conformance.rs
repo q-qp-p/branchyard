@@ -20,6 +20,7 @@ fn fresh() -> Open {
         instructions: None,
         mcp_config_file: None,
         remote_mcp_servers: Vec::new(),
+        permission_profile: None,
     }
 }
 
@@ -33,7 +34,12 @@ fn answer(protocol: Protocol) -> impl Fn(&Value) -> Vec<Value> {
                     "response": {"subtype": "success", "request_id": frame["request_id"], "response": {}}})]
             }
             (Protocol::CodexAppServer, Some("initialize")) => json!({}),
-            (Protocol::CodexAppServer, Some("thread/start")) => json!({"thread": {"id": "t1"}}),
+            (Protocol::CodexAppServer, Some("thread/start")) => json!({
+                "thread": {"id": "t1"},
+                "approvalPolicy": "untrusted",
+                "approvalsReviewer": "user",
+                "sandbox": {"type": "workspaceWrite"},
+            }),
             (Protocol::Acp, Some("initialize")) => json!({"protocolVersion": 1}),
             // The models an agent may list (agy 1.4.12 does); a profile
             // that chooses one sets it next.
@@ -250,6 +256,7 @@ fn replay_answers_permissions_and_substitutes_aliases() {
     let (mut driver, opened) = claude();
     let replayed = Replay::new(&transcript)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .prompt("ls")
         .answer_permissions(PermissionDecision::Allow)
@@ -275,6 +282,7 @@ fn replay_rejects_a_differing_outgoing_frame() {
     let (mut driver, opened) = claude();
     Replay::new(&transcript)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .run(&mut driver, &opened);
 }
 
@@ -291,6 +299,7 @@ fn replay_rejects_a_recorded_frame_the_driver_never_writes() {
     let (mut driver, opened) = claude();
     Replay::new(&transcript)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .run(&mut driver, &opened);
 }
 

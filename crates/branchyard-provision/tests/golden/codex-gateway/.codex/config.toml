@@ -1,12 +1,19 @@
 model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 model_provider = "branchyard"
+default_permissions = "branchyard"
+web_search = "disabled"
 
 [projects."/workspace"]
-trust_level = "trusted"
+trust_level = "untrusted"
 
 [model_providers.branchyard]
 name = "Branchyard model gateway"
 base_url = "http://192.168.127.1:41100/openai/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
+
+[permissions.branchyard.filesystem]
+":root" = "read"
+":workspace_roots" = "write"
+"/workspace/.branchyard-no-read" = "deny"

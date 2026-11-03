@@ -60,9 +60,25 @@ enum Pending {
     Steer(u64, u64),
 }
 
+/// The tool name an ordinary command approval is decided under.
+const COMMAND_EXECUTION: &str = "commandExecution";
+
+/// The tool name a command approval that asks to leave Codex's sandbox is
+/// decided under: no preset allows it by name, so only a policy that allows
+/// everything, or one that names it, approves it.
+pub const ESCALATED_COMMAND: &str = "commandExecution:escalated";
+
+/// The approval policy every thread runs under: Codex asks before each
+/// command and patch its sandbox does not already allow.
+const APPROVAL_POLICY: &str = "untrusted";
+
+/// Who answers Codex's approval requests: the client, never an automatic
+/// reviewer.
+const APPROVALS_REVIEWER: &str = "user";
+
 /// Approval requests this profile answers.
 const APPROVALS: [(&str, &str); 2] = [
-    ("item/commandExecution/requestApproval", "commandExecution"),
+    ("item/commandExecution/requestApproval", COMMAND_EXECUTION),
     ("item/fileChange/requestApproval", "fileChange"),
 ];
 
@@ -167,11 +183,19 @@ impl Codex {
     #[allow(clippy::expect_used)] // ratchet: branchyard-harness
     fn thread_request(&mut self) -> Frame {
         let open = self.open.clone().expect("the thread opens after open()");
+        // `untrusted` asks before every command and patch the sandbox does
+        // not already allow; `user` keeps the asking with Branchyard, not an
+        // automatic reviewer a configuration names. A permission profile
+        // Branchyard prepared sets the sandbox itself: naming one here as
+        // well would discard the profile.
         let mut params = json!({
             "cwd": open.cwd,
-            "approvalPolicy": "untrusted",
-            "sandbox": "workspace-write",
+            "approvalPolicy": APPROVAL_POLICY,
+            "approvalsReviewer": APPROVALS_REVIEWER,
         });
+        if open.permission_profile.is_none() {
+            params["sandbox"] = json!("workspace-write");
+        }
         if let Some(model) = open.model {
             params["model"] = json!(model);
         }
@@ -221,7 +245,10 @@ impl Codex {
             (Pending::Initialize | Pending::Thread, Some(error)) => {
                 Output::event(Event::OpenFailed { reason: error })
             }
-            (Pending::Thread, None) => self.thread_opened(&message["result"]["thread"]),
+            (Pending::Thread, None) => match self.thread_settings(&message["result"]) {
+                Some(reason) => Output::event(Event::OpenFailed { reason }),
+                None => self.thread_opened(&message["result"]["thread"]),
+            },
             (Pending::TurnStart(turn), None) => {
                 let native = message["result"]["turn"]["id"].as_str().map(str::to_owned);
                 if self.native_turn.is_none() {
@@ -255,6 +282,52 @@ impl Codex {
                     reason,
                 })
             }
+        }
+    }
+
+    /// Why the thread's reported settings could let Codex run a call
+    /// Branchyard did not approve, or `None` when they are the ones asked
+    /// for. An administrator's `requirements.toml` can replace a requested
+    /// approval policy, reviewer or sandbox with a warning and nothing else,
+    /// so the answer is read back rather than assumed.
+    fn thread_settings(&self, result: &Value) -> Option<String> {
+        let reported = |field: &str| result[field].as_str().unwrap_or("(none)").to_owned();
+        if result["approvalPolicy"] != APPROVAL_POLICY {
+            return Some(format!(
+                "Codex runs the thread with approval policy {}, not {APPROVAL_POLICY}, so it \
+                 could run commands without asking Branchyard",
+                reported("approvalPolicy")
+            ));
+        }
+        if result["approvalsReviewer"] != APPROVALS_REVIEWER {
+            return Some(format!(
+                "Codex has approvals decided by {}, not the {APPROVALS_REVIEWER}, so they would \
+                 not reach Branchyard",
+                reported("approvalsReviewer")
+            ));
+        }
+        let profile = self
+            .open
+            .as_ref()
+            .and_then(|open| open.permission_profile.as_deref());
+        match profile {
+            Some(id) if result["activePermissionProfile"]["id"] != id => Some(format!(
+                "Codex did not take Branchyard's permission profile {id:?} (it reports {}), \
+                 so an approved command could run outside its sandbox",
+                result["activePermissionProfile"]
+            )),
+            Some(_) => None,
+            None if !matches!(
+                result["sandbox"]["type"].as_str(),
+                Some("workspaceWrite" | "readOnly")
+            ) =>
+            {
+                Some(format!(
+                    "Codex runs the thread in sandbox {}, wider than workspace-write",
+                    result["sandbox"]
+                ))
+            }
+            None => None,
         }
     }
 
@@ -298,11 +371,23 @@ impl Codex {
         if let Some((_, tool)) = APPROVALS.iter().find(|(m, _)| *m == method) {
             let key = id.to_string();
             self.approvals.insert(key.clone(), id);
+            // Under `untrusted`, a command Codex asks about only because its
+            // policy says so carries no `reason`. One that carries a reason
+            // asks for more: the model's request to run outside the sandbox
+            // (`require_escalated`), or Codex's own "retry without sandbox?"
+            // after the sandbox refused it. It is its own permission, so an
+            // approval of commands never widens Codex's sandbox (verified
+            // against codex-cli 0.166.0 on 3 November 2026).
+            let escalated = *tool == COMMAND_EXECUTION && !message["params"]["reason"].is_null();
             return Output::event(Event::PermissionRequested {
                 turn: self.turns.active,
                 request: PermissionRequest {
                     key: PermissionKey(key),
-                    tool: (*tool).to_owned(),
+                    tool: if escalated {
+                        ESCALATED_COMMAND.to_owned()
+                    } else {
+                        (*tool).to_owned()
+                    },
                     input: self.approval_input(&message["params"]),
                 },
             });

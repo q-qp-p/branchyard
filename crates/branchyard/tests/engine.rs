@@ -1142,7 +1142,7 @@ fn a_session_the_harness_cannot_find_fails_precisely() {
 fn profiles_that_route_no_tool_approvals_need_an_explicit_opt_in() {
     let f = Fixture::new();
     for profile in ["antigravity-stream-json", "pi-rpc", "amp-stream-json"] {
-        let refused = f.task("go").harness(profile).run();
+        let refused = f.task("go").harness(profile).unapproved_tools(false).run();
         assert!(
             matches!(&refused, Err(Error::UnroutedApprovals { profile: p }) if p == profile),
             "{profile}: {refused:?}"
@@ -1171,12 +1171,112 @@ fn profiles_that_route_no_tool_approvals_need_an_explicit_opt_in() {
             "{profile}: {admitted:?}"
         );
     }
-    let fan = f.task("go").run_on(&["gemini-cli", "pi"]);
+    let fan = f
+        .task("go")
+        .unapproved_tools(false)
+        .run_on(&["gemini-cli", "pi"]);
     assert!(
         matches!(&fan, Err(Error::UnroutedApprovals { profile }) if profile == "pi-rpc"),
         "{fan:?}"
     );
     assert!(f.yard.branches().unwrap().is_empty(), "nothing was created");
+}
+
+/// A restricting policy starts only where the profile keeps it against its
+/// harness's own permissions: Gemini CLI in a home Branchyard prepares,
+/// with `--approval-mode default` and the policy file on its command line;
+/// in the user's own home it is refused, naming `--isolated`, and nothing
+/// is created; a policy that allows everything, or the opt-out, runs there.
+#[test]
+fn a_restricting_policy_runs_only_where_the_profile_keeps_it() {
+    let f = Fixture::new();
+    let refused = f.task("go").unapproved_tools(false).run();
+    let Err(refusal) = &refused else {
+        panic!("{refused:?}")
+    };
+    assert!(
+        matches!(
+            refusal,
+            Error::UnboundPolicy { profile, private_home_binds: true, .. }
+                if profile == "gemini-cli-acp"
+        ),
+        "{refusal:?}"
+    );
+    assert_eq!(refusal.kind(), "unsupported");
+    assert!(
+        refusal.to_string().contains("run it with --isolated"),
+        "{refusal}"
+    );
+    assert_eq!(
+        refusal.detail().unwrap()["unsupported"],
+        serde_json::json!("unbound_policy")
+    );
+    assert!(f.yard.branches().unwrap().is_empty(), "nothing was created");
+
+    // In a private home it runs, asking in `default` under the policy file.
+    let record = f.dir.join("launch.json");
+    let isolated = f
+        .task("go")
+        .name("isolated")
+        .unapproved_tools(false)
+        .isolated(true)
+        .command([
+            fake_agent().display().to_string(),
+            "--record-launch".into(),
+            record.display().to_string(),
+        ])
+        .run();
+    assert!(isolated.is_ok(), "{isolated:?}");
+    let launch: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
+    let cmdline: Vec<String> = serde_json::from_value(launch["cmdline"].clone()).unwrap();
+    let at = cmdline.iter().position(|a| a == "--approval-mode").unwrap();
+    assert_eq!(cmdline[at + 1], "default", "{cmdline:?}");
+    let at = cmdline.iter().position(|a| a == "--policy").unwrap();
+    let policy = fs::read_to_string(&cmdline[at + 1]).unwrap();
+    assert!(policy.contains("decision = \"ask_user\""), "{policy}");
+
+    // The fake agent, launched with the flag, reports the mode: a turn runs.
+    let allowed = f
+        .task("WRITE a.txt=1")
+        .name("allowed")
+        .unapproved_tools(false)
+        .policy(Policy::allow_all())
+        .run()
+        .unwrap();
+    assert_eq!(
+        allowed.info().status,
+        BranchStatus::Ready,
+        "{:?}",
+        allowed.events()
+    );
+
+    // The opt-out runs and says on the branch what was given up.
+    let opted = f.task("go").name("opted").run().unwrap();
+    let events = opted.events().unwrap();
+    assert!(
+        events.iter().any(|e| matches!(&e.activity,
+            Activity::Warning(w) if w.contains("gemini-cli-acp decides some tool calls itself"))),
+        "{events:?}"
+    );
+
+    // A profile verified nowhere is refused in a private home too.
+    let goose = f
+        .task("go")
+        .harness("goose-acp")
+        .unapproved_tools(false)
+        .isolated(true)
+        .run();
+    assert!(
+        matches!(
+            &goose,
+            Err(Error::UnboundPolicy {
+                private_home_binds: false,
+                ..
+            })
+        ),
+        "{goose:?}"
+    );
 }
 
 #[test]

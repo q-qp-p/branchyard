@@ -437,6 +437,7 @@ pub struct Replay<'t> {
     inputs: VecDeque<Input>,
     aliases: Vec<String>,
     ignored: Vec<String>,
+    added: Vec<String>,
     permissions: Option<PermissionDecision>,
 }
 
@@ -470,6 +471,7 @@ impl<'t> Replay<'t> {
             inputs: VecDeque::new(),
             aliases: Vec::new(),
             ignored: Vec::new(),
+            added: Vec::new(),
             permissions: None,
         }
     }
@@ -517,6 +519,17 @@ impl<'t> Replay<'t> {
     /// frames or neither.
     pub fn ignore(mut self, pointer: impl Into<String>) -> Self {
         self.ignored.push(pointer.into());
+        self
+    }
+
+    /// A field, by JSON pointer into outgoing frames, that the driver has
+    /// sent since the transcript was recorded, such as the hook Claude Code's
+    /// `initialize` has registered since 3 November 2026. Where the recorded
+    /// frame lacks it, it is removed from the driver's frame before they are
+    /// compared, so an older recording still checks every other field; where
+    /// the recorded frame has it, it is compared as usual.
+    pub fn added_since_recording(mut self, pointer: impl Into<String>) -> Self {
+        self.added.push(pointer.into());
         self
     }
 
@@ -604,6 +617,11 @@ impl<'t> Replay<'t> {
     }
 
     fn normalize(&self, ours: &mut Value, recorded: &mut Value, learned: &mut Vec<(Value, Value)>) {
+        for pointer in &self.added {
+            if recorded.pointer(pointer).is_none() {
+                remove_pointer(ours, pointer);
+            }
+        }
         for pointer in &self.ignored {
             if let (Some(a), Some(b)) = (ours.pointer_mut(pointer), recorded.pointer_mut(pointer)) {
                 *a = Value::Null;
@@ -636,6 +654,17 @@ impl<'t> Replay<'t> {
                 }
             }
         }
+    }
+}
+
+/// Remove the member `pointer` names, if the object holding it exists.
+fn remove_pointer(value: &mut Value, pointer: &str) {
+    let Some((parent, key)) = pointer.rsplit_once('/') else {
+        return;
+    };
+    let key = key.replace("~1", "/").replace("~0", "~");
+    if let Some(Value::Object(object)) = value.pointer_mut(parent) {
+        object.remove(&key);
     }
 }
 

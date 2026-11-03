@@ -159,6 +159,35 @@ struct Call {
     cache_write_1h: u64,
 }
 
+/// The permission mode every session runs in. In `default` a tool call is
+/// approved by a native allow rule or decided by Branchyard, never by the
+/// mode itself.
+const PERMISSION_MODE: &str = "default";
+
+/// The callback ID of the `PreToolUse` hook registered at `initialize`.
+/// Hooks run before a settings file's allow rules and before the permission
+/// mode, so every tool call reaches it, including the ones an allow rule in
+/// the user's or the repository's settings would approve on their own.
+const PRE_TOOL_USE_HOOK: &str = "branchyard-pre-tool-use";
+
+/// The hook's answer for every call: `ask`. Claude Code then sends the call
+/// to Branchyard as a `can_use_tool` request, which the policy decides. It
+/// does not loosen anything: a native deny rule or another hook's deny still
+/// refuses the call first (verified against Claude Code 2.1.317 on 3
+/// November 2026, `docs/harness-integration.md`).
+fn pre_tool_use_answer(request_id: &str) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask"},
+            },
+        },
+    })
+}
+
 /// A Claude Code stream-json session.
 #[derive(Debug)]
 pub struct ClaudeCode {
@@ -624,7 +653,13 @@ impl ClaudeCode {
                 },
             });
         }
-        // Hook callbacks, SDK MCP servers and dialogs are not part of this
+        if subtype == "hook_callback" && request["callback_id"] == PRE_TOOL_USE_HOOK {
+            return Output {
+                events: Vec::new(),
+                frames: vec![frame(&pre_tool_use_answer(&id))],
+            };
+        }
+        // SDK MCP servers, dialogs and other hooks are not part of this
         // profile. Answer so the CLI does not wait forever.
         let reply = json!({
             "type": "control_response",
@@ -823,6 +858,21 @@ impl ClaudeCode {
                 detail: "system/init without a usable session_id".into(),
             });
         };
+        // The mode the session runs in decides which calls Claude Code
+        // approves without asking: anything but `default` would let some
+        // through that Branchyard never sees.
+        match message["permissionMode"].as_str() {
+            Some(PERMISSION_MODE) => {}
+            other => {
+                return Output::event(Event::ProtocolViolation {
+                    detail: format!(
+                        "the session started in permission mode {}, not {PERMISSION_MODE}, so \
+                         Claude Code could approve tool calls without asking Branchyard",
+                        other.map_or("(none reported)".to_owned(), |mode| format!("{mode:?}"))
+                    ),
+                })
+            }
+        }
         if let Some(known) = &self.session {
             // The CLI repeats init on later turns of the same session.
             return if *known == session {
@@ -1311,6 +1361,12 @@ impl Driver for ClaudeCode {
                 "--verbose",
                 "--permission-prompt-tool",
                 "stdio",
+                // Whatever a settings file names as the default mode
+                // (`acceptEdits`, `auto`, `bypassPermissions`), the session
+                // starts in `default`, so the mode approves nothing on its
+                // own; `init` checks it took.
+                "--permission-mode",
+                PERMISSION_MODE,
             ]
             .map(String::from),
         );
@@ -1381,8 +1437,13 @@ impl Driver for ClaudeCode {
             }
         }
         self.mode = Some(open.mode);
-        let initialize =
-            self.control_request(Pending::Initialize, json!({"subtype": "initialize"}));
+        let initialize = self.control_request(
+            Pending::Initialize,
+            json!({
+                "subtype": "initialize",
+                "hooks": {"PreToolUse": [{"matcher": "*", "hookCallbackIds": [PRE_TOOL_USE_HOOK]}]},
+            }),
+        );
         Ok(Opened {
             launch: LaunchSpec {
                 argv,

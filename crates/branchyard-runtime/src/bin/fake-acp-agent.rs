@@ -2,8 +2,10 @@
 //!
 //! It answers `initialize`, `session/new`, `session/resume`, `session/load`
 //! and `session/prompt` over newline-delimited JSON-RPC on stdio, and exits
-//! when stdin closes. Resuming or loading a session whose ID starts with
-//! `missing` fails as not found. A prompt replies `echo: <prompt>` unless it
+//! when stdin closes. Started with `--approval-mode MODE`, its `session/new`
+//! answer names `MODE` as the current mode, as Gemini CLI's and Qwen Code's
+//! do; without it, the answer names no mode. Resuming or loading a session
+//! whose ID starts with `missing` fails as not found. A prompt replies `echo: <prompt>` unless it
 //! contains a complete whitespace-delimited directive word. Paths and IDs that
 //! contain a directive name do not invoke it:
 //!
@@ -212,6 +214,13 @@ fn main() {
         return;
     }
     exit_with_directory();
+    // Like Gemini CLI and Qwen Code, the session answer names the mode
+    // `--approval-mode` started it in; without the flag it names none.
+    let mode = args
+        .iter()
+        .position(|a| a == "--approval-mode")
+        .and_then(|at| args.get(at + 1))
+        .cloned();
     let mut instructed = false;
     // The last instructions preamble, for SHOW_INSTRUCTIONS.
     let mut preamble = String::new();
@@ -272,7 +281,14 @@ fn main() {
             }
             (Some("session/new"), Some(id)) => {
                 servers = params["mcpServers"].clone();
-                reply(&id, json!({"sessionId": session}));
+                let mut result = json!({"sessionId": session});
+                if let Some(mode) = &mode {
+                    result["modes"] = json!({
+                        "currentModeId": mode,
+                        "availableModes": [{"id": mode, "name": mode}],
+                    });
+                }
+                reply(&id, result);
             }
             (Some("session/resume" | "session/load"), Some(id))
                 if params["sessionId"]

@@ -3384,7 +3384,12 @@ impl Local {
         let launch = harness::command(profile, command.as_deref());
         self.yard
             .admit_provider(caller.provider.as_ref(), &self.options)?;
-        harness::check_approvals(profile, self.options.unapproved_tools)?;
+        harness::check_composition(
+            profile,
+            &self.options,
+            isolated || crate::placement::sandboxed(caller.provider.as_ref()),
+            &self.yard.approval_settings(),
+        )?;
         harness::check_available(profile.harness, &launch)?;
         let seated_provision = seat.and_then(|s| s.provision.as_ref());
         let model = child_model(

@@ -55,7 +55,12 @@ pub(crate) fn launch(
 ) -> Result<Launch, Error> {
     yard.admit_provider(provider, options)?;
     let profile = harness::select(id)?;
-    harness::check_approvals(profile, options.unapproved_tools)?;
+    harness::check_composition(
+        profile,
+        options,
+        options.isolated || placement::sandboxed(provider),
+        &yard.approval_settings(),
+    )?;
     let command = harness::command(profile, command);
     placement::check(yard, provider)?;
     if !placement::sandboxed(provider) {
@@ -1216,7 +1221,12 @@ fn prepare(
         record.provider = options.provider.clone();
     }
     yard.admit_provider(record.provider.as_ref(), options)?;
-    harness::check_approvals(profile, options.unapproved_tools)?;
+    harness::check_composition(
+        profile,
+        options,
+        options.isolated || placement::sandboxed(record.provider.as_ref()),
+        &yard.approval_settings(),
+    )?;
     let command = harness::command(profile, record.command.as_deref());
     placement::check(yard, record.provider.as_ref())?;
     if !placement::sandboxed(record.provider.as_ref()) {
@@ -1509,9 +1519,14 @@ pub(crate) fn fork(
         (None, true) => parent.command.clone(),
         (None, false) => None,
     };
-    harness::check_approvals(profile, options.unapproved_tools)?;
-    let launch_command = harness::command(profile, command.as_deref());
     let provider = options.provider.clone().or(parent.provider.clone());
+    harness::check_composition(
+        profile,
+        options,
+        options.isolated || placement::sandboxed(provider.as_ref()),
+        &yard.approval_settings(),
+    )?;
+    let launch_command = harness::command(profile, command.as_deref());
     yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
     if !placement::sandboxed(provider.as_ref()) {
@@ -1672,9 +1687,14 @@ pub(crate) fn reincarnate_with(
         (None, true) => parent.command.clone(),
         (None, false) => None,
     };
-    harness::check_approvals(profile, options.unapproved_tools)?;
-    let launch_command = harness::command(profile, command.as_deref());
     let provider = options.provider.clone().or(parent.provider.clone());
+    harness::check_composition(
+        profile,
+        options,
+        options.isolated || placement::sandboxed(provider.as_ref()),
+        &yard.approval_settings(),
+    )?;
+    let launch_command = harness::command(profile, command.as_deref());
     yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
     if !placement::sandboxed(provider.as_ref()) {

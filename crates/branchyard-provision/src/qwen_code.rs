@@ -19,6 +19,38 @@ pub const BASE_URL: &str = "OPENAI_BASE_URL";
 /// The model variable.
 pub const MODEL: &str = "OPENAI_MODEL";
 
+/// The variable that names Qwen Code's system defaults file, in place of
+/// `/etc/qwen-code/system-defaults.json`.
+pub const SYSTEM_DEFAULTS_VAR: &str = "QWEN_CODE_SYSTEM_DEFAULTS_PATH";
+
+/// The system defaults file a private home gets.
+pub(crate) const SYSTEM_DEFAULTS: &str = ".qwen/branchyard/system-defaults.json";
+
+/// Every tool Qwen Code 0.26.6 names, as `ask` rules: an ask rule outranks
+/// an allow rule in any settings file, so each call reaches its client.
+/// Qwen Code has no rule for every tool, so the list is the tools probed on
+/// 3 November 2026; a tool a later release adds is not on it.
+pub const ASK_TOOLS: &[&str] = &[
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "Glob",
+    "Grep",
+    "ListFiles",
+    "WebFetch",
+    "WebSearch",
+    "tool_call",
+    "skill",
+    "agent",
+    "notebook_edit",
+    "todo_write",
+    "save_memory",
+    "lsp",
+    "monitor",
+    "mcp__*",
+];
+
 pub(crate) struct QwenCode;
 
 impl Provisioner for QwenCode {
@@ -62,6 +94,23 @@ impl Provisioner for QwenCode {
         }
         plan.unused_secrets = unused(context, &used);
         pass_session(context, &mut plan);
+        // Its default mode is `auto`, where a classifier approves calls;
+        // `default` asks, and the driver refuses a session in another mode.
+        plan.session
+            .args
+            .extend(["--approval-mode".into(), "default".into()]);
+        if context.private_home {
+            let defaults = serde_json::json!({"permissions": {"ask": ASK_TOOLS}});
+            plan.edit(
+                SYSTEM_DEFAULTS,
+                false,
+                crate::edit::Edit::Put(format!("{defaults:#}\n")),
+            );
+            plan.set_env(EnvVar::plain(
+                SYSTEM_DEFAULTS_VAR,
+                context.home_path(SYSTEM_DEFAULTS),
+            ));
+        }
         Ok(plan)
     }
 }
@@ -95,7 +144,7 @@ mod tests {
             .iter()
             .all(|d| d.tool_env && matches!(&d.via, Via::Env { var } if *var == d.secret)));
         assert_eq!(plan.unused_secrets, ["GH_TOKEN"]);
-        assert!(plan.files.is_empty() && plan.session.model.is_none());
+        assert!(plan.session.model.is_none());
     }
 
     #[test]
@@ -128,5 +177,35 @@ mod tests {
         let mut context = self::context();
         context.auth = Some("api-key".into());
         assert!(QwenCode.plan(&context).is_err());
+    }
+
+    /// Every Qwen Code session asks in `default`; a home Branchyard prepares
+    /// also gets the system defaults file asking about every tool.
+    #[test]
+    fn the_session_asks_and_a_private_home_asks_about_every_tool() {
+        let plan = QwenCode
+            .plan(&Context::new("qwen-code", Protocol::Acp, "/h", "/w"))
+            .unwrap();
+        assert_eq!(plan.session.args, ["--approval-mode", "default"]);
+        assert!(plan.files.is_empty());
+        assert!(plan.env.iter().all(|e| e.name != SYSTEM_DEFAULTS_VAR));
+
+        let plan = QwenCode.plan(&context()).unwrap();
+        assert_eq!(plan.session.args, ["--approval-mode", "default"]);
+        assert!(plan.env.contains(&EnvVar::plain(
+            SYSTEM_DEFAULTS_VAR,
+            "/h/.qwen/branchyard/system-defaults.json"
+        )));
+        let file = plan
+            .files
+            .iter()
+            .find(|f| f.path == SYSTEM_DEFAULTS)
+            .unwrap();
+        let [crate::edit::Edit::Put(content)] = &file.edits[..] else {
+            panic!("{:?}", file.edits)
+        };
+        let defaults: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(defaults["permissions"]["ask"], serde_json::json!(ASK_TOOLS));
+        assert!(defaults["permissions"].get("allow").is_none());
     }
 }

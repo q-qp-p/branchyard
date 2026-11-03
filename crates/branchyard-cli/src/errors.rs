@@ -413,6 +413,11 @@ pub(crate) fn sdk(error: &Error, branch: Option<&str>) -> Report {
         } => by_kind(kind, message, detail.as_deref(), branch),
         // The engine names the SDK option too; here only the flag matters.
         Error::UnroutedApprovals { profile } => unrouted(profile),
+        Error::UnboundPolicy {
+            profile,
+            reason,
+            private_home_binds,
+        } => unbound(profile, reason, *private_home_binds),
         other => Report::new(other.kind(), other.to_string()),
     };
     report.detail = error.detail();
@@ -446,6 +451,31 @@ fn unrouted(profile: &str) -> Report {
     .next("pick another profile: by harnesses --profiles")
 }
 
+/// A profile that cannot keep the policy's restrictions against its
+/// harness's own permissions: the message, the reason, and the ways on.
+fn unbound(profile: &str, reason: &str, private_home_binds: bool) -> Report {
+    let mut report = Report::new(
+        "unsupported",
+        format!(
+            "unsupported: {profile} cannot keep your policy's restrictions{}: {reason}",
+            if private_home_binds {
+                " in your own home"
+            } else {
+                ""
+            }
+        ),
+    );
+    if private_home_binds {
+        report = report.next("add --isolated (Branchyard prepares the home and keeps your policy)");
+    }
+    report
+        .next(
+            "add --allow-unapproved-tools (its own permissions then decide what your policy \
+             would refuse)",
+        )
+        .next("pick another profile: by harnesses --profiles")
+}
+
 /// The report for an error known by its `kind`, message and detail alone,
 /// as a server or a parent's engine sends it: the hints that need only the
 /// branch the message starts with, the one the command acts on, or the
@@ -471,6 +501,14 @@ fn by_kind(kind: &str, message: &str, detail: Option<&Value>, branch: Option<&st
         "unsupported" if said("unsupported") == Some("unrouted_approvals") => {
             unrouted(said("profile").unwrap_or("this profile"))
         }
+        "unsupported" if said("unsupported") == Some("unbound_policy") => unbound(
+            said("profile").unwrap_or("this profile"),
+            said("reason").unwrap_or("its harness's own permissions could approve a call"),
+            detail
+                .and_then(|d| d.get("private_home_binds"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
         "running" if is_name(first) => report
             .next(format!("by wait {first} (blocks until it settles)"))
             .next(format!("by cancel {first} (stops it)")),
@@ -901,6 +939,62 @@ mod tests {
         );
     }
 
+    /// A profile that keeps the policy only in a home Branchyard prepares
+    /// names --isolated first; one that cannot keep it anywhere does not.
+    #[test]
+    fn an_unbound_policy_names_isolation_the_flag_and_another_profile() {
+        let report = sdk(
+            &Error::UnboundPolicy {
+                profile: "codex-app-server".into(),
+                reason: "your home's configuration can approve calls".into(),
+                private_home_binds: true,
+            },
+            None,
+        );
+        assert_eq!(report.kind, "unsupported");
+        assert_eq!(
+            report.message,
+            "unsupported: codex-app-server cannot keep your policy's restrictions in your own \
+             home: your home's configuration can approve calls"
+        );
+        assert_eq!(report.next.len(), 3);
+        assert!(report.next[0].starts_with("add --isolated"));
+        assert_eq!(
+            report.detail,
+            Some(json!({
+                "unsupported": "unbound_policy",
+                "profile": "codex-app-server",
+                "reason": "your home's configuration can approve calls",
+                "private_home_binds": true,
+            }))
+        );
+        // The same report from a server's kind and detail alone.
+        let remote = sdk(
+            &remote(
+                "unsupported",
+                "unsupported: anything",
+                report.detail.clone().unwrap(),
+            ),
+            None,
+        );
+        assert_eq!((remote.message, remote.next), (report.message, report.next));
+
+        let nowhere = sdk(
+            &Error::UnboundPolicy {
+                profile: "goose-acp".into(),
+                reason: "the agent decides".into(),
+                private_home_binds: false,
+            },
+            None,
+        );
+        assert!(
+            nowhere.next.iter().all(|n| !n.contains("--isolated")),
+            "{:?}",
+            nowhere.next
+        );
+        assert_eq!(nowhere.next.len(), 2);
+    }
+
     #[test]
     fn a_failed_check_names_the_check_the_exit_and_that_nothing_merged() {
         let error = Error::CheckFailed {
@@ -1071,6 +1165,11 @@ mod tests {
             Error::UnroutedApprovals {
                 profile: "pi-rpc".into(),
             },
+            Error::UnboundPolicy {
+                profile: "goose-acp".into(),
+                reason: "the agent decides".into(),
+                private_home_binds: false,
+            },
             Error::Config("bad".into()),
             Error::NoCandidate("b".into()),
             Error::TargetMoved {
@@ -1140,6 +1239,7 @@ mod tests {
                 | Error::HarnessUnavailable { .. }
                 | Error::Unsupported(_)
                 | Error::UnroutedApprovals { .. }
+                | Error::UnboundPolicy { .. }
                 | Error::Config(_)
                 | Error::NoCandidate(_)
                 | Error::TargetMoved { .. }

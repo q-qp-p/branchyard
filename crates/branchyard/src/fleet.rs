@@ -1233,7 +1233,13 @@ pub(crate) fn availability(
     harnesses: Option<&dyn crate::inventory::HarnessGate>,
 ) -> Result<(), String> {
     let profile = harness::select(Some(&candidate.harness)).map_err(|e| e.to_string())?;
-    harness::check_approvals(profile, options.unapproved_tools).map_err(|e| e.to_string())?;
+    harness::check_composition(
+        profile,
+        options,
+        crate::configure::private_home(options),
+        &yard.approval_settings(),
+    )
+    .map_err(|e| e.to_string())?;
     placement::check(yard, options.provider.as_ref()).map_err(|e| e.to_string())?;
     if !placement::sandboxed(options.provider.as_ref()) {
         let replaced = candidate.command.as_deref().or(options.command.as_deref());
@@ -2406,10 +2412,12 @@ mod tests {
             row.id = format!("{harness}-row");
             yard.store().outcomes().put_outcome(&row).unwrap();
         }
-        // Every candidate's executable is this shell, so availability
-        // passes and only the cost decides.
+        // Every candidate's executable is this shell and each branch has a
+        // home of its own, where Codex keeps the default policy, so
+        // availability passes and only the cost decides.
         let options = TaskOptions {
             command: Some(vec!["/bin/sh".into()]),
+            isolated: true,
             ..TaskOptions::default()
         };
         let advise_with = |max_usd: Option<f64>| {

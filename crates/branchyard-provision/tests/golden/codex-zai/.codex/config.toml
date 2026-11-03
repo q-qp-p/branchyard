@@ -1,11 +1,18 @@
 model = "gpt-5.6-sol"
 model_provider = "zai"
+default_permissions = "branchyard"
+web_search = "disabled"
 
 [projects."/workspace"]
-trust_level = "trusted"
+trust_level = "untrusted"
 
 [model_providers.zai]
 name = "Z.ai"
 base_url = "https://api.z.ai/api/v1"
 env_key = "ZAI_API_KEY"
 wire_api = "responses"
+
+[permissions.branchyard.filesystem]
+":root" = "read"
+":workspace_roots" = "write"
+"/workspace/.branchyard-no-read" = "deny"

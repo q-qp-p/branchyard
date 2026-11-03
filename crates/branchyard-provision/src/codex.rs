@@ -47,6 +47,7 @@ use serde_json::json;
 
 use crate::auth::{Method, Spec};
 use crate::edit::{Edit, TomlEdit};
+use crate::permissions::Fallback;
 use crate::{
     needs_private_home, pass_session, toml, unused, Context, EnvVar, Plan, Protocol, Provisioner,
     Refused, Telemetry, Via,
@@ -57,6 +58,35 @@ pub(crate) const CONFIG: &str = ".codex/config.toml";
 
 /// The provider written for the model gateway, and the `model_provider`.
 pub const GATEWAY_PROVIDER: &str = "branchyard";
+
+/// The permission profile Branchyard writes into a private `CODEX_HOME`
+/// and makes the default, so the thread's sandbox is the profile's.
+pub const PERMISSION_PROFILE: &str = "branchyard";
+
+/// A path the profile denies reading. It need not exist: a profile with a
+/// deny entry is what stops Codex retrying an approved command outside its
+/// sandbox without asking again (codex-cli 0.166.0, 3 November 2026).
+const DENY_SENTINEL: &str = ".branchyard-no-read";
+
+/// The `[permissions.branchyard.filesystem]` table: read everywhere, write
+/// in the workspace roots, and the deny entry that disables the retry.
+fn permission_profile(workspace: &str) -> String {
+    let sentinel = format!("{}/{DENY_SENTINEL}", workspace.trim_end_matches('/'));
+    format!(
+        "[permissions.{PERMISSION_PROFILE}.filesystem]\n\":root\" = \"read\"\n\
+         \":workspace_roots\" = \"write\"\n{} = \"deny\"\n",
+        toml::string(&sentinel)
+    )
+}
+
+/// The `[projects."<workspace>"]` table that marks the working tree
+/// untrusted, so Codex loads no rules or hooks from the repository. Without
+/// it, codex-cli 0.166.0 trusts the project the thread starts in.
+fn untrusted_project(workspace: &str) -> (String, String) {
+    let name = format!("projects.{}", toml::string(workspace));
+    let table = format!("[{name}]\ntrust_level = \"untrusted\"\n");
+    (name, table)
+}
 
 /// The `[model_providers.branchyard]` table for a gateway at `url`.
 fn gateway_provider(url: &str) -> String {
@@ -109,6 +139,36 @@ pub fn otel_section(telemetry: &Telemetry) -> String {
     ]
     .join("\n")
         + "\n"
+}
+
+/// The edits that keep Codex asking Branchyard: the permission profile as
+/// the default, the project untrusted, and web search off unless the policy
+/// allows everything, since Codex runs a search without asking anyone.
+fn composition_edits(context: &Context) -> Vec<TomlEdit> {
+    let (project, project_table) = untrusted_project(&context.workspace);
+    let mut edits = vec![
+        TomlEdit::SetKey {
+            key: "default_permissions".into(),
+            literal: toml::string(PERMISSION_PROFILE),
+        },
+        TomlEdit::RemoveTables(format!("permissions.{PERMISSION_PROFILE}")),
+        TomlEdit::AppendTable(permission_profile(&context.workspace)),
+        TomlEdit::RemoveTables(project),
+        TomlEdit::AppendTable(project_table),
+    ];
+    let allows_everything = context
+        .permissions
+        .as_ref()
+        .is_some_and(|p| p.fallback == Fallback::Allow && p.rules.iter().all(|r| r.allow));
+    edits.push(if allows_everything {
+        TomlEdit::RemoveKey("web_search".into())
+    } else {
+        TomlEdit::SetKey {
+            key: "web_search".into(),
+            literal: toml::string("disabled"),
+        }
+    });
+    edits
 }
 
 pub(crate) struct Codex;
@@ -210,6 +270,13 @@ impl Provisioner for Codex {
                 }
                 toml_edits.extend(edits);
             }
+        }
+        // Composition with Codex's own permissions, in a private home only:
+        // the user's home is theirs to configure. See
+        // docs/harness-integration.md#composing-with-a-harnesss-own-permissions.
+        if context.private_home && context.protocol == Protocol::CodexAppServer {
+            toml_edits.extend(composition_edits(context));
+            plan.session.permission_profile = Some(PERMISSION_PROFILE.into());
         }
         if !toml_edits.is_empty() {
             needs_private_home(context, "Codex's config.toml")?;
@@ -318,7 +385,10 @@ mod tests {
             anthropic: true,
             openai: false,
         });
-        assert!(Codex.plan(&context).unwrap().files.is_empty());
+        let plan = Codex.plan(&context).unwrap();
+        let file = plan.files.iter().find(|f| f.path == CONFIG).unwrap();
+        let out = apply_all(&file.edits, None).unwrap().unwrap();
+        assert!(!out.contains("model_provider"), "{out}");
     }
 
     #[test]
@@ -331,6 +401,10 @@ mod tests {
     fn no_effort_writes_no_reasoning_key() {
         let mut context = Context::new("codex", Protocol::CodexAppServer, "/h", "/w");
         context.private_home = true;
+        let out = reconcile(None, None, None);
+        assert!(!out.contains("reasoning_effort"), "{out}");
+        // Outside a private home nothing is written at all.
+        context.private_home = false;
         let plan = Codex.plan(&context).unwrap();
         assert!(plan.files.is_empty() && plan.env.is_empty());
     }
@@ -366,5 +440,73 @@ mod tests {
         ] {
             assert_eq!(Effort::from_level(level), effort, "{level}");
         }
+    }
+
+    fn composed(
+        permissions: Option<crate::permissions::Permissions>,
+        current: Option<&str>,
+    ) -> (Plan, String) {
+        let mut context = Context::new("codex", Protocol::CodexAppServer, "/h", "/w");
+        context.private_home = true;
+        context.permissions = permissions;
+        let plan = Codex.plan(&context).unwrap();
+        let file = plan.files.iter().find(|f| f.path == CONFIG).unwrap();
+        let out = apply_all(&file.edits, current).unwrap().unwrap();
+        (plan, out)
+    }
+
+    /// The configuration verified with codex-cli 0.166.0: Branchyard's
+    /// profile replaces the user's default, its deny entry is present, and
+    /// the working tree is untrusted even where the copied config trusted it.
+    #[test]
+    fn a_private_home_makes_branchyards_profile_the_default() {
+        let user = "default_permissions = \":danger-no-sandbox\"\n\
+                    [projects.\"/w\"]\ntrust_level = \"trusted\"\n";
+        let (plan, out) = composed(None, Some(user));
+        assert_eq!(
+            plan.session.permission_profile.as_deref(),
+            Some("branchyard")
+        );
+        for line in [
+            "default_permissions = \"branchyard\"",
+            "[permissions.branchyard.filesystem]",
+            "\":root\" = \"read\"",
+            "\":workspace_roots\" = \"write\"",
+            "\"/w/.branchyard-no-read\" = \"deny\"",
+            "[projects.\"/w\"]\ntrust_level = \"untrusted\"",
+            "web_search = \"disabled\"",
+        ] {
+            assert!(out.contains(line), "{line} in\n{out}");
+        }
+        assert!(!out.contains("danger-no-sandbox"), "{out}");
+        assert!(!out.contains("\"trusted\""), "{out}");
+        // A second turn in the same home writes the same file.
+        let (_, again) = composed(None, Some(&out));
+        assert_eq!(again, out);
+    }
+
+    #[test]
+    fn web_search_stays_when_the_policy_allows_everything() {
+        let everything = crate::permissions::Permissions::new(Fallback::Allow);
+        let (_, out) = composed(Some(everything), Some("web_search = \"live\"\n"));
+        assert!(!out.contains("web_search"), "{out}");
+        let (_, out) = composed(
+            Some(crate::permissions::Permissions::new(Fallback::Deny)),
+            None,
+        );
+        assert!(out.contains("web_search = \"disabled\""), "{out}");
+    }
+
+    /// The user's own home is theirs: nothing is written there and no
+    /// profile is named, so a restricting policy is refused before the run.
+    #[test]
+    fn the_users_own_home_gets_no_profile() {
+        let context = Context::new("codex", Protocol::CodexAppServer, "/h", "/w");
+        let plan = Codex.plan(&context).unwrap();
+        assert!(plan.files.iter().all(|f| f.path != CONFIG));
+        assert_eq!(plan.session.permission_profile, None);
+        let mut acp = Context::new("codex", Protocol::Acp, "/h", "/w");
+        acp.private_home = true;
+        assert_eq!(Codex.plan(&acp).unwrap().session.permission_profile, None);
     }
 }

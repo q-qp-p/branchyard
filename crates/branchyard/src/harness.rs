@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use branchyard_harness::profiles::{self, Profile, PROFILES};
+use branchyard_harness::Binding;
 use branchyard_runtime::Environment;
 use serde_json::Value;
 
-use crate::{Error, HarnessInfo, Unavailable};
+use crate::{Error, HarnessInfo, TaskOptions, Unavailable};
 
 pub(crate) const DEFAULT_HARNESS: &str = "claude-code";
 
@@ -172,6 +173,97 @@ pub(crate) fn check_approvals(profile: &Profile, allowed: bool) -> Result<(), Er
     }
     Err(Error::UnroutedApprovals {
         profile: profile.id.to_owned(),
+    })
+}
+
+/// Refuse a run whose restrictions `profile` cannot make binding on its
+/// harness's own permission system ([`Error::UnboundPolicy`]), after
+/// [`check_approvals`]. `private_home` says whether the run gets a home
+/// Branchyard prepares (isolated, or on a sandbox provider). A run restricts when its policy refuses or asks
+/// about anything, or when an approval rule (the administrator's, a
+/// person's, or the task's own seat) names a tool. Nothing is refused when
+/// the task lets the harness's own permissions decide
+/// ([`TaskOptions::unapproved_tools`]); the branch's log then says so.
+pub(crate) fn check_composition(
+    profile: &Profile,
+    options: &TaskOptions,
+    private_home: bool,
+    approvals: &crate::effects::ApprovalSettings,
+) -> Result<(), Error> {
+    check_approvals(profile, options.unapproved_tools)?;
+    if options.unapproved_tools || !restricts(options, approvals) {
+        return Ok(());
+    }
+    let composition = profile.composition;
+    let bound = match composition.binding {
+        Binding::Always => true,
+        Binding::PrivateHome => private_home,
+        Binding::Unverified => false,
+    };
+    if bound {
+        return Ok(());
+    }
+    let private_home_binds = composition.binding == Binding::PrivateHome;
+    Err(Error::UnboundPolicy {
+        profile: profile.id.to_owned(),
+        reason: if private_home_binds {
+            OWN_HOME.to_owned()
+        } else {
+            composition.how.to_owned()
+        },
+        private_home_binds,
+    })
+}
+
+/// Why a profile that binds the policy in a private home cannot in the
+/// user's own.
+const OWN_HOME: &str = "Branchyard writes the settings that make it ask only into a home it \
+     prepares, and your own home's configuration can approve calls without asking Branchyard";
+
+/// Whether a run under `options` restricts anything a harness could
+/// approve on its own; see [`check_composition`].
+pub(crate) fn restricts(
+    options: &TaskOptions,
+    approvals: &crate::effects::ApprovalSettings,
+) -> bool {
+    options.policy.restricts()
+        || approvals.restricts_tools()
+        || options
+            .provision
+            .as_ref()
+            .and_then(|p| p.approvals.as_ref())
+            .is_some_and(crate::effects::restricts_tools)
+}
+
+/// The line a branch's log carries when its task let the harness's own
+/// permissions decide calls the profile cannot bind
+/// ([`TaskOptions::unapproved_tools`]): which profile, and why. `None`
+/// when nothing was given up.
+pub(crate) fn unbound_note(
+    profile: &Profile,
+    options: &TaskOptions,
+    private_home: bool,
+    approvals: &crate::effects::ApprovalSettings,
+) -> Option<String> {
+    if !options.unapproved_tools || !restricts(options, approvals) {
+        return None;
+    }
+    let composition = profile.composition;
+    let bound = match composition.binding {
+        Binding::Always => profile.driver().capabilities().tool_approvals,
+        Binding::PrivateHome => private_home,
+        Binding::Unverified => false,
+    };
+    let why = match composition.binding {
+        Binding::PrivateHome => OWN_HOME,
+        _ => composition.how,
+    };
+    (!bound).then(|| {
+        format!(
+            "{} decides some tool calls itself, which Branchyard's policy and approvals do not \
+             reach ({why}); allowed by unapproved_tools",
+            profile.id
+        )
     })
 }
 

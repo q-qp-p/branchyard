@@ -27,6 +27,7 @@ fn open_with(mode: SessionMode) -> (ClaudeCode, Opened) {
             instructions: None,
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
+            permission_profile: None,
         })
         .unwrap();
     assert_eq!(opened.launch.cwd, "/workspace");
@@ -61,7 +62,7 @@ fn session(id: &str) -> NativeSession {
 }
 
 fn init(id: &str) -> Value {
-    json!({"type": "system", "subtype": "init", "session_id": id})
+    json!({"type": "system", "subtype": "init", "session_id": id, "permissionMode": "default"})
 }
 
 #[test]
@@ -78,11 +79,19 @@ fn launch_matches_the_agent_sdk_invocation() {
             "stream-json",
             "--verbose",
             "--permission-prompt-tool",
-            "stdio"
+            "stdio",
+            "--permission-mode",
+            "default"
         ]
     );
     assert_eq!(initialize["type"], "control_request");
-    assert_eq!(initialize["request"], json!({"subtype": "initialize"}));
+    assert_eq!(
+        initialize["request"],
+        json!({
+            "subtype": "initialize",
+            "hooks": {"PreToolUse": [{"matcher": "*", "hookCallbackIds": ["branchyard-pre-tool-use"]}]},
+        })
+    );
 
     let (_, argv, _) = open(SessionMode::Resume(session("parent")));
     assert!(argv.ends_with(&["--resume".into(), "parent".into()]));
@@ -100,6 +109,7 @@ fn replays_a_recorded_claude_code_turn() {
     // every other field equals the recorded frame.
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .prompt("Say hello.")
         .run(&mut driver, &opened);
@@ -927,6 +937,7 @@ fn steered_input_joins_the_turn_at_its_next_model_call() {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .prompt("TOOLTURN: please start")
         .steer(STEER_PROMPT)
@@ -958,6 +969,7 @@ fn a_steered_follow_up_keeps_the_turn_open_until_it_is_answered() {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .prompt("TEXTTURN: please start")
         .steer(STEER_PROMPT)
@@ -993,6 +1005,7 @@ fn an_interrupt_cancels_queued_steered_input() {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .prompt("TEXTTURN: please start")
         .steer(STEER_PROMPT)
@@ -1247,6 +1260,7 @@ fn replay_2_1_293(name: &str, prompt: &str) -> Vec<Event> {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let mut replay = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .answer_permissions(PermissionDecision::Allow)
         .prompt(prompt);
@@ -1361,6 +1375,7 @@ fn a_turn_is_held_open_until_its_background_task_and_follow_up_finish() {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .answer_permissions(PermissionDecision::Allow)
         .prompt(BACKGROUND_PROMPT)
@@ -1833,6 +1848,7 @@ fn replay_until_end_session(name: &str, prompt: &str) -> Vec<Event> {
     let (mut driver, opened) = open_with(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .answer_permissions(PermissionDecision::Allow)
         .prompt(prompt)
@@ -1991,6 +2007,7 @@ fn a_resumed_sessions_queued_notification_does_not_end_the_turn() {
     )));
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .answer_permissions(PermissionDecision::Allow)
         .prompt("Reply with the single word resumed and end your turn.")
@@ -2064,6 +2081,7 @@ fn a_resumed_prompt_that_joins_the_notification_turn_keeps_its_text_and_tools() 
     )));
     let replayed = Replay::new(&recorded)
         .alias("/request_id")
+        .added_since_recording("/request/hooks")
         .alias("/uuid")
         .answer_permissions(PermissionDecision::Allow)
         .prompt("Run echo resumed, then reply with the single word resumed and end your turn.")
@@ -2194,4 +2212,123 @@ fn text_blocks_in_a_row_are_paragraphs() {
         }));
     }
     assert_eq!(said, ["First.", "\n\nSecond.", "Third."]);
+}
+
+/// A session in any permission mode but `default` could approve tool calls
+/// on its own: a settings file's `defaultMode` of `bypassPermissions` or
+/// `acceptEdits` that `--permission-mode` did not override, or an init with
+/// no mode at all, is refused rather than run.
+#[test]
+fn a_session_not_in_the_default_permission_mode_is_refused() {
+    for mode in [
+        json!("bypassPermissions"),
+        json!("acceptEdits"),
+        json!("auto"),
+        Value::Null,
+    ] {
+        let mut driver = ready(SessionMode::Fresh);
+        driver.submit("go").unwrap();
+        let mut frame = init("s-1");
+        frame["permissionMode"] = mode.clone();
+        let (events, _) = feed(&mut driver, &frame);
+        assert!(
+            matches!(&events[0], Event::ProtocolViolation { detail } if detail.contains("permission mode")),
+            "{mode}: {events:?}"
+        );
+    }
+    let mut driver = ready(SessionMode::Fresh);
+    driver.submit("go").unwrap();
+    let (events, _) = feed(&mut driver, &init("s-1"));
+    assert!(
+        matches!(&events[0], Event::SessionStarted { .. }),
+        "{events:?}"
+    );
+}
+
+/// The `PreToolUse` hook registered at `initialize` answers every call
+/// `ask`, so Claude Code sends it to Branchyard as `can_use_tool` even when
+/// an allow rule in a settings file would approve it. No event: the
+/// decision is the `can_use_tool` request that follows.
+#[test]
+fn the_pre_tool_use_hook_sends_every_call_to_branchyard() {
+    let mut driver = ready(SessionMode::Fresh);
+    driver.submit("go").unwrap();
+    let callback = json!({
+        "type": "control_request",
+        "request_id": "hook-7",
+        "request": {
+            "subtype": "hook_callback",
+            "callback_id": "branchyard-pre-tool-use",
+            "input": {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}},
+            "tool_use_id": "toolu_1",
+        },
+    });
+    let (events, frames) = feed(&mut driver, &callback);
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(
+        frames,
+        vec![json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": "hook-7",
+                "response": {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask"}},
+            },
+        })]
+    );
+
+    // A callback Branchyard did not register is still refused.
+    let mut other = callback.clone();
+    other["request"]["callback_id"] = json!("someone-else");
+    let (events, frames) = feed(&mut driver, &other);
+    assert!(
+        matches!(&events[0], Event::UnsupportedRequest { .. }),
+        "{events:?}"
+    );
+    assert_eq!(frames[0]["response"]["subtype"], "error");
+}
+
+/// A real Claude Code 2.1.317 session, driven with these frames against a
+/// scripted stand-in for the Messages API (no model): the repository is
+/// trusted and its `.claude/settings.json` allows `Bash`, which would run it
+/// without asking anyone. The `PreToolUse` hook registered at `initialize`
+/// answers `ask`, so the call reaches Branchyard as `can_use_tool` and its
+/// denial holds. Every frame the driver writes is the one the binary took.
+#[test]
+fn a_call_a_repositorys_allow_rule_would_approve_still_reaches_branchyard() {
+    let recorded = Transcript::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/claude-code-2.1.317-hook-routes-allowed-call.jsonl"
+    ));
+    let (mut driver, opened) = open_with(SessionMode::Fresh);
+    let replayed = Replay::new(&recorded)
+        .alias("/request_id")
+        .alias("/uuid")
+        .prompt("Run the command.")
+        .answer_permissions(PermissionDecision::Deny {
+            message: "denied by policy".into(),
+        })
+        .run(&mut driver, &opened);
+    assert_eq!(
+        replayed.sent, 4,
+        "initialize with the hook, the prompt, the hook's ask and the denial"
+    );
+    assert!(replayed.unsent.is_empty(), "{:?}", replayed.unsent);
+    let asked: Vec<_> = replayed
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::PermissionRequested { request, .. } => Some(request.tool.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, ["Bash"]);
+    assert!(
+        replayed
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::TurnEnded { .. })),
+        "{:?}",
+        replayed.events
+    );
 }
