@@ -42,8 +42,11 @@ pub struct Reconciled {
 /// gone has no turn running; a store that cannot be read is an error, not
 /// "not running": that would move the effects of a turn still in flight to
 /// `unknown`.
-fn turn_running(yard: &Yard, entry: &EffectEntry, now: u64) -> Result<bool, Error> {
-    let store = yard.store();
+pub(crate) fn turn_running(
+    store: &crate::state::Store,
+    entry: &EffectEntry,
+    now: u64,
+) -> Result<bool, Error> {
     let record = match store.read(&entry.branch) {
         Ok(record) => record,
         Err(Error::UnknownBranch(_)) => return Ok(false),
@@ -56,8 +59,16 @@ fn turn_running(yard: &Yard, entry: &EffectEntry, now: u64) -> Result<bool, Erro
         .leases()
         .map_err(|e| e.could_not("read the branch leases"))?
         .into_iter()
-        .any(|l| l.branch == entry.branch && l.owner.is_some() && l.stale(now).is_none());
-    Ok(held && record.info.turns + 1 == entry.turn)
+        .any(|l| {
+            l.branch == entry.branch
+                && l.turn == u64::from(entry.turn)
+                && l.owner.is_some()
+                && l.stale(now).is_none()
+        });
+    Ok(record.info.status == crate::BranchStatus::Running
+        && held
+        && record.info.turns + 1 == entry.turn
+        && entry.created_ms >= record.created_ms)
 }
 
 /// Move `begun` entries whose turn is not running to `unknown`. No network.
@@ -65,7 +76,7 @@ pub(crate) fn orphans(yard: &Yard, now: u64) -> Result<Vec<String>, Error> {
     let ledger = yard.store();
     let mut moved = Vec::new();
     for entry in ledger.effects().effects(None)? {
-        if entry.state != EffectState::Begun || turn_running(yard, &entry, now)? {
+        if entry.state != EffectState::Begun || turn_running(&ledger, &entry, now)? {
             continue;
         }
         let change = EffectMove::to(EffectState::Unknown).detail(

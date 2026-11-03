@@ -162,6 +162,7 @@ pub(crate) fn new_record(store: &crate::state::Store, new: NewBranch<'_>) -> Res
             stalled: false,
             awaiting: None,
             stage: None,
+            liveness: None,
             superseded_by: None,
             model: new.provision.as_ref().and_then(|p| p.model.clone()),
             provider: crate::providers::label_of(new.provider.as_ref()),

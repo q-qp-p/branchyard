@@ -16,7 +16,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use branchyard::{
-    Activity, BranchStatus, Error, Event, Policy, RecordedEvent, SteerState, TurnOutcome, Yard,
+    Activity, BranchStatus, Error, Event, LivenessState, Policy, RecordedEvent, SteerState,
+    TurnOutcome, Yard,
 };
 use branchyard_testkit::wait;
 use common::{edit_record, fake_agent, text, Fixture};
@@ -325,6 +326,10 @@ fn two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other() {
     let other = Yard::open(&f.root).unwrap();
     assert!(other.recover().unwrap().is_empty());
     let held = other.branch("held").unwrap();
+    // Its engine renews the lease: live, as seen from the other yard.
+    let liveness = held.info().liveness.clone().unwrap();
+    assert_eq!(liveness.state, LivenessState::Live, "{liveness:?}");
+    assert!(liveness.known_until_ms > liveness.heard_ms);
     assert!(matches!(
         held.send("WHOAMI", f.options()),
         Err(Error::Running(name)) if name == "held"
@@ -374,6 +379,21 @@ fn a_recorded_snapshot_is_used_when_recovery_finishes_a_turn() {
     )
     .unwrap();
     drop(db);
+    // Before recovery the record still says running; its liveness says
+    // no engine backs that, and why.
+    let listed = f.yard.branches().unwrap();
+    let again = listed.iter().find(|b| b.name == "again").unwrap();
+    assert_eq!(again.status, BranchStatus::Running);
+    let liveness = again.liveness.as_ref().unwrap();
+    assert_eq!(liveness.state, LivenessState::Lost);
+    assert!(
+        liveness
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("no longer running"),
+        "{liveness:?}"
+    );
 
     let yard = Yard::open(&f.root).unwrap();
     let recovered_branch = yard.branch("again").unwrap();

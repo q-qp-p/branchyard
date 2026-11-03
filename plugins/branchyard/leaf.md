@@ -2,6 +2,8 @@ Your delegated branch cannot create Branchyard children. Native planning, task
 graphs and subagents follow harness permissions and limits. `by` on PATH and in
 `$BRANCHYARD_BY` acts as your branch; commands accept `--json`:
 
+`by obligations [BRANCH] --json` lists approvals, uncertain effects and blocked work. Local only.
+
 - `by inspect` shows your status, budget and last message.
 - `by check` runs your configured or inherited check on your current work
   merged into your parent's branch as integration would. Run and fix a code

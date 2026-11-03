@@ -1109,3 +1109,15 @@ An event a bot caused no longer fires a new event trigger unless it allows bots 
 | `Task` | `by`, `policy`, `origin` | also `trigger`, set when a trigger's run starts the task; `by` and `policy` unchanged |
 | `TaskOptions` | no trigger | `trigger`, read when a branch starts a new task |
 | `trigger runs` text | the state, key and what happened | also `by AUTHOR`, marked `(bot)` |
+
+## Added with liveness and obligations
+
+A running branch says whether its engine is still heard from ([durability](durability.md#liveness)), and one projection lists what branches still owe ([obligations](obligations.md)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| List what is owed: approvals, unknown and staged effects, lost turns and engines, blocked, ready and waiting children, parked parents, undo windows, each with the commands that deal with it | `Yard::obligations`, `obligations_at` (`Obligation`, `ObligationKind`) | `obligations [BRANCH] [--json]` | no: refused with `usage` | no | no | `by obligations <branch>` in a local harness's shell, as `by effects`; named in the delegate skill |
+
+| Surface | Before | Now |
+|---|---|---|
+| `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for every running branch, with zero timing fields and a lost reason when no held lease exists, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |

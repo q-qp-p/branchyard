@@ -708,6 +708,7 @@ class BranchInfo(Record):
     cost_usd: Optional[float]  # None when the harness reports none
     created_at: int
     stalled: bool
+    liveness: Optional[JSON]  # {state: live|unknown|lost, heard_ms, known_until_ms, reason?}; None unless running
 
     @property
     def status(self) -> Status:

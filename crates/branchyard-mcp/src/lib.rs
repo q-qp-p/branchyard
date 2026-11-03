@@ -108,6 +108,7 @@ Manager tool outputs have a bounded JSON budget, with explicit errors for oversi
 The operator manager's start_session accepts explicit unapproved_tools acknowledgment for profiles without routed approvals, still subject to server permission. \
 It also takes preset, an operator execution preset ID that a server can require; the preset then supplies the provider and bounds the harness and model. \
 An operator can select --provider container or --provider agent-sandbox with a digest-pinned --image, --cpus, --memory and --pass-env. \
+Local by obligations [BRANCH] --json lists durable work owed; it refuses --remote. \
 Agent Sandbox also needs --kube-context and --kube-namespace. --sandbox-runtime defaults to gvisor; runc applies only to Container and microvm applies only to Agent Sandbox. \
 --sandbox-network defaults to deny; unrestricted permits ordinary networking. Container permits cloud metadata; Agent Sandbox retains its GKE metadata blocks. Native providers destroy allocations after each turn and refuse retention, snapshots and required hostname allowlists. \
 Its workspace_action requires revision from inspect_workspace. On revision_conflict inspect again before explicitly proposing a new action; never automatically refresh and resubmit. \

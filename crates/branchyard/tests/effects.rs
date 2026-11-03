@@ -15,12 +15,13 @@ use std::time::Duration;
 
 use branchyard::connectors::{Bundle, Gateway, GrantEntry, Packager};
 use branchyard::effects::{
-    Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectState, Layer, UndoKind,
+    Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectEntry, EffectState,
+    Layer, UndoKind,
 };
 use branchyard::stage::{Reason, Stage};
 use branchyard::{
-    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy,
-    Provisioning, Spawn, TaskOptions,
+    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, ObligationKind,
+    Policy, Provisioning, Spawn, TaskOptions,
 };
 use branchyard_testkit::wait;
 use common::{fake_agent, text, Fixture};
@@ -655,6 +656,347 @@ fn a_lost_answer_is_unknown_until_the_lookup_settles_it() {
         "{settled:?}"
     );
     assert_eq!(mock.calls_to("flaky__charge").len(), 1);
+}
+
+#[test]
+fn the_turn_after_a_lost_one_is_told_which_calls_it_made() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("lost")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("lost")).unwrap();
+    let states: Vec<_> = ledger.iter().map(|e| e.state).collect();
+    assert_eq!(states, [EffectState::Confirmed, EffectState::Unknown]);
+    // As recovery leaves a branch whose submitted turn its engine lost.
+    common::edit_record(&f.root, "lost", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+    });
+    let sent = branch.send("WHOAMI", granted(&f)).unwrap();
+    let prompt = sent
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(prompt.starts_with("<branchyard-recovered>"), "{prompt}");
+    let posted = format!("- slack: chat_post ({}): happened", short(&ledger[0].id));
+    let charged = format!(
+        "- flaky: charge ({}): may have happened: its answer was lost; do not call it again",
+        short(&ledger[1].id)
+    );
+    assert!(prompt.contains(&posted), "{prompt}");
+    assert!(prompt.contains(&charged), "{prompt}");
+    assert!(prompt.contains("`by effects reconcile`"), "{prompt}");
+    assert!(
+        prompt.contains("a push, a pull request, a comment, a message"),
+        "untracked shell effects still need their own warning: {prompt}"
+    );
+    // Told once: the turn after does not repeat it.
+    let again = sent.send("WHOAMI", granted(&f)).unwrap();
+    let last = again
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(!last.contains("connector gateway"), "{last}");
+}
+
+/// Replay a durable ledger projection without invoking its upstream again.
+fn write_effect(f: &Fixture, entry: &EffectEntry) {
+    let db = rusqlite::Connection::open(f.root.join(".branchyard/state.db")).unwrap();
+    db.execute(
+        "INSERT INTO effects (id, branch, state, created_ms, entry) VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(id) DO UPDATE SET state = excluded.state, created_ms = excluded.created_ms, \
+         entry = excluded.entry",
+        rusqlite::params![
+            entry.id,
+            entry.branch,
+            entry.state.as_str(),
+            entry.created_ms,
+            serde_json::to_string(entry).unwrap()
+        ],
+    )
+    .unwrap();
+}
+
+fn last_prompt(branch: &branchyard::Branch) -> String {
+    branch
+        .events()
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.activity {
+            Activity::Prompt(prompt) => Some(prompt),
+            _ => None,
+        })
+        .next_back()
+        .unwrap()
+}
+
+#[test]
+fn a_recovered_turn_excludes_effects_of_a_name_recreated_in_the_same_second() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    f.task(&calls(&script, &[("slack__chat_post", "{}")]))
+        .options(granted(&f))
+        .name("reused")
+        .run()
+        .unwrap();
+    let mut old = f.yard.effects(Some("reused")).unwrap().remove(0);
+    f.yard.remove("reused").unwrap();
+    let branch = f
+        .task(&calls(&script, &[("flaky__charge", "{}")]))
+        .options(granted(&f))
+        .name("reused")
+        .run()
+        .unwrap();
+    let mut current = f
+        .yard
+        .effects(Some("reused"))
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.connector == "flaky")
+        .unwrap();
+    // Deterministic times within one second: the old incarnation's entry
+    // survives removal, but predates the new record by 800 milliseconds.
+    old.created_ms = 10_100;
+    current.created_ms = 10_950;
+    write_effect(&f, &old);
+    write_effect(&f, &current);
+    common::edit_record(&f.root, "reused", |record| {
+        record["created_ms"] = serde_json::json!(10_900);
+        record["info"]["created_at"] = serde_json::json!(10);
+        record["lost"] = serde_json::json!("the engine stopped");
+    });
+    let sent = branch.send("WHOAMI", granted(&f)).unwrap();
+    let prompt = last_prompt(&sent);
+    assert!(prompt.contains(short(&current.id)), "{prompt}");
+    assert!(!prompt.contains(short(&old.id)), "{prompt}");
+    assert!(prompt.contains("flaky: charge"), "{prompt}");
+    assert!(!prompt.contains("slack: chat_post"), "{prompt}");
+}
+
+#[test]
+fn recovered_effect_outcomes_do_not_claim_failure_means_nothing_happened() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(&f, person(&[("slack:*", Approval::Allow)]));
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"text":"private-request-argument"}"#),
+                ("slack__chat_post", "{}"),
+                ("slack__chat_post", "{}"),
+            ],
+        ))
+        .options(granted(&f))
+        .name("outcomes")
+        .run()
+        .unwrap();
+    let entries = f.yard.effects(Some("outcomes")).unwrap();
+    for (entry, state) in entries.iter().zip([
+        EffectState::Failed,
+        EffectState::Expired,
+        EffectState::UndoFailed,
+    ]) {
+        let mut entry = entry.clone();
+        entry.state = state;
+        entry.detail = Some("private-upstream-response".into());
+        write_effect(&f, &entry);
+    }
+    common::edit_record(&f.root, "outcomes", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+    });
+    let sent = branch.send("WHOAMI", granted(&f)).unwrap();
+    let prompt = last_prompt(&sent);
+    for (entry, outcome) in entries.iter().zip([
+        "reported failure; inspect upstream before retry",
+        "happened; its undo window expired; do not call it again",
+        "happened; its undo failed or its answer was lost; inspect upstream",
+    ]) {
+        assert!(
+            prompt.contains(&format!(
+                "- slack: chat_post ({}): {outcome}",
+                short(&entry.id)
+            )),
+            "{prompt}"
+        );
+    }
+    assert!(!prompt.contains("did not happen"), "{prompt}");
+    assert!(!prompt.contains("private-request-argument"), "{prompt}");
+    assert!(!prompt.contains("private-upstream-response"), "{prompt}");
+}
+
+#[test]
+fn begun_effects_belong_to_their_live_turn_and_an_unowned_running_record_is_lost() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(&f, person(&[("slack:*", Approval::Allow)]));
+    let branch = f
+        .task(&calls(&script, &[("slack__chat_post", "{}")]))
+        .options(granted(&f))
+        .name("turns")
+        .run()
+        .unwrap();
+    let mut old = f.yard.effects(Some("turns")).unwrap().remove(0);
+    old.state = EffectState::Begun;
+    write_effect(&f, &old);
+    let mut current = old.clone();
+    current.id = branchyard_support::new_ulid().unwrap();
+    current.turn += 1;
+    std::thread::scope(|scope| {
+        let run = scope.spawn(|| branch.send("HANG", granted(&f)));
+        wait::until("the later turn to hold a live lease", || {
+            f.yard
+                .branch("turns")
+                .unwrap()
+                .info()
+                .liveness
+                .as_ref()
+                .is_some_and(|liveness| liveness.state == branchyard::LivenessState::Live)
+        });
+        write_effect(&f, &current);
+        let owed = f.yard.obligations(Some("turns")).unwrap();
+        let unknown: Vec<_> = owed
+            .iter()
+            .filter(|o| o.kind == ObligationKind::UnknownEffect)
+            .map(|o| o.id.as_deref())
+            .collect();
+        f.yard.cancel("turns").unwrap();
+        run.join().unwrap().unwrap();
+        assert_eq!(unknown, [Some(old.id.as_str())], "{owed:?}");
+    });
+    // A failed owner may release its lease without settling its record.
+    common::edit_record(&f.root, "turns", |record| {
+        record["info"]["status"] = serde_json::json!({"state":"running"});
+        record["info"]["turns"] = serde_json::json!(current.turn - 1);
+    });
+    let branch = f.yard.branch("turns").unwrap();
+    let liveness = branch.info().liveness.as_ref().unwrap();
+    assert_eq!(liveness.state, branchyard::LivenessState::Lost);
+    assert_eq!((liveness.heard_ms, liveness.known_until_ms), (0, 0));
+    assert!(liveness.reason.as_ref().unwrap().contains("no held lease"));
+    let listed = f.yard.branches().unwrap();
+    assert_eq!(listed[0].liveness.as_ref(), Some(liveness));
+    assert!(
+        listed[0].stage.is_some(),
+        "stage still projects alongside liveness"
+    );
+    let owed = f.yard.obligations(Some("turns")).unwrap();
+    assert!(
+        owed.iter().any(|o| {
+            o.kind == ObligationKind::UnknownEffect && o.id.as_deref() == Some(current.id.as_str())
+        }),
+        "an unleased turn has no in-flight call: {owed:?}"
+    );
+    let engine = owed
+        .iter()
+        .find(|o| o.kind == ObligationKind::LostEngine)
+        .unwrap();
+    assert_eq!(engine.since_ms, None, "last heartbeat is unknown");
+}
+
+#[test]
+fn obligations_list_what_a_branch_owes_until_its_source_settles() {
+    let f = Fixture::new();
+    let (mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    mock.set_deadline(4_102_444_800_000);
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("owes")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("owes")).unwrap();
+    let kinds = |owed: &[branchyard::Obligation]| -> Vec<(ObligationKind, String)> {
+        owed.iter().map(|o| (o.kind, o.branch.clone())).collect()
+    };
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [
+            (ObligationKind::UnknownEffect, "owes".to_owned()),
+            (ObligationKind::UndoWindow, "owes".to_owned()),
+        ],
+        "{owed:?}"
+    );
+    assert_eq!(owed[0].id.as_deref(), Some(ledger[1].id.as_str()));
+    assert_eq!(owed[0].next[0], "by effects reconcile");
+    assert_eq!(owed[1].due_ms, Some(4_102_444_800_000));
+    // Past the deadline the window is no longer owed.
+    let later = f
+        .yard
+        .obligations_at(Some("owes"), 4_102_444_800_001)
+        .unwrap();
+    assert_eq!(
+        kinds(&later),
+        [(ObligationKind::UnknownEffect, "owes".to_owned())]
+    );
+
+    // A lost turn is owed a decision until another turn is sent.
+    common::edit_record(&f.root, "owes", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+        record["info"]["status"] = serde_json::json!({"state": "interrupted"});
+    });
+    let owed = f.yard.obligations(None).unwrap();
+    assert!(
+        owed.iter()
+            .any(|o| o.kind == ObligationKind::LostTurn && o.next[1] == "by send owes --retry"),
+        "{owed:?}"
+    );
+    // Another branch's obligations are not this one's.
+    f.task("WHOAMI").name("clean").run().unwrap();
+    assert!(f.yard.obligations(Some("clean")).unwrap().is_empty());
+    assert!(matches!(
+        f.yard.obligations(Some("nope")),
+        Err(Error::UnknownBranch(name)) if name == "nope"
+    ));
+
+    // Reconciliation settles the unknown call: no longer owed.
+    f.yard.reconcile_effects().unwrap();
+    branch.send("WHOAMI", granted(&f)).unwrap();
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [(ObligationKind::UndoWindow, "owes".to_owned())],
+        "{owed:?}"
+    );
+}
+
+fn short(id: &str) -> &str {
+    branchyard::effects::short_id(id)
 }
 
 #[test]

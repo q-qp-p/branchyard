@@ -123,6 +123,9 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Environment recipes](recipes.md) | Defining custom VM or container lifecycle scripts in `branchyard.toml` and driving harnesses inside them over SSH. |
 | [Harness lifecycle](harness-lifecycle.md) | Detecting installed harnesses, versions, logins, and quotas, and installing or updating agent CLIs under user policy. |
 | [Code mode](code-mode.md) | Benchmarks from the multi-agent delegation suite and design notes for programmatic SDK delegation. |
+| [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |
+| [Durability contract](durability-contract.md) | Which rules about turns, effects, ownership, signals and obligations does a durable agent runtime keep, which does Branchyard keep today, and which test shows each? |
+| [Durability primitives design](superpowers/specs/2026-11-02-durability-primitives-design.md) | Why ideas from Tape and Durable Actors are built inside Branchyard rather than taken as a dependency, what was built (lost-turn effects, liveness, obligations) and what comes next, in order |
 
 ## Roadmap and background
 

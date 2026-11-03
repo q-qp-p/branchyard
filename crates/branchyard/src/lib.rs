@@ -132,12 +132,14 @@ mod judge;
 mod knowledge;
 mod land;
 mod lifecycle;
+mod liveness;
 mod lock;
 mod map;
 mod map_input;
 pub mod models;
 mod names;
 mod native_options;
+mod obligations;
 pub mod operations;
 mod ops;
 #[cfg(feature = "postgres")]
@@ -274,6 +276,7 @@ pub use knowledge::{
 };
 pub use land::{Landing, FIXES as LAND_FIXES};
 pub use lifecycle::{Parked, Resting};
+pub use liveness::{Liveness, LivenessState};
 pub use map::{
     check_spec as check_map_spec, default_name as map_default_name,
     follow_up_prompt as map_follow_up_prompt, item_prompt as map_item_prompt,
@@ -287,6 +290,7 @@ pub use map_input::{
     parse_items as parse_map_items, render as render_map_prompt, ItemFormat, MapItem,
     TemplateContext,
 };
+pub use obligations::{Obligation, ObligationKind};
 pub use plan::{
     approved_prompt, from_events as plan_from_events, parse_tasks as parse_plan_tasks,
     planning_prompt, read_only as read_only_policy, Plan, PlanActivity, PlanInfo, PlanPhase,
@@ -695,15 +699,17 @@ impl Yard {
 
     /// Every branch Branchyard knows, oldest first, each with what its
     /// running turn waits on a person for ([`BranchInfo::awaiting`]) and
-    /// what it needs from a person ([`BranchInfo::stage`]).
+    /// what it needs from a person ([`BranchInfo::stage`]) and whether its
+    /// engine is still heard from ([`BranchInfo::liveness`]).
     pub fn branches(&self) -> Result<Vec<BranchInfo>, Error> {
         let parked = parked(self.store().effects().asks(true)?);
+        let alive = self.liveness()?;
         let questions = self.store().backend().unanswered()?;
         let infos = self
             .store()
             .list()?
             .into_iter()
-            .map(|record| with_awaiting(record.info, &parked))
+            .map(|record| with_liveness(with_awaiting(record.info, &parked), &alive))
             .collect();
         Ok(stage::staged(infos, &questions))
     }
@@ -711,7 +717,11 @@ impl Yard {
     /// Look up one branch by name.
     pub fn branch(&self, name: &str) -> Result<Branch, Error> {
         let record = self.store().read(name)?;
-        let info = with_awaiting(record.info, &parked(self.store().effects().asks(true)?));
+        let alive = self.liveness()?;
+        let info = with_liveness(
+            with_awaiting(record.info, &parked(self.store().effects().asks(true)?)),
+            &alive,
+        );
         let questions = self.store().backend().unanswered()?;
         let parent = match info.parent.as_deref() {
             Some(parent) if info.depth > 0 => {
@@ -725,6 +735,35 @@ impl Yard {
             yard: self.clone(),
             info,
         })
+    }
+
+    /// What branches still owe, or what `branch` and the branches
+    /// delegated below it owe: unknown and staged effects, closing undo
+    /// windows, waiting approvals, lost turns and engines, blocked and
+    /// waiting children, parked parents and ready children nobody
+    /// integrated. Read from the ledger, the asks, the records and the
+    /// leases; nothing is stored. See `docs/obligations.md`.
+    pub fn obligations(&self, branch: Option<&str>) -> Result<Vec<Obligation>, Error> {
+        self.obligations_at(branch, branchyard_support::time::now_ms())
+    }
+
+    /// [`Yard::obligations`] as of `now_ms`, for an undo window's deadline
+    /// and an engine's lease.
+    pub fn obligations_at(
+        &self,
+        branch: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Vec<Obligation>, Error> {
+        obligations::list(&self.store(), branch, now_ms)
+    }
+
+    /// The liveness of each branch holding a lease, by branch.
+    fn liveness(&self) -> Result<HashMap<String, Liveness>, Error> {
+        let leases = self.store().backend().leases()?;
+        Ok(liveness::by_branch(
+            &leases,
+            branchyard_support::time::now_ms(),
+        ))
     }
 
     /// Per branch, the unanswered question or escalation its stage counts
@@ -2344,6 +2383,14 @@ pub struct BranchInfo {
     /// looked up, never stored, like [`BranchInfo::awaiting`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<stage::Stage>,
+    /// Whether a running turn's engine is still heard from: `live`,
+    /// `unknown` once its lease renewals stopped, `lost` once the lease no
+    /// longer protects it and recovery will end the turn. Read from the
+    /// branch's lease when the record is listed or looked up, never stored;
+    /// `None` whenever the branch is not running. See
+    /// `docs/durability.md#liveness`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<Liveness>,
     /// The branch [`Branch::reincarnate`] started from this one's latest
     /// candidate, with a fresh session and a handoff brief.
     #[serde(default)]
@@ -2399,6 +2446,21 @@ fn parked(asks: Vec<effects::ApprovalAsk>) -> HashMap<String, Awaiting> {
 fn with_awaiting(mut info: BranchInfo, parked: &HashMap<String, Awaiting>) -> BranchInfo {
     info.awaiting = match info.status {
         BranchStatus::Running => parked.get(&info.name).cloned(),
+        _ => None,
+    };
+    info
+}
+
+/// Every running `info` has liveness: its held lease's, or lost when no
+/// held lease backs it. Other states have no engine to hear from.
+fn with_liveness(mut info: BranchInfo, alive: &HashMap<String, Liveness>) -> BranchInfo {
+    info.liveness = match info.status {
+        BranchStatus::Running => Some(
+            alive
+                .get(&info.name)
+                .cloned()
+                .unwrap_or_else(Liveness::unowned),
+        ),
         _ => None,
     };
     info
