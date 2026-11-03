@@ -1215,27 +1215,31 @@
   };
   const at = (el, scale, ms) => { el.style.left = `${scale.x(ms)}%`; return el; };
 
-  // A branch's turns from its latest events: when each began and ended,
-  // when each tool call started, and when the branch merged.
-  function trackOf(events) {
-    const turns = [];
-    let turn = null;
-    let merged = null;
-    for (const { activity: a, at_ms: ms } of events) {
-      const ev = a.harness || {};
-      if (a.prompt != null || a.steered) {
-        if (turn && turn.end == null && a.steered) continue;
-        turn = { start: ms, end: null, tools: [] };
-        turns.push(turn);
-      } else if (ev.type === 'tool_started') {
-        if (!turn) { turn = { start: ms, end: null, tools: [] }; turns.push(turn); }
-        turn.tools.push(ms);
-      } else if (a.status) {
-        if (a.status.state === 'merged') merged = ms;
-        if (turn && turn.end == null && !['running', 'waiting'].includes(a.status.state)) turn.end = ms;
-      }
-    }
-    return { turns, merged };
+  // A branch's track from its timeline (`GET …/timeline`): each turn's
+  // span, its tool calls by time and name, what it cost and how it ended,
+  // and when the branch merged. The server reads the whole log for it, so
+  // a long branch keeps its first turns and the board reads no content.
+  function trackOf(timeline) {
+    return {
+      turns: (timeline.turns || []).map((t) => ({
+        start: t.started_at_ms,
+        end: t.ended_at_ms == null ? null : t.ended_at_ms,
+        tools: (t.tools || []).map((c) => c.at_ms),
+        names: (t.tools || []).map((c) => c.name),
+        cost: t.cost_usd == null ? null : t.cost_usd,
+        outcome: t.outcome || null,
+      })),
+      merged: timeline.merged_at_ms == null ? null : timeline.merged_at_ms,
+    };
+  }
+
+  // What hovering or focusing a turn's bar says: when it ran, how many
+  // calls it made, what it cost and, if it did not end ready, why.
+  function turnTitle(t, i) {
+    const span = t.end != null ? `${clock(t.start)}–${clock(t.end)}` : `${clock(t.start)}, running`;
+    const ended = t.outcome && !['ready', 'no_changes', 'merged'].includes(t.outcome.state)
+      ? statusOf({ status: t.outcome }).text + (t.outcome.reason ? `: ${t.outcome.reason}` : '') : null;
+    return [`turn ${i + 1}: ${span}`, plural(t.tools.length, 'call'), t.cost != null ? cents(t.cost) : null, ended].filter(Boolean).join(' · ');
   }
 
   // Read the tracks the board draws, each once per change of its branch:
@@ -1249,8 +1253,8 @@
     const entry = { key, loading: true, track: found ? found.track : null };
     state.tracks.set(b.name, entry);
     const repo = state.repo;
-    api('GET', `${branchPath(b.name)}/event-page?limit=200`)
-      .then((page) => { entry.track = trackOf(page.events); })
+    api('GET', `${branchPath(b.name)}/timeline`)
+      .then((timeline) => { entry.track = trackOf(timeline); })
       .catch(() => {})
       .finally(() => {
         entry.loading = false;
@@ -1282,8 +1286,9 @@
     track.turns.forEach((t, i) => {
       const last = i === track.turns.length - 1;
       const end = t.end != null ? t.end : (open && last ? now : activeAt(b));
-      rail.append(place(h('i', { class: `seg seg-${lane.key}${t.end == null && open && last ? ' seg-live' : ''}`, title: `turn ${i + 1}: ${clock(t.start)}${t.end != null ? `–${clock(t.end)}` : ', running'} · ${plural(t.tools.length, 'call')}` }), scale, t.start, end));
-      for (const ms of t.tools) rail.append(at(h('i', { class: 'call' }), scale, ms));
+      const failed = t.outcome && ['failed', 'interrupted', 'budget_exceeded'].includes(t.outcome.state);
+      rail.append(place(h('i', { class: `seg seg-${lane.key}${t.end == null && open && last ? ' seg-live' : ''}${failed ? ' seg-failed' : ''}`, title: turnTitle(t, i) }), scale, t.start, end));
+      t.tools.forEach((ms, k) => rail.append(at(h('i', { class: 'call', title: t.names && t.names[k] ? `${t.names[k]} · ${clock(ms)}` : clock(ms) }), scale, ms)));
     });
     for (const a of state.answered.filter((x) => x.branch === b.name && x.answer)) {
       rail.append(place(h('i', { class: 'wait wait-past', title: `waited on you ${clock(a.created_ms)}–${clock(a.answer.at_ms)}, ${a.answer.allow ? 'allowed' : 'denied'}` }), scale, a.created_ms, a.answer.at_ms));
@@ -1307,7 +1312,11 @@
     else if (lane.key === 'running' && applies(COMPOSER.steer, b)) action = h('button', { type: 'button', class: 'small', text: 'Steer', 'aria-pressed': String(state.steering === b.name), onclick: () => { state.steering = state.steering === b.name ? null : b.name; redraw(homeSignature(), renderHome); } });
     else if (lane.key === 'needs' && applies(ACTIONS.resume, b)) action = h('button', { type: 'button', class: 'small', text: 'Resume', onclick: () => runAction(ACTIONS.resume, b.name) });
     else action = h('a', { class: 'button small', href: branchHref(b.name), text: 'Open' });
-    const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name },
+    // `data-track` says whether the row is drawn from the branch's timeline
+    // yet (`loaded`), or from its record while the timeline is read.
+    const entry = state.tracks.get(b.name);
+    const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name,
+      'data-track': entry && entry.track && !entry.loading ? 'loaded' : 'loading' },
       h('span', { class: 'board-name' }, dot(lane.key),
         h('span', { class: 'board-id' }, h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta))),
       rail,

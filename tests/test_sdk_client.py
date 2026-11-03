@@ -3645,6 +3645,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/repos/{repo}/branches/{branch}/discard": [lambda _c, r: r.discard("b")],
     "/v1/repos/{repo}/branches/{branch}/escalate": [lambda _c, r: r.escalate("b", "help")],
     "/v1/repos/{repo}/branches/{branch}/event-page": [lambda _c, r: r.event_page("b")],
+    "/v1/repos/{repo}/branches/{branch}/timeline": [lambda _c, r: r.timeline("b")],
     "/v1/repos/{repo}/branches/{branch}/events": [lambda _c, r: r.events("b"), lambda _c, r: r.said("b")],
     "/v1/repos/{repo}/branches/{branch}/fork": [lambda _c, r: r.fork("b", "go", at=1)],
     "/v1/repos/{repo}/branches/{branch}/graph": [

@@ -854,6 +854,7 @@ pub fn router(app: Shared) -> Router {
             "/v1/repos/{repo}/branches/{branch}/event-page",
             get(event_page),
         )
+        .route("/v1/repos/{repo}/branches/{branch}/timeline", get(timeline))
         .route("/v1/repos/{repo}/branches/{branch}/children", get(children))
         .route(
             "/v1/repos/{repo}/branches/{branch}/graph",
@@ -2850,6 +2851,40 @@ async fn diff(
         .await?
         .map_err(|e| error::sdk(&e))?;
     Ok(Json(Diff { diff }))
+}
+
+/// The shape of a branch's work: each turn's span, tool calls and cost,
+/// and its merge ([`branchyard::Timeline`]), read from its whole event log
+/// so a client drawing many branches reads none of their content.
+async fn timeline(
+    State(app): State<Shared>,
+    Path((repo, branch)): Path<(String, String)>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Response, ApiError> {
+    let state = app.authorized_repo(&caller, &repo, "read")?;
+    let repo = state.name.clone();
+    let target = existing(&state.yard, &branch).await?;
+    blocking(move || {
+        let mut events = Vec::new();
+        let mut next = 0;
+        loop {
+            let page = target
+                .events_since(next, STREAM_BATCH)
+                .map_err(|e| error::sdk(&e))?;
+            if page.events.is_empty() {
+                break;
+            }
+            next = page.next_cursor;
+            events.extend(page.events);
+        }
+        branch_response(
+            &app,
+            &repo,
+            branchyard::Timeline::of(&events),
+            whole(&branch),
+        )
+    })
+    .await?
 }
 
 async fn events(

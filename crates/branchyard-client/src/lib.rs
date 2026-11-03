@@ -1029,6 +1029,13 @@ impl Repo {
             .get(&self.branch_path(name, &format!("/events?cursor={cursor}")))
     }
 
+    /// The shape of a branch's work: each turn's span, tool calls and
+    /// cost, and its merge, without its content; see
+    /// [`branchyard::Timeline`].
+    pub fn timeline(&self, name: &str) -> Result<branchyard::Timeline, Error> {
+        self.client.get(&self.branch_path(name, "/timeline"))
+    }
+
     pub fn remove(&self, name: &str) -> Result<(), Error> {
         self.client
             .delete::<Removed>(&self.branch_path(name, ""))

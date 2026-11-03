@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->133<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->134<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -801,6 +801,7 @@ Every connector call that changes the world is decided, written to a ledger befo
 | List asks | `Yard::approvals`, `approval` | `approvals [ls [--all]] [--json]` | yes | `GET …/approvals[?all=true]` | `Repo::approvals` | no |
 | What waits for a person | `Yard::branches`, `branch` (`BranchInfo::awaiting`, `BranchInfo::stage`), `asking` | `ls` and `watch` show `waiting for approval: …`; bare `by`, `by hook` and `by statusline` read each branch's stage | yes | `GET …/decisions` (`DecisionList`) | `Repo::decisions` | no |
 | Which files are in whose hands (the ground plan) | `Yard::branches`, `Branch::diff`, `diff_files` | none | no | `GET …/ground` (`Ground`, `GroundFile`, `GroundBranch`) | `Repo::ground` | no |
+| A branch's shape: each turn's span, outcome and cost, and its tool calls by time and name, with none of its content ([reading a branch](server.md#reading-a-branch)) | `Timeline::of` over `Branch::events` | none | no | `GET …/branches/{b}/timeline` (`Timeline`, `TimelineTurn`, `TimelineTool`) | `Repo::timeline`; Python `Repo.timeline` | no |
 | What waits for a person in a project's workspaces (outputs to accept, sessions that stopped) | none: a workspace is a server resource | none | no | `GET /v1/projects/{project}/decisions` (`DecisionList`; `output` and `session` decisions) | `Client::project_decisions` | no |
 | Answer an ask | `Yard::answer_approval` | `approvals allow\|deny ID\|--branch B [--reason]`; `A`, `D` in `by watch` | yes | `POST …/approvals/{id}/allow\|deny` (`ApprovalAnswerRequest`) | `Repo::answer_approval` | `Delegate::answer_approval`, the MCP `answer_approval` tool, `by approvals` in its shell; descendants only |
 | The ledger | `Yard::effects`, `effect`, `effect_history` | `effects [--branch B] [show ID] [--json]` | yes | `GET …/effects[?branch=]`, `GET …/effects/{id}` | `Repo::effects`, `effect` | no |

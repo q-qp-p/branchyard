@@ -268,6 +268,16 @@ const shots = process.env.BY_SCREENSHOTS;
   await receipts.filter({ hasText: '$0.50' }).waitFor({ timeout: 60000 });
   if (await receipts.filter({ hasText: '$0.75' }).count()) throw new Error('a receipt shows the session total, not its turn');
   await page.locator('.strip-meta', { hasText: '$0.75' }).waitFor();
+  // The board draws the same branch from its timeline, not its events: a
+  // bar per turn, each saying on hover what that turn cost. It changed no
+  // file, so its row is under the folded Done group: attached, not shown.
+  await go('#/');
+  const costlyRow = page.locator('#main .board-row[data-branch="costly"][data-track="loaded"]');
+  await costlyRow.waitFor({ state: 'attached', timeout: 60000 });
+  const turnTitles = await costlyRow.locator('.rail .seg').evaluateAll((bars) => bars.map((bar) => bar.title));
+  if (turnTitles.length !== 2 || !turnTitles[0].includes('$0.25') || !turnTitles[1].includes('$0.50')) {
+    throw new Error(`the board's bars say ${JSON.stringify(turnTitles)}`);
+  }
   say('COSTED');
 
   // A turn parked on an approval: the branch itself says so on the board
