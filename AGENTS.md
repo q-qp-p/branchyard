@@ -25,9 +25,10 @@ A counted file records what is still wrong. A count may fall and may not rise, a
 
 ## Facts in docs come from code
 
-- A count, list, matrix or date the code knows sits in a `<!-- fact:NAME -->...<!-- /fact -->` region. Never edit inside one. After a change that a fact reads (a crate, a test, a route, a vendored file), run `python3 tools/docs_facts.py --write` and commit what it rewrites.
+- A count, list, matrix or date the code knows sits in a `<!-- fact:NAME -->...<!-- /fact -->` region. Never edit inside one. After a change that a fact reads (a crate, a route, a vendored file), run `python3 tools/docs_facts.py --write` and commit what it rewrites.
 - A page that opens with "Written ..." or "Prepared ..." names a date no earlier than any dated status below it (`python3 tools/check_docs.py` checks).
 - A hand-typed copy of a generated list is a bug. Wrap it in a region.
+- A fact that almost every change moves (the test count) makes open pull requests conflict, so it is not committed. `python3 tools/docs_facts.py --tests` prints the count.
 
 ## Status paragraphs say what ran
 

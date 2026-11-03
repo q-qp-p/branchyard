@@ -19,7 +19,11 @@
 // CLAUDE.md projection are not used; the version probe (`claude
 // --version`) is dropped, since planning runs no processes. Scion's launch
 // flags (`--dangerously-skip-permissions`) are not ported: Branchyard's
-// drivers route every permission request.
+// drivers route every permission request. Vertex AI also takes Claude
+// Code's own names for the project and region (`ANTHROPIC_VERTEX_PROJECT_ID`,
+// `CLOUD_ML_REGION`), which come first; a project without a region selects
+// nothing rather than refusing, unless `vertex-ai` is asked for; and every
+// other method sets `CLAUDE_CODE_USE_VERTEX=0`.
 
 //! Claude Code: `claude-code-stream-json` and `claude-code-acp`.
 //!
@@ -36,6 +40,15 @@
 //! tool commands: Claude Code does not filter its Bash tool's environment
 //! unless `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is on, which on Linux needs
 //! bubblewrap and is not set here.
+//!
+//! An isolated harness keeps Claude Code's Vertex AI switch from the
+//! engine's environment, so every method but `vertex-ai` sets
+//! `CLAUDE_CODE_USE_VERTEX=0`: an inherited switch would otherwise win
+//! over the credential given here. With no method chosen, nothing is set
+//! and the inherited switch, if any, applies. A project given without a
+//! region (a `GOOGLE_CLOUD_PROJECT` meant for Gemini CLI, say) chooses
+//! nothing: it is reported unused, with a warning naming the region it
+//! lacked.
 //!
 //! A gateway's token (`ANTHROPIC_AUTH_TOKEN`, the `auth-token` method, or a
 //! [provider login](crate::logins) such as Z.ai's) takes the same helper:
@@ -108,13 +121,27 @@ pub const AUTH: Spec = Spec {
         ),
         Method::env_all(
             "vertex-ai",
-            &["GOOGLE_CLOUD_PROJECT"],
-            &["GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"],
-            "provide GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION/GOOGLE_CLOUD_REGION \
-             (with ADC available to the harness) for Vertex AI",
+            &[VERTEX_PROJECT],
+            VERTEX_REGION,
+            "give a project (--secret ANTHROPIC_VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT) and a \
+             region (--secret CLOUD_ML_REGION, GOOGLE_CLOUD_LOCATION or GOOGLE_CLOUD_REGION), \
+             with Application Default Credentials the harness can reach (GCLOUD_ADC, or a Google \
+             VM's metadata server), for Vertex AI",
         ),
     ],
 };
+
+/// The secrets `vertex-ai` takes the project from, Claude Code's own name
+/// first.
+const VERTEX_PROJECT: &[&str] = &["ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"];
+
+/// The secrets `vertex-ai` takes the region from, Claude Code's own name
+/// first.
+const VERTEX_REGION: &[&str] = &[
+    "CLOUD_ML_REGION",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_CLOUD_REGION",
+];
 
 /// Lower-case, and expand `s`, `m`, `l` and `xl`.
 pub fn normalize_model_alias(raw: &str) -> String {
@@ -334,18 +361,30 @@ impl Provisioner for Claude {
                     );
                 }
                 "vertex-ai" => {
-                    let region = resolved.env_key.unwrap_or("GOOGLE_CLOUD_REGION");
-                    plan.set_env(EnvVar::plain("CLAUDE_CODE_USE_VERTEX", "1"));
+                    let project = VERTEX_PROJECT
+                        .iter()
+                        .copied()
+                        .find(|name| context.secret(name).is_some());
+                    let (Some(project), Some(region)) = (project, resolved.env_key) else {
+                        return Err(Refused(
+                            "vertex-ai was chosen without a project and a region".into(),
+                        ));
+                    };
                     plan.secret_env(
-                        "GOOGLE_CLOUD_PROJECT",
+                        project,
                         "ANTHROPIC_VERTEX_PROJECT_ID",
-                        &secret("GOOGLE_CLOUD_PROJECT"),
+                        &secret(project),
                         true,
                     );
                     plan.secret_env(region, "CLOUD_ML_REGION", &secret(region), true);
                 }
                 _ => unreachable!("every method of AUTH is handled"),
             }
+            let vertex = resolved.method == "vertex-ai";
+            plan.set_env(EnvVar::plain(
+                "CLAUDE_CODE_USE_VERTEX",
+                if vertex { "1" } else { "0" },
+            ));
             // Suppress model upgrade and fallback dialogs: the provider is
             // chosen here. Not with the helper: Claude Code 2.1.283 then
             // ignores `apiKeyHelper` and reports it is not logged in.
@@ -385,6 +424,19 @@ impl Provisioner for Claude {
         let mut read = AUTH.names();
         read.push(BASE_URL);
         plan.unused_secrets = unused(context, &read);
+        if plan.auth.is_none() {
+            for gap in AUTH.incomplete(&given) {
+                plan.unused_secrets
+                    .extend(gap.given.iter().map(|name| (*name).to_owned()));
+                plan.warnings.push(format!(
+                    "{} did not use {}: {} also needs {}",
+                    self.harness(),
+                    gap.given.join(", "),
+                    gap.method,
+                    gap.missing
+                ));
+            }
+        }
         if let Some(telemetry) = &context.telemetry {
             let on = telemetry.enabled;
             let exporter = if on { "otlp" } else { "none" };

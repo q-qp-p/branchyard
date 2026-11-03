@@ -15,6 +15,7 @@ here from the source of truth and written in two places:
 
     python3 tools/docs_facts.py --write   recompute and rewrite both
     python3 tools/docs_facts.py --check   fail on any difference (CI)
+    python3 tools/docs_facts.py --tests   print the test count per crate (not committed)
 
 --check also fails when a server route is mentioned in neither docs/server.md
 nor docs/surfaces.md,
@@ -27,9 +28,11 @@ by `cargo test -p branchyard-harness`, catalog/*.toml by
 status table in docs/status.md is read from docs/compatibility.md's table (which
 already carries the qualification reports' results) rather than from a second
 copy of the registry.
-The test count is every `#[test]` and `#[tokio::test]` attribute in `src` and
-`tests`, feature-gated files and modules included: it is not the number a
-default `cargo test --workspace` runs, and the Markdown must not say so.
+The test count is not a fact here. Almost every change adds a test, so a
+committed count changed in almost every pull request, and any two open pull
+requests conflicted on it. `--tests` prints it instead: every `#[test]` and
+`#[tokio::test]` attribute in `src` and `tests`, feature-gated files and
+modules included. It is not the number a default `cargo test --workspace` runs.
 No network, no build: everything here is read from files.
 """
 
@@ -257,7 +260,6 @@ def compute():
         },
         "vendor": vendor_facts(),
         "derivatives": derivative_facts(),
-        "tests": test_facts(crates),
         "http": http_facts(),
         "runtime": runtime_facts(),
         "profiles": profile_facts(),
@@ -304,8 +306,7 @@ def profile_summary(profiles):
 
 def regions(facts):
     """Every region name the Markdown may use, with its exact rendering."""
-    vendor, tests, derived = facts["vendor"], facts["tests"], facts["derivatives"]
-    by_crate = [f"{count['tests']} in `{name}`" for name, count in tests["by_crate"].items() if count["tests"]]
+    vendor, derived = facts["vendor"], facts["derivatives"]
     return {
         "document.skills": "\n\n| Skill | Purpose | Requires |\n|---|---|---|\n"
         + "\n".join(
@@ -330,9 +331,6 @@ def regions(facts):
         "artifact_preview.page_cap": str(facts["artifact_preview"]["page_cap"]),
         "artifact_preview.row_page": str(facts["artifact_preview"]["row_page"]),
         "workspace.crate_count": str(facts["workspace"]["crate_count"]),
-        "tests.total": str(tests["total"]),
-        "tests.ignored": str(tests["ignored"]),
-        "tests.by_crate": join_and(by_crate),
         "http.route_count": str(facts["http"]["route_count"]),
         "runtime.strip_prefixes": join_and([f"`{p}*`" for p in facts["runtime"]["strip_prefixes"]]),
         "profiles.summary": profile_summary(facts["profiles"]),
@@ -393,7 +391,15 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true", help="rewrite docs/facts.json and every fact region")
     mode.add_argument("--check", action="store_true", help="fail when either differs from the code")
+    mode.add_argument("--tests", action="store_true", help="print the test count per crate; nothing is written")
     args = parser.parse_args()
+
+    if args.tests:
+        counted = test_facts(workspace_crates())
+        for name, count in counted["by_crate"].items():
+            print(f"{count['tests']:6}  {count['ignored']:4} ignored  {name}")
+        print(f"{counted['total']:6}  {counted['ignored']:4} ignored  total")
+        return
 
     facts = compute()
     rendered = regions(facts)

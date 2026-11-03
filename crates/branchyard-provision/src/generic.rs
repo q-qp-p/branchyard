@@ -1,6 +1,7 @@
 //! Harnesses without a translated provisioner: session items pass through
-//! to the driver, which accepts or refuses them, and nothing is written in
-//! the home. Such a harness reads its provider keys from its environment
+//! to the driver, which accepts or refuses them, and nothing of theirs is
+//! written in the home (Google Cloud's credentials, [`crate::gcloud`], go
+//! into every private home). Such a harness reads its provider keys from its environment
 //! and nothing else would hand one over, so a secret the task names that is
 //! one (`--secret NAME`, `NAME` ending in `_API_KEY`) is set in the
 //! harness's environment under its own name, and in that of its tool

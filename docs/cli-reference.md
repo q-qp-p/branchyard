@@ -2755,7 +2755,8 @@ by compute gce [OPTIONS] --project <PROJECT> --zone <ZONE> --name <NAME>
 | `--image <PIN>` | Published worker image pinned by release tag or @sha256 digest; defaults to --version |
 | `--backend <BACKEND>` | Worker execution: local processes or Microsandbox KVM guests (one of `local`, `microsandbox`) (default `local`) |
 | `--machine-type <MACHINE_TYPE>` | VM machine type; Microsandbox needs n2-standard or c3-standard (default `n2-standard-4`) |
-| `--service-account <EMAIL>` | Existing service account in this project; omitted attaches no account |
+| `--service-account <EMAIL>` | Existing service account in this project; its IAM roles decide what the worker reaches, such as roles/aiplatform.user for Vertex AI; omitted attaches no account |
+| `--scopes <SCOPES>` | Access scopes for --service-account: comma-separated names or URLs, or none; defaults to cloud-platform |
 | `--network <NETWORK>` | Existing VPC network; creates no network or NAT (default `default`) |
 | `--subnet <SUBNET>` | Existing subnet for the VM (default `default`) |
 | `--disk-size <DISK_SIZE>` | Balanced persistent disk size in GB (default `100`) |

@@ -750,6 +750,199 @@ fn provider_logins(config: &branchyard_setup::config::ProjectConfig) -> (Vec<Str
     (logins, keyless)
 }
 
+/// The variables that point harnesses at Vertex AI or name its project and
+/// region: Claude Code's, Gemini CLI's, Antigravity's ADC switch, Hermes's,
+/// and the projects OpenCode reads.
+const VERTEX_VARIABLES: &[&str] = &[
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GCP_PROJECT",
+    "GCLOUD_PROJECT",
+    "AGY_ADC_AUTH",
+    "VERTEX_PROJECT_ID",
+    "VERTEX_REGION",
+];
+
+/// Where Application Default Credentials come from on this machine, in the
+/// order Google's client libraries look for them.
+#[derive(Debug, PartialEq)]
+enum AdcSource {
+    /// `GOOGLE_APPLICATION_CREDENTIALS` names a file that exists.
+    KeyFile,
+    /// `GOOGLE_APPLICATION_CREDENTIALS` names a file that does not.
+    MissingKeyFile(String),
+    /// gcloud's file, as shown to people.
+    Gcloud(String),
+    /// A Google Compute Engine VM's metadata server.
+    Metadata,
+    /// None of these.
+    None,
+}
+
+/// What `harnesses.google_cloud` reads, so the decision is tested without
+/// this machine's files.
+struct GoogleCloud<'a> {
+    var: &'a dyn Fn(&str) -> Option<String>,
+    exists: &'a dyn Fn(&Path) -> bool,
+    /// `/sys/class/dmi/id/product_name`, when it can be read.
+    product: Option<String>,
+}
+
+impl GoogleCloud<'_> {
+    fn set(&self, name: &str) -> Option<String> {
+        (self.var)(name).filter(|v| !v.is_empty())
+    }
+
+    /// gcloud's ADC file, as `(path, shown)`: under `CLOUDSDK_CONFIG`, else
+    /// `~/.config/gcloud`.
+    fn gcloud_file(&self) -> Option<(std::path::PathBuf, String)> {
+        const NAME: &str = "application_default_credentials.json";
+        match self.set("CLOUDSDK_CONFIG") {
+            Some(dir) => Some((Path::new(&dir).join(NAME), format!("{dir}/{NAME}"))),
+            None => self.set("HOME").map(|home| {
+                (
+                    Path::new(&home).join(".config/gcloud").join(NAME),
+                    format!("~/.config/gcloud/{NAME}"),
+                )
+            }),
+        }
+    }
+
+    fn source(&self) -> AdcSource {
+        if let Some(path) = self.set("GOOGLE_APPLICATION_CREDENTIALS") {
+            return match (self.exists)(Path::new(&path)) {
+                true => AdcSource::KeyFile,
+                false => AdcSource::MissingKeyFile(path),
+            };
+        }
+        if let Some((path, shown)) = self.gcloud_file() {
+            if (self.exists)(&path) {
+                return AdcSource::Gcloud(shown);
+            }
+        }
+        match self.product.as_deref() {
+            Some(product) if product.contains("Google") => AdcSource::Metadata,
+            _ => AdcSource::None,
+        }
+    }
+
+    /// Whether a harness is switched to Vertex AI or ADC: Claude Code's
+    /// switch is true, Gemini CLI's or Antigravity's is exactly `true`, or a
+    /// project is set, which turns OpenCode's and Hermes's Vertex AI on and
+    /// which Gemini CLI's Vertex AI needs (however its settings select it).
+    fn vertex_in_use(&self) -> bool {
+        let claude = self.set("CLAUDE_CODE_USE_VERTEX").is_some_and(|v| {
+            ["1", "true", "yes", "on"].contains(&v.trim().to_lowercase().as_str())
+        });
+        let gemini = self.set("GOOGLE_GENAI_USE_VERTEXAI").as_deref() == Some("true");
+        let antigravity = self.set("AGY_ADC_AUTH").as_deref() == Some("true");
+        let projects = [
+            "GOOGLE_CLOUD_PROJECT",
+            "GCP_PROJECT",
+            "GCLOUD_PROJECT",
+            "VERTEX_PROJECT_ID",
+        ];
+        let project = projects.iter().any(|name| self.set(name).is_some());
+        claude || gemini || antigravity || project
+    }
+
+    /// The row, or none when no Vertex AI variable, key file or gcloud file
+    /// is there: a Google VM alone is a source, not a reason to report.
+    fn check(&self) -> Option<Check> {
+        const NAME: &str = "harnesses.google_cloud";
+        const FIX: &str = "run `gcloud auth application-default login` (not `gcloud auth \
+                           login`), or set GOOGLE_APPLICATION_CREDENTIALS to a service account \
+                           key file (docs/setup.md#google-cloud)";
+        let set: Vec<&str> = VERTEX_VARIABLES
+            .iter()
+            .copied()
+            .filter(|name| self.set(name).is_some())
+            .collect();
+        let variables = match set.is_empty() {
+            true => "no Vertex AI variable is set".to_owned(),
+            false => format!("Vertex AI variables set: {} (names only)", set.join(", ")),
+        };
+        let source = self.source();
+        let gcloud_file = self
+            .gcloud_file()
+            .is_some_and(|(path, _)| (self.exists)(&path));
+        if set.is_empty() && self.set("GOOGLE_APPLICATION_CREDENTIALS").is_none() && !gcloud_file {
+            return None;
+        }
+        let adc = |from: &str| format!("Application Default Credentials: {from}; {variables}");
+        Some(match source {
+            AdcSource::KeyFile => Check::ok(
+                NAME,
+                adc("the file GOOGLE_APPLICATION_CREDENTIALS names (not read)"),
+            ),
+            AdcSource::MissingKeyFile(path) => Check::warn(
+                NAME,
+                format!("GOOGLE_APPLICATION_CREDENTIALS names {path}, which does not exist; {variables}"),
+                "point GOOGLE_APPLICATION_CREDENTIALS at a credentials file, or unset it",
+            ),
+            AdcSource::Gcloud(shown) => Check::ok(
+                NAME,
+                adc(&format!(
+                    "{shown}, from `gcloud auth application-default login` (isolated and \
+                     sandboxed branches get a copy with [secrets] GCLOUD_ADC = \"@{shown}\")"
+                )),
+            ),
+            AdcSource::Metadata => Check::ok(
+                NAME,
+                adc(
+                    "the metadata server's service account, on this Google Compute Engine VM \
+                     (its scopes are not checked: Vertex AI needs cloud-platform)",
+                ),
+            ),
+            AdcSource::None if self.vertex_in_use() => Check::todo(
+                NAME,
+                format!(
+                    "{variables}, but no Application Default Credentials were found (no \
+                     GOOGLE_APPLICATION_CREDENTIALS, no {}, and this is not a Google Compute \
+                     Engine VM)",
+                    self.gcloud_file()
+                        .map_or("gcloud file".to_owned(), |(_, shown)| shown)
+                ),
+                FIX,
+            ),
+            AdcSource::None => Check::ok(
+                NAME,
+                format!(
+                    "{variables}; no harness is switched to Vertex AI and no Application \
+                     Default Credentials were found"
+                ),
+            ),
+        })
+    }
+}
+
+/// Application Default Credentials and the Vertex AI variables, by name,
+/// for a machine on Google Cloud or a harness pointed at Vertex AI.
+pub(super) fn harnesses_google_cloud(ctx: &Context) -> Vec<Check> {
+    // No such file is the usual answer off Linux and in many containers:
+    // not a Google VM, as far as this row can tell.
+    let product = match std::fs::read_to_string("/sys/class/dmi/id/product_name") {
+        Ok(text) => Some(text.trim().to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => branchyard_support::best_effort(
+            "read the DMI product name for harnesses.google_cloud",
+            Err::<String, _>(error),
+        ),
+    };
+    GoogleCloud {
+        var: &|name| (ctx.vars)(name),
+        exists: &|path| path.exists(),
+        product,
+    }
+    .check()
+    .into_iter()
+    .collect()
+}
+
 /// The `[secrets]` whose variable is unset or whose file is missing, as
 /// `NAME (from $VAR)` or `NAME (from @path)`.
 fn missing_secrets(
@@ -1414,6 +1607,150 @@ fn short(digest: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `harnesses.google_cloud` for a machine with these variables, files
+    /// and DMI product name.
+    fn google_cloud(vars: &[(&str, &str)], files: &[&str], product: Option<&str>) -> Option<Check> {
+        let vars: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        let files: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+        GoogleCloud {
+            var: &|name| vars.get(name).cloned(),
+            exists: &|path| files.iter().any(|f| f == path),
+            product: product.map(str::to_owned),
+        }
+        .check()
+    }
+
+    const GCE: Option<&str> = Some("Google Compute Engine");
+    const ADC: &str = "/home/me/.config/gcloud/application_default_credentials.json";
+
+    #[test]
+    fn no_sign_of_google_cloud_is_no_row() {
+        assert_eq!(google_cloud(&[("HOME", "/home/me")], &[], None), None);
+        // A Google VM is where credentials may come from, not a reason to
+        // report: with nothing pointed at Vertex AI there is no row.
+        assert_eq!(google_cloud(&[("HOME", "/home/me")], &[], GCE), None);
+    }
+
+    #[test]
+    fn adc_is_looked_for_in_the_order_google_libraries_look() {
+        let key = google_cloud(
+            &[
+                ("HOME", "/home/me"),
+                ("GOOGLE_APPLICATION_CREDENTIALS", "/keys/sa.json"),
+            ],
+            &["/keys/sa.json", ADC],
+            GCE,
+        )
+        .unwrap();
+        assert_eq!(key.status, Status::Ok);
+        assert!(key.detail.starts_with(
+            "Application Default Credentials: the file GOOGLE_APPLICATION_CREDENTIALS names"
+        ));
+        let missing = google_cloud(
+            &[("GOOGLE_APPLICATION_CREDENTIALS", "/keys/gone.json")],
+            &[ADC],
+            GCE,
+        )
+        .unwrap();
+        assert_eq!(missing.status, Status::Warn);
+        assert!(missing
+            .detail
+            .contains("/keys/gone.json, which does not exist"));
+        let gcloud = google_cloud(&[("HOME", "/home/me")], &[ADC], GCE).unwrap();
+        assert_eq!(gcloud.status, Status::Ok);
+        assert!(gcloud.detail.contains(
+            "~/.config/gcloud/application_default_credentials.json, from `gcloud auth \
+             application-default login` (isolated and sandboxed branches get a copy with \
+             [secrets] GCLOUD_ADC = \"@~/.config/gcloud/application_default_credentials.json\")"
+        ));
+        let moved = google_cloud(
+            &[("HOME", "/home/me"), ("CLOUDSDK_CONFIG", "/etc/gcloud")],
+            &["/etc/gcloud/application_default_credentials.json"],
+            None,
+        )
+        .unwrap();
+        assert!(moved
+            .detail
+            .contains("/etc/gcloud/application_default_credentials.json"));
+        let vm = google_cloud(
+            &[("HOME", "/home/me"), ("GOOGLE_CLOUD_PROJECT", "p")],
+            &[],
+            GCE,
+        )
+        .unwrap();
+        assert_eq!(vm.status, Status::Ok);
+        assert_eq!(
+            vm.detail,
+            "Application Default Credentials: the metadata server's service account, on this \
+             Google Compute Engine VM (its scopes are not checked: Vertex AI needs \
+             cloud-platform); Vertex AI variables set: GOOGLE_CLOUD_PROJECT (names only)"
+        );
+        let file_alone = google_cloud(&[("HOME", "/home/me")], &[ADC], None).unwrap();
+        assert!(file_alone
+            .detail
+            .ends_with("; no Vertex AI variable is set"));
+    }
+
+    #[test]
+    fn vertex_ai_without_adc_is_a_todo_that_names_the_application_default_login() {
+        let vars = [
+            ("HOME", "/home/me"),
+            ("CLAUDE_CODE_USE_VERTEX", "1"),
+            ("ANTHROPIC_VERTEX_PROJECT_ID", "secret-project-name"),
+        ];
+        let row = google_cloud(&vars, &[], None).unwrap();
+        assert_eq!(row.status, Status::Todo);
+        assert_eq!(
+            row.detail,
+            "Vertex AI variables set: CLAUDE_CODE_USE_VERTEX, ANTHROPIC_VERTEX_PROJECT_ID \
+             (names only), but no Application Default Credentials were found (no \
+             GOOGLE_APPLICATION_CREDENTIALS, no \
+             ~/.config/gcloud/application_default_credentials.json, and this is not a Google \
+             Compute Engine VM)"
+        );
+        assert!(row
+            .fix
+            .unwrap()
+            .starts_with("run `gcloud auth application-default login` (not `gcloud auth login`)"));
+        // Values are never shown, only names.
+        for row in [
+            google_cloud(&vars, &[], None),
+            google_cloud(&vars, &[ADC], GCE),
+        ] {
+            assert!(!row.unwrap().detail.contains("secret-project-name"));
+        }
+    }
+
+    #[test]
+    fn a_region_with_no_switch_is_not_vertex_ai_in_use() {
+        let row = google_cloud(
+            &[
+                ("CLAUDE_CODE_USE_VERTEX", "0"),
+                ("CLOUD_ML_REGION", "us-east5"),
+            ],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert_eq!(row.status, Status::Ok);
+        assert!(row.detail.contains("no harness is switched to Vertex AI"));
+        // Gemini CLI's switch is exactly `true`; OpenCode's is a project.
+        let gemini = google_cloud(&[("GOOGLE_GENAI_USE_VERTEXAI", "1")], &[], None).unwrap();
+        assert_eq!(gemini.status, Status::Ok);
+        let opencode = google_cloud(&[("GCLOUD_PROJECT", "p")], &[], None).unwrap();
+        assert_eq!(opencode.status, Status::Todo);
+        // Antigravity's ADC switch and Hermes's project are Vertex AI too.
+        for vars in [[("AGY_ADC_AUTH", "true")], [("VERTEX_PROJECT_ID", "p")]] {
+            let row = google_cloud(&vars, &[], None).unwrap();
+            assert_eq!(row.status, Status::Todo, "{vars:?}");
+        }
+        let off = google_cloud(&[("AGY_ADC_AUTH", "false")], &[], None).unwrap();
+        assert_eq!(off.status, Status::Ok);
+    }
     use branchyard::services::ServiceOwner;
     use branchyard_testkit::{MockHttp, Response};
     use serde_json::json;

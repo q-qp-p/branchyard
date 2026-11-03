@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,8 @@ IMAGE_REPOSITORY = "ghcr.io/vamsiramakrishnan/branchyard-agy"
 MSB_VERSION = "0.7.3"
 MSB_ARCHIVE_SHA256 = "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea"
 IAP_SOURCE_RANGE = "35.235.240.0/20"
+DEFAULT_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+SCOPE_PATTERN = r"[a-z][a-z0-9-]*|https://www\.googleapis\.com/auth/[a-z0-9._-]+"
 
 
 class SetupError(Exception):
@@ -43,6 +45,7 @@ class Config:
     version: str = RELEASE_VERSION
     machine_type: str = "n2-standard-4"
     service_account: str | None = None
+    scopes: str | None = None
     image: str = f"{IMAGE_REPOSITORY}:{RELEASE_VERSION}"
     backend: str = "local"
     repo: Path | None = None
@@ -63,10 +66,18 @@ class Config:
         return f"branchyard-{self.name[:32]}-{hashlib.sha256(identity).hexdigest()[:8]}"
 
     @property
+    def access_scopes(self) -> tuple[str, ...]:
+        if self.scopes is None:
+            return (DEFAULT_SCOPE,) if self.service_account else ()
+        return () if self.scopes == "none" else tuple(self.scopes.split(","))
+
+    @property
     def fingerprint(self) -> str:
         target = asdict(self)
-        for key in ("state_dir", "repo", "forward_secret"):
+        for key in ("state_dir", "repo", "forward_secret", "scopes"):
             target.pop(key)
+        if self.access_scopes:
+            target["scopes"] = list(self.access_scopes)
         if self.tunnel_through_iap:
             target["iap_firewall"] = self.iap_firewall
         else:
@@ -108,6 +119,11 @@ class Config:
             rf"[a-z][a-z0-9-]+@{re.escape(self.project)}\.iam\.gserviceaccount\.com", self.service_account
         ):
             raise SetupError("--service-account must name an existing account in --project")
+        if self.scopes not in {None, "none"}:
+            if not self.service_account:
+                raise SetupError("--scopes needs --service-account; a VM without an account gets no scopes")
+            if not all(re.fullmatch(SCOPE_PATTERN, scope) and scope != "none" for scope in self.access_scopes):
+                raise SetupError("--scopes must be none, or comma-separated scope names or googleapis.com/auth URLs")
         if self.disk_size < 30:
             raise SetupError("--disk-size must be at least 30 GB")
         if not re.fullmatch(
@@ -139,6 +155,7 @@ def plan(config: Config) -> dict[str, Any]:
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
         ],
         "service_account": config.service_account or "none; no default Compute Engine account selected",
+        "access_scopes": list(config.access_scopes),
         "network": network,
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": firewall_plan(config),
@@ -334,6 +351,14 @@ def wait_for_ssh(
     raise SetupError(f"SSH was not ready within 180 seconds. {failure}")
 
 
+def unscoped_reuse(config: Config, instance: dict[str, Any] | None) -> bool:
+    """Whether a worker made without access scopes (0.4.0 and earlier) is reused under the default."""
+    if instance is None or config.scopes is not None or not config.service_account:
+        return False
+    metadata = {item.get("key"): item.get("value") for item in instance.get("metadata", {}).get("items", [])}
+    return metadata.get("branchyard-configuration-sha256") == replace(config, scopes="none").fingerprint
+
+
 def inspect_instance(config: Config, run: Runner) -> dict[str, Any] | None:
     """Read the named VM; permission failures are never treated as absence."""
     instance = run.json(
@@ -348,7 +373,7 @@ def inspect_instance(config: Config, run: Runner) -> dict[str, Any] | None:
     checks = (
         instance.get("name") == config.name,
         instance.get("labels", {}).get(OWNER_LABEL) == config.name,
-        metadata.get("branchyard-configuration-sha256") == config.fingerprint,
+        metadata.get("branchyard-configuration-sha256") == config.fingerprint or unscoped_reuse(config, instance),
         instance.get("machineType", "").rsplit("/", 1)[-1] == config.machine_type,
         instance.get("zone", "").rsplit("/", 1)[-1] == config.zone,
         bool(instance.get("advancedMachineFeatures", {}).get("enableNestedVirtualization"))
@@ -619,6 +644,7 @@ def apply(config: Config) -> dict[str, Any]:
         if not account or account.get("email") != config.service_account:
             raise SetupError("could not verify the selected existing service account")
     instance = inspect_instance(config, run)
+    unscoped = unscoped_reuse(config, instance)
     firewall = inspect_iap_firewall(config, run)
     if instance is None:
         args = gcloud(
@@ -637,7 +663,7 @@ def apply(config: Config) -> dict[str, Any]:
             f"--subnet={config.subnet}",
             f"--labels={OWNER_LABEL}={config.name}",
             f"--metadata=enable-oslogin=TRUE,branchyard-configuration-sha256={config.fingerprint}",
-            "--no-scopes",
+            f"--scopes={','.join(config.access_scopes)}" if config.access_scopes else "--no-scopes",
             f"--service-account={config.service_account}" if config.service_account else "--no-service-account",
         )
         if config.backend == "microsandbox":
@@ -719,6 +745,7 @@ def apply(config: Config) -> dict[str, Any]:
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": {**(firewall_plan(config) or {}), "id": firewall.get("id")} if firewall else None,
         "qualification": {"model": "not_checked", "microsandbox_hard_memory_ceiling": "not_qualified"},
+        "access_scopes": [] if unscoped else list(config.access_scopes),
         "credential_source": config.forward_secret,
         "credential_destination": "native by keystore; GEMINI_API_KEY",
         "project_dependencies": "not_run",
@@ -733,6 +760,12 @@ def apply(config: Config) -> dict[str, Any]:
             "server_config": f"~/.local/state/branchyard/gce/{config.name}/server.json",
         },
     }
+    if unscoped:
+        result["access_scopes_note"] = (
+            "this worker was made without access scopes, so its service account cannot reach Vertex AI, "
+            "gs:// stores or Cloud KMS; it is reused as it is. For a worker with cloud-platform, run again "
+            "with another --name, or delete this one and run again; --scopes none keeps it without this note"
+        )
     destination = config.state_dir / "deployment.json"
     staged = destination.with_suffix(".json.new")
     staged.write_text(json.dumps(result, indent=2) + "\n")
@@ -750,6 +783,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine-type", default="n2-standard-4")
     parser.add_argument(
         "--service-account", help="existing account; omitted means no account, never the project default"
+    )
+    parser.add_argument(
+        "--scopes",
+        help="access scopes for --service-account: comma-separated names or URLs, or none; "
+        "defaults to cloud-platform, so the account's IAM roles decide API access",
     )
     parser.add_argument("--image", help="defaults to the published worker image matching --version")
     parser.add_argument("--backend", choices=("local", "microsandbox"), default="local")

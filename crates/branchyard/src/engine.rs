@@ -823,6 +823,9 @@ fn run(
         Ok(placement) => placement,
         Err(reason) => {
             recorder.record(provisioned.activity)?;
+            for warning in provisioned.warnings {
+                recorder.record(Activity::Warning(warning))?;
+            }
             driven.end = End::failed(reason);
             return Ok(driven);
         }
@@ -849,6 +852,9 @@ fn run(
         provisioned.activity,
         managed,
     ))?;
+    for warning in provisioned.warnings {
+        recorder.record(Activity::Warning(warning))?;
+    }
     if let Some(why) = managed_failure {
         recorder.record(Activity::Warning(why))?;
     }

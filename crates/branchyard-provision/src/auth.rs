@@ -10,7 +10,10 @@
 // no check for a credential file already on disk (planning does no I/O);
 // no secrets means no authentication is provisioned rather than Scion's
 // no-auth gate; secrets none of whose names a harness reads select nothing
-// and are reported as unused.
+// and are reported as unused; an `all_of` entry is a group of names, one of
+// which is needed; and a method given some of the secrets it needs but not
+// all selects nothing ([`Spec::incomplete`] says what it lacks) unless it was
+// asked for, where Scion refuses.
 
 //! Choosing how a harness authenticates from the secrets it was given.
 
@@ -19,10 +22,11 @@ use crate::Refused;
 /// How one authentication method is recognized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Every `all_of` secret and the first present `any_of` secret.
+    /// One secret of every `all_of` group and the first present `any_of`
+    /// secret. Within a group, as in `any_of`, the first present one counts.
     Env {
         any_of: &'static [&'static str],
-        all_of: &'static [&'static str],
+        all_of: &'static [&'static [&'static str]],
     },
     /// A file's whole content, given as the secret `secret`.
     File { secret: &'static str },
@@ -54,7 +58,7 @@ impl Method {
 
     pub const fn env_all(
         name: &'static str,
-        all_of: &'static [&'static str],
+        all_of: &'static [&'static [&'static str]],
         any_of: &'static [&'static str],
         hint: &'static str,
     ) -> Method {
@@ -76,10 +80,58 @@ impl Method {
     /// Every secret name this method reads.
     pub fn names(&self) -> Vec<&'static str> {
         match self.kind {
-            Kind::Env { any_of, all_of } => all_of.iter().chain(any_of).copied().collect(),
+            Kind::Env { any_of, all_of } => all_of
+                .iter()
+                .flat_map(|group| group.iter())
+                .chain(any_of)
+                .copied()
+                .collect(),
             Kind::File { secret } => vec![secret],
         }
     }
+
+    /// For an environment method given some of the secrets it reads but
+    /// not all it needs, what it lacks: each missing group as `A, B or C`,
+    /// joined by `and`. `None` when it has all it needs or was given none.
+    fn missing(&self, given: &[&str]) -> Option<String> {
+        let Kind::Env { any_of, all_of } = self.kind else {
+            return None;
+        };
+        if !self.names().iter().any(|name| given.contains(name)) {
+            return None;
+        }
+        let groups = all_of
+            .iter()
+            .copied()
+            .chain(Some(any_of).filter(|a| !a.is_empty()));
+        let missing: Vec<String> = groups
+            .filter(|group| first_given(group, given).is_none())
+            .map(|group| match group.split_last() {
+                Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+                _ => group.concat(),
+            })
+            .collect();
+        (!missing.is_empty()).then(|| missing.join(" and "))
+    }
+}
+
+/// The first of `names` that `given` holds.
+fn first_given(names: &[&'static str], given: &[&str]) -> Option<&'static str> {
+    names.iter().copied().find(|name| given.contains(name))
+}
+
+/// A method given some of the secrets it reads and not all it needs, which
+/// therefore selects nothing: Claude Code's `vertex-ai` with a project and
+/// no region, say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Incomplete {
+    /// The method's name: `vertex-ai`.
+    pub method: &'static str,
+    /// The secrets of it that were given.
+    pub given: Vec<&'static str>,
+    /// What it lacks: `CLOUD_ML_REGION, GOOGLE_CLOUD_LOCATION or
+    /// GOOGLE_CLOUD_REGION`.
+    pub missing: String,
 }
 
 /// A harness's methods, in order of precedence.
@@ -138,8 +190,9 @@ impl Spec {
     }
 
     /// Choose a method from the secrets `given` names: the explicit one if
-    /// asked for, else the first that matches. `None` when no secret this
-    /// harness reads was given.
+    /// asked for, else the first that matches. `None` when none matches,
+    /// which without an explicit method is never a refusal: a method given
+    /// only part of what it needs is [`Spec::incomplete`].
     pub fn select(
         &self,
         given: &[&str],
@@ -161,11 +214,14 @@ impl Spec {
             }
             let matched = match method.kind {
                 Kind::Env { any_of, all_of } => {
-                    if all_of.iter().all(|k| has(k)) {
+                    if all_of
+                        .iter()
+                        .all(|group| first_given(group, given).is_some())
+                    {
                         match (any_of, all_of) {
-                            ([], [first, ..]) => Some(Some(*first)),
+                            ([], [first, ..]) => first_given(first, given).map(Some),
                             ([], []) => None,
-                            (any, _) => any.iter().find(|k| has(k)).map(|k| Some(*k)),
+                            (any, _) => first_given(any, given).map(Some),
                         }
                     } else {
                         None
@@ -189,24 +245,38 @@ impl Spec {
                     }))
                 }
                 (None, _) if explicit.is_some() => {
+                    let why = match method.missing(given) {
+                        Some(missing) => format!("also needs {missing}"),
+                        None => "selected but no credentials found".into(),
+                    };
                     return Err(Refused(format!(
-                        "{}: auth type {:?} selected but no credentials found; {}",
+                        "{}: auth type {:?} {why}; {}",
                         self.harness, method.name, method.hint
-                    )))
+                    )));
                 }
                 (None, _) => {}
             }
         }
-        let names = self.names();
-        if explicit.is_none() && !given.iter().any(|g| names.contains(g)) {
-            return Ok(None);
-        }
-        let hints: Vec<&str> = self.methods.iter().map(|m| m.hint).collect();
-        Err(Refused(format!(
-            "{}: no valid auth method found; {}",
-            self.harness,
-            hints.join(", or ")
-        )))
+        Ok(None)
+    }
+
+    /// The methods `given` holds part of what they need, and what each
+    /// lacks.
+    pub fn incomplete(&self, given: &[&str]) -> Vec<Incomplete> {
+        self.methods
+            .iter()
+            .filter_map(|method| {
+                Some(Incomplete {
+                    method: method.name,
+                    missing: method.missing(given)?,
+                    given: method
+                        .names()
+                        .into_iter()
+                        .filter(|name| given.contains(name))
+                        .collect(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -293,7 +363,7 @@ mod tests {
         harness: "test",
         methods: &[Method::env_all(
             "vertex-ai",
-            &["GOOGLE_CLOUD_PROJECT"],
+            &[&["GOOGLE_CLOUD_PROJECT"]],
             &["GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"],
             "provide GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION",
         )],
@@ -311,9 +381,85 @@ mod tests {
         );
     }
 
+    /// Scion refuses a partial set; here it selects nothing, and says what
+    /// is missing.
     #[test]
     fn all_of_missing_one() {
-        assert!(VERTEX.select(&["GOOGLE_CLOUD_LOCATION"], None).is_err());
+        assert_eq!(
+            VERTEX.select(&["GOOGLE_CLOUD_LOCATION"], None).unwrap(),
+            None
+        );
+        assert_eq!(
+            VERTEX.incomplete(&["GOOGLE_CLOUD_LOCATION", "UNRELATED"]),
+            [Incomplete {
+                method: "vertex-ai",
+                given: vec!["GOOGLE_CLOUD_LOCATION"],
+                missing: "GOOGLE_CLOUD_PROJECT".into(),
+            }]
+        );
+    }
+
+    /// A group is one of several names, the first given one counting; a
+    /// method missing a group is incomplete, and refused only when asked
+    /// for, naming what it lacks.
+    #[test]
+    fn a_group_takes_any_of_its_names_and_names_them_all_when_missing() {
+        const SPEC: Spec = Spec {
+            harness: "test",
+            methods: &[
+                Method::env("api-key", &["API_KEY"], "set API_KEY"),
+                Method::env_all(
+                    "vertex-ai",
+                    &[&["OWN_PROJECT", "GOOGLE_CLOUD_PROJECT"]],
+                    &["OWN_REGION", "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"],
+                    "set a project and a region",
+                ),
+            ],
+        };
+        let got = SPEC
+            .select(
+                &["GOOGLE_CLOUD_PROJECT", "OWN_PROJECT", "GOOGLE_CLOUD_REGION"],
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (got.method, got.env_key),
+            ("vertex-ai", Some("GOOGLE_CLOUD_REGION"))
+        );
+        let partial = ["GOOGLE_CLOUD_PROJECT"];
+        assert_eq!(SPEC.select(&partial, None).unwrap(), None);
+        let gaps = SPEC.incomplete(&partial);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(
+            (
+                gaps[0].method,
+                gaps[0].given.as_slice(),
+                gaps[0].missing.as_str()
+            ),
+            (
+                "vertex-ai",
+                &["GOOGLE_CLOUD_PROJECT"][..],
+                "OWN_REGION, GOOGLE_CLOUD_LOCATION or GOOGLE_CLOUD_REGION"
+            )
+        );
+        let error = SPEC.select(&partial, Some("vertex-ai")).unwrap_err().0;
+        assert_eq!(
+            error,
+            "test: auth type \"vertex-ai\" also needs OWN_REGION, GOOGLE_CLOUD_LOCATION or \
+             GOOGLE_CLOUD_REGION; set a project and a region"
+        );
+        // Beside a method that has all it needs, the partial one is passed.
+        let got = SPEC
+            .select(&["OWN_REGION", "API_KEY"], None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.method, "api-key");
+        let error = SPEC.select(&[], Some("vertex-ai")).unwrap_err().0;
+        assert!(
+            error.contains("selected but no credentials found"),
+            "{error}"
+        );
     }
 
     const CLAUDE_LIKE: Spec = Spec {
@@ -323,7 +469,7 @@ mod tests {
             Method::env("oauth-token", &["CLAUDE_CODE_OAUTH_TOKEN"], ""),
             Method::env_all(
                 "vertex-ai",
-                &["GOOGLE_CLOUD_PROJECT"],
+                &[&["GOOGLE_CLOUD_PROJECT"]],
                 &["GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"],
                 "",
             ),

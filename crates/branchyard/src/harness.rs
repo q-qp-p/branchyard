@@ -33,6 +33,19 @@ pub(crate) const CLAUDE_CONFIGURATION: &[&str] = &[
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ];
 
+/// Claude Code's Vertex AI selectors, which an isolated harness keeps from
+/// this process's environment though it loses every other `CLAUDE*` and
+/// `ANTHROPIC*` variable: like the `GOOGLE_*` variables Gemini CLI and
+/// OpenCode select Vertex AI with, which isolation keeps too, they name a
+/// switch, a project and a region, and the credential is Application
+/// Default Credentials. A Claude Code credential given as a secret turns the
+/// switch off (`branchyard_provision`'s Claude provisioner).
+pub(crate) const CLAUDE_VERTEX: &[&str] = &[
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+];
+
 /// Whether an inherited variable belongs to the running Claude Code process
 /// or its host rather than to the developer's configuration.
 pub(crate) fn is_parent_session_variable(name: &str) -> bool {
@@ -269,10 +282,14 @@ pub(crate) fn is_branchyard_variable(name: &str) -> bool {
 
 /// The harness's environment: this process's, minus the parent Claude Code
 /// session's variables and Branchyard's own; or, isolated, the runtime's
-/// scrubbed environment with `home`.
+/// scrubbed environment with `home`, keeping [`CLAUDE_VERTEX`].
 pub(crate) fn environment(isolated_home: Option<&Path>) -> Environment {
     match isolated_home {
-        Some(home) => Environment::new(home).strip("BRANCHYARD_"),
+        Some(home) => CLAUDE_VERTEX
+            .iter()
+            .fold(Environment::new(home).strip("BRANCHYARD_"), |env, name| {
+                env.keep(*name)
+            }),
         None => std::env::vars_os()
             .filter_map(|(name, _)| name.into_string().ok())
             .filter(|name| is_parent_session_variable(name) || is_branchyard_variable(name))
@@ -527,5 +544,28 @@ mod tests {
         );
         let isolated = environment(Some(Path::new("/h")));
         assert_eq!(isolated.home(), Path::new("/h"));
+        for name in CLAUDE_VERTEX
+            .iter()
+            .chain(&["GOOGLE_CLOUD_PROJECT", "PATH"])
+        {
+            assert!(
+                isolated.admits(name),
+                "{name} must reach an isolated harness"
+            );
+        }
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDECODE",
+            "OPENAI_API_KEY",
+            "BRANCHYARD_REMOTE",
+        ] {
+            assert!(
+                !isolated.admits(name),
+                "{name} must not reach an isolated harness"
+            );
+        }
     }
 }

@@ -998,6 +998,9 @@ prints an offline JSON plan using the packaged helper; `--apply` provisions it.
 This operator-only command uses `--directory PATH` for a clean source repository.
 IAP allows TCP 22 from `35.235.240.0/20` only to the dedicated VM tag.
 `--internal-ip` can be combined with IAP to omit an external address.
+`--service-account EMAIL` gives the VM that account with the `cloud-platform`
+scope, so its IAM roles decide API access; `--scopes LIST` (comma-separated
+names or URLs) replaces the default, and `--scopes none` gives no scopes.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified
 forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable

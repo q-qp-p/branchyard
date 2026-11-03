@@ -164,6 +164,7 @@ const CHECKS: &[CheckFn] = &[
     checks::harnesses_installed,
     checks::harnesses_default,
     checks::harnesses_credentials,
+    checks::harnesses_google_cloud,
     hooks::heard,
     checks::provider_default,
     checks::provider_sandboxes,

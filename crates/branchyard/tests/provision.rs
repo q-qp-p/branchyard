@@ -402,6 +402,95 @@ fn claude_code_acp_gets_its_key_model_and_mcp_server() {
     assert!(matches!(secrets[0].via, Via::Helper { .. }) && !secrets[0].tool_env);
 }
 
+const ADC_JSON: &str = r#"{"type": "authorized_user", "refresh_token": "1//ADC-SECRET-TOKEN"}"#;
+
+/// An isolated Claude Code turn given `GCLOUD_ADC` and a project meant for
+/// Gemini CLI, with no region: the turn runs rather than being refused, the
+/// harness finds gcloud's credentials 0600 in its private home where
+/// `GOOGLE_APPLICATION_CREDENTIALS` points, and the record says the project
+/// went unused and what Vertex AI lacked.
+#[test]
+fn claude_code_gets_gcloud_adc_and_runs_beside_a_project_it_cannot_use() {
+    let f = Fixture::new();
+    let adc = f.dir.join("adc.json");
+    fs::write(&adc, ADC_JSON).unwrap();
+    std::env::set_var("BY_TEST_GEMINI_PROJECT", "gemini-project");
+    let branch = f
+        .task(
+            "SH stat -c 'adc %a' \"$GOOGLE_APPLICATION_CREDENTIALS\"\n\
+             SH test \"$GOOGLE_APPLICATION_CREDENTIALS\" = \
+             \"$HOME/.config/gcloud/application_default_credentials.json\" && echo adc-in-home",
+        )
+        .options(TaskOptions {
+            harness: Some("claude-code-acp".into()),
+            isolated: true,
+            provision: Some(Provisioning {
+                secrets: vec![
+                    SecretSource::parse(&format!("GCLOUD_ADC=@{}", adc.display())).unwrap(),
+                    SecretSource::parse("GOOGLE_CLOUD_PROJECT=BY_TEST_GEMINI_PROJECT").unwrap(),
+                ],
+                ..Provisioning::default()
+            }),
+            ..f.options()
+        })
+        .name("claude-adc")
+        .policy(Policy::allow_all())
+        .run()
+        .unwrap();
+    let events = branch.events().unwrap();
+    assert_eq!(branch.info().status, BranchStatus::NoChanges, "{events:?}");
+    let said = text(&events);
+    assert!(said.contains("adc 600"), "{said}");
+    assert!(said.contains("adc-in-home"), "{said}");
+    let (auth, env, secrets, unused) = events
+        .iter()
+        .find_map(|e| match &e.activity {
+            Activity::Provisioned {
+                auth,
+                env,
+                secrets,
+                unused_secrets,
+                ..
+            } => Some((
+                auth.clone(),
+                env.clone(),
+                secrets.clone(),
+                unused_secrets.clone(),
+            )),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(auth, None);
+    assert!(
+        env.contains(&"GOOGLE_APPLICATION_CREDENTIALS".to_owned()),
+        "{env:?}"
+    );
+    assert!(secrets.iter().any(|d| d.secret == "GCLOUD_ADC"
+        && d.via
+            == Via::File {
+                path: ".config/gcloud/application_default_credentials.json".into()
+            }
+        && !d.tool_env));
+    assert_eq!(unused, ["GOOGLE_CLOUD_PROJECT"]);
+    let warnings: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Warning(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        warnings,
+        [
+            "claude-code did not use GOOGLE_CLOUD_PROJECT: vertex-ai also needs CLOUD_ML_REGION, \
+          GOOGLE_CLOUD_LOCATION or GOOGLE_CLOUD_REGION"
+        ]
+    );
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("ADC-SECRET"));
+}
+
 const MCP_SECRET: &str = "mcp-token-PROVISIONED-0123456789abcdefXYZ";
 const CLAUDE_SECRET: &str = "sk-ant-api03-LAUNCH-SECRET-0123456789abcdefghij";
 const HEADER_SECRET: &str = "Bearer remote-HEADER-SECRET-0123456789";
