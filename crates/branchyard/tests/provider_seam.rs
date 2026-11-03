@@ -35,6 +35,7 @@ const SEAM: &str = "crates/branchyard/src/providers/";
 /// - `branchyard-cli`: announcing the chosen provider (`commands/mod.rs`,
 ///   `remote.rs`), building it from flags (`commands/mod.rs`), and a local-only
 ///   check (`harness_cmd.rs`).
+///
 /// These remaining CLI sites use the closed enum directly; callers can
 /// use the public constructors and semantic accessors to lower this list.
 const RATCHET: &[(&str, usize)] = &[
