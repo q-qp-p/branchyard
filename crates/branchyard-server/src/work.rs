@@ -444,7 +444,8 @@ impl Executor for AppExecutor {
         for branch in &operation.branches {
             let Some(Some(repo)) = branchyard_support::best_effort(
                 "resolve a running operation's shutdown target",
-                self.shutdown_repo(stored, branch),
+                self.shutdown_repo(stored, branch)
+                    .map_err(|error| error.body.message),
             ) else {
                 continue;
             };

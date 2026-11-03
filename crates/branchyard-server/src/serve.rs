@@ -6,7 +6,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use branchyard_support::LockExt as _;
 use std::time::Duration;
 
 use branchyard::Yard;
