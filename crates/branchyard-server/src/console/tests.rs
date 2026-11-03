@@ -344,6 +344,13 @@ async fn shutdown_stops_managed_console_turns_through_their_tenant_binding() {
     assert_eq!(status, StatusCode::OK, "{started}");
     let sid = started["session_id"].as_str().unwrap();
     let operation_id = started["id"].as_str().unwrap();
+    let session = fixture
+        .app
+        .registry
+        .console_get(Collection::Sessions, sid)
+        .unwrap()
+        .unwrap();
+    let branch_name = session.body["branch"].as_str().unwrap();
     let workspace = fixture
         .app
         .registry
@@ -352,10 +359,14 @@ async fn shutdown_stops_managed_console_turns_through_their_tenant_binding() {
         .unwrap();
     let repo = super::runtime::resolve(&fixture.app, &workspace).unwrap();
     assert!(fixture.app.repos.is_empty());
-    branchyard_testkit::wait::until("the managed turn to start", || {
-        repo.yard.branch(sid).is_ok_and(|branch| {
+    branchyard_testkit::wait::until("the managed harness to receive its prompt", || {
+        repo.yard.branch(branch_name).is_ok_and(|branch| {
             branch.info().status == branchyard::BranchStatus::Running
-                && branch.info().session.is_some()
+                && branch.events().is_ok_and(|events| {
+                    events.iter().any(|event| {
+                        matches!(&event.activity, branchyard::Activity::Prompt(prompt) if prompt == "HANG")
+                    })
+                })
         })
     });
     let foreign = crate::store::StoredOperation {
@@ -373,7 +384,7 @@ async fn shutdown_stops_managed_console_turns_through_their_tenant_binding() {
         &foreign,
     );
     assert_eq!(
-        repo.yard.branch(sid).unwrap().info().status,
+        repo.yard.branch(branch_name).unwrap().info().status,
         branchyard::BranchStatus::Running
     );
     fixture.app.registry.stop_accepting();
@@ -390,7 +401,7 @@ async fn shutdown_stops_managed_console_turns_through_their_tenant_binding() {
         "{finished:?}"
     );
     assert_eq!(
-        repo.yard.branch(sid).unwrap().info().status,
+        repo.yard.branch(branch_name).unwrap().info().status,
         branchyard::BranchStatus::Interrupted
     );
 }

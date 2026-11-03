@@ -79,7 +79,7 @@ isolation. State lives in .branchyard/ at the repository root. Remote mode:
 work runs on the server's configured worker under its provider policy.
 To isolate: --provider container (gVisor by default), --provider agent-sandbox
 (gVisor or a Kata microVM), or --provider microsandbox (needs that build feature).
---isolated gives a private HOME and no sandbox. Where harnesses run
+--isolated gives a private HOME, not a sandbox. Where harnesses run
 and where state lives, rung by rung: docs/modes.md.";
 
 pub(crate) const RUN_EXAMPLES: &str = "\

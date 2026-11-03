@@ -356,11 +356,11 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
     ] {
         // Craft a recorded target without contacting a runtime. Raw API edits
         // must reject it before graph admission, including non-spawn edits.
+        let baseline = serde_json::from_value::<branchyard::Provider>(provider.clone()).unwrap();
         assert_eq!(db.execute("UPDATE branches SET record=json_set(record,'$.provider',json(?1)) WHERE name='native-parent'", [provider.to_string()]).unwrap(), 1);
         assert_eq!(
-            serde_json::to_value(yard.branch("native-parent").unwrap().provider().unwrap())
-                .unwrap(),
-            provider
+            yard.branch("native-parent").unwrap().provider().unwrap(),
+            Some(baseline.clone())
         );
         for edits in [
             json!([{"kind":"spawn","prompt":"Hello","name":"must-not-start"}]),
@@ -380,6 +380,10 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
             assert_eq!(refused["error"]["code"], "preset_required");
             assert!(yard.branch("must-not-start").is_err());
             assert_eq!(yard.graph("native-parent").unwrap().revision, 0);
+            assert_eq!(
+                yard.branch("native-parent").unwrap().provider().unwrap(),
+                Some(baseline.clone())
+            );
         }
         for route in ["send", "fork", "reincarnate", "spawn"] {
             let body = match route {
@@ -403,6 +407,10 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
                 "{route}: {refused}"
             );
             assert!(yard.branch("must-not-start").is_err());
+            assert_eq!(
+                yard.branch("native-parent").unwrap().provider().unwrap(),
+                Some(baseline.clone())
+            );
         }
     }
 }

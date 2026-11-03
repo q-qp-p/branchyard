@@ -627,12 +627,10 @@ impl Launch {
                 return Err(format!("--{flag} is unsupported by native sandbox providers; allocations are destroyed after each turn"));
             }
         }
-        if chosen != Some(ProviderArg::AgentSandbox) {
-            if self.native.kube_context.is_some() || self.native.kube_namespace.is_some() {
-                return Err(
-                    "--kube-context and --kube-namespace need --provider agent-sandbox".into(),
-                );
-            }
+        if chosen != Some(ProviderArg::AgentSandbox)
+            && (self.native.kube_context.is_some() || self.native.kube_namespace.is_some())
+        {
+            return Err("--kube-context and --kube-namespace need --provider agent-sandbox".into());
         }
         if !native
             && (self.native.sandbox_runtime.is_some() || self.native.sandbox_network.is_some())
