@@ -241,7 +241,9 @@ impl Yard {
         let client = Client::new(&gateway.url, token);
         let called = match staged.draft.as_ref().and_then(|d| d.promote.as_ref()) {
             // The draft's promotion is the real effect, with its own report.
-            Some(promote) => client.follow_up(&promote.tool, &promote.arguments, Some(&entry.id)),
+            Some(promote) => {
+                client.follow_up(&promote.tool, &promote.arguments, Some(&entry.key()))
+            }
             // The outbox: the call as the harness made it.
             None => {
                 let tool = request["name"].as_str().map_or_else(
@@ -252,8 +254,8 @@ impl Yard {
                 client.call(
                     &tool,
                     &arguments,
-                    &json!({"idempotency_key": entry.id}),
-                    Some(&entry.id),
+                    &json!({"idempotency_key": entry.key()}),
+                    Some(&entry.key()),
                 )
             }
         };

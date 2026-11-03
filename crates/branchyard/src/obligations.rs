@@ -137,7 +137,7 @@ pub(crate) fn list(
     for entry in store.effects().effects(None)? {
         if within(&entry.branch) {
             let running = entry.state == EffectState::Begun
-                && crate::effects::reconcile::turn_running(store, &entry, now_ms)?;
+                && crate::effects::reconcile::turn_running(store, &entry)?;
             owed.extend(of_effect(&entry, running, now_ms));
         }
     }

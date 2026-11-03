@@ -245,6 +245,7 @@ fn a_prerequisite_that_fails_blocks_its_dependents_until_the_graph_changes() {
     ));
     delegate.cancel("gate").unwrap();
     root.wait_subtree().unwrap();
+    common::assert_no_drift(&f.yard);
 }
 
 /// Each invalid proposal is refused whole: no branch, no dependency, no
@@ -518,6 +519,7 @@ fn a_dependent_waits_to_be_integrated_and_starts_from_the_merge() {
     let app = f.yard.branch("app").unwrap().info().clone();
     assert_eq!(app.base, merged.commit);
     assert!(app.worktree.join("lib.txt").is_file());
+    common::assert_no_drift(&f.yard);
 }
 
 /// A prerequisite settled and no engine started its dependent, as when the
@@ -867,6 +869,7 @@ fn a_prerequisite_whose_engine_was_killed_blocks_its_dependent_on_recovery() {
         .resume_graph(&TaskOptions::default())
         .unwrap()
         .is_empty());
+    common::assert_no_drift(&branchyard::Yard::open(&f.root).unwrap());
 }
 
 /// The battery's crash and graph scenarios (M3): a dependent blocked

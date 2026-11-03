@@ -1,0 +1,32 @@
+<main id="content">
+<section class="hero">
+  <div class="hero-text">
+    <h1>Run several coding agents at once. Merge what passes.</h1>
+    <p class="lede">Each task gets its own branch and worktree. Agents never touch each other's files, or yours.
+    You read the diff. <code>by merge</code> runs your tests on the result before anything lands.</p>
+    <div class="cta">
+      <a class="button primary" href="$start_href">Get started</a>
+      <a class="button" href="#shelves">Browse the docs</a>
+    </div>
+  </div>
+  <div class="steps" aria-label="Three commands">
+    <div class="code"><div class="code-head"><span class="lang">Install</span><button type="button" class="copy" data-copy>Copy</button></div><pre><code>$install</code></pre></div>
+    <ol>
+      <li><code>by run "Fix the flaky test" --check "cargo test"</code><span>Start a task on its own branch.</span></li>
+      <li><code>by diff fix-flaky-test</code><span>Read what the agent changed.</span></li>
+      <li><code>by merge fix-flaky-test</code><span>Merge it if the check passes.</span></li>
+    </ol>
+  </div>
+</section>
+<figure class="shot">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="$shot-dark.png">
+    <img src="$shot.png" width="1440" height="900" loading="lazy" alt="The console's home. Every open branch sits on one time axis. A branch that waits on you is amber, with an Answer button. Running branches have Steer, ready ones have Merge, and each row shows what it cost.">
+  </picture>
+  <figcaption>The console's board. Each turn is a bar, each tool call a tick. Amber waits on you. Demo data from a scripted agent; no model ran.</figcaption>
+</figure>
+<div id="shelves" class="shelves">$cards</div>
+</main>
+<footer class="site-foot"><p>Apache-2.0 · <a href="$repo" rel="noopener">Source on GitHub</a></p></footer>
+</body>
+</html>

@@ -66,7 +66,7 @@ mod provider;
 mod checkpoint;
 
 #[cfg(feature = "microsandbox")]
-pub use provider::{MicrosandboxProvider, error, event, failure_kind, state};
+pub use provider::{error, event, failure_kind, state, MicrosandboxProvider};
 
 /// The pinned SDK version, which must match the installed `msb` runtime.
 pub const SDK_VERSION: &str = "0.7.3";

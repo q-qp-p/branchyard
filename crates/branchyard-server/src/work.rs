@@ -391,7 +391,29 @@ impl Work {
 /// Runs claimed operations on a server's repositories and configuration.
 pub struct AppExecutor(pub Arc<App>);
 
+/// Who a turn stopped for a shutdown was cancelled by, in its log.
+pub const SHUTDOWN: &str = "the server's shutdown";
+
 impl Executor for AppExecutor {
+    fn stop_for_shutdown(&self, stored: &StoredOperation) {
+        let operation = &stored.operation;
+        let Some(repo) = self.0.repos.get(&operation.repo) else {
+            return;
+        };
+        for branch in &operation.branches {
+            match repo.yard.cancel_as(branch, SHUTDOWN) {
+                // Not created yet, or already gone: nothing to stop.
+                Err(branchyard::Error::UnknownBranch(_)) => {}
+                result => {
+                    branchyard_support::best_effort(
+                        &format!("stop branch {branch} for the shutdown"),
+                        result,
+                    );
+                }
+            }
+        }
+    }
+
     fn execute(&self, stored: &StoredOperation, work: &Value) -> Finished {
         let app = &self.0;
         let operation = &stored.operation;

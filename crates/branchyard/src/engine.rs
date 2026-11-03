@@ -566,11 +566,13 @@ fn drive(
         .budget
         .max_duration
         .and_then(|limit| started.checked_add(limit));
-    // The deadline is durable, so recovery can say whether it had passed.
-    let deadline_ms = bounds
-        .budget
-        .max_duration
-        .map(|limit| deadline_capped(now_ms(), limit));
+    // The deadline is durable, so recovery can say whether it had passed;
+    // on the store's clock, which recovery compares it with. The turn
+    // itself is held to `deadline`, on this process's monotonic clock.
+    let deadline_ms = match bounds.budget.max_duration {
+        Some(limit) => Some(deadline_capped(store.backend().clock_ms()?, limit)),
+        None => None,
+    };
     store.backend().set_deadline(fence, deadline_ms)?;
     let driven = run(recorder, turn, record, bounds, lease, started, deadline)?;
     journal(

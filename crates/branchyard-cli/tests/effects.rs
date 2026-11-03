@@ -188,7 +188,28 @@ fn effects_are_listed_and_undo_plans_then_rewinds_and_undoes() {
         repo.call("legacy__do", "{}"),
         repo.call("gmail__send", r#"{"to": "finance@"}"#),
     );
-    repo.ok(&["send", "board", &second, "--yes"]);
+    // `legacy__do` declares nothing, so nothing could settle it were its
+    // answer lost: the `allow` rule is asked about, and another `by`
+    // answers. (`gmail__send` is staged, its ask left waiting.)
+    let send = repo
+        .command(env!("CARGO_BIN_EXE_by"))
+        .args(["send", "board", &second, "--yes"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let id = wait::until("the unsettleable call's ask", || {
+        repo.json(&["approvals", "--json"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["resolved"]["layer"] == "unsettleable")
+            .map(|ask| ask["id"].as_str().unwrap().to_owned())
+    });
+    repo.ok(&["approvals", "allow", &id[id.len() - 8..]]);
+    let out = send.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
 
     // The ledger.
     let ledger = repo.json(&["effects", "--json"]);

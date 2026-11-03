@@ -72,6 +72,10 @@ pub struct Finished {
 /// record names (`StoredOperation::principal`), never as the worker.
 pub trait Executor: Send + Sync {
     fn execute(&self, operation: &StoredOperation, work: &Value) -> Finished;
+    /// Stop `operation`'s running turns for a shutdown, through the same
+    /// durable cancel `by cancel` records, so they end with a known
+    /// outcome instead of dying with the process. Nothing by default.
+    fn stop_for_shutdown(&self, _operation: &StoredOperation) {}
 }
 
 pub struct NewOperation {
@@ -1167,6 +1171,33 @@ impl Registry {
             self.store.pending(&self.options.repos),
         )?;
         Some(pending.saturating_sub(self.running_here()))
+    }
+
+    /// At shutdown, before the grace period runs out: ask the executor to
+    /// stop the turns of each operation still running here
+    /// ([`Executor::stop_for_shutdown`]). Returns the IDs it asked about.
+    pub fn stop_running_turns(&self) -> Vec<String> {
+        let (ids, executor) = {
+            let state = self.lock();
+            let ids: Vec<String> = state.running.keys().cloned().collect();
+            (ids, state.executor.clone())
+        };
+        let Some(executor) = executor else {
+            return Vec::new();
+        };
+        for id in &ids {
+            if let Some(Some(stored)) =
+                branchyard_support::best_effort("read a running operation", self.store.get(id))
+            {
+                executor.stop_for_shutdown(&stored);
+            }
+        }
+        ids
+    }
+
+    /// Whether operation `id` still runs here.
+    pub fn runs_here(&self, id: &str) -> bool {
+        self.lock().running.contains_key(id)
     }
 
     /// Refuse new operations and stop claiming queued ones.

@@ -33,6 +33,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install ruff==0.15.8 mypy==2.4.0
+      - run: python -m pip install --require-hashes -r tools/docs_site/requirements.lock
       - run: python3 tools/check.py --fast --keep-going
       - run: cargo fmt --all -- --check
   test-engine:

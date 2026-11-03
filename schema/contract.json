@@ -9124,6 +9124,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -9829,6 +9834,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -10547,6 +10557,13 @@
               ],
               "description": "The idempotency key the gateway sent upstream, when it sent one."
             },
+            "decision_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The decision the call carries out, as the harness named it\n(`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).\nThe key sent upstream is then [`EffectEntry::key`], the same for\nevery call of that decision in the task, so a repeat in a later\nturn reaches the upstream with the key it already saw."
+            },
             "created_ms": {
               "type": "integer",
               "format": "uint64",
@@ -10800,6 +10817,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -11099,6 +11121,13 @@
               ],
               "description": "The idempotency key the gateway sent upstream, when it sent one."
             },
+            "decision_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The decision the call carries out, as the harness named it\n(`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).\nThe key sent upstream is then [`EffectEntry::key`], the same for\nevery call of that decision in the task, so a repeat in a later\nturn reaches the upstream with the key it already saw."
+            },
             "created_ms": {
               "type": "integer",
               "format": "uint64",
@@ -11352,6 +11381,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -11948,6 +11982,13 @@
               ],
               "description": "The idempotency key the gateway sent upstream, when it sent one."
             },
+            "decision_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The decision the call carries out, as the harness named it\n(`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).\nThe key sent upstream is then [`EffectEntry::key`], the same for\nevery call of that decision in the task, so a repeat in a later\nturn reaches the upstream with the key it already saw."
+            },
             "created_ms": {
               "type": "integer",
               "format": "uint64",
@@ -12201,6 +12242,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -12602,6 +12648,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -12797,6 +12848,13 @@
             "null"
           ],
           "description": "The idempotency key the gateway sent upstream, when it sent one."
+        },
+        "decision_key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The decision the call carries out, as the harness named it\n(`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).\nThe key sent upstream is then [`EffectEntry::key`], the same for\nevery call of that decision in the task, so a repeat in a later\nturn reaches the upstream with the key it already saw."
         },
         "created_ms": {
           "type": "integer",
@@ -13053,6 +13111,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -13416,6 +13479,13 @@
               ],
               "description": "The idempotency key the gateway sent upstream, when it sent one."
             },
+            "decision_key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The decision the call carries out, as the harness named it\n(`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).\nThe key sent upstream is then [`EffectEntry::key`], the same for\nevery call of that decision in the task, so a repeat in a later\nturn reaches the upstream with the key it already saw."
+            },
             "created_ms": {
               "type": "integer",
               "format": "uint64",
@@ -13669,6 +13739,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -36155,6 +36230,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -41774,6 +41854,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."
@@ -53591,6 +53676,11 @@
               "type": "string",
               "const": "deletion",
               "description": "A deletion, asked about whatever the policy said."
+            },
+            {
+              "type": "string",
+              "const": "unsettleable",
+              "description": "An irreversible operation that declares no lookup, asked about\nwhatever the policy allowed: if its answer were lost, nothing could\ntell whether it happened."
             }
           ],
           "description": "Which layer decided."

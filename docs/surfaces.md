@@ -1116,8 +1116,10 @@ A running branch says whether its engine is still heard from ([durability](durab
 
 | Operation | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
+| Check that each branch's record agrees with its event log (status) | `Yard::drift` (`Drift`) | no | no | no | no | no |
 | List what is owed: approvals, unknown and staged effects, lost turns and engines, blocked, ready and waiting children, parked parents, undo windows, each with the commands that deal with it | `Yard::obligations`, `obligations_at` (`Obligation`, `ObligationKind`) | `obligations [BRANCH] [--json]` | no: refused with `usage` | no | no | `by obligations <branch>` in a local harness's shell, as `by effects`; named in the delegate skill |
 
 | Surface | Before | Now |
 |---|---|---|
+| `Resolved::layer` (`Layer::Unsettleable`, `unsettleable`) | none | the layer an ask carries when a policy allowed an irreversible operation that declares no lookup and it was asked about instead; in `by approvals`, the ledger's `decided`, `schema/contract.json` |
 | `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for every running branch, with zero timing fields and a lost reason when no held lease exists, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |

@@ -464,8 +464,11 @@
   const workspaceLane = (w) => WORKSPACE_LANES.find((lane) => !lane.states || lane.states.includes(w.state));
   const workspaceStateText = (w) => ({ pending: 'starting' }[w.state] || w.state);
 
+  // Dollars to the cent; a cost under a cent keeps the digits that show it.
   function money(v) {
-    return v == null ? '—' : `$${Number(v).toFixed(v < 1 ? 4 : 2)}`;
+    if (v == null) return '—';
+    const n = Number(v);
+    return `$${n.toFixed(n > 0 && n < 0.01 ? 4 : 2)}`;
   }
   // Dollars to the cent, for a column of them.
   const cents = (v) => (v == null ? '—' : v > 0 && v < 0.005 ? '<$0.01' : `$${Number(v).toFixed(2)}`);
@@ -3701,7 +3704,7 @@
     accepted: { pick: false, tag: 'Accepted', note: (a) => `turn ${a.turn}` },
     current: { pick: true, tag: 'Current', note: (a) => `turn ${a.turn}` },
     working: { pick: false, note: (a) => `turn ${a.turn} · a newer turn is running` },
-    earlier: { pick: false, note: (a) => `Earlier turn ${a.turn} — not the current result` },
+    earlier: { pick: false, note: (a) => `turn ${a.turn} · a later turn replaced it` },
     unsettled: { pick: false, note: (a) => `turn ${a.turn} · this turn ended without its result` },
   };
 
@@ -4398,7 +4401,7 @@
       h('div', { class: 'row' },
         m.kind === 'escalation'
           ? [h('button', { type: 'button', class: 'primary', disabled, text: 'Approve', onclick: () => send('Approved.') }),
-            h('button', { type: 'button', class: 'danger', disabled, text: 'Deny', onclick: () => send('Denied.') })]
+            h('button', { type: 'button', class: 'deny', disabled, text: 'Deny', onclick: () => send('Denied.') })]
           : h('button', { type: 'button', class: 'primary', disabled, text: 'Answer', onclick: () => send(null) })),
       disabled ? h('p', { class: 'hint', text: 'This token lacks the run scope.' }) : null);
   }
@@ -4428,7 +4431,7 @@
       h('label', { class: 'block', for: id, text: 'Reason' }), area,
       h('div', { class: 'row' },
         h('button', { type: 'button', class: 'primary', disabled, text: 'Allow', onclick: () => send(true) }),
-        h('button', { type: 'button', class: 'danger', disabled, text: 'Deny', onclick: () => send(false) })),
+        h('button', { type: 'button', class: 'deny', disabled, text: 'Deny', onclick: () => send(false) })),
       disabled ? h('p', { class: 'hint', text: 'This token lacks the run scope.' }) : null);
   }
 
@@ -4449,7 +4452,7 @@
   const UNDO_MS = 8000;
   const HOLD_MS = 700;
   const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : d.output ? d.output.id : ''}`;
-  const WAITS = { agent: 'an agent is parked until you answer', delivery: 'delivery waits on you', nobody: 'nothing waits on this' };
+  const WAITS = { agent: 'an agent is parked until you answer', delivery: 'it lands when you act', nobody: 'nothing waits on this' };
   const KIND_LABEL = { approval: 'Approval', question: 'Question', plan: 'Plan', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent', output: 'Delivered', session: 'Stopped' };
   const KIND_VERB = { approval: 'allow or deny', question: 'answer', plan: 'open', merge: 'merge', stop: 'resume', stall: 'look', output: 'accept', session: 'open' };
   // Who a card is about: a branch, or a workspace's session.
@@ -4705,7 +4708,7 @@
       primary = () => holdAnswer(d, true, reason.value.trim());
       actions = [
         h('button', { type: 'button', class: 'primary', disabled, text: 'Allow', onclick: primary }, h('kbd', { text: '↵' })),
-        h('button', { type: 'button', class: 'danger', disabled, text: 'Deny', onclick: () => holdAnswer(d, false, reason.value.trim()) }, h('kbd', { text: 'n' })),
+        h('button', { type: 'button', class: 'deny', disabled, text: 'Deny', onclick: () => holdAnswer(d, false, reason.value.trim()) }, h('kbd', { text: 'n' })),
       ];
     } else if (d.kind === 'question') {
       const m = d.question;
@@ -4845,12 +4848,12 @@
       onclick: () => { state.deck.front = decisionKey(d); state.deck.later = state.deck.later.filter((k) => k !== decisionKey(d)); branchesChanged(); focusDeck(); },
     }, h('span', { class: 'bay-main' },
       h('b', { text: summaryOf(d) }),
-      h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? (d.kind === 'output' ? `delivered ${since_(d.since_ms)} ago` : `parked ${since_(d.since_ms)}`) : WAITS[d.waits]}` })),
+      h('span', { class: 'bay-meta', text: `${d.kind === 'merge' ? '' : `${KIND_LABEL[d.kind].toLowerCase()} · `}${d.since_ms ? (d.kind === 'output' ? `delivered ${since_(d.since_ms)} ago` : `parked ${since_(d.since_ms)}`) : WAITS[d.waits]}` })),
     h('span', { class: 'bay-verb mono', text: KIND_VERB[d.kind] })));
     return h('aside', { class: 'deck-bay', 'aria-label': 'Up next' },
       held.length || next.length ? h('p', { class: 'deck-label bay-title' }, h('span', { text: 'Up next' }), next.length ? h('span', { class: 'lane-count', text: String(next.length) }) : null) : null,
       held, next,
-      next.length ? h('p', { class: 'bay-why muted', text: 'Parked agents first, the longest wait first; then what delivery waits on; then the rest. Later sends a card to the back.' }) : null);
+      next.length ? h('p', { class: 'bay-why muted', text: 'Parked agents come first, longest wait first. Then what is ready to land. Then the rest. Later sends a card to the back.' }) : null);
   }
 
   // What was decided today, newest first: approvals answered (here, in a

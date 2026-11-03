@@ -135,6 +135,7 @@ fn a_parent_integrates_a_child_into_its_own_branch_only() {
         root.info().candidate.as_ref().unwrap().commit,
         merged.commit
     );
+    common::assert_no_drift(&f.yard);
 }
 
 /// A child runs the check it inherited on its work as it is, merged into
@@ -902,6 +903,7 @@ fn a_subtree_driven_by_another_engine_is_waited_for_and_a_stopped_ones_recovered
         "{}",
         reasons[2]
     );
+    common::assert_no_drift(&branchyard::Yard::open(&f.root).unwrap());
 }
 
 fn seat(below: &[&str]) -> Seat {
@@ -1229,6 +1231,7 @@ fn a_parent_woken_max_wakes_times_settles_without_another_wake() {
     assert!(why.is_some() && why < settled, "{log:?}");
     let root_info = f.yard.branch("root").unwrap().info().clone();
     assert_eq!(root_info.turns, 1, "not woken");
+    common::assert_no_drift(&f.yard);
 }
 
 /// A child's model is refused where its profile cannot deliver it, with

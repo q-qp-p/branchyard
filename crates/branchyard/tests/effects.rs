@@ -245,12 +245,13 @@ fn a_tasks_record_carries_its_attempts_ledger() {
 fn a_call_the_gateway_describes_nothing_about_is_irreversible() {
     let f = Fixture::new();
     let (mock, script) = setup(&f, person(&[("legacy:*", Approval::Allow)]));
-    let branch = f
-        .task(&calls(&script, &[("legacy__do", "{}")]))
-        .options(granted(&f))
-        .name("legacy")
-        .run()
-        .unwrap();
+    let (branch, asks) = allowing_asks(&f, || {
+        f.task(&calls(&script, &[("legacy__do", "{}")]))
+            .options(granted(&f))
+            .name("legacy")
+            .run()
+            .unwrap()
+    });
     assert!(text(&branch.events().unwrap()).contains("call legacy__do: done"));
     let entry = &f.yard.effects(Some("legacy")).unwrap()[0];
     assert_eq!(entry.state, EffectState::Confirmed);
@@ -262,9 +263,53 @@ fn a_call_the_gateway_describes_nothing_about_is_irreversible() {
         .as_deref()
         .unwrap()
         .contains("described no effect"));
-    // Its default would have staged it: the person's rule allowed it.
-    assert_eq!(entry.decided.as_ref().unwrap().layer, Layer::Person);
+    // The person's rule allowed it, but nothing could settle it if its
+    // answer were lost (it declares no lookup): it was asked about first.
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].resolved.as_ref().unwrap().layer,
+        Layer::Unsettleable
+    );
+    assert_eq!(entry.decided.as_ref().unwrap().layer, Layer::Unsettleable);
+    assert_eq!(entry.approval.as_ref().unwrap().by, "ana");
     assert_eq!(mock.calls_to("legacy__do").len(), 1);
+}
+
+/// Run `work` on another thread, allowing as `ana` each ask it opens
+/// because a call nothing could settle was allowed (`Layer::Unsettleable`);
+/// other asks, such as a staged call's, are left. What it returned, and
+/// the asks answered, in order.
+fn allowing_asks<T: Send>(
+    f: &Fixture,
+    work: impl FnOnce() -> T + Send,
+) -> (T, Vec<branchyard::effects::ApprovalAsk>) {
+    std::thread::scope(|scope| {
+        let run = scope.spawn(work);
+        let mut answered = Vec::new();
+        loop {
+            let next = wait::until("an ask, or the work to end", || {
+                if run.is_finished() {
+                    return Some(None);
+                }
+                f.yard
+                    .approvals(true)
+                    .unwrap()
+                    .into_iter()
+                    .find(|ask| {
+                        ask.resolved
+                            .as_ref()
+                            .is_some_and(|r| r.layer == Layer::Unsettleable)
+                    })
+                    .map(Some)
+            });
+            let Some(ask) = next else { break };
+            f.yard
+                .answer_approval(&ask.id, true, "ana", "api", None)
+                .unwrap();
+            answered.push(ask);
+        }
+        (run.join().unwrap(), answered)
+    })
 }
 
 #[test]
@@ -1000,6 +1045,121 @@ fn short(id: &str) -> &str {
 }
 
 #[test]
+fn a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff() {
+    let f = Fixture::new();
+    let (mock, script) = setup(&f, person(&[("flaky:*", Approval::Allow)]));
+    f.task(&calls(&script, &[("flaky__charge", r#"{"amount": 5}"#)]))
+        .options(granted(&f))
+        .name("paced")
+        .run()
+        .unwrap();
+    let entry = f.yard.effects(Some("paced")).unwrap().remove(0);
+    assert_eq!(entry.state, EffectState::Unknown);
+    let lookups = || mock.calls_to("flaky__charge_lookup").len();
+    let t0 = branchyard_support::time::now_ms();
+
+    // The upstream cannot tell: the entry stays unknown, with when it is
+    // asked next.
+    mock.fail_lookups(true);
+    let report = f.yard.reconcile_effects_at(t0).unwrap();
+    assert!(report.settled.is_empty());
+    assert_eq!(report.unknown.len(), 1);
+    assert!(
+        report.unknown[0].1.contains("is asked again at"),
+        "{report:?}"
+    );
+    assert_eq!(lookups(), 1);
+    // A sweep before the backoff does not ask again.
+    let report = f.yard.reconcile_effects_at(t0 + 29_999).unwrap();
+    assert!(
+        report.unknown[0].1.contains("could not answer before"),
+        "{report:?}"
+    );
+    assert_eq!(lookups(), 1);
+    // After it, it is asked again; the second failure waits twice as long.
+    f.yard.reconcile_effects_at(t0 + 30_000).unwrap();
+    assert_eq!(lookups(), 2);
+    f.yard.reconcile_effects_at(t0 + 30_000 + 59_999).unwrap();
+    assert_eq!(lookups(), 2);
+    // Once the upstream answers, the entry settles and is not asked again.
+    mock.fail_lookups(false);
+    let report = f.yard.reconcile_effects_at(t0 + 30_000 + 60_000).unwrap();
+    assert_eq!(report.settled, [(entry.id.clone(), EffectState::Confirmed)]);
+    assert_eq!(lookups(), 3);
+    f.yard.reconcile_effects_at(t0 + 200_000).unwrap();
+    assert_eq!(lookups(), 3);
+    // The charge itself was never made again.
+    assert_eq!(mock.calls_to("flaky__charge").len(), 1);
+}
+
+#[test]
+fn a_decision_is_keyed_upstream_alike_across_turns_and_not_made_twice() {
+    let f = Fixture::new();
+    let (mock, script) = setup(&f, person(&[("flaky:*", Approval::Allow)]));
+    let charge = |decision: &str, rest: bool| {
+        format!(
+            "SH python3 {script} {}--decision {decision} flaky__charge '{{\"amount\": 5}}'",
+            if rest { "--rest " } else { "" }
+        )
+    };
+    // Turn 1 charges for decision `invoice-7`; its answer is lost, so the
+    // entry is unknown.
+    let branch = f
+        .task(&charge("invoice-7", false))
+        .options(granted(&f))
+        .name("pay")
+        .run()
+        .unwrap();
+    let first = f.yard.effects(Some("pay")).unwrap().remove(0);
+    assert_eq!(first.state, EffectState::Unknown);
+    assert_eq!(first.decision_key.as_deref(), Some("invoice-7"));
+    let key = first.key();
+    assert!(key.starts_with("bydk-"), "{key}");
+    assert_ne!(key, first.id);
+    assert_eq!(
+        mock.calls_to("flaky__charge")[0].key.as_deref(),
+        Some(key.as_str())
+    );
+    // The lookup asks by that key, not the entry's id.
+    assert_eq!(first.lookup.as_ref().unwrap().arguments["key"], key);
+
+    // Turn 2, a re-sampled model, makes the same decision again: refused
+    // before it reaches the gateway, saying what is known.
+    let branch = branch
+        .send(&charge("invoice-7", false), granted(&f))
+        .unwrap();
+    let said = text(&branch.events().unwrap());
+    assert!(said.contains("decision_already_made"), "{said}");
+    assert!(said.contains("invoice-7"), "{said}");
+    assert!(said.contains("was already sent in turn 1 of pay"), "{said}");
+    assert!(said.contains("by effects reconcile"), "{said}");
+    assert_eq!(mock.calls_to("flaky__charge").len(), 1);
+    assert_eq!(f.yard.effects(Some("pay")).unwrap().len(), 1);
+
+    // Reconciled: it happened. Over REST, the same decision is still not
+    // made again; another decision is, under a key of its own.
+    f.yard.reconcile_effects().unwrap();
+    let branch = branch
+        .send(
+            &format!(
+                "{}\n{}",
+                charge("invoice-7", true),
+                charge("invoice-8", true)
+            ),
+            granted(&f),
+        )
+        .unwrap();
+    let said = text(&branch.events().unwrap());
+    assert!(said.contains("already happened in turn 1 of pay"), "{said}");
+    let calls = mock.calls_to("flaky__charge");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let second = f.yard.effects(Some("pay")).unwrap().remove(1);
+    assert_eq!(second.decision_key.as_deref(), Some("invoice-8"));
+    assert_eq!(calls[1].key.as_deref(), Some(second.key().as_str()));
+    assert_ne!(second.key(), key);
+}
+
+#[test]
 fn an_irreversible_call_is_staged_as_a_draft_or_held_then_promoted() {
     let f = Fixture::new();
     let (mock, script) = setup(&f, ApprovalSettings::default());
@@ -1088,23 +1248,26 @@ fn undo_plans_by_what_the_upstream_supports_and_undoes_what_was_chosen() {
         .name("board")
         .run()
         .unwrap();
-    let branch = first
-        .send(
-            &calls(
-                &script,
-                &[
-                    ("slack__chat_post", r#"{"channel": "board"}"#),
-                    ("github__issues_create", r#"{"title": "prep"}"#),
-                    ("legacy__do", "{}"),
-                    ("webhook__fire", "{}"),
-                ],
-            ),
-            TaskOptions {
-                policy: Policy::allow_all(),
-                ..TaskOptions::default()
-            },
-        )
-        .unwrap();
+    // `legacy__do` declares nothing: allowed, it is still asked about.
+    let (branch, _) = allowing_asks(&f, || {
+        first
+            .send(
+                &calls(
+                    &script,
+                    &[
+                        ("slack__chat_post", r#"{"channel": "board"}"#),
+                        ("github__issues_create", r#"{"title": "prep"}"#),
+                        ("legacy__do", "{}"),
+                        ("webhook__fire", "{}"),
+                    ],
+                ),
+                TaskOptions {
+                    policy: Policy::allow_all(),
+                    ..TaskOptions::default()
+                },
+            )
+            .unwrap()
+    });
     let ledger = f.yard.effects(Some("board")).unwrap();
     assert_eq!(ledger.len(), 5, "{ledger:?}");
     // Back to turn 1: the first post stays out of the plan.

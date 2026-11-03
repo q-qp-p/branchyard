@@ -70,6 +70,7 @@ A merge the caller repeats after it succeeded is still refused with `already_mer
 - While a live owner holds the lease, another `Yard`, in this process or another, gets `Error::Running` for `send`, `merge` and `remove`.
 - Every record write, event append, step and process row of a turn checks that the lease still has the turn's incarnation and generation. Once another engine takes the lease over, the old owner's writes fail with `Error::Fenced` and it writes nothing more; its heartbeat notices within 5 seconds, and the turn stops its harness.
 - A lease is *stale* when its owner is on this host and boot and its process (pid and start time) is gone, or when it expired. Stale leases are what recovery takes over.
+- Expiry is measured on the **store's clock** (`Backend::clock_ms`): a lease's expiry is written as the store's time plus its 30 seconds, on grant, renewal and takeover, and judged against the store's time by recovery, the check that refuses a second engine, [liveness](#liveness), obligations and reconciliation. On SQLite, one host's file, that is the host's clock. On PostgreSQL it is the database's (`clock_timestamp()`, read in the writing transaction), so engines on several hosts agree on when a lease expired without synchronized clocks. A `max_duration` deadline is stored on the same clock, for recovery to say whether it had passed; the engine running the turn enforces it on its own monotonic clock. The heartbeat's own count of how long its lease has gone unrenewed is also monotonic, and needs no shared clock.
 
 A lease cannot stop a process on another host that is still running but partitioned (design §11): fencing makes its writes to the store fail, and nothing more.
 
@@ -84,6 +85,30 @@ A branch's record says `running` from the moment a turn takes its lease until th
 | `lost` | the lease no longer protects a live engine: it expired, or its engine's process is gone from this host (`reason` says which) | the next recovery ends the turn `interrupted` |
 
 A running record without a held lease is `lost`, with an explicit reason; both timing fields are `0` when no lease observation exists. With an observed lease it carries `heard_ms`, when the engine last renewed (the lease's expiry less its 30 seconds), and `known_until_ms`, the expiry itself. `by ls` and `by watch` print a running branch that is not `live` as `running (no heartbeat for 14s)` or `running (engine lost: …)`; `--json` and the server's `BranchInfo` carry the object. This is the effect ledger's `unknown` applied to the engine itself: the record does not guess, it says what is known and until when.
+
+## Timers
+
+A durable timer is a row with a due time, not a sleeping thread: `timers` (`by_timers` on PostgreSQL), keyed by `(kind, key)`, with `due_ms`, `revision`, `attempts`, `claimed_until_ms` and a JSON `payload` ([`timers.rs`](../crates/branchyard/src/timers.rs)). It survives a restart and is shared by every engine and server on the store.
+
+- **Claim.** A due timer whose claim has lapsed is claimed for a lease, in one transaction (on PostgreSQL the row is locked `FOR UPDATE`), so of any number of claimants one acts; one that dies lets the lease lapse and the timer is claimed again. Delivery is at least once, so what a timer triggers is idempotent. Claiming a missing timer creates it, due now.
+- **Set.** Setting a timer again replaces its due time and payload, drops any claim, keeps its attempts and bumps its revision.
+- **Finish.** A claimant deletes the timer by the revision it claimed; if it was set again meanwhile, the delete matches nothing and the later setting stands.
+
+Due times are whatever clock the caller passes; the reconciler passes the store's (below), so effect lookups are paced on the same clock as leases.
+
+**First user: effect lookups.** An `unknown` effect whose lookup cannot answer (the upstream is down, the gateway refuses) is no longer asked again on every reconciliation sweep. Its `effect_lookup` timer holds the next attempt: 30 seconds after the first failure, doubling, at most an hour apart. A reconciler that finds the timer not yet due reports the entry `unknown` with when it is asked next (`it is asked again at 14:05`); one that finds it claimed reports that another reconciler is asking. A settled entry's timer is finished, and the timer of an entry settled some other way (the audit log, a person) is finished by the next sweep.
+
+## Shutdown
+
+A server or `by worker` stopping on SIGTERM or SIGINT stops its turns before its process ends rather than letting them die with it ([server](server.md#running-it)). In the last quarter of its grace period (at least 2 seconds and at most 10, or all of a shorter one), each turn still running is cancelled through the durable cancel request (`cancelled by the server's shutdown`): the engine interrupts the harness, the turn's proxy waits for connector calls in flight, the turn concludes `interrupted` with its snapshot and checkpoint, and the operation finishes. The branch's last turn has a known outcome, so recovery has nothing to call lost and the next turn starts without a `<branchyard-recovered>` block; `send` continues its harness session. A turn that does not conclude even then is recorded interrupted at exit and recovered as before. Not done: queuing the continuation itself, so the next server resumes the branch without being asked; and a local `by run`, which a signal still stops mid-turn, recovered as a lost turn.
+
+## The record and the log
+
+A branch's record says what is true now; its event log says what happened. Every write that changes a branch's status appends an `Activity::Status` event in the same transaction: a turn's start, its conclusion (`Recorder::finish` writes the final record, its status event and the lease release together), a merge, a rewind, a park, a wake, a recovery. So the last status the log records is the status the record holds.
+
+`Yard::drift(branch)` checks that, for one branch or all of them, and returns each disagreement as a `Drift` (`branch`, `field`, what the `record` holds, what the `log` gives). Empty is the only correct answer; anything else names a write path that changed one without the other. The status is the field checked because recovery, waits, obligations and the console all key on it. The candidate is not checked: a rewind decides it by comparing trees, which its event does not carry. A branch whose log has no status event yet, as one imported from an earlier version may, has nothing to compare.
+
+The engine's tests assert it after the paths most likely to break it: a killed engine recovered, a crash before the prompt, a cancel from another engine, a merge cut short, a fork at a checkpoint, a rewind back and forward and one cut short, a blocked dependent, a dependent started from a merge, a recovered prerequisite, a child integrated, a parent woken to its limit, and a subtree another engine drove.
 
 ## Cancellation and deadlines
 
@@ -189,7 +214,7 @@ A store written by an earlier version with valid values reads unchanged. A row a
 - **Reservations of earlier versions** stay taken; another host's reservation is freed only after 10 minutes.
 - **Old and new versions side by side** on one repository.
 - **The data directory lock on a network file system** is only as good as that file system's `flock`.
-- **A hung worker.** A server that stops renewing its operation claims for the lease (30 seconds) while still alive has its running operations recorded `interrupted` by another worker; its own later outcome is refused, and the branch is what the engine says. Operation leases are on the database's clock; the engine's turn leases are on the engines'.
+- **A hung worker.** A server that stops renewing its operation claims for the lease (30 seconds) while still alive has its running operations recorded `interrupted` by another worker; its own later outcome is refused, and the branch is what the engine says. Operation leases and, on PostgreSQL, the engine's turn leases are both on the database's clock.
 - **Delivery to a server that serves other repositories.** A worker claims only the repositories it serves; an operation for a repository no running worker serves waits in the queue.
 
 ## PostgreSQL
@@ -206,7 +231,7 @@ A store written by an earlier version with valid values reads unchanged. A row a
 | `synchronous=FULL`; `NORMAL` for event appends | `synchronous_commit = on`; `off` for event appends, with the same caveat |
 | JSON as text | JSON as text, so it reads back exactly as written |
 | In-process wakeups; 100 ms polling across processes | The same: waits poll every 100 ms. Nothing listens for `NOTIFY` |
-| Lease expiry from the engines' clocks | The same; engines on several hosts need synchronized clocks |
+| Lease expiry from this host's clock | Lease expiry from the database's clock (`clock_timestamp()`), written and judged in one place; engines on several hosts need no synchronized clocks |
 | Startup and periodic recovery | The same recovery code, over the database's leases |
 | `graph_edges`, `graph_revisions`; a proposal in one `BEGIN IMMEDIATE` transaction | `by_graph_edges`, `by_graph_revisions`, keyed by scope; a proposal in one serializable transaction, retried whole on a conflict |
 
@@ -244,6 +269,8 @@ As any other user, drop `runuser -u nobody --`. The CI job `postgres` in [`check
 | [`engine.rs`](../crates/branchyard/src/engine.rs), [`run.rs`](../crates/branchyard/src/run.rs), [`ops.rs`](../crates/branchyard/src/ops.rs) | Journaled steps of a turn, of branch creation, merge and removal |
 | [`recover.rs`](../crates/branchyard/src/recover.rs), [`proc.rs`](../crates/branchyard/src/proc.rs) | Recovery and process identity, the spawn marker |
 | [`lock.rs`](../crates/branchyard/src/lock.rs) | The data directory lock |
+| [`timers.rs`](../crates/branchyard/src/timers.rs), `effects/reconcile.rs` | Durable timers and the backoff; the conformance check `timers` (claim, a held claim, set bumping the revision, a stale finish refused, listing) on both backends; `tests/effects.rs` `a_lookup_that_cannot_answer_is_asked_again_only_after_its_backoff` |
+| [`drift.rs`](../crates/branchyard/src/drift.rs) | The record against its log; `common::assert_no_drift` at the end of the flow tests named above in `tests/durable.rs`, `checkpoints.rs`, `graph.rs` and `delegation.rs` |
 | [`liveness.rs`](../crates/branchyard/src/liveness.rs) | Liveness from a lease row: renewed, silent and expired leases, a released one, an engine gone from this host; `tests/durable.rs` checks a held turn reads `live` from another yard and a dead engine's `lost` before recovery |
 | [`tests/durable.rs`](../crates/branchyard/tests/durable.rs) | A killed engine recovered (orphaned harness and its child killed, prompt received once, session continued), a crash before submit, a harness whose pid was never recorded found by its marker, stale reservations freed and live ones kept, a Microsandbox sandbox that this build cannot destroy reported, two yards, a superseded lease, a replayed snapshot, a merge cut short, cursors and waits, the import; input steered from this process into a turn a child process runs, delivered and recorded with its sender, an agent without the steering extension refusing it while the turn goes on, and a profile that cannot steer refused up front |
 | [`tests/substrate.rs`](../crates/branchyard/tests/substrate.rs) | A killed engine's work brought back from its actor and in the recovered candidate; not applied over a worktree changed since |

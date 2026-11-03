@@ -788,7 +788,7 @@ let browser = null;
   await outputs.nth(9).waitFor(TURN);
   const earlier = byId(artifact[DOCX]);
   await page.waitForFunction((id) => document.querySelector(`#outputs-list li[data-artifact="${id}"]`).dataset.standing === 'earlier', artifact[DOCX]);
-  if (!(await earlier.locator('.item-meta').innerText()).endsWith('Earlier turn 1 — not the current result')) throw new Error(`the earlier DOCX says ${await earlier.locator('.item-meta').innerText()}`);
+  if (!(await earlier.locator('.item-meta').innerText()).endsWith('turn 1 · a later turn replaced it')) throw new Error(`the earlier DOCX says ${await earlier.locator('.item-meta').innerText()}`);
   const earlierBox = earlier.getByRole('checkbox');
   if (!(await earlierBox.isDisabled()) || await earlierBox.isChecked()) throw new Error('an earlier turn\'s output can still be selected');
   if (await strip.locator('#accept').count()) throw new Error('Accept is still offered for an earlier turn\'s output');

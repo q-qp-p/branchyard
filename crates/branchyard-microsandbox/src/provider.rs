@@ -43,7 +43,7 @@ use microsandbox::sandbox::{DestroyOptions, SandboxStatus};
 use microsandbox::{ExecControl, ExecEvent, ExecHandle, MicrosandboxError, Sandbox, Snapshot};
 use tokio::runtime::{Handle, Runtime};
 
-use crate::bridge::{self, BridgedProcess, GROUP_TEARDOWN, GuestControl, GuestEvent, GuestEvents};
+use crate::bridge::{self, BridgedProcess, GuestControl, GuestEvent, GuestEvents, GROUP_TEARDOWN};
 use crate::checkpoint::{self, Reference};
 use crate::plan::{self, CreatePlan, PlannedMount};
 
@@ -288,7 +288,11 @@ fn mount_with(
 ) -> impl FnOnce(microsandbox::sandbox::MountBuilder) -> microsandbox::sandbox::MountBuilder {
     move |m| {
         let m = m.bind(mount.host);
-        if mount.readonly { m.readonly() } else { m }
+        if mount.readonly {
+            m.readonly()
+        } else {
+            m
+        }
     }
 }
 

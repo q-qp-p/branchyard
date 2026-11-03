@@ -50,6 +50,10 @@ use crate::models::upstream::{self, Failure, Target};
 use crate::Yard;
 use branchyard_support::time::now_ms;
 
+/// The longest decision key the proxy takes; a longer one is ignored, as
+/// if none were given.
+const MAX_DECISION_KEY: usize = 200;
+
 /// How long a turn's end waits for calls still in flight.
 const DRAIN: Duration = Duration::from_secs(5);
 
@@ -593,7 +597,14 @@ fn handle(stream: TcpStream, state: &ProxyState) {
         true => serde_json::from_slice(&request.body).ok(),
         false => None,
     };
-    let (wire, name, arguments, staging) = match rest_tool(&request) {
+    // The decision the call carries out, when the harness names one: what
+    // keys it upstream across turns (`EffectEntry::key`).
+    let decision = |text: Option<&str>| {
+        text.map(str::trim)
+            .filter(|d| !d.is_empty() && d.len() <= MAX_DECISION_KEY)
+            .map(str::to_owned)
+    };
+    let (wire, name, arguments, staging, decision) = match rest_tool(&request) {
         // Anvil's REST route: `{"arguments": {...}, "stage": true?}`.
         Some(name) => {
             let Some(body) = json.as_ref().filter(|j| j.is_object()) else {
@@ -609,6 +620,7 @@ fn handle(stream: TcpStream, state: &ProxyState) {
                 name,
                 body.get("arguments").cloned().unwrap_or(json!({})),
                 body.get("stage") == Some(&Value::Bool(true)),
+                decision(request.header("x-branchyard-decision-key")),
             )
         }
         None => {
@@ -637,6 +649,7 @@ fn handle(stream: TcpStream, state: &ProxyState) {
                 params["name"].as_str().unwrap_or("").to_owned(),
                 params.get("arguments").cloned().unwrap_or(json!({})),
                 params["_meta"]["stage"] == Value::Bool(true),
+                decision(params["_meta"]["decision_key"].as_str()),
             )
         }
     };
@@ -672,6 +685,7 @@ fn handle(stream: TcpStream, state: &ProxyState) {
         alias: decl.operation.as_deref(),
         class,
         deletion,
+        settleable: decl.lookup.is_some(),
     };
     let resolved = super::resolve(&state.layers(), &subject).unwrap_or(Resolved {
         approval: class.default_approval(),
@@ -685,11 +699,22 @@ fn handle(stream: TcpStream, state: &ProxyState) {
         operation,
         arguments,
         staging,
+        decision,
         class,
         deletion,
         decl,
         resolved: resolved.clone(),
     };
+    // A decision already carried out, or that may have been, is not
+    // carried out again: the harness is told what is known instead.
+    if let Some(done) = call.earlier(state) {
+        return call.wire.refused(
+            &mut out,
+            "decision_already_made",
+            &done,
+            json!({"decision_key": call.decision}),
+        );
+    }
     match resolved.approval {
         Approval::Block => {
             ask::note(
@@ -788,6 +813,8 @@ struct Call {
     arguments: Value,
     /// The harness asked for the draft form itself.
     staging: bool,
+    /// The decision it carries out, when the harness named one.
+    decision: Option<String>,
     class: EffectClass,
     deletion: bool,
     decl: ToolDecl,
@@ -795,8 +822,57 @@ struct Call {
 }
 
 impl Call {
+    /// What is known of an earlier call of this call's decision in this
+    /// task, when one happened, may have, or is staged: why this one must
+    /// not be made. `None` without a decision, or when every earlier call
+    /// of it failed or was undone, so trying again is safe (under the same
+    /// key, which the upstream deduplicates).
+    fn earlier(&self, state: &ProxyState) -> Option<String> {
+        let decision = self.decision.as_ref()?;
+        let entries = best_effort(
+            "read the effect ledger for an earlier call of this decision",
+            state.yard.store().effects().effects(None),
+        )
+        .unwrap_or_default();
+        let earlier = entries.into_iter().rev().find(|e| {
+            e.task == state.task
+                && e.connector == self.connector
+                && e.operation == self.operation
+                && e.decision_key.as_deref() == Some(decision.as_str())
+                && !matches!(
+                    e.state,
+                    EffectState::Failed | EffectState::Undone | EffectState::Compensated
+                )
+        })?;
+        let id = super::short_id(&earlier.id);
+        let at = format!(
+            "in turn {} of {} (effect {id})",
+            earlier.turn, earlier.branch
+        );
+        Some(match earlier.state {
+            EffectState::Begun | EffectState::Unknown => format!(
+                "decision {decision:?} was already sent {at}, and its answer was lost: it may \
+                 have happened. It was not sent again; `by effects reconcile` asks the upstream"
+            ),
+            EffectState::Staged => format!(
+                "decision {decision:?} is already staged {at}, waiting for approval; it was not \
+                 staged again"
+            ),
+            _ => format!("decision {decision:?} already happened {at}; it was not done again"),
+        })
+    }
+
     fn entry(&self, state: &ProxyState, id: &str, entry_state: EffectState) -> EffectEntry {
         let now = now_ms();
+        let key = match &self.decision {
+            Some(decision) => super::decision_upstream_key(
+                &state.task,
+                &self.connector,
+                &self.operation,
+                decision,
+            ),
+            None => id.to_owned(),
+        };
         EffectEntry {
             id: id.to_owned(),
             task: state.task.clone(),
@@ -825,11 +901,12 @@ impl Call {
             // The declared lookup, resolved from the request and the key
             // before the call: what settles an answer lost entirely.
             lookup: self.decl.lookup.as_ref().and_then(|declared| {
-                mcp::resolve_lookup(declared, &self.arguments, id, &state.operations())
+                mcp::resolve_lookup(declared, &self.arguments, &key, &state.operations())
             }),
             declared: false,
             detail: None,
             upstream_key: None,
+            decision_key: self.decision.clone(),
             created_ms: now,
             updated_ms: now,
         }
@@ -938,8 +1015,9 @@ fn perform(
         );
     }
     ask::note(&state.yard, &state.branch, EffectActivity::of(&entry));
-    let body = call.wire.body(request, &id, call.staging);
-    let extra = [("Idempotency-Key".to_owned(), id.clone())];
+    let key = entry.key();
+    let body = call.wire.body(request, &key, call.staging);
+    let extra = [("Idempotency-Key".to_owned(), key)];
     let (change, reply) = match forward(state, request, &body, &extra) {
         Err(Failure::Connect(why)) => (
             EffectMove::to(EffectState::Failed).detail(format!("not sent: {why}")),
@@ -1050,8 +1128,9 @@ fn stage(state: &ProxyState, request: &Request, call: &Call, out: &mut TcpStream
         );
     }
     // The draft form: the call with `stage: true`, under the same key.
-    let body = call.wire.body(request, &id, true);
-    let extra = [("Idempotency-Key".to_owned(), id.clone())];
+    let key = entry.key();
+    let body = call.wire.body(request, &key, true);
+    let extra = [("Idempotency-Key".to_owned(), key)];
     match forward(state, request, &body, &extra) {
         Ok(answer) => {
             let called = call.wire.called(&answer);

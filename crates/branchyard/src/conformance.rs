@@ -16,6 +16,7 @@ use crate::state::{
     SandboxBackend, SandboxKind, SandboxRow, SlotRow, SlotState,
 };
 use crate::storage::StorageBackend;
+use crate::timers::TimerBackend;
 use crate::{Activity, BranchStatus, Error, RecordedEvent, SteerState};
 use crate::{KnowledgeEntry, KnowledgeScope, KnowledgeSource, KnowledgeStatus};
 use branchyard_support::time::now_ms;
@@ -59,6 +60,10 @@ pub(crate) struct Opened {
     pub effects: Arc<dyn EffectBackend>,
     /// [`Opened::again`], as [`EffectBackend`].
     pub again_effects: Box<dyn Fn() -> Arc<dyn EffectBackend> + Send + Sync>,
+    /// The same backend, as [`TimerBackend`].
+    pub timers: Arc<dyn TimerBackend>,
+    /// [`Opened::again`], as [`TimerBackend`].
+    pub again_timers: Box<dyn Fn() -> Arc<dyn TimerBackend> + Send + Sync>,
     /// Runs SQL on the store's own database, behind the backend's back: to
     /// plant rows no backend writes (see [`corrupt`]).
     pub raw: Box<dyn Fn(&str)>,
@@ -118,6 +123,10 @@ pub(crate) fn sqlite(name: &str) -> Opened {
         let dir = dir.clone();
         move || Arc::new(crate::sqlite::Sqlite::open(&dir).unwrap()) as Arc<dyn EffectBackend>
     };
+    let open_timers = {
+        let dir = dir.clone();
+        move || Arc::new(crate::sqlite::Sqlite::open(&dir).unwrap()) as Arc<dyn TimerBackend>
+    };
     let raw = {
         let dir = dir.clone();
         move |sql: &str| {
@@ -133,6 +142,8 @@ pub(crate) fn sqlite(name: &str) -> Opened {
         scope: None,
         effects: shared.clone(),
         again_effects: Box::new(open_effects),
+        timers: shared.clone(),
+        again_timers: Box::new(open_timers),
         pool: shared.clone(),
         again_pool: Box::new(open_pool),
         usage: shared.clone(),
@@ -218,6 +229,11 @@ pub(crate) fn postgres_at(url: String, name: &str) -> Opened {
         let scope = scope.clone();
         move || Arc::new(crate::pg::Postgres::open(&url, &scope).unwrap()) as Arc<dyn EffectBackend>
     };
+    let open_timers = {
+        let url = url.clone();
+        let scope = scope.clone();
+        move || Arc::new(crate::pg::Postgres::open(&url, &scope).unwrap()) as Arc<dyn TimerBackend>
+    };
     let raw = {
         let url = url.clone();
         move |sql: &str| {
@@ -233,6 +249,8 @@ pub(crate) fn postgres_at(url: String, name: &str) -> Opened {
         scope: Some(scope.clone()),
         effects: shared.clone(),
         again_effects: Box::new(open_effects),
+        timers: shared.clone(),
+        again_timers: Box::new(open_timers),
         pool: shared.clone(),
         again_pool: Box::new(open_pool),
         usage: shared.clone(),
@@ -2247,6 +2265,7 @@ pub(crate) fn effects_backend(
         declared: false,
         detail: None,
         upstream_key: None,
+        decision_key: None,
         created_ms: at,
         updated_ms: at,
     };
@@ -2961,13 +2980,106 @@ fn upgrade_handoffs(
     assert_eq!(upgraded.message(new.id).unwrap(), Some(new));
 }
 
+/// The store's clock: close to this host's, and what a lease's expiry is
+/// written by, on grant and on renewal, so every engine judges expiry by
+/// one clock. (SQLite's is this host's; PostgreSQL's is the database's.)
+pub(crate) fn clock(s: Opened) {
+    let store = s.backend;
+    let clock = store.clock_ms().unwrap();
+    assert!(clock.abs_diff(now_ms()) < 60_000, "{clock} vs {}", now_ms());
+    let ttl = u64::try_from(TTL.as_millis()).unwrap();
+    let expiry = |store: &Arc<dyn Backend>| {
+        store
+            .leases()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.branch == "b")
+            .unwrap()
+            .expires_ms
+    };
+    store.reserve("b", &owner("a")).unwrap();
+    let before = store.clock_ms().unwrap();
+    let fence = granted(store.acquire(&record("b"), &owner("a"), TTL).unwrap());
+    let after = store.clock_ms().unwrap();
+    let granted_until = expiry(&store);
+    assert!(
+        (before + ttl..=after + ttl).contains(&granted_until),
+        "{granted_until} outside {before}..={after} + {ttl}"
+    );
+    let before = store.clock_ms().unwrap();
+    store.renew(&fence, TTL).unwrap();
+    let after = store.clock_ms().unwrap();
+    let renewed_until = expiry(&store);
+    assert!(
+        (before + ttl..=after + ttl).contains(&renewed_until),
+        "{renewed_until} outside {before}..={after} + {ttl}"
+    );
+}
+
+/// Durable timers: set, claim, a claim holding off others until its lease
+/// lapses, a revision guarding finish, and a second handle seeing it all.
+pub(crate) fn timers(s: Opened) {
+    let timers = s.timers;
+    let other = (s.again_timers)();
+    let payload = serde_json::json!({"why": "test"});
+
+    // Claiming a missing timer creates it, due now, claimed.
+    let first = timers.claim_timer("k", "a", 1_000, 500).unwrap().unwrap();
+    assert_eq!(
+        (first.due_ms, first.revision, first.attempts),
+        (1_000, 1, 1)
+    );
+    assert_eq!(first.claimed_until_ms, Some(1_500));
+    // Held: no one else claims it until the lease lapses.
+    assert_eq!(other.claim_timer("k", "a", 1_499, 500).unwrap(), None);
+    let again = other.claim_timer("k", "a", 1_500, 500).unwrap().unwrap();
+    assert_eq!((again.revision, again.attempts), (1, 2));
+
+    // Setting it again bumps the revision, drops the claim, keeps attempts.
+    let revision = timers.set_timer("k", "a", 5_000, &payload).unwrap();
+    assert_eq!(revision, 2);
+    let set = other.timer("k", "a").unwrap().unwrap();
+    assert_eq!((set.due_ms, set.revision, set.attempts), (5_000, 2, 2));
+    assert_eq!(set.claimed_until_ms, None);
+    assert_eq!(set.payload, payload);
+    // A finish naming the old revision deletes nothing.
+    assert!(!timers.finish_timer("k", "a", 1).unwrap());
+    // Not due yet.
+    assert_eq!(timers.claim_timer("k", "a", 4_999, 500).unwrap(), None);
+    let due = timers.claim_timer("k", "a", 5_000, 500).unwrap().unwrap();
+    assert_eq!((due.revision, due.attempts), (2, 3));
+    assert!(other.finish_timer("k", "a", 2).unwrap());
+    assert_eq!(timers.timer("k", "a").unwrap(), None);
+    assert!(!timers.finish_timer("k", "a", 2).unwrap(), "already gone");
+
+    // A new timer starts at revision 1 with no attempts; listing by kind.
+    assert_eq!(timers.set_timer("k", "b", 300, &payload).unwrap(), 1);
+    assert_eq!(timers.set_timer("j", "c", 200, &payload).unwrap(), 1);
+    let b = timers.timer("k", "b").unwrap().unwrap();
+    assert_eq!(b.attempts, 0);
+    let all: Vec<(String, String)> = other
+        .timers(None)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.kind, t.key))
+        .collect();
+    assert_eq!(all, [("j".into(), "c".into()), ("k".into(), "b".into())]);
+    let ks: Vec<String> = timers
+        .timers(Some("k"))
+        .unwrap()
+        .into_iter()
+        .map(|t| t.key)
+        .collect();
+    assert_eq!(ks, ["b"]);
+}
+
 /// Generate one `#[test]` per conformance check for a backend.
 macro_rules! suite {
     ($open:expr) => {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
             concurrent_appends, contended_feed, races, storage, artifact_capture, messages, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
-            outcomes, knowledge, pools, usage, effects, limits, corrupt);
+            outcomes, knowledge, pools, usage, effects, timers, clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {
         $(

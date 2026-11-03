@@ -104,7 +104,7 @@ fn the_log_says_where_the_token_is_and_what_a_shutdown_did() {
                 "--listen",
                 "127.0.0.1:0",
                 "--shutdown-grace",
-                "1",
+                "4",
                 "--max-running",
                 "1",
                 "--no-inventory",
@@ -178,15 +178,15 @@ fn the_log_says_where_the_token_is_and_what_a_shutdown_did() {
     assert!(!log.contains("serve a connection"), "{log}");
     assert!(
         log.contains(
-            "shutting down: 1 running operation may finish within 1s (signal again to stop \
+            "shutting down: 1 running operation may finish within 4s (signal again to stop \
              waiting); 1 queued stay queued for the next start"
         ),
         "{log}"
     );
     assert!(
         log.contains(
-            "stopped: 0 finished within the grace period; 1 recorded interrupted; 1 left in the \
-             queue for the next start, or another server on the database"
+            "stopped: 0 finished within the grace period; 1 stopped cleanly for the shutdown; 1 \
+             left in the queue for the next start, or another server on the database"
         ),
         "{log}"
     );
@@ -241,15 +241,17 @@ fn sigterm_and_sigint_stop_an_idle_server_at_once() {
     }
 }
 
-/// `--shutdown-grace 2` with a turn that never ends and a client that sent
+/// `--shutdown-grace 6` with a turn that never ends and a client that sent
 /// half a request: the process is gone within the grace period (plus the
 /// time to record the operation), not the grace period plus the ten
-/// seconds connections used to get first, and the turn is recorded as
-/// interrupted.
+/// seconds connections used to get first. The turn is stopped cleanly in
+/// the grace period's last 2 seconds: its operation succeeds and its branch
+/// is `interrupted`, cancelled by the server's shutdown, with a known
+/// outcome rather than lost with the process.
 #[test]
 fn sigterm_stops_the_server_within_its_grace_period() {
     let f = Fixture::new();
-    let (mut child, url) = spawn(&f, "2");
+    let (mut child, url) = spawn(&f, "6");
     let client = Client::new(&url, TOKEN).unwrap();
     let op = client
         .repo("app")
@@ -275,10 +277,11 @@ fn sigterm_stops_the_server_within_its_grace_period() {
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer:?}");
     let (code, elapsed, stderr) = stop(&mut child, "TERM", Duration::from_secs(30));
     assert_eq!(code, Some(0), "{stderr}");
-    // Contract: a running operation gets the whole grace period (2 s). The
-    // clock is the server's, so this bound is not scaled.
+    // Contract: a running operation gets the grace period less the time
+    // kept for stopping it (6 s less 2 s) to finish on its own. The clock
+    // is the server's, so this bound is not scaled.
     assert!(
-        elapsed >= Duration::from_millis(1900),
+        elapsed >= Duration::from_millis(3900),
         "running operations get the grace period: {elapsed:?}"
     );
     // Contract: the process is gone within the grace period plus the time
@@ -287,18 +290,33 @@ fn sigterm_stops_the_server_within_its_grace_period() {
     // margin of 5 s (half of that regression's ten) for the spawn of `kill`
     // and a slow, instrumented shutdown.
     assert!(
-        elapsed < wait::scaled(Duration::from_secs(7)),
-        "SIGTERM took {elapsed:?}; the grace period is 2s"
+        elapsed < wait::scaled(Duration::from_secs(11)),
+        "SIGTERM took {elapsed:?}; the grace period is 6s"
     );
     drop(slow);
-    // The next start finds the operation recorded as interrupted.
+    // The next start finds the operation finished, its turn stopped for
+    // the shutdown: the branch is interrupted with a known outcome, and
+    // nothing was left for recovery to call lost.
     let (mut again, url) = spawn(&f, "0");
     let client = Client::new(&url, TOKEN).unwrap();
     let state = client.operation(&op.id).unwrap().state;
+    assert_eq!(state, OperationState::Succeeded, "{stderr}");
+    let held = client.repo("app").branch("held").unwrap();
     assert_eq!(
-        state,
-        branchyard_client::api::OperationState::Interrupted,
-        "{stderr}"
+        held.status,
+        branchyard::BranchStatus::Interrupted,
+        "{held:?}"
+    );
+    let log = client.repo("app").events("held", 0).unwrap().events;
+    assert!(
+        log.iter().any(|e| matches!(&e.activity,
+            branchyard::Activity::Warning(w) if w == "cancelled by the server's shutdown")),
+        "{log:?}"
+    );
+    assert!(
+        !log.iter()
+            .any(|e| matches!(e.activity, branchyard::Activity::Recovered { .. })),
+        "{log:?}"
     );
     let (code, _, _) = stop(&mut again, "INT", Duration::from_secs(20));
     assert_eq!(code, Some(0));
