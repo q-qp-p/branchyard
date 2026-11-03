@@ -602,12 +602,18 @@ fn max_running_holds_across_a_restart_with_queued_operations() {
     a.stop();
 
     // Another server on the database: the queued operation survived and
-    // still counts; the interrupted one does not.
+    // still counts; the one ended at shutdown does not, whether its turn
+    // was stopped cleanly (succeeded) or outlasted the grace period
+    // (interrupted).
     let b = Server::start(second(&f, &config, "data-b"));
     let client = b.client();
-    assert_eq!(
-        client.operation(&first.id).unwrap().state,
-        OperationState::Interrupted
+    let ended = client.operation(&first.id).unwrap().state;
+    assert!(
+        matches!(
+            ended,
+            OperationState::Succeeded | OperationState::Interrupted
+        ),
+        "{ended:?}"
     );
     wait::until("h2 to start", || common::started(&client, "app", "h2"));
     let third = client
