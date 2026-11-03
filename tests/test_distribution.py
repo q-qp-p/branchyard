@@ -1097,7 +1097,7 @@ class InstallScriptTests(unittest.TestCase):
 
 
 class ReleaseAssetTests(unittest.TestCase):
-    def test_assets_use_actual_archive_hashes_and_keep_the_bootstrap(self):
+    def test_assets_hash_shipped_files_after_granular_dist_manifests_are_removed(self):
         import hashlib
 
         spec = importlib.util.spec_from_file_location("release_assets", ROOT / "tools/release_assets.py")
@@ -1112,10 +1112,29 @@ class ReleaseAssetTests(unittest.TestCase):
                 "x86_64-unknown-linux-musl",
             ]:
                 release = _fake_release(root, "0.0.1", target)
+            for name in [
+                "dist-manifest.json",
+                "microsandbox-runtime.json",
+                "microsandbox-runtime-x86_64-unknown-linux-gnu.tar.provenance.json",
+                "runtime-images.json",
+            ]:
+                (release / name).write_text(json.dumps({"asset": name}))
+            reports = ["plan-dist-manifest.json", "global-dist-manifest.json", f"{target}-dist-manifest.json"]
+            for name in reports:
+                (release / name).write_text(json.dumps({"report": name}))
             bootstrap, sums, formula = module.build_assets(release, root / "output")
             self.assertEqual(bootstrap.read_bytes(), (ROOT / "install.sh").read_bytes())
             self.assertIn(hashlib.sha256(bootstrap.read_bytes()).hexdigest() + "  install.sh", sums.read_text())
             self.assertIn("resource binary", formula.read_text())
+            # The host and rehearsal remove these reports before uploading assets.
+            for name in reports:
+                (release / name).unlink()
+            shutil.copyfile(bootstrap, release / bootstrap.name)
+            recorded = {name: digest for digest, name in (line.split() for line in sums.read_text().splitlines())}
+            self.assertEqual(
+                recorded,
+                {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in release.iterdir()},
+            )
         for tool in ["release_assets.py", "release_smoke.py"]:
             result = subprocess.run(
                 [sys.executable, str(ROOT / "tools" / tool), "--help"], capture_output=True, text=True
