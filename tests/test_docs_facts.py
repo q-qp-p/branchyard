@@ -188,10 +188,27 @@ class DocsFacts(Tree):
         self.assertEqual(live, int(re.search(r"(\d+) live-qualified", before).group(1)) - 1)
         self.assertEqual(partial, int(re.search(r"(\d+) partial", before).group(1)) + 1)
 
-    def test_the_test_count_is_not_called_what_cargo_runs(self):
-        claim = re.compile(r"cargo test --workspace[^|\n]*?\bruns\b[^|\n]*fact:tests\.total")
-        for path in (REPO / "docs").rglob("*.md"):
-            self.assertIsNone(claim.search(path.read_text()), path)
+    def test_the_test_count_is_printed_not_committed(self):
+        # A committed count changed in almost every pull request, so any two open ones conflicted on it.
+        crate = self.root / "crates/branchyard-wire/src/lib.rs"
+        before = self.facts("--tests").stdout
+        crate.write_text(crate.read_text() + "\n#[test]\nfn counted() {}\n")
+        after = self.facts("--tests")
+        self.assertEqual(after.returncode, 0)
+        total = re.compile(r"^\s*(\d+)\s+\d+ ignored  total$", re.M)
+        self.assertEqual(int(total.search(after.stdout)[1]), int(total.search(before)[1]) + 1)
+        self.assertEqual(self.facts("--check").returncode, 0, "a new test changes no committed file")
+        self.assertNotIn("tests", json.loads((self.root / "docs/facts.json").read_text()))
+
+    def test_a_test_count_region_is_refused(self):
+        self.edit(
+            "docs/validation.md",
+            "`python3 tools/docs_facts.py --tests` counts",
+            "<!-- fact:tests.total -->1<!-- /fact --> `python3 tools/docs_facts.py --tests` counts",
+        )
+        done = self.facts("--check")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("unknown fact region 'tests.total'", done.stderr)
 
     def test_a_new_route_must_be_documented(self):
         api = self.root / "crates/branchyard-server/src/api.rs"
