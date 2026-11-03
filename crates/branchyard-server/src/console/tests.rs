@@ -79,6 +79,13 @@ impl ReservedFakeAgentPorts {
 }
 
 impl crate::ops::Executor for ReservedFakeAgentPorts {
+    fn stop_for_shutdown(&self, operation: &crate::store::StoredOperation) {
+        crate::ops::Executor::stop_for_shutdown(
+            &crate::work::AppExecutor(self.0.clone()),
+            operation,
+        );
+    }
+
     fn execute(
         &self,
         operation: &crate::store::StoredOperation,
@@ -319,6 +326,73 @@ impl Drop for Fixture {
         }
         self.app.registry.close();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_stops_managed_console_turns_through_their_tenant_binding() {
+    let fixture = Fixture::new(true);
+    let wid = fixture.workspace().await;
+    let (status, started) = fixture
+        .json(
+            Method::POST,
+            &format!("/v1/workspaces/{wid}/sessions"),
+            OWNER,
+            Some("shutdown-managed-session"),
+            json!({"name":"Hanging writer","prompt":"HANG","harness":"gemini-cli","access":"writer"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let sid = started["session_id"].as_str().unwrap();
+    let operation_id = started["id"].as_str().unwrap();
+    let workspace = fixture
+        .app
+        .registry
+        .console_get(Collection::Workspaces, &wid)
+        .unwrap()
+        .unwrap();
+    let repo = super::runtime::resolve(&fixture.app, &workspace).unwrap();
+    assert!(fixture.app.repos.is_empty());
+    branchyard_testkit::wait::until("the managed turn to start", || {
+        repo.yard.branch(sid).is_ok_and(|branch| {
+            branch.info().status == branchyard::BranchStatus::Running
+                && branch.info().session.is_some()
+        })
+    });
+    let foreign = crate::store::StoredOperation {
+        operation: fixture.app.registry.get(operation_id).unwrap().unwrap(),
+        idempotency: None,
+        locks: Vec::new(),
+        tenant: "foreign".into(),
+        principal: None,
+        creates: Vec::new(),
+        trace: None,
+        lane: crate::store::Lane::Normal,
+    };
+    crate::ops::Executor::stop_for_shutdown(
+        &crate::work::AppExecutor(fixture.app.clone()),
+        &foreign,
+    );
+    assert_eq!(
+        repo.yard.branch(sid).unwrap().info().status,
+        branchyard::BranchStatus::Running
+    );
+    fixture.app.registry.stop_accepting();
+    assert!(fixture
+        .app
+        .registry
+        .stop_running_turns()
+        .iter()
+        .any(|id| id == operation_id));
+    let finished = fixture.finished(operation_id);
+    assert_eq!(
+        finished.state,
+        branchyard_client::api::OperationState::Succeeded,
+        "{finished:?}"
+    );
+    assert_eq!(
+        repo.yard.branch(sid).unwrap().info().status,
+        branchyard::BranchStatus::Interrupted
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

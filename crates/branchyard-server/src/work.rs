@@ -394,13 +394,60 @@ pub struct AppExecutor(pub Arc<App>);
 /// Who a turn stopped for a shutdown was cancelled by, in its log.
 pub const SHUTDOWN: &str = "the server's shutdown";
 
+impl AppExecutor {
+    fn shutdown_repo(
+        &self,
+        stored: &StoredOperation,
+        branch: &str,
+    ) -> Result<Option<RepoState>, ApiError> {
+        let app = &self.0;
+        let name = &stored.operation.repo;
+        if let Some(repo) = app.repos.get(name) {
+            return Ok(Some(repo.clone()));
+        }
+        if name != crate::console::MANAGED_REPO {
+            return Ok(None);
+        }
+        use crate::console_store::Collection;
+        let Some(binding) = app
+            .registry
+            .console_get(Collection::Bindings, &format!("{name}:{branch}"))?
+        else {
+            return Ok(None);
+        };
+        let workspace_id = binding.body["workspace_id"]
+            .as_str()
+            .ok_or_else(|| ApiError::internal("shutdown binding has no workspace"))?;
+        let Some(workspace) = app
+            .registry
+            .console_get(Collection::Workspaces, workspace_id)?
+        else {
+            return Ok(None);
+        };
+        if binding.tenant != stored.tenant()
+            || workspace.tenant != stored.tenant()
+            || binding.body["repo"] != name.as_str()
+            || binding.body["branch"] != branch
+            || workspace.body["repo"] != name.as_str()
+        {
+            return Err(ApiError::internal(
+                "shutdown workspace binding differs from its operation",
+            ));
+        }
+        crate::console::resolve_source(app, &workspace).map(Some)
+    }
+}
+
 impl Executor for AppExecutor {
     fn stop_for_shutdown(&self, stored: &StoredOperation) {
         let operation = &stored.operation;
-        let Some(repo) = self.0.repos.get(&operation.repo) else {
-            return;
-        };
         for branch in &operation.branches {
+            let Some(Some(repo)) = branchyard_support::best_effort(
+                "resolve a running operation's shutdown target",
+                self.shutdown_repo(stored, branch),
+            ) else {
+                continue;
+            };
             match repo.yard.cancel_as(branch, SHUTDOWN) {
                 // Not created yet, or already gone: nothing to stop.
                 Err(branchyard::Error::UnknownBranch(_)) => {}

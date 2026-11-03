@@ -4,6 +4,19 @@
 
 ## 0.4.0 - 2026-11-02
 
+A running branch reports engine liveness, and `by obligations` lists unresolved
+work across branches. Recovered turns read the effect ledger before retrying
+outside actions; failed calls are reported as failures rather than proof that
+nothing happened. Calls from an earlier turn remain visible while a later turn
+runs. Durable timers pace effect lookups using the store clock, and irreversible
+calls without a lookup require a decision even when policy would allow them.
+Shutdown stops active turns cleanly within its grace period. Rewinding across a
+changed lockfile runs setup again, and the engine checks branch records against
+their event logs.
+
+The console shows clearer costs and decision actions. A documentation site is
+built from the repository guides.
+
 `by compute gce --service-account EMAIL` creates the worker with the
 `cloud-platform` access scope, so harnesses on it reach Vertex AI, `gs://` and
 Cloud KMS as that account, within its IAM roles. Workers previously got no
