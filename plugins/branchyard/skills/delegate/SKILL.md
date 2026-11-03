@@ -299,6 +299,11 @@ needs approval, the ask comes to you too: `by approvals ls` lists what waits,
 `by approvals allow <id>` or `by approvals deny <id> --reason "<why>"` answers
 it. Only an ancestor may decide either.
 
+Before you call a delegated task done, `by obligations <your branch>` lists
+what your subtree still owes: calls whose answer was lost, staged calls,
+approvals, lost turns, ready children you have not integrated or discarded,
+each with the command that deals with it. An empty list means nothing is owed.
+
 Inside a harness, `by spawn` refuses `--parent`, `--yes`, `--ask` and
 `--permissions`: your children run under your policy. `by spawn --help`
 marks every flag you may not pass.

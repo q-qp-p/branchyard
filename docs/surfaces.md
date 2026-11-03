@@ -1042,3 +1042,15 @@ A repository's `.agents/skills/` are text its writers committed, so they take th
 | `TaskOptions::repository_skills` (`SkillGate::Withheld`, `Trusted`, `Allowed`) | none | read when `run`, a fan or `run_attempts` creates a branch: its repository's `.agents/skills/` at the base commit are staged when allowed, else withheld with the reason; fixed with the branch (`BranchSkills`) and inherited by forks, reincarnations and delegated children; withheld by default |
 | `allow_repository_skills` in the server's JSON config | none | `true` or served repository names (`schema/server.config.json`); the server stages those repositories' skills for the branches it creates, and withholds every other's; never from a request or the repository's `branchyard.toml` |
 | `by rm`, `Yard::remove` | the branch's skill cache stayed | also delete `.branchyard/capabilities/<blake3 of the branch name>/` |
+
+## Added with liveness and obligations
+
+A running branch says whether its engine is still heard from ([durability](durability.md#liveness)), and one projection lists what branches still owe ([obligations](obligations.md)).
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| List what is owed: approvals, unknown and staged effects, lost turns and engines, blocked, ready and waiting children, parked parents, undo windows, each with the commands that deal with it | `Yard::obligations`, `obligations_at` (`Obligation`, `ObligationKind`) | `obligations [BRANCH] [--json]` | no: refused with `usage` | no | no | `by obligations <branch>` in a local harness's shell, as `by effects`; named in the delegate skill |
+
+| Surface | Before | Now |
+|---|---|---|
+| `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for a running branch whose lease is held, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |

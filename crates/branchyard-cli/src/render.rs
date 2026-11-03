@@ -1122,9 +1122,18 @@ pub fn status_text(status: &BranchStatus) -> (String, Tone) {
 
 /// [`status_text`], with what a running turn is parked on when it waits
 /// for an approval (`waiting for approval: …`), or else a `stalled` marker
-/// while it has had no harness activity for its stall window.
+/// while it has had no harness activity for its stall window. Before
+/// either, a running turn whose engine is no longer heard from says so
+/// (`running (no heartbeat for 14s)`, `running (engine lost: …)`).
 pub fn branch_status_text(info: &BranchInfo) -> (String, Tone) {
     let (text, tone) = status_text(&info.status);
+    let silent = info
+        .liveness
+        .as_ref()
+        .and_then(|l| l.describe(branchyard_support::time::now_ms()));
+    if let Some(silent) = silent {
+        return (format!("{text} ({silent})"), Tone::Yellow);
+    }
     match (&info.awaiting, info.stalled) {
         (Some(awaiting), _) => (
             format!("waiting for approval: {}", awaiting.about),
@@ -2141,6 +2150,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_running_branch_whose_engine_is_silent_or_lost_says_so() {
+        let now = branchyard_support::time::now_ms();
+        let mut branch = info("b", None);
+        branch.status = BranchStatus::Running;
+        branch.stalled = true;
+        let silent = |state, heard_ms, reason: Option<&str>| branchyard::Liveness {
+            state,
+            heard_ms,
+            known_until_ms: heard_ms + 30_000,
+            reason: reason.map(str::to_owned),
+        };
+        branch.liveness = Some(silent(branchyard::LivenessState::Live, now, None));
+        assert_eq!(branch_status_text(&branch).0, "running (stalled)");
+        branch.liveness = Some(silent(
+            branchyard::LivenessState::Unknown,
+            now - 14_500,
+            None,
+        ));
+        let (text, tone) = branch_status_text(&branch);
+        assert_eq!(text, "running (no heartbeat for 14s)");
+        assert_eq!(tone, Tone::Yellow);
+        branch.liveness = Some(silent(
+            branchyard::LivenessState::Lost,
+            now - 40_000,
+            Some("its engine (pid 7) is no longer running"),
+        ));
+        assert_eq!(
+            branch_status_text(&branch).0,
+            "running (engine lost: its engine (pid 7) is no longer running)"
+        );
+    }
+
+    #[test]
     fn blank_handoff_note_still_displays_frozen_evidence() {
         let mut message: branchyard::Message = serde_json::from_value(serde_json::json!({
             "id": 1, "from": "lead", "to": "writer", "kind": "answer",
@@ -2480,6 +2522,7 @@ mod tests {
             created_at: 10_000,
             stalled: false,
             awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

@@ -43,6 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract;
 use crate::delegation::{self, Limits};
+use crate::effects::EffectState;
 use crate::projection::lock;
 use crate::record::{self, Recorder};
 use crate::state::{Record, Store};
@@ -629,8 +630,55 @@ pub(crate) fn recovered_note(store: &Store, record: &Record, reason: &str) -> St
         ));
         text.push('\n');
     }
+    text.push_str(&lost_turn_effects(store, record));
     text.push_str("</branchyard-recovered>\n\n");
     text
+}
+
+/// The calls the lost turn made through the connector gateway, from the
+/// effect ledger, so the next turn does not repeat one that happened or
+/// may have. Empty when it made none (or the ledger cannot be read: the
+/// note still says what it can).
+///
+/// The lost turn is the record's last counted one: recovery counts a turn
+/// whose prompt was submitted, and only such a turn is lost. Entries
+/// outlive their branch, so an earlier incarnation's (older than this
+/// record) are left out.
+fn lost_turn_effects(store: &Store, record: &Record) -> String {
+    let created_ms = record.info.created_at.saturating_mul(1000);
+    let entries = match store.effects().effects(Some(&record.info.name)) {
+        Ok(entries) => entries,
+        Err(_) => return String::new(),
+    };
+    let lines: Vec<String> = entries
+        .iter()
+        .filter(|e| e.turn == record.info.turns && e.created_ms >= created_ms)
+        .map(|e| {
+            let what = match e.state {
+                EffectState::Confirmed => "happened",
+                EffectState::Begun | EffectState::Unknown => {
+                    "may have happened: its answer was lost; do not call it again"
+                }
+                EffectState::Failed => "did not happen",
+                EffectState::Staged => "is staged and has not happened",
+                other => other.as_str(),
+            };
+            format!(
+                "- {} ({}): {what}",
+                e.title(),
+                crate::effects::short_id(&e.id)
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "Calls that turn made through the connector gateway, from the effect ledger:\n{}\n\
+         Do not repeat a call that happened or may have: `by effects show <id>` says what is \
+         known, and `by effects reconcile` asks the upstream about an unknown one.\n",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
