@@ -43,6 +43,10 @@ pub(crate) fn is_parent_session_variable(name: &str) -> bool {
 /// this list against `docs/qualification/`.
 pub(crate) const REPORTS: &[(&str, &str)] = &[
     (
+        "antigravity-acp",
+        include_str!("../../../docs/qualification/antigravity-acp.json"),
+    ),
+    (
         "antigravity-stream-json",
         include_str!("../../../docs/qualification/antigravity-stream-json.json"),
     ),
@@ -180,7 +184,7 @@ pub(crate) fn check_model(profile: &Profile, model: &str, private_home: bool) ->
     if plan.session.model.is_none() || driver.capabilities().model {
         return Ok(());
     }
-    let reasons = branchyard_harness::reasons_for(&["model"], driver.capability_reasons());
+    let reasons = branchyard_harness::reasons_for(&["model"], &driver.capability_reasons());
     Err(refuse(
         reasons.first().map_or("not verified", |(_, why)| why),
     ))
@@ -468,29 +472,30 @@ mod tests {
             assert!(profiles::by_id(id).is_some(), "{id} is not a profile");
         }
         assert_eq!(qualification("claude-code-acp").unwrap(), "9/9 on 0.81.2");
-        assert_eq!(qualification("gemini-cli-acp").unwrap(), "9/9 on 0.65.0");
+        assert_eq!(qualification("antigravity-acp").unwrap(), "9/9 on 1.4.12");
+        assert_eq!(qualification("gemini-cli-acp").unwrap(), "9/9 on 0.66.0");
         assert_eq!(
             qualification("antigravity-stream-json").unwrap(),
-            "9/9 on 1.4.7"
+            "9/9 on 1.4.12"
         );
         assert_eq!(
             qualification("codex-app-server").unwrap(),
-            "9/9 on codex-cli 0.164.0"
+            "9/9 on codex-cli 0.166.0"
         );
-        assert_eq!(qualification("oh-my-pi-acp").unwrap(), "9/9 on omp/18.12.6");
+        assert_eq!(qualification("oh-my-pi-acp").unwrap(), "9/9 on omp/18.15.0");
         // 25 October 2026, GLM-4.6 through Z.ai: the three permission
         // scenarios fail on both, since neither asks before a shell command
         // that writes inside its workspace.
         assert_eq!(
             qualification("deepseek-harness-acp").unwrap(),
-            "6/9 on 0.2.1-rc.2"
+            "9/9 on 0.2.1-rc.5"
         );
         assert_eq!(
             qualification("hermes-acp").unwrap(),
-            "6/9 on Hermes Agent v0.19.0 (2026.7.20)"
+            "9/9 on Hermes Agent v0.19.0 (2026.7.20)"
         );
         assert_eq!(qualification("qwen-code-acp").unwrap(), "9/9 on 0.26.0");
-        assert_eq!(qualification("opencode-acp").unwrap(), "9/9 on 1.19.4");
+        assert_eq!(qualification("opencode-acp").unwrap(), "9/9 on 1.19.5");
         assert_eq!(qualification("pi-rpc").unwrap(), "9/9 on 1.4.0");
     }
 

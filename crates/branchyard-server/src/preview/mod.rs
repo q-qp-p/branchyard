@@ -124,8 +124,12 @@ impl PreviewOptions {
     }
 
     fn validate(&self) -> Result<(), ApiError> {
-        if !(1..=500).contains(&self.page)
-            || !(1..=500).contains(&self.limit)
+        if !(1..=64).contains(&self.page) {
+            return Err(ApiError::bad_request(
+                "document previews are limited to pages 1 through 64; download the original for later pages",
+            ));
+        }
+        if !(1..=500).contains(&self.limit)
             || self.offset > 100_000
             || self.sheet.as_ref().is_some_and(|sheet| {
                 sheet.is_empty() || sheet.len() > 256 || sheet.chars().any(char::is_control)
@@ -138,6 +142,7 @@ impl PreviewOptions {
 }
 
 /// Original bytes already authorized and digest-checked by the caller.
+#[derive(Clone)]
 pub struct PreviewInput {
     /// Artifact bytes, never modified by conversion.
     pub bytes: Vec<u8>,

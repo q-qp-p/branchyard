@@ -609,12 +609,16 @@ impl Facts {
         self.harnesses.iter().filter(|h| h.installed)
     }
 
-    /// The harness to suggest: Claude Code or Codex when installed and not
-    /// known to be logged out, else the first installed one logged in,
-    /// else the first installed, else Claude Code.
+    /// The harness to suggest: Antigravity, Claude Code or Codex when installed
+    /// and not known to be logged out, else the first installed non-excluded
+    /// one logged in, else the first installed non-excluded one, else
+    /// Antigravity when present or Claude Code. Gemini CLI is excluded from
+    /// onboarding recommendations.
     pub fn preferred_harness(&self) -> String {
-        let usable = |h: &&HarnessFact| h.login.as_ref().is_none_or(|l| l.state != "logged_out");
-        for preferred in ["claude-code", "codex"] {
+        let usable = |h: &&HarnessFact| {
+            h.harness != "gemini-cli" && h.login.as_ref().is_none_or(|l| l.state != "logged_out")
+        };
+        for preferred in ["antigravity", "claude-code", "codex"] {
             if self
                 .installed()
                 .filter(usable)
@@ -624,8 +628,9 @@ impl Facts {
             }
         }
         self.installed()
+            .filter(|h| h.harness != "gemini-cli")
             .find(|h| h.login.as_ref().is_some_and(HarnessLogin::logged_in))
-            .or_else(|| self.installed().next())
+            .or_else(|| self.installed().find(|h| h.harness != "gemini-cli"))
             .map_or_else(|| "claude-code".into(), |h| h.harness.clone())
     }
 
@@ -860,9 +865,10 @@ pub fn harness_label(harness: &str) -> String {
     }
 }
 
-/// Profiles that cannot route tool permission requests to Branchyard.
+/// Harnesses whose default profile cannot route tool permission requests
+/// to Branchyard. Antigravity's `agy acp` asks, so it is no longer one.
 pub fn unapproved_tools(harness: &str) -> bool {
-    matches!(harness, "antigravity" | "pi" | "amp")
+    matches!(harness, "pi" | "amp")
 }
 
 /// A probe with fixed answers, for tests and examples.
@@ -910,7 +916,7 @@ impl FakeProbe {
                     Some("2.1.283 (Claude Code)"),
                 ),
                 harness("codex", "codex-app-server", true, Some("codex-cli 0.157.1")),
-                harness("antigravity", "antigravity-stream-json", false, None),
+                harness("antigravity", "antigravity-acp", false, None),
                 harness("gemini-cli", "gemini-cli-acp", false, None),
                 harness("opencode", "opencode-acp", false, None),
             ],

@@ -66,6 +66,8 @@ pub fn contract() -> Value {
     entry::<knowledge_api::PlanRejectRequest>("PlanRejectRequest", &mut types);
     entry::<branchyard::KnowledgeEntry>("KnowledgeEntry", &mut types);
     entry::<effects_api::ApprovalList>("ApprovalList", &mut types);
+    entry::<effects_api::DecisionList>("DecisionList", &mut types);
+    entry::<effects_api::Ground>("Ground", &mut types);
     entry::<effects_api::ApprovalAnswerRequest>("ApprovalAnswerRequest", &mut types);
     entry::<effects_api::EffectList>("EffectList", &mut types);
     entry::<effects_api::EffectDetail>("EffectDetail", &mut types);
@@ -139,6 +141,14 @@ pub fn contract() -> Value {
     entry::<crate::workspace_api::ProjectList>("workspace.ProjectList", &mut types);
     entry::<crate::workspace_api::WorkspaceList>("workspace.WorkspaceList", &mut types);
     entry::<crate::workspace_api::SessionList>("workspace.SessionList", &mut types);
+    entry::<crate::workspace_api::PresetOrigin>("workspace.PresetOrigin", &mut types);
+    entry::<crate::workspace_api::ReadyState>("workspace.ReadyState", &mut types);
+    entry::<crate::workspace_api::ReadinessScope>("workspace.ReadinessScope", &mut types);
+    entry::<crate::workspace_api::PresetCredentials>("workspace.PresetCredentials", &mut types);
+    entry::<crate::workspace_api::Readiness>("workspace.Readiness", &mut types);
+    entry::<crate::workspace_api::PresetHarnessView>("workspace.PresetHarnessView", &mut types);
+    entry::<crate::workspace_api::ExecutionPresetView>("workspace.ExecutionPresetView", &mut types);
+    entry::<crate::workspace_api::ExecutionPresetList>("workspace.ExecutionPresetList", &mut types);
     entry::<api::ErrorBody>("ErrorBody", &mut types);
     entry::<api::ErrorResponse>("ErrorResponse", &mut types);
     entry::<api::FeedEntry>("FeedEntry", &mut types);

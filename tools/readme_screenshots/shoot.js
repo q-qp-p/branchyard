@@ -56,17 +56,35 @@ async function openBranch(page) {
   try {
     const desktop = await signIn(browser, { viewport: { width: 1440, height: 900 } });
     let page = desktop.page;
+    // Home is the board: the yard's numbers, then every open branch on one clock, its turns and
+    // calls drawn where they happened, the parked branch's wait filled amber; the day's decisions
+    // and the spend under it. Each row's track is read from its events, so wait for all of them.
+    await page.goto(`${app}#/`);
+    await page.locator(`#main .board-row.board-parked[data-branch="${plan.parked}"] .rail .wait`).waitFor(TURN);
+    await page.locator('#main .board-row.board-running .rail .call').first().waitFor(TURN);
+    await page.locator('#main .board-row.board-ready .rail .rail-ready').first().waitFor(TURN);
+    await page.locator('#main .home-lower .recent li').first().waitFor(TURN);
+    await shoot(page, desktop.problems, 'console-board', ['light', 'dark']);
+
+    // Needs you is a deck: the parked branch's ask first, the ready branches queued in the bay.
+    await page.goto(`${app}#/attention`);
+    await page.locator('#main .deck-card.deck-approval').waitFor(TURN);
+    await page.locator('#main .bay-item').first().waitFor(TURN);
+    await page.locator('#main .recent-box .recent li').first().waitFor(TURN);
+    // The card's evidence is read after the card is drawn: wait for what the agent was doing.
+    await page.locator('#main .deck-card .deck-section .rich').first().waitFor(TURN);
+    await shoot(page, desktop.problems, 'console-decide', ['light', 'dark']);
+
     await page.goto(`${app}#/b/${plan.repo}/${plan.branch}`);
     await openBranch(page);
-    await page.locator('#convo details.tools summary').click();
-    await page.locator('#convo details.tools[open] li').first().waitFor();
+    await page.locator('#convo .turn .notes .note').first().waitFor();
     await shoot(page, desktop.problems, 'console-branches', ['light', 'dark']);
 
     await page.goto(`${app}#/w/${plan.workspace}/s/${plan.session}`);
     await page.locator(`nav#sessions a.session-tab[data-session="${plan.session}"][aria-current="page"]`).waitFor(TURN);
     await page.locator('#convo .turn .agent', { hasText: plan.sessionSays }).waitFor(TURN);
     await page.locator('#tab-outputs').click();
-    await page.locator(`#outputs li[data-artifact="${plan.output}"] button.output-name`).click();
+    await page.locator(`#outputs-list li[data-artifact="${plan.output}"] button[data-preview="output:${plan.output}"]`).click();
     await page.locator('#preview-host .by-artifact-preview table td').first().waitFor(TURN);
     await shoot(page, desktop.problems, 'console-workspace', ['light', 'dark']);
 

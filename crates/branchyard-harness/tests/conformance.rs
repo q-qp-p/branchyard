@@ -35,7 +35,12 @@ fn answer(protocol: Protocol) -> impl Fn(&Value) -> Vec<Value> {
             (Protocol::CodexAppServer, Some("initialize")) => json!({}),
             (Protocol::CodexAppServer, Some("thread/start")) => json!({"thread": {"id": "t1"}}),
             (Protocol::Acp, Some("initialize")) => json!({"protocolVersion": 1}),
-            (Protocol::Acp, Some("session/new")) => json!({"sessionId": "s1"}),
+            // The models an agent may list (agy 1.4.12 does); a profile
+            // that chooses one sets it next.
+            (Protocol::Acp, Some("session/new")) => json!({"sessionId": "s1",
+                "models": {"availableModels": [{"modelId": "small-model"}, {"modelId": "big-model"}],
+                           "currentModelId": "big-model"}}),
+            (Protocol::Acp, Some("session/set_model")) => json!({}),
             (Protocol::PiRpc, _) if frame["type"] == "get_state" => {
                 return vec![
                     json!({"id": frame["id"], "type": "response", "command": "get_state",

@@ -7,10 +7,16 @@ import resource
 import sys
 from pathlib import Path
 
+# Chromium reserves far more address space than it uses (V8 cage, partition
+# allocator) and crashes under a 2 GiB limit, so an HTML source gets none; the
+# network-less namespace, CPU and file-size limits and the 45-second deadline
+# still bound it.
+browser = "--file" in sys.argv and sys.argv[sys.argv.index("--file") + 1].lower().endswith((".html", ".htm"))
 resource.setrlimit(resource.RLIMIT_CPU, (35, 35))
 resource.setrlimit(resource.RLIMIT_FSIZE, (32 * 1024 * 1024, 32 * 1024 * 1024))
-resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
-resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+if not browser:
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024) if browser else (128, 128))
 os.umask(0o077)
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -34,6 +40,9 @@ def bounded_response(value):
         raise ValueError("Preview metadata exceeds the response byte limit")
     rows = value["rows"]
     result = {**value, "rows": [], "warnings": list(value.get("warnings", []))}
+    details = value.get("cell_details")
+    if details is not None:
+        result["cell_details"] = []
     sheets = result.get("sheets", [])
     if len(sheets) > 1000:
         result["sheets"] = sheets[:1000]
@@ -46,15 +55,23 @@ def bounded_response(value):
     result["next_offset"] = offset + len(rows)
     used = encoded(result)
     kept = []
-    for row in rows:
+    kept_details = []
+    for index, row in enumerate(rows):
+        detail = details[index] if details is not None else None
         addition = encoded(row) + (2 if kept else 0)
+        if details is not None:
+            addition += encoded(detail) + (2 if kept else 0)
         if used + addition > byte_limit:
             break
         kept.append(row)
+        if details is not None:
+            kept_details.append(detail)
         used += addition
     if not kept and rows:
         raise ValueError("One row or its table metadata exceeds the preview response byte limit")
     result["rows"] = kept
+    if details is not None:
+        result["cell_details"] = kept_details
     result["next_offset"] = offset + len(kept)
     return result
 

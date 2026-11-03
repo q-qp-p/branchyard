@@ -1,5 +1,205 @@
 # Changelog
 
+## Unreleased
+
+## 0.4.0 - 2026-11-02
+
+The Rust client resumes a response read interrupted by an operating-system
+signal, keeping the same connection and request. Waiting for the first byte
+previously returned a transport error. Timeouts and closed connections still
+follow their existing error and retry rules.
+
+The Rust client (`branchyard-client`, and the `by` hooks and CLI that use it) keeps its HTTP/1.1 connections alive: a request reuses an idle connection to the same server when its response left the connection open and its body was read to the end, instead of opening a new TCP and TLS connection for every request. A `GET` or `HEAD` that finds a connection the server had closed is sent once more on a new one; no other request is sent again because of a closed connection (a `POST` is still resent with its idempotency key, as before).
+
+Four corrections from the 1 November qualification of the ACP harnesses.
+DeepSeek Harness and Hermes run a benign shell command without asking their
+client, so their profiles now say so (`tool_approvals` carries the caveat in
+the compatibility matrix), the qualification runner records the permission
+scenarios as declared for them, interrupts a running tool on the harness's
+own word that it started rather than waiting for a request that never comes,
+and fails `permission_allowed` where a harness that routes approvals let the
+command run unasked. Provisioning projects the branch's policy into each
+harness's own setting: `DSH_PERMISSION_MODE=read-only` for dsh unless the
+policy allows the shell outright, and an `approvals.deny: ["*"]` rule in a
+managed block of Hermes's `config.yaml` (a shared home is refused). The ACP
+driver ends a turn `interrupted` when the agent answers a cancelled prompt
+with an error instead of `cancelled` (Hermes 0.19.0), keeping the error as a
+warning, and can choose a pinned model through a session's `model` config
+option (`session/set_config_option`) where a profile turns it on. OpenCode
+takes a `ZAI_API_KEY` secret as the `ZHIPU_API_KEY` its Z.ai providers read.
+Each qualification report records the model the harness named in its usage
+(`model_reported`) beside the one asked for.
+
+The Python SDK's `Client` keeps one HTTP connection per thread and reuses it for ordinary calls (`http.client`), where it opened a new TCP and TLS connection for every call. A kept connection that has idled more than 5 seconds, was made before a `fork`, or has been closed by the server is replaced before the next request is sent, so an unkeyed `POST` or `DELETE` is not sent on a connection the client can already see is closed (a close still in flight, or a proxy with a very short idle timeout, can still race). A proxy from the environment and the event stream are unchanged. A `GET`, a `HEAD` or a keyed request answered with a redirect is sent again through `urllib`, which follows it as it always did (a `POST` answered 301, 302 or 303 becomes a `GET`; a 307 or 308 is raised as an error); any other request answered with a redirect is not sent again (the server may already have acted on it) and raises the status as an error.
+
+The console's second pass gives it depth and density. Surfaces have three
+elevations (the page, raised panels and cards, and the overlay for the one
+object a page asks about), each a background, a border and a shadow in light
+and dark, with tinted neutrals and a darker sidebar. Home leads with five
+tiles (in flight, need you, ready, merged today, spent) and draws each branch's
+turns on a clock that fits the work: a bar per turn from its own events, a tick
+per tool call, the amber wait, the merge tick, each row's cost, the done
+branches folded, and under the board the day's decisions and each branch's
+spend. The deck's card has a tinted header band, its evidence as labelled
+sections and its answers as a footer, the next card peeking under it, and the
+day's decisions (from `GET …/approvals?all=true`, the merges and the ledger)
+where the empty folds were. A branch reads as a report with the prompt as its
+headline, legible margin notes joined to their paragraphs, a receipt of
+labelled figures, a diff header that stays in view and counts on every tab.
+Empty yards, decks, branches and workspaces say what to do. The README
+screenshots add dark variants of the board and the deck, from a demo whose
+branches run Claude Code's stream-json profile through a script that reports
+cost.
+
+Office files open in a full-width console viewer: DOCX pages load as you scroll,
+PPTX slides have thumbnails and keyboard navigation, and XLSX workbooks have
+sheet tabs, column widths, merged cells, formatted cached values with formula
+tooltips, frozen headers and <!-- fact:artifact_preview.row_page -->200<!-- /fact -->-row pagination. Print view renders the selected
+sheet through LibreOffice and Poppler. Page previews are cached individually
+and bounded to <!-- fact:artifact_preview.page_cap -->64<!-- /fact --> pages, with download guidance for longer originals.
+
+An HTML output of a workspace session can be seen and used from the console.
+It previews as a page image like a DOCX (headless Chromium inside the
+converter's Bubblewrap namespace, no network, the source read-only, so `GET
+…/preview` answers `passed` with one page instead of `422 preview_unsupported`),
+and **Open** runs the page in a sandboxed iframe: served from `/app/frame/{ticket}`
+(minted by `POST …/artifacts/{artifact}/frame`) with `Content-Security-Policy:
+sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline';
+style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'`, framed with
+`sandbox="allow-scripts"` and no `allow-same-origin`, so it reaches neither the
+console's storage nor its token. The rest of the console keeps
+`X-Frame-Options: DENY`; its policy gains `frame-src 'self'`.
+`BRANCHYARD_PREVIEW_CHROMIUM` names the browser; the default is the one under
+`PLAYWRIGHT_BROWSERS_PATH` or `/opt/pw-browsers`.
+
+The console becomes a dispatcher's desk. Needs you is a deck: one decision
+at a time, shaped for what it is (an approval, a question, a merge, a stop,
+a stall), the question at the top, the evidence in the middle and the
+answers at the bottom, taken from the keyboard; an allow or a deny is held
+for eight seconds with Undo before it is sent, and a merge is a hold, not a
+dialog. Home is a board: every open branch on one clock, the last hour to
+scale, a wait on you filled amber from the moment the turn parked, with a
+steer box under a running row. A branch page reads as a report: each tool
+call is a note in the margin beside the paragraph it preceded, and each
+turn ends with a receipt.
+
+For that, a branch record now says what its running turn is parked on:
+`awaiting` names the approval ask, what it asks and since when, read from
+the pending asks whenever the branch is listed or looked up, and `by ls`
+shows `waiting for approval: …`. The server adds `GET …/decisions`
+(`DecisionList`, `Repo::decisions`): what waits for a person in the order to
+take it, parked agents first, oldest wait first. Nothing in it expires.
+
+The ground plan says which files are in two hands: `GET …/ground`
+(`Ground`, `Repo::ground`, `app.ground()`) lists every path an open branch
+changed with the open branches that changed it, read from their diffs when
+asked; a branch whose diff cannot be read is named in `skipped`. A branch
+page gains a Ground tab ("also in app-2" or "only here") and a merge card
+names the files another open branch also holds.
+
+In the deck, Enter in a question's answer box sends the answer (Shift+Enter adds a
+line); it used to add a line, so only the Answer button sent.
+
+Knowledge work reaches the deck. `GET /v1/projects/{project}/decisions`
+(`Client::project_decisions`, `Client.project_decisions`) lists a project's
+workspace outputs waiting to be accepted (`output`) and its sessions that
+failed, were interrupted or never started (`session`) as `Decision`s, and
+Needs you shows them beside the repository's: an output card mounts the
+preview, with Download original and a held Accept, instead of a diff; the
+project page's board draws its open sessions on one clock; the tab title
+counts the cards.
+
+Each turn's receipt now says what that turn cost. The engine records a
+`turn_cost` event (`Activity::TurnCost`) when a turn's metering has settled:
+what the branch's cost grew by, so a harness's running session total counts
+only the part the turn added. A turn nothing measured records none, and the
+branch's `cost_usd` stays its total. `by log`, `by show`'s checkpoints, the
+event page and Python's `FeedEntry.turn_cost` carry it.
+
+Reading an operation, or a fork, no longer fails with `404 unknown_branch`
+for a branch that was removed meanwhile: a fork's removed parent, or a goal
+judge's scratch branch removed between two reads of the operation that ran
+it. The authorization walk ends at a branch that is gone.
+
+The console renders an agent's reply instead of printing it: headings, lists,
+quotes, pipe tables, emphasis, inline code and web links become elements, a
+fenced block is code under a header with a Copy button, and a JSON block shows
+its keys and values with the text one click away. Nothing from the server is
+parsed as HTML, and a relative link target stays text. Each reply sits under a
+head that names the harness and marks it as the agent's, and each tool call
+carries an icon for its verb.
+
+The page gains depth and the same system in both themes: three surfaces, three
+shadows, one radius scale and motion that only moves and fades, still under
+reduced motion. State is a tinted pill in the strip and on each turn's outcome,
+the open branch carries its lane's colour, the changed files show how much each
+adds and removes, the composer says which key sends, the filter shows its `/`
+shortcut, and a loading conversation shows quiet bars rather than a sentence.
+Text in the sidebar, strip and conversation is larger on a phone.
+
+The README's console screenshots are regenerated for this console: the branch page
+with margin notes and a receipt, and the workspace with its table preview.
+
+DOCX and PPTX previews work under the default Bubblewrap backend. The namespace
+set `SAL_USE_VCLPLUGIN=gen`, LibreOffice's X11 backend, which overrides
+`--headless`, finds no display and exits 0 without a PDF, so every Office page
+preview failed with "LibreOffice completed without producing the requested
+PDF" while CSV and XLSX tables rendered. The namespace now sets `svp`, the
+display-less backend the Docker backend already used; isolation is unchanged.
+When a converter exits cleanly without a PDF, the failure message quotes its
+first diagnostic line.
+
+Antigravity runs over ACP by default. `antigravity-acp` launches `agy acp`,
+the CLI's ACP server, so a branch on Antigravity can be cancelled
+(`session/cancel` ends the turn `cancelled`), its shell and file tools ask
+Branchyard before they run (`session/request_permission`, answered from the
+branch's policy, so `--allow-unapproved-tools` is no longer needed), `--model`
+is honoured through `session/set_model` against the models the agent lists,
+and each turn reports its tokens. The headless stream stays as
+`antigravity-stream-json`, with its permission rules. The ACP driver gained
+the two unstable methods behind per-profile flags (`acp_models`, `acp_usage`),
+off for every other agent. Checked against Antigravity CLI 1.4.12 with model
+calls, recorded as fixtures, and live-qualified 9 of 9.
+
+## 0.3.1 - 2026-10-31
+
+Operators can name the environments console sessions run in.
+`execution_presets` in the server configuration lists each environment's
+provider, harnesses, models, secrets by name, tenants and worker labels, and
+`require_workspace_execution_presets` makes workspace sessions choose one. The
+browser sends a preset ID, and the server resolves the rest and validates it
+through the existing checks. A session on a remote preset never falls back to
+local execution, and members see placeholders where an error would name a
+preset's paths, endpoints or secrets. `GET /v1/execution-presets` reports each
+environment's readiness from configuration and offline checks only, and the
+manager MCP starts sessions on a preset.
+
+The console guides a workspace start: choose sources, an environment, a harness
+and model, and the outputs to collect, then follow several sessions side by
+side, each with its own draft and outputs. Sources open in the inspector like
+outputs, outputs are grouped by session and turn, and only the current turn's
+outputs can be accepted. Source titles may be any Unicode text, sent with
+`X-Source-Title-Encoded`, and downloads keep the title. XLSX and CSV previews no
+longer warn about columns they did not cut, a session's first message shows
+what the person typed, and follow-ups in a session that collects outputs keep
+collecting them.
+
+A repository's own skills in `.agents/skills/` reach a branch once a person
+trusts that set with `by skills trust` or a server operator allows them. Every
+turn records the skills it ran with, and copied sandboxes record their ready
+time and transfer sizes. `by up`, `by doctor`, `by setup` and
+`by substrate check` report remote readiness as seven separate checks and never
+treat a found binary as ready to run; `by up --plan --smoke` adds one bounded,
+read-only call to the control plane.
+
+CI runs the test jobs under cargo-nextest and splits the PostgreSQL and coverage
+jobs into partitions. Pull requests plan releases instead of building every
+target, and main rehearses the build. The README says why Branchyard exists and
+shows the console.
+
+The evidence for this release is hermetic: fake agents, fake providers and
+recorded fixtures. No live model, GKE or Substrate run was made for it.
+
 ## 0.3.0 - 2026-10-29
 
 One desktop console now handles coding and knowledge work. Projects contain

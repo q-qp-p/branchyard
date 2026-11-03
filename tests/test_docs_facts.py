@@ -37,6 +37,9 @@ def copy_tree(root):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(source, target)
 
+    asset = Path("crates/branchyard-server/src/companion/assets/artifact-preview.js")
+    shutil.copy(REPO / asset, root / asset)
+
 
 class Tree(unittest.TestCase):
     def setUp(self):
@@ -63,6 +66,23 @@ class Tree(unittest.TestCase):
 
 
 class DocsFacts(Tree):
+    def test_preview_bounds_follow_the_service_and_component(self):
+        self.edit("crates/branchyard-server/src/preview/mod.rs", "1..=64", "1..=32")
+        self.edit(
+            "crates/branchyard-server/src/companion/assets/artifact-preview.js",
+            "var limit = viewer ? 200 : 100",
+            "var limit = viewer ? 150 : 100",
+        )
+        self.assertNotEqual(self.facts("--check").returncode, 0)
+        self.assertEqual(self.facts("--write").returncode, 0)
+        data = json.loads((self.root / "docs/facts.json").read_text())
+        self.assertEqual(data["artifact_preview"], {"page_cap": 32, "row_page": 150})
+        self.assertIn(
+            "<!-- fact:artifact_preview.page_cap -->32<!-- /fact -->",
+            (self.root / "docs/artifact-previews.md").read_text(),
+        )
+        self.assertEqual(self.facts("--check").returncode, 0)
+
     def test_document_skill_metadata_is_generated_from_the_catalog(self):
         path = self.root / "plugins/branchyard/capabilities.json"
         catalog = json.loads(path.read_text())
@@ -146,27 +166,27 @@ class DocsFacts(Tree):
     def test_the_harness_table_follows_the_compatibility_page(self):
         status = self.root / "docs" / "status.md"
         before = status.read_text()
-        self.assertIn("| DeepSeek Harness | `deepseek-harness-acp` (default) | partial | 6 of 9 pass,", before)
+        self.assertIn("| DeepSeek Harness | `deepseek-harness-acp` (default) | live-qualified | 9 of 9 pass,", before)
         self.assertIn("| Aider | none | not built |", before)
         self.assertIn("| Goose | `goose-acp` (default) | unqualified | not run |", before)
         self.edit(
             "docs/compatibility.md",
-            "[6 of 9 pass](qualification/deepseek-harness-acp.json)",
             "[9 of 9 pass](qualification/deepseek-harness-acp.json)",
+            "[8 of 9 pass](qualification/deepseek-harness-acp.json)",
         )
         done = self.facts("--check")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("docs/status.md", done.stderr)
         self.assertEqual(self.facts("--write").returncode, 0)
         after = status.read_text()
-        self.assertIn("| DeepSeek Harness | `deepseek-harness-acp` (default) | live-qualified | 9 of 9 pass,", after)
+        self.assertIn("| DeepSeek Harness | `deepseek-harness-acp` (default) | partial | 8 of 9 pass,", after)
         counts = re.search(
             r"cover (\d+) of (\d+) harness targets: (\d+) live-qualified, (\d+) partial and (\d+) unqualified", after
         )
         self.assertIsNotNone(counts)
         live, partial = int(counts.group(3)), int(counts.group(4))
-        self.assertEqual(live, int(re.search(r"(\d+) live-qualified", before).group(1)) + 1)
-        self.assertEqual(partial, int(re.search(r"(\d+) partial", before).group(1)) - 1)
+        self.assertEqual(live, int(re.search(r"(\d+) live-qualified", before).group(1)) - 1)
+        self.assertEqual(partial, int(re.search(r"(\d+) partial", before).group(1)) + 1)
 
     def test_the_test_count_is_not_called_what_cargo_runs(self):
         claim = re.compile(r"cargo test --workspace[^|\n]*?\bruns\b[^|\n]*fact:tests\.total")

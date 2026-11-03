@@ -40,6 +40,8 @@ struct Config {
     keep_env: BTreeSet<String>,
     report: Option<PathBuf>,
     installed_from: Option<String>,
+    /// The model every session is opened with, for a profile that chooses one.
+    model: Option<String>,
 }
 
 /// The command line, before the profile and work directory are checked.
@@ -75,6 +77,10 @@ struct Args {
     /// such as "npm @openai/codex@0.157.1"
     #[arg(long, value_name = "TEXT")]
     installed_from: Option<String>,
+    /// The model to open every session with, such as gemini-4-argon-high; the
+    /// profile must offer the model capability, else the open is refused
+    #[arg(long, value_name = "NAME")]
+    model: Option<String>,
 }
 
 fn parse_args() -> Result<Config, String> {
@@ -93,6 +99,7 @@ fn parse_args() -> Result<Config, String> {
         keep_env: args.keep_env.into_iter().collect(),
         report: args.report,
         installed_from: args.installed_from,
+        model: args.model,
     })
 }
 
@@ -225,9 +232,23 @@ struct Run<'a> {
     /// Whether any harness reported a cost. Without one, spend is unknown
     /// and the cap cannot apply.
     cost_observed: bool,
+    /// The model the harness itself named in its usage, when it did: what
+    /// a run without `--model` actually ran on.
+    model_reported: Option<String>,
 }
 
 impl Run<'_> {
+    /// Keep the model the harness named in its usage events, if any.
+    fn note_model(&mut self, events: &[Event]) {
+        let named = events.iter().rev().find_map(|e| match e {
+            Event::UsageObserved { usage, .. } => usage.model.clone(),
+            _ => None,
+        });
+        if named.is_some() {
+            self.model_reported = named;
+        }
+    }
+
     fn record(&mut self, name: &'static str, started: Instant, result: Result<String, String>) {
         let (passed, detail) = match result {
             Ok(detail) => (true, detail),
@@ -278,7 +299,7 @@ impl Run<'_> {
         let open = Open {
             mode,
             cwd: self.cwd().display().to_string(),
-            model: None,
+            model: self.config.model.clone(),
             max_budget_usd: None,
             mcp_servers: Vec::new(),
             instructions: None,
@@ -334,6 +355,7 @@ fn main() {
         results: Vec::new(),
         spent_usd: 0.0,
         cost_observed: false,
+        model_reported: None,
     };
     let started = Instant::now();
     scenarios(&mut run);
@@ -344,7 +366,21 @@ fn main() {
 }
 
 fn scenarios(run: &mut Run) {
-    let capabilities = run.config.profile.driver().capabilities();
+    let driver = run.config.profile.driver();
+    let capabilities = driver.capabilities();
+    // A harness that asks its client about some tools and runs others
+    // (DeepSeek Harness inside its own sandbox, Hermes for any command its
+    // dangerous-command list does not name) says so in its profile. The
+    // policy cannot deny what the harness never asks about, so the
+    // scenarios that need a request for a benign shell command are
+    // recorded declared, as for a profile with no approvals at all; what
+    // the harness does ask about is still routed and still checked.
+    let approvals_caveat = driver
+        .capability_reasons()
+        .into_iter()
+        .find(|(capability, _)| *capability == "tool_approvals")
+        .map(|(_, reason)| reason);
+    let asks_for_shell = capabilities.tool_approvals && approvals_caveat.is_none();
     let turn_timeout = Duration::from_secs(240);
 
     // One session carries the first four scenarios, then closes cleanly.
@@ -369,6 +405,7 @@ fn scenarios(run: &mut Run) {
         Ok(format!("session {session}; replied {:?}", text.trim()))
     })();
     run.record("fresh_turn", t, result);
+    run.note_model(main.events());
 
     let t = Instant::now();
     if !capabilities.tool_approvals {
@@ -384,6 +421,16 @@ fn scenarios(run: &mut Run) {
                 never a Branchyard policy, and its profile needs --allow-unapproved-tools"
                     .into(),
             ),
+        );
+    } else if let Some(caveat) = approvals_caveat {
+        run.record(
+            "permission_denied",
+            t,
+            Ok(format!(
+                "declared: the harness {caveat}; the policy cannot deny a request that never \
+                 comes, so provisioning sets the harness's own permission setting from the \
+                 policy instead"
+            )),
         );
     } else if run.over_budget_with(&main) {
         run.skip_over_budget("permission_denied", t);
@@ -418,6 +465,7 @@ fn scenarios(run: &mut Run) {
     } else {
         let marker = run.cwd().join("allow-marker.txt");
         let result = (|| {
+            let before = main.events().len();
             let prompt = "Use your shell/Bash tool to run exactly this command: echo qualified > allow-marker.txt \
                       Then reply with the word DONE.";
             let (_, outcome, _) = turn(&mut main, prompt, Policy::Allow, turn_timeout)?;
@@ -429,7 +477,20 @@ fn scenarios(run: &mut Run) {
             check(content.trim() == "qualified", || {
                 format!("marker holds {content:?}")
             })?;
-            Ok("request allowed; command ran".into())
+            // A harness that routes its approvals must have asked: a
+            // command that ran unasked is the same gap permission_denied
+            // reports, not a pass.
+            let requests = main.events()[before..]
+                .iter()
+                .filter(|e| matches!(e, Event::PermissionRequested { .. }))
+                .count();
+            check(!asks_for_shell || requests > 0, || {
+                "the command ran, but no permission request reached the driver".into()
+            })?;
+            Ok(match requests {
+                0 => "command ran; no request, as the profile declares".into(),
+                n => format!("{n} request(s) allowed; command ran"),
+            })
         })();
         run.record("permission_allowed", t, result);
     }
@@ -440,6 +501,14 @@ fn scenarios(run: &mut Run) {
             "interrupt_during_permission",
             t,
             Ok("declared: the profile has no tool approvals, so no request is ever pending".into()),
+        );
+    } else if let Some(caveat) = approvals_caveat {
+        run.record(
+            "interrupt_during_permission",
+            t,
+            Ok(format!(
+                "declared: the harness {caveat}; no request is pending for a benign command"
+            )),
         );
     } else if run.over_budget_with(&main) {
         run.skip_over_budget("interrupt_during_permission", t);
@@ -494,13 +563,17 @@ fn scenarios(run: &mut Run) {
              python3 -c \"import time; time.sleep(45)\" Then reply DONE.",
         )?;
             // The command is under way once it is allowed; a profile whose
-            // harness asks nobody (Pi) never sends a request to wait for,
-            // so there the harness's own word that the tool started does.
+            // harness asks nobody (Pi), or not about a benign command
+            // (DeepSeek Harness, Hermes), never sends a request to wait
+            // for, so there the harness's own word that the tool started
+            // does. Until 1 November 2026 every profile with approvals
+            // waited for a request, and the two that ask only sometimes
+            // timed out here for 240 seconds without an interrupt sent.
             pump(
                 &mut main,
                 turn_timeout,
                 Policy::Allow,
-                |e| match capabilities.tool_approvals {
+                |e| match asks_for_shell {
                     true => matches!(e, Event::PermissionRequested { .. }),
                     false => matches!(e, Event::ToolStarted { .. }),
                 },
@@ -554,7 +627,7 @@ fn scenarios(run: &mut Run) {
             let rejected = driver.open(Open {
                 mode: SessionMode::Fork(parent.clone()),
                 cwd: run.cwd().display().to_string(),
-                model: None,
+                model: run.config.model.clone(),
                 max_budget_usd: None,
                 mcp_servers: Vec::new(),
                 instructions: None,
@@ -720,6 +793,12 @@ fn report(run: &Run, elapsed: Duration) {
         // The UTC day of the run, as docs/compatibility.md's matrix dates it.
         "date": &branchyard_support::time::rfc3339(branchyard_support::time::now_ms())[..10],
         "installed_from": run.config.installed_from,
+        // The model asked for with --model, and the one the harness named
+        // in its usage (its own word; null where it reports no usage or
+        // names no model), so a run without --model still records what it
+        // ran on where the harness says.
+        "model": run.config.model,
+        "model_reported": run.model_reported,
         "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
         "seconds": elapsed.as_secs_f64().round(),
         "harness_estimated_cost_usd": if run.cost_observed {

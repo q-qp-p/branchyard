@@ -53,6 +53,24 @@ pub struct Profile {
     /// response) to authenticate with when resuming a session fails with
     /// `auth_required`; see [`Acp::with_auth_method`].
     pub acp_auth_method: Option<&'static str>,
+    /// ACP only: the agent lists its models in its `session/new` answer
+    /// (`models.availableModels`) and takes one through the unstable
+    /// `session/set_model`, so the profile offers the `model` capability
+    /// ([`Acp::with_models`]). Verified against the agent, never assumed.
+    pub acp_models: bool,
+    /// ACP only: the agent's prompt response carries the turn's token
+    /// `usage` (the unstable end-of-turn usage), which the driver reports
+    /// ([`Acp::with_usage`]). Verified against the agent, never assumed.
+    pub acp_usage: bool,
+    /// ACP only: the agent lists no models but its session answer carries a
+    /// `model` config option, and the pinned model is chosen with
+    /// `session/set_config_option` ([`Acp::with_config_model`]). Verified
+    /// against the agent, never assumed.
+    pub acp_config_model: bool,
+    /// ACP only: why the agent's tool approvals are partial, when a probe
+    /// saw it run a tool without asking ([`Acp::with_approvals_caveat`]).
+    /// The compatibility matrix and the qualification runner read it.
+    pub acp_approvals_caveat: Option<&'static str>,
 }
 
 impl Profile {
@@ -80,6 +98,18 @@ impl Profile {
                 if let Some(method) = self.acp_auth_method {
                     driver = driver.with_auth_method(method);
                 }
+                if self.acp_models {
+                    driver = driver.with_models();
+                }
+                if self.acp_usage {
+                    driver = driver.with_usage();
+                }
+                if self.acp_config_model {
+                    driver = driver.with_config_model();
+                }
+                if let Some(caveat) = self.acp_approvals_caveat {
+                    driver = driver.with_approvals_caveat(caveat);
+                }
                 Box::new(driver)
             }
         }
@@ -95,8 +125,27 @@ const fn acp(id: &'static str, harness: &'static str, command: &'static [&'stati
         checked_against: None,
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     }
 }
+
+/// DeepSeek Harness confines its shell itself (`workspace-write` unless
+/// `DSH_PERMISSION_MODE` says otherwise) and asks its client only for a
+/// command that leaves that confinement: `echo qualified > deny-marker.txt`
+/// ran under a denying policy (25 October and 1 November 2026, live).
+const DSH_APPROVALS: &str = "asks only when a command leaves its own sandbox (DSH_PERMISSION_MODE, \
+     workspace-write by default); a command that writes inside the workspace runs without a request";
+
+/// Hermes asks its client for its file-edit tools and for the shell
+/// commands its dangerous-command list names; any other command runs
+/// (`echo qualified > deny-marker.txt` did, 25 October and 1 November 2026,
+/// live).
+const HERMES_APPROVALS: &str =
+    "asks for file edits and for the commands its own dangerous-command \
+     list names; any other shell command runs without a request";
 
 /// Keeps permission bypass unavailable in claude-agent-acp sessions, so no
 /// mode switch can skip Branchyard's permission answers. The adapter
@@ -114,6 +163,10 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("Claude Code 2.1.283"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     },
     Profile {
         checked_against: Some("claude-agent-acp 0.81.2"),
@@ -128,8 +181,25 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("codex-cli 0.157.1"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     },
     acp("codex-acp", "codex", &["codex-acp"]),
+    // `agy acp` (Antigravity CLI 1.4.12) speaks ACP v1 and carries what
+    // the headless stream cannot: `session/cancel`, permission requests
+    // for its tools, `session/set_model` from the models its
+    // `session/new` lists, and the turn's token usage. The key alone is
+    // enough: a `session/new` it answers `auth_required` is retried after
+    // one `authenticate` with `gemini-api-key`.
+    Profile {
+        checked_against: Some("Antigravity CLI 1.4.12"),
+        acp_auth_method: Some("gemini-api-key"),
+        acp_models: true,
+        acp_usage: true,
+        ..acp("antigravity-acp", "antigravity", &["agy", "acp"])
+    },
     Profile {
         id: "antigravity-stream-json",
         harness: "antigravity",
@@ -138,13 +208,28 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("Antigravity CLI 1.2.11"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     },
-    acp("oh-my-pi-acp", "oh-my-pi", &["omp", "acp"]),
-    acp(
-        "deepseek-harness-acp",
-        "deepseek-harness",
-        &["dsh", "--profile", "acp"],
-    ),
+    // The probe (1 November 2026, Oh My Pi 18.15.0) saw per-turn usage on
+    // each prompt response; no `models` in `session/new`.
+    Profile {
+        acp_usage: true,
+        ..acp("oh-my-pi-acp", "oh-my-pi", &["omp", "acp"])
+    },
+    Profile {
+        acp_approvals_caveat: Some(DSH_APPROVALS),
+        // The probe (1 November 2026, DeepSeek Harness 0.2.1-rc.5) got a
+        // result to `session/set_config_option` on its `model` option.
+        acp_config_model: true,
+        ..acp(
+            "deepseek-harness-acp",
+            "deepseek-harness",
+            &["dsh", "--profile", "acp"],
+        )
+    },
     Profile {
         // Gemini CLI's `session/new` falls back to `GEMINI_API_KEY` when its
         // settings choose no auth type; `session/load` does not, and answers
@@ -155,7 +240,12 @@ pub const PROFILES: &[Profile] = &[
         // release from before `--acp`).
         ..acp("gemini-cli-acp", "gemini-cli", &["gemini", "--acp"])
     },
-    acp("opencode-acp", "opencode", &["opencode", "acp"]),
+    // The probe (1 November 2026, OpenCode 1.19.5) saw per-turn usage on
+    // each prompt response; no `models` in `session/new`.
+    Profile {
+        acp_usage: true,
+        ..acp("opencode-acp", "opencode", &["opencode", "acp"])
+    },
     Profile {
         id: "pi-rpc",
         harness: "pi",
@@ -164,6 +254,10 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("pi 0.87.1"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     },
     acp("goose-acp", "goose", &["goose", "acp"]),
     acp("cursor-acp", "cursor", &["agent", "acp"]),
@@ -180,10 +274,22 @@ pub const PROFILES: &[Profile] = &[
         checked_against: Some("documentation only, not recorded"),
         acp_session_meta: None,
         acp_auth_method: None,
+        acp_models: false,
+        acp_usage: false,
+        acp_config_model: false,
+        acp_approvals_caveat: None,
     },
     acp("qwen-code-acp", "qwen-code", &["qwen", "--acp"]),
     acp("kimi-cli-acp", "kimi-cli", &["kimi", "acp"]),
-    acp("hermes-acp", "hermes", &["hermes", "acp"]),
+    // The probe (1 November 2026, Hermes 0.19.0) listed `models` in
+    // `session/new`, took `session/set_model` (answered `{}`), and saw
+    // per-turn usage on each prompt response.
+    Profile {
+        acp_models: true,
+        acp_usage: true,
+        acp_approvals_caveat: Some(HERMES_APPROVALS),
+        ..acp("hermes-acp", "hermes", &["hermes", "acp"])
+    },
 ];
 
 /// Integration targets without a driver yet, and why.
@@ -289,12 +395,70 @@ mod tests {
 
     #[test]
     fn native_targets_default_to_their_native_drivers() {
-        for (harness, protocol) in [
-            ("antigravity", Protocol::AntigravityStreamJson),
-            ("pi", Protocol::PiRpc),
-            ("amp", Protocol::AmpStreamJson),
-        ] {
+        for (harness, protocol) in [("pi", Protocol::PiRpc), ("amp", Protocol::AmpStreamJson)] {
             assert_eq!(default_for(harness).unwrap().protocol, protocol);
+        }
+    }
+
+    /// Antigravity's default is `agy acp`, which cancels, asks and takes a
+    /// model; the headless stream stays as the alternate, and only this
+    /// profile turns on the ACP driver's verified extensions.
+    #[test]
+    fn antigravity_defaults_to_acp_and_keeps_its_stream() {
+        let default = default_for("antigravity").unwrap();
+        assert_eq!(default.id, "antigravity-acp");
+        assert_eq!(default.protocol, Protocol::Acp);
+        assert_eq!(default.command, &["agy", "acp"]);
+        assert_eq!(default.acp_auth_method, Some("gemini-api-key"));
+        assert!(default.acp_models && default.acp_usage);
+        let capabilities = default.driver().capabilities();
+        assert!(capabilities.cancellation && capabilities.tool_approvals);
+        assert!(capabilities.model && capabilities.usage);
+        let stream = by_id("antigravity-stream-json").unwrap();
+        assert_eq!(stream.protocol, Protocol::AntigravityStreamJson);
+        // Only the profiles a probe verified turn these on; see the
+        // comments on each profile.
+        let verified = [
+            "antigravity-acp",
+            "oh-my-pi-acp",
+            "opencode-acp",
+            "hermes-acp",
+        ];
+        for profile in PROFILES.iter().filter(|p| !verified.contains(&p.id)) {
+            assert!(!profile.acp_models && !profile.acp_usage, "{}", profile.id);
+        }
+        // Only DeepSeek Harness's `model` option has been probed with
+        // `session/set_config_option`, and it answered with a result.
+        assert!(PROFILES
+            .iter()
+            .filter(|p| p.id != "deepseek-harness-acp")
+            .all(|p| !p.acp_config_model));
+    }
+
+    /// The two agents a live run saw execute a shell command without asking
+    /// carry the caveat, which their drivers report under `tool_approvals`
+    /// while still offering approvals; no other profile does.
+    #[test]
+    fn partial_approvals_are_declared_where_a_run_saw_them() {
+        for profile in PROFILES {
+            let reasons = profile.driver().capability_reasons();
+            let caveat = reasons
+                .iter()
+                .find(|(c, _)| *c == "tool_approvals")
+                .map(|(_, r)| *r);
+            match profile.id {
+                "deepseek-harness-acp" | "hermes-acp" => {
+                    assert_eq!(caveat, profile.acp_approvals_caveat, "{}", profile.id);
+                    assert!(caveat.is_some_and(|c| c.contains("without a request")));
+                    assert!(profile.driver().capabilities().tool_approvals);
+                }
+                // A profile with no approvals at all (Pi, Amp, the
+                // Antigravity stream) gives its own reason for the `no`.
+                _ if !profile.driver().capabilities().tool_approvals => {
+                    assert!(caveat.is_some(), "{}", profile.id);
+                }
+                _ => assert_eq!(caveat, None, "{}", profile.id),
+            }
         }
     }
 

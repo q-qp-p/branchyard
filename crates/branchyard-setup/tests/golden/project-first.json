@@ -91,7 +91,7 @@
         {
           "value": "antigravity",
           "label": "Antigravity",
-          "description": "not found on PATH; cannot route permission requests"
+          "description": "not found on PATH"
         },
         {
           "value": "oh-my-pi",
@@ -103,11 +103,6 @@
         {
           "value": "deepseek-harness",
           "label": "DeepSeek Harness",
-          "description": "not found on PATH"
-        },
-        {
-          "value": "gemini-cli",
-          "label": "Gemini CLI",
           "description": "not found on PATH"
         },
         {
@@ -153,6 +148,11 @@
         {
           "value": "hermes",
           "label": "Hermes",
+          "description": "not found on PATH"
+        },
+        {
+          "value": "gemini-cli",
+          "label": "Gemini CLI",
           "description": "not found on PATH"
         }
       ],

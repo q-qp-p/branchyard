@@ -118,7 +118,7 @@ async fn list(
     let kind = uri.query().and_then(|q| {
         q.split('&')
             .find_map(|pair| pair.strip_prefix("kind="))
-            .map(decode)
+            .map(branchyard_client::http::decode)
     });
     let services = blocking(move || fleet(&app)).await?.map_err(io)?;
     Ok(Json(ServiceList {
@@ -216,27 +216,101 @@ pub(crate) fn reap(app: &Shared) -> std::io::Result<Vec<services::Reaped>> {
     )
 }
 
-/// A query parameter with its `%XX` escapes decoded.
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| (b as char).to_digit(16);
-        match (
-            bytes[i],
-            bytes.get(i + 1).copied(),
-            bytes.get(i + 2).copied(),
-        ) {
-            (b'%', Some(h), Some(l)) if hex(h).is_some() && hex(l).is_some() => {
-                out.push((hex(h).unwrap_or(0) * 16 + hex(l).unwrap_or(0)) as u8);
-                i += 3;
-            }
-            (b, _, _) => {
-                out.push(b);
-                i += 1;
-            }
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use axum::Extension;
+    use branchyard::services::{conformance, Service};
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::api::{App, Caller};
+    use crate::config::{Config, Principal};
+
+    fn app(directory: &tempfile::TempDir) -> Shared {
+        let config = Config::new(PathBuf::from(directory.path()).join("data"));
+        Arc::new(App {
+            preview: Arc::new(
+                crate::preview::PreviewService::new(directory.path().join("previews")).unwrap(),
+            ),
+            runtime: Default::default(),
+            pull_requests: Default::default(),
+            repos: Default::default(),
+            registry: crate::ops::Registry::open(
+                Box::new(crate::store::MemoryStore::default()),
+                crate::ops::Options::new(Vec::new()),
+            )
+            .unwrap(),
+            credentials: crate::auth::Credentials::new(config.all_credentials()),
+            shutdown: tokio::sync::watch::channel(false).1,
+            storage_idem: Default::default(),
+            triggers: Arc::new(crate::triggers::dispatch::Hub::new(
+                Arc::new(crate::triggers::store::SqliteTriggers::memory()),
+                config.triggers.clone(),
+                "http://127.0.0.1".into(),
+            )),
+            companion: None,
+            sync: None,
+            config,
+        })
+    }
+
+    /// `GET /v1/services?kind=...` decodes its query value: `%XX` escapes
+    /// become bytes (either hex case), a `%` that is not followed by two hex
+    /// digits stays literal, and bytes that are not UTF-8 become U+FFFD. The
+    /// stored kinds are ASCII, so each case is observed by which of them the
+    /// decoded value matches. A kind cannot hold `+`, so that `+` stays
+    /// literal is pinned in `branchyard-client`'s `decoding_handles_the_edges`.
+    #[tokio::test]
+    async fn the_kind_query_decodes_percent_escapes() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = app(&directory);
+        let now = branchyard_support::time::now_ms();
+        for kind in ["a", "ab", "a.b", "a:b", "model_gateway"] {
+            let service = Service::new(kind, conformance::owner(&format!("owner-{kind}")));
+            app.registry.services().register(&service, now).unwrap();
+        }
+        let cases: [(&str, &[&str]); 8] = [
+            ("model%5Fgateway", &["model_gateway"]),
+            ("a%2Eb", &["a.b"]),
+            ("a%3ab", &["a:b"]),
+            // A lone `%`, or one not followed by two hex digits, is literal:
+            // it neither matches `a` or `ab` nor drops the bytes after it.
+            ("a%b", &[]),
+            ("a%2", &[]),
+            ("a%G1", &[]),
+            // Invalid UTF-8 becomes U+FFFD, so `ab` does not match.
+            ("ab%FF", &[]),
+            ("%", &[]),
+        ];
+        for (query, expected) in cases {
+            let caller = Caller::new(Principal::default_for("reader"));
+            let response = router()
+                .layer(Extension(caller))
+                .with_state(app.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/v1/services?kind={query}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200, "kind={query}");
+            let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let mut kinds: Vec<&str> = body["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["kind"].as_str().unwrap())
+                .collect();
+            kinds.sort_unstable();
+            assert_eq!(kinds, expected, "kind={query}");
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
 }

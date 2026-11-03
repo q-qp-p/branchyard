@@ -2,56 +2,57 @@
   "profile": "oh-my-pi-acp",
   "harness": "oh-my-pi",
   "command": "omp acp",
-  "harness_version": "omp/18.12.6",
-  "driver_version": "0.0.1",
-  "host": "Linux 6.18.44-fc-v153 x86_64",
-  "date": "2026-10-25",
-  "installed_from": "npm @oh-my-pi/pi-coding-agent@18.12.6 (bun)",
+  "harness_version": "omp/18.15.0",
+  "driver_version": "0.4.0",
+  "host": "Linux 6.18.44-fc-v185 x86_64",
+  "date": "2026-11-01",
+  "installed_from": "npm @oh-my-pi/pi-coding-agent 18.15.0 under bun 1.4.4 (npm bun@1.4.4 in /tmp/qual/npm)",
+  "model": null,
   "execution": "local process with scrubbed environment and private home; not a Branchyard sandbox",
-  "seconds": 49.0,
+  "seconds": 26.0,
   "harness_estimated_cost_usd": "not reported by the harness; the cost cap did not apply",
   "scenarios": [
     {
       "name": "fresh_turn",
       "passed": true,
-      "detail": "session 01a1729a-015a-74a3-b453-27348c585fc8; replied \"OK\"",
-      "seconds": 5.6
+      "detail": "session 01a198fc-958d-73cf-b085-12ec534a9c7e; replied \"OK\"",
+      "seconds": 3.9
     },
     {
       "name": "permission_denied",
       "passed": true,
       "detail": "1 request(s) denied; marker absent; turn Completed",
-      "seconds": 9.6
+      "seconds": 3.4
     },
     {
       "name": "permission_allowed",
       "passed": true,
       "detail": "request allowed; command ran",
-      "seconds": 6.2
+      "seconds": 2.5
     },
     {
       "name": "interrupt_during_permission",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: false; pending request withdrawn by harness: false",
-      "seconds": 3.0
+      "seconds": 1.5
     },
     {
       "name": "interrupt_during_tool",
       "passed": true,
       "detail": "stopped 0.0s after interrupt; acknowledged: false",
-      "seconds": 8.4
+      "seconds": 6.7
     },
     {
       "name": "clean_close",
       "passed": true,
       "detail": "closed cleanly; no descendants outlived the harness; session cost $0.0000",
-      "seconds": 0.2
+      "seconds": 0.1
     },
     {
       "name": "resume",
       "passed": true,
-      "detail": "session 01a1729a-015a-74a3-b453-27348c585fc8; remembered PELICAN-7; cost $0.0000",
-      "seconds": 6.5
+      "detail": "session 01a198fc-958d-73cf-b085-12ec534a9c7e; remembered PELICAN-7; cost $0.0000",
+      "seconds": 3.8
     },
     {
       "name": "fork",
@@ -63,7 +64,7 @@
       "name": "connection_lost",
       "passed": true,
       "detail": "killed mid-turn; outcome reported unknown",
-      "seconds": 9.5
+      "seconds": 4.1
     }
   ]
 }

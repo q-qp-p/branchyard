@@ -117,8 +117,12 @@ fn entry_text(entry: &CheckpointEntry, style: Style) -> String {
         true => String::new(),
         false => style.paint(Tone::Red, "  (ref missing)"),
     };
+    let cost = entry
+        .cost_usd
+        .map(|usd| format!("  {}", render::usd(usd)))
+        .unwrap_or_default();
     format!(
-        "{}  {}  {} file(s) +{} -{}{after}{prompt}{gone}",
+        "{}  {}  {} file(s) +{} -{}{cost}{after}{prompt}{gone}",
         c.turn,
         short(&c.commit),
         c.files_changed,
@@ -777,6 +781,8 @@ mod tests {
             cost_usd: None,
             created_at: 1,
             stalled: false,
+            awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),
@@ -937,13 +943,14 @@ mod tests {
                     sandbox: None,
                 },
                 prompt: Some("write it".into()),
+                cost_usd: Some(0.25),
                 available: true,
             }],
         };
         let text = checkpoint_lines(&list, Style { color: false });
         assert!(text.contains("    0  ba5e000000  base"), "{text}");
         assert!(
-            text.contains("  * 1  c0ffee0000  1 file(s) +2 -0  write it"),
+            text.contains("  * 1  c0ffee0000  1 file(s) +2 -0  $0.25  write it"),
             "{text}"
         );
         let fresh = SessionContinuity::Fresh { reason: "x".into() };

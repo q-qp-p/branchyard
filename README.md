@@ -6,10 +6,24 @@ Run several AI agents at once, each on its own branch, then review and merge onl
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-branches-dark.png">
-  <img src="assets/screenshots/console-branches.png" alt="The Branchyard console in a desktop browser. The sidebar sorts a Rust library's branches into Needs you, Running, Ready and Done. The open branch, parser-fix, shows the request, the agent's reply and its tool calls, a Merge button at the top, its two changed files and the first file's diff.">
+  <img src="assets/screenshots/console-branches.png" alt="The Branchyard console in a desktop browser. The sidebar sorts a Rust library's branches into Needs you, Running, Ready and Done. The open branch, parser-fix, shows the request, the agent's reply with each tool call as a note in the margin beside it, a receipt closing the turn, a Merge button at the top, its two changed files and the first file's diff.">
 </picture>
 
 <sub>A scripted agent produced the demo data in these screenshots, and no model ran. [How to regenerate them](assets/screenshots/README.md).</sub>
+
+Home is a board: the yard's numbers, then every open branch on one clock, each turn a bar with its tool calls as ticks, a wait on you filled amber, and what each branch cost.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-board-dark.png">
+  <img src="assets/screenshots/console-board.png" alt="The console's home in a desktop browser. Tiles count the branches in flight, needing you, ready and merged today, and what they spent. Below, a board lists a Rust library's open branches on one time axis, each turn a bar with a tick for each tool call: the branch changelog waiting for you in an amber row with an Answer button, an interrupted branch with Resume, two running branches with Steer and two ready branches with Merge, each with its cost, and three merged branches folded under their merge ticks. Under the board, today's decisions and each branch's spend.">
+</picture>
+
+Needs you is a deck: one decision at a time, with the question, the evidence and the answers.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-decide-dark.png">
+  <img src="assets/screenshots/console-decide.png" alt="The console's Needs you view. One raised card, tinted amber, asks whether the agent on the changelog branch may use Claude Code's Write tool on CHANGELOG.md, with what it was doing beside what it asks, a reason field and the answers Allow, Deny, Open and Later; the next card peeks under it, and beside it a queue of the two ready branches to merge and the interrupted branch. Below, what was decided today.">
+</picture>
 
 ## Why
 

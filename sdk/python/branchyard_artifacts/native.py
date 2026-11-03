@@ -7,6 +7,7 @@ import json
 import math
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
@@ -17,7 +18,7 @@ from xml.sax.saxutils import escape
 from .common import ArtifactError, Unavailable, library, load_json, output_file, report, request
 from .doctor import uno_python
 
-MAX_RENDER_PAGES = 500
+MAX_RENDER_PAGES = 64
 MAX_RENDER_DIMENSION = 2048
 MAX_RENDER_IMAGE_BYTES = 16 * 1024 * 1024
 MAX_RENDER_PIXELS = 16_777_216
@@ -47,11 +48,83 @@ def write_hardened_profile(profile_dir: Path) -> str:
     return profile_dir.as_uri()
 
 
+def converter_note(stderr: bytes | None) -> str:
+    """Quote the converter's first diagnostic that is not a warning, so an exit-0 run without a PDF explains itself."""
+    lines = [line.strip() for line in (stderr or b"").decode("utf-8", "replace").splitlines() if line.strip()]
+    first = next((line for line in lines if not line.startswith("Warning:")), "")
+    first = "".join(ch for ch in first if ch.isprintable())[:200]
+    return " (converter said: " + first + ")" if first else ""
+
+
+def recalculate_workbook(
+    path: Path,
+    out: Path,
+    *,
+    max_output_bytes: int = 64 * 1024 * 1024,
+    timeout: int = RENDER_TIMEOUT_SECONDS,
+) -> None:
+    """Calculate a private XLSX copy with hardened LibreOffice, preserving the original."""
+    if path.suffix.lower() != ".xlsx":
+        raise ArtifactError("Formula recalculation requires an XLSX workbook")
+    if path.resolve() == out.resolve():
+        raise ArtifactError("Recalculated workbook must not overwrite the original")
+    office = shutil.which("libreoffice") or shutil.which("soffice")
+    if not office:
+        raise Unavailable("Formula values need saved caches or LibreOffice on the rendering server")
+    with tempfile.TemporaryDirectory(prefix="branchyard-workbook-values-") as temporary:
+        work = Path(temporary)
+        input_dir = work / "input"
+        input_dir.mkdir()
+        staged_input = input_dir / path.name
+        shutil.copyfile(path, staged_input)
+        profile = write_hardened_profile(work / "profile")
+        try:
+            converted = subprocess.run(
+                [
+                    str(office),
+                    "-env:UserInstallation=" + profile,
+                    "--headless",
+                    "--nolockcheck",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--norestore",
+                    "--convert-to",
+                    "xlsx:Calc MS Excel 2007 XML",
+                    "--outdir",
+                    str(work),
+                    str(staged_input),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ArtifactError("LibreOffice formula recalculation timed out") from error
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ArtifactError("LibreOffice failed to calculate workbook values") from error
+        calculated = work / (path.stem + ".xlsx")
+        if not calculated.exists():
+            raise ArtifactError(
+                "LibreOffice completed without producing calculated values" + converter_note(converted.stderr)
+            )
+        metadata = calculated.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= max_output_bytes:
+            raise ArtifactError("Calculated workbook exceeds preview byte bounds or is not a regular file")
+        descriptor = os.open(calculated, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            payload = stream.read(max_output_bytes + 1)
+        if not payload or len(payload) > max_output_bytes:
+            raise ArtifactError("Calculated workbook exceeds preview byte bounds")
+        with output_file(out) as staged:
+            staged.write_bytes(payload)
+
+
 def render_page(
     path: Path,
     out_image: Path,
     *,
     page: int = 1,
+    sheet: str | None = None,
     max_pages: int = MAX_RENDER_PAGES,
     max_dimension: int = MAX_RENDER_DIMENSION,
     max_output_bytes: int = MAX_RENDER_IMAGE_BYTES,
@@ -79,12 +152,26 @@ def render_page(
         input_dir.mkdir(parents=True, exist_ok=True)
         staged_input = input_dir / path.name
         shutil.copyfile(path, staged_input)
+        if sheet is not None:
+            if suffix != ".xlsx":
+                raise ArtifactError("Sheet selection is only available for XLSX print previews")
+            workbook = library("openpyxl").load_workbook(staged_input, keep_links=False)
+            try:
+                if sheet not in workbook.sheetnames:
+                    raise ArtifactError("Worksheet does not exist: " + sheet)
+                # Change only the private staging copy; LibreOffice prints visible sheets.
+                for worksheet in workbook.worksheets:
+                    worksheet.sheet_state = "visible" if worksheet.title == sheet else "hidden"
+                workbook.active = workbook.sheetnames.index(sheet)
+                workbook.save(staged_input)
+            finally:
+                workbook.close()
         if suffix == ".pdf":
             pdf = staged_input
         else:
             profile = write_hardened_profile(work / "profile")
             try:
-                subprocess.run(
+                converted = subprocess.run(
                     [
                         str(office),
                         "-env:UserInstallation=" + profile,
@@ -109,7 +196,9 @@ def render_page(
                 raise ArtifactError("LibreOffice failed to convert " + escape(path.name) + " to PDF") from error
             pdf = work / (path.stem + ".pdf")
             if not pdf.is_file() or pdf.stat().st_size == 0:
-                raise ArtifactError("LibreOffice completed without producing the requested PDF")
+                raise ArtifactError(
+                    "LibreOffice completed without producing the requested PDF" + converter_note(converted.stderr)
+                )
         try:
             reader = pypdf.PdfReader(str(pdf), strict=True)
         except Exception as error:
@@ -122,8 +211,12 @@ def render_page(
         if count < 1:
             raise ArtifactError("Renderer produced no pages")
         if count > max_pages:
-            raise ArtifactError(
-                "Document page count (" + str(count) + ") exceeds the " + str(max_pages) + "-page limit"
+            warnings.append(
+                "Preview limited to the first "
+                + str(max_pages)
+                + " pages of "
+                + str(count)
+                + "; download the original to read the remaining pages"
             )
         if page > count:
             raise ArtifactError("Requested page " + str(page) + " exceeds document page count (" + str(count) + ")")
@@ -187,11 +280,97 @@ def render_page(
         with output_file(out_image) as staged:
             staged.write_bytes(raw_png)
     return {
-        "pages": count,
+        "pages": min(count, max_pages),
         "width": width,
         "height": height,
         "warnings": warnings,
     }
+
+
+CHROMIUM_ENV = "BRANCHYARD_CHROMIUM"
+HTML_VIEWPORT = (1280, 1024)
+HTML_VIRTUAL_TIME_MS = 2000
+
+
+def find_chromium() -> str | None:
+    """The headless Chromium the operator selected, or one under the shared browsers directory."""
+    chosen = os.environ.get(CHROMIUM_ENV)
+    if chosen:
+        return chosen if os.access(chosen, os.X_OK) else None
+    root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "/opt/pw-browsers")
+    for pattern in ("chromium_headless_shell-*/*/chrome-headless-shell", "chromium-*/*/chrome"):
+        for candidate in sorted(root.glob(pattern)):
+            if os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
+
+
+def render_html(
+    path: Path,
+    out_image: Path,
+    *,
+    max_output_bytes: int = MAX_RENDER_IMAGE_BYTES,
+    timeout: int = RENDER_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Screenshot an HTML file with headless Chromium; the caller supplies the network-less namespace."""
+    chromium = find_chromium()
+    if not chromium:
+        raise Unavailable(
+            "HTML preview needs headless Chromium; set " + CHROMIUM_ENV + " or install it for the rendering server"
+        )
+    pil_image = library("PIL.Image")
+    with tempfile.TemporaryDirectory(prefix="branchyard-html-render-") as temporary:
+        work = Path(temporary)
+        staged = work / "page.html"
+        shutil.copyfile(path, staged)
+        shot = work / "shot.png"
+        try:
+            subprocess.run(
+                [
+                    chromium,
+                    "--no-sandbox",  # the enclosing namespace is the sandbox; Chromium cannot nest its own
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--disable-extensions",
+                    "--hide-scrollbars",
+                    "--host-resolver-rules=MAP * ~NOTFOUND",
+                    "--user-data-dir=" + str(work / "profile"),
+                    "--window-size=" + str(HTML_VIEWPORT[0]) + "," + str(HTML_VIEWPORT[1]),
+                    "--virtual-time-budget=" + str(HTML_VIRTUAL_TIME_MS),
+                    "--screenshot=" + str(shot),
+                    staged.as_uri(),
+                ],
+                capture_output=True,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ArtifactError("Chromium page rendering timed out") from error
+        except subprocess.CalledProcessError as error:
+            detail = " (exit " + str(error.returncode) + ")" + converter_note(error.stderr)
+            raise ArtifactError("Chromium failed to render the HTML page" + detail) from error
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ArtifactError("Chromium failed to render the HTML page") from error
+        if not shot.is_file() or shot.stat().st_size == 0:
+            raise ArtifactError("Chromium completed without producing a screenshot")
+        raw_png = shot.read_bytes()
+        if len(raw_png) > max_output_bytes:
+            raise ArtifactError("Rendered page image exceeds the output byte limit")
+        try:
+            with pil_image.open(io.BytesIO(raw_png)) as verified:
+                if verified.width <= 0 or verified.height <= 0 or verified.width * verified.height > MAX_RENDER_PIXELS:
+                    raise ArtifactError("Rendered page dimensions exceed preview pixel bounds")
+                verified.verify()
+            with pil_image.open(io.BytesIO(raw_png)) as decoded:
+                width, height = decoded.width, decoded.height
+        except Exception as error:
+            if isinstance(error, (ArtifactError, Unavailable)):
+                raise
+            raise ArtifactError("Rendered PNG failed image verification") from error
+        out_image.parent.mkdir(parents=True, exist_ok=True)
+        with output_file(out_image) as target:
+            target.write_bytes(raw_png)
+    return {"pages": 1, "width": width, "height": height, "warnings": []}
 
 
 def render(path: Path, out: Path) -> dict[str, Any]:

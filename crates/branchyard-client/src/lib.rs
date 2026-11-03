@@ -56,6 +56,9 @@ pub mod storage_api;
 pub mod triggers;
 pub mod workspace_api;
 
+#[cfg(test)]
+mod keep_alive_tests;
+
 use std::fmt;
 use std::io::BufReader;
 use std::path::Path;
@@ -81,7 +84,8 @@ use api::{
     ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest, TaskList,
     TaskRequest, TextRequest, WaitRequest,
 };
-use http::{encode, Endpoint, Response};
+use branchyard_support::time::now_ms;
+use http::{encode, Endpoint, Reply};
 use sse::SseReader;
 use storage_api::{
     Ack, ArtifactList, CreateScratchRequest, Empty, LockState, ScratchList, ShareRequest,
@@ -166,13 +170,15 @@ pub fn new_key() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// A connection to one server. Cheap to clone.
+/// A connection to one server. Cheap to clone; clones share the server's
+/// idle connections, kept alive between requests.
 #[derive(Clone)]
 pub struct Client {
     endpoint: Endpoint,
     token: Arc<str>,
     tls: Option<Arc<ClientConfig>>,
     timeout: Duration,
+    pool: Arc<http::Pool>,
 }
 
 impl fmt::Debug for Client {
@@ -202,6 +208,7 @@ impl Client {
             token: token.into(),
             tls,
             timeout: Duration::from_secs(60),
+            pool: Arc::default(),
         })
     }
 
@@ -223,6 +230,8 @@ impl Client {
     /// Also trust the certificates in `path`, such as a private CA's.
     pub fn with_ca_file(mut self, path: impl AsRef<Path>) -> Result<Client, Error> {
         self.tls = Some(http::tls_config(Some(path.as_ref())).map_err(Error::Config)?);
+        // Connections made under the old trust settings are not reused.
+        self.pool = Arc::default();
         Ok(self)
     }
 
@@ -356,7 +365,7 @@ impl Client {
         body: Option<&[u8]>,
         extra: &[(&str, String)],
         timeout: Duration,
-    ) -> Result<Response, Error> {
+    ) -> Result<Reply, Error> {
         let content_type = body.is_some().then_some("application/json");
         self.call_raw(method, path, body, content_type, extra, timeout)
     }
@@ -372,7 +381,28 @@ impl Client {
         content_type: Option<&str>,
         extra: &[(&str, String)],
         timeout: Duration,
-    ) -> Result<Response, Error> {
+    ) -> Result<Reply, Error> {
+        let headers = self.request_headers(content_type, extra);
+        self.exchange(method, path, &headers, body, timeout, true)
+    }
+
+    /// A `GET` whose body the caller streams (an event feed). Its connection
+    /// closes with the stream, so it is never pooled.
+    fn call_stream(
+        &self,
+        path: &str,
+        extra: &[(&str, String)],
+        timeout: Duration,
+    ) -> Result<Reply, Error> {
+        let headers = self.request_headers(None, extra);
+        self.exchange("GET", path, &headers, None, timeout, false)
+    }
+
+    fn request_headers<'a>(
+        &self,
+        content_type: Option<&'a str>,
+        extra: &[(&'a str, String)],
+    ) -> Vec<(&'a str, String)> {
         let mut headers = vec![
             ("Authorization", format!("Bearer {}", self.token)),
             ("Accept", "application/json".to_owned()),
@@ -380,21 +410,47 @@ impl Client {
         if let Some(content_type) = content_type {
             headers.push(("Content-Type", content_type.to_owned()));
         }
-        headers.extend(extra.iter().cloned());
+        headers.extend(extra.iter().map(|(n, v)| (*n, v.clone())));
+        headers
+    }
+
+    /// Send one request and read its response head. With `keep_alive` the
+    /// request may use an idle pooled connection. A reused connection the
+    /// server had already closed fails before any response byte, and a `GET`
+    /// or `HEAD` is then sent once more on a fresh connection. Any other
+    /// method's error is returned as it is: a `POST` is never replayed.
+    fn exchange(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Option<&[u8]>,
+        timeout: Duration,
+        keep_alive: bool,
+    ) -> Result<Reply, Error> {
         let target = format!("{}{path}", self.endpoint.prefix);
+        let request = http::Request {
+            method,
+            target: &target,
+            headers,
+            body,
+        };
+        let pool = keep_alive.then(|| self.pool.clone());
+        if let Some(pool) = &pool {
+            if let Some(conn) = pool.checkout(timeout, now_ms()) {
+                match http::send_on(conn, &self.endpoint, &request, Some(pool.clone())) {
+                    Ok(reply) => return Ok(reply),
+                    Err(failed) if failed.before_response && matches!(method, "GET" | "HEAD") => {
+                        // The connection was closed while idle: try once more.
+                    }
+                    Err(failed) => return Err(self.transport(failed.error)),
+                }
+            }
+        }
         let stream = http::connect(&self.endpoint, self.tls.as_ref(), timeout)
             .map_err(|e| self.transport(e))?;
-        http::send(
-            stream,
-            &self.endpoint,
-            &http::Request {
-                method,
-                target: &target,
-                headers: &headers,
-                body,
-            },
-        )
-        .map_err(|e| self.transport(e))
+        http::send_on(http::Conn::new(stream), &self.endpoint, &request, pool)
+            .map_err(|failed| self.transport(failed.error))
     }
 
     /// `GET path`, returning its response headers and raw body (not JSON):
@@ -439,7 +495,7 @@ impl Client {
     }
 
     /// Read a JSON body, or the structured error.
-    fn decode<T: DeserializeOwned>(&self, response: Response) -> Result<T, Error> {
+    fn decode<T: DeserializeOwned>(&self, response: Reply) -> Result<T, Error> {
         let status = response.status;
         let body = response
             .read_body(MAX_BODY)
@@ -1047,16 +1103,16 @@ impl EventStream {
         }
         let accept = [("Accept", "text/event-stream".to_owned())];
         // The server sends a comment every 15 seconds.
-        let response =
-            self.repo
-                .client
-                .call("GET", &path, None, &accept, Duration::from_secs(45))?;
+        let response = self
+            .repo
+            .client
+            .call_stream(&path, &accept, Duration::from_secs(45))?;
         if response.status != 200 {
             let status = response.status;
             let body = response.read_body(64 * 1024).unwrap_or_default();
             return Err(api_error(status, &body));
         }
-        self.reader = Some(SseReader::new(BufReader::new(response.body)));
+        self.reader = Some(SseReader::new(BufReader::new(response.into_stream())));
         Ok(())
     }
 }

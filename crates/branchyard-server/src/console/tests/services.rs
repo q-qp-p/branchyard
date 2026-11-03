@@ -50,9 +50,10 @@ for number, line in enumerate(sys.stdin):
     print(json.dumps({'event':'result','result':{'conversation_id':session,'status':'SUCCESS','response':'Checked evidence','num_turns':number+1}}),flush=True)
 "#).unwrap();
         std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
-        app.config
-            .harness_commands
-            .insert("antigravity".into(), vec![agy.display().to_string()]);
+        app.config.harness_commands.insert(
+            "antigravity-stream-json".into(),
+            vec![agy.display().to_string()],
+        );
         let by = app.config.data_dir.parent().unwrap().join("fake-by");
         std::fs::write(
             &by,
@@ -549,7 +550,7 @@ async fn configured_remote_runtime_actions_keep_native_state_and_durable_results
     let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-provider"),json!({"name":"Denied","prompt":"say hello","harness":"codex-acp","access":"writer","provider":Provider::substrate(branchyard::SubstrateOptions::default())})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
     assert_eq!(error["error"]["code"], "provider_not_allowed");
-    let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-ack"),json!({"name":"Unapproved","prompt":"say hello","harness":"antigravity","access":"writer","unapproved_tools":true})).await;
+    let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-ack"),json!({"name":"Unapproved","prompt":"say hello","harness":"antigravity-stream-json","access":"writer","unapproved_tools":true})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
     assert_eq!(error["error"]["code"], "unapproved_tools_not_allowed");
 }
@@ -628,7 +629,7 @@ async fn agy_acknowledgment_is_explicit_and_still_needs_operator_permission() {
     let case = Case::with_ack("printf '{}'", false, true);
     let (wid, _) = case.writer().await;
     let f = &case.fixture;
-    let (status,operation)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("explicit-ack"),json!({"name":"AGY","prompt":"say hello","harness":"antigravity","access":"writer","unapproved_tools":true})).await;
+    let (status,operation)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("explicit-ack"),json!({"name":"AGY","prompt":"say hello","harness":"antigravity-stream-json","access":"writer","unapproved_tools":true})).await;
     assert_eq!(status, StatusCode::OK, "{operation}");
     let done = f.finished(operation["id"].as_str().unwrap());
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
@@ -668,7 +669,7 @@ async fn agy_acknowledgment_is_explicit_and_still_needs_operator_permission() {
             .turns,
         2
     );
-    let (status,refused)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("reviewer-cannot-bypass"),json!({"name":"Unenforced review","prompt":"Review only","harness":"antigravity","access":"reviewer","unapproved_tools":true})).await;
+    let (status,refused)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("reviewer-cannot-bypass"),json!({"name":"Unenforced review","prompt":"Review only","harness":"antigravity-stream-json","access":"reviewer","unapproved_tools":true})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
     assert_eq!(refused["error"]["code"], "unsupported");
 }

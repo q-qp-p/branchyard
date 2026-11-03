@@ -21,26 +21,18 @@ const BY: &str = env!("CARGO_BIN_EXE_by");
 const ANSWER_SCHEMA: &str = r#"{"type":"object","required":["answer"],"additionalProperties":false,"properties":{"answer":{"type":"string"}}}"#;
 
 /// A temporary directory holding repositories. Removed on drop.
-struct Dir(PathBuf);
+struct Dir(PathBuf, branchyard_testkit::Scratch);
 
 impl Dir {
     fn new() -> Dir {
         fake_agent!();
-        let dir = std::env::temp_dir().join(format!(
-            "branchyard-remote-test-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        if dir.exists() {
-            fs::remove_dir_all(&dir).unwrap();
-        }
-        fs::create_dir_all(&dir).unwrap();
-        Dir(fs::canonicalize(dir).unwrap())
+        let scratch = branchyard_testkit::Scratch::new("remote-test");
+        Dir(scratch.path().to_path_buf(), scratch)
     }
 
     /// A repository at `<dir>/<name>` with one commit on `main`.
     fn repo(&self, name: &str) -> PathBuf {
-        let root = self.0.join(name);
+        let root = self.1.join(name);
         fs::create_dir_all(&root).unwrap();
         for args in [
             &["init", "-q", "-b", "main"][..],
@@ -61,12 +53,6 @@ impl Dir {
             .unwrap()
             .success());
         root
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        branchyard_support::cleanup_dir(&self.0);
     }
 }
 
@@ -630,9 +616,10 @@ fn normalize(text: &str, root: &Path) -> String {
         } else {
             line.to_owned()
         };
-        // `by show`'s "created 10s ago" is relative too.
+        // `by show`'s "created 10s ago" is relative too, and "just now" until
+        // the first second passes: the two sides may print one each.
         let line = match line.trim_start().strip_prefix("created") {
-            Some(rest) if rest.ends_with(" ago") => {
+            Some(rest) if rest.ends_with(" ago") || rest.trim() == "just now" => {
                 let indent = line.len() - line.trim_start().len();
                 format!("{}created <age>", &line[..indent])
             }
@@ -648,6 +635,16 @@ fn normalize(text: &str, root: &Path) -> String {
         out.push('\n');
     }
     out
+}
+
+#[test]
+fn a_created_age_compares_equal_whichever_side_of_a_second_it_was_read() {
+    let root = Path::new("/r");
+    assert_eq!(
+        normalize("created     just now\n", root),
+        normalize("created     3s ago\n", root)
+    );
+    assert_eq!(normalize("created     3s ago\n", root), "created <age>\n");
 }
 
 /// A row's last field, when it is an age such as `now` or `12s`, becomes
@@ -819,7 +816,15 @@ fn remote_commands_print_what_local_ones_do() {
         "hello-alt",
         "--yes",
     ]);
-    same(&["run", "HANG", "--name", "slow", "--max-minutes", "0.005"]);
+    // A turn limit reaches the same state on both sides. A short duration
+    // can expire before one harness opens and after the other starts a turn.
+    same(&["run", "say hi", "--name", "slow", "--max-turns", "1"]);
+    let (_, r) = same(&["send", "slow", "this turn must not start"]);
+    assert!(
+        text(&r.stdout).contains("over budget: max_turns"),
+        "{}",
+        text(&r.stdout)
+    );
     same(&["run", "EXIT", "--name", "exits"]);
 
     // Two branches interleave in either order; compare line sets.

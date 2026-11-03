@@ -24,6 +24,72 @@ the image identity, observed resource limits, versions and source digests.
 Not done: browser acceptance, GKE renderer qualification, model turns or
 production load testing.
 
+Status, 30 October 2026: hermetic. A table preview warned "Truncated columns to
+100" for every XLSX sheet, however narrow, because read-only rows were padded to
+101 cells before the check. `tests/test_artifact_previews.py` now covers a
+three-column workbook, a styled empty cell and a value in column 150, a value in
+column 101, a stored dimension that understates the data, and CSV rows padded
+with empty fields. With Python 3.12.3 and openpyxl 3.1.5 it failed 5 tests on
+the module before the change and passed 19, with 1 skipped, after it. Not done:
+other spreadsheet writers, and a live renderer on GCE or GKE.
+
+Status, 1 November 2026: live for the default Bubblewrap backend; hermetic for
+the guards. A console tester saw every DOCX and PPTX preview fail with "LibreOffice
+completed without producing the requested PDF" while CSV and XLSX tables
+rendered. The cause: the namespace set `SAL_USE_VCLPLUGIN=gen`, LibreOffice's X11
+backend, which overrides `--headless`, found no display and exited 0 without a
+PDF (`X11 error: Can't open display`); the same command with `svp` converts.
+The namespace now sets `svp`. Run on this machine (Linux 6.18.44) with
+Bubblewrap 0.9.0, LibreOffice 24.2.7.2, Poppler `pdftoppm` 24.02.0, Python 3.13.18,
+pypdf 6.21.4 and Pillow 13.0.0, a locally built `by serve --app --knowledge` with
+`BRANCHYARD_PREVIEW_BWRAP` and `BRANCHYARD_PREVIEW_PYTHON` set returned, for
+workspace outputs a fake ACP agent wrote, `passed` for a CSV and an XLSX table, for a
+DOCX one 1583 by 2048 page and for a PPTX three slides (first slide 2048 by 1536), and
+both page images fetched as PNG. The
+[Bubblewrap record](evidence/console-document-bubblewrap-2026-11-01.json) holds the
+failing command, LibreOffice's stderr and these responses. Hermetic: the unit test
+on the namespace arguments and a service test with a recording fake `bwrap` assert
+`SAL_USE_VCLPLUGIN svp`, the cleared environment, the unshared network and the
+private `/tmp` and home; a Python test with a fake converter asserts that its
+diagnostic reaches the failure message. No test needs LibreOffice. Not done: the
+hosts with restricted user namespaces (Docker backend) were not rerun, no browser
+acceptance, no model turns, and no other LibreOffice version.
+
+Status, 1 November 2026: hermetic component coverage passes lazy stacked pages,
+slide buttons and arrow keys, folded thumbnails at 390 px, sheet tabs, merged
+cells, column widths, frozen headers and formula tooltips. Live converter checks
+on generated fixtures used Bubblewrap 0.9.0, LibreOffice 24.2.7.2, Poppler
+24.02.0 and Python 3.13.18: every page of a three-page DOCX and every slide of a
+three-slide PPTX rendered through the server launcher; the selected XLSX Summary
+sheet produced two print pages. The [dated Office viewer record](evidence/console-office-viewer-2026-11-01.json)
+contains these responses. `python3 tools/check.py --fast` passed with the branch
+scratch directory as the Git ceiling. The complete server test suite and
+Clippy with warnings denied passed, including the default console browser's
+unavailable-renderer state, original downloads and viewer acceptance. The
+real-converter console browser also passed in Chromium 153.0.8010.12 through
+Playwright 1.63.0 at 1440 and 390 px: page/slide navigation, current page tracking,
+formatted formula values, merged cells, row paging, selected-sheet print view,
+original download bytes, viewer acceptance and Escape back. Not done: a live
+model, a real phone, Safari, Firefox or a screen reader; unusual Excel custom
+format codes rely on native print view for full display fidelity.
+
+Status, 1 November 2026: live for the Bubblewrap backend; hermetic for the
+guards. An HTML output previews as a page image like a DOCX does. The service
+runs headless Chromium (`BRANCHYARD_PREVIEW_CHROMIUM`, else the one under
+`PLAYWRIGHT_BROWSERS_PATH` or `/opt/pw-browsers`; nothing is downloaded) inside
+the converter's namespace: no network, a private home and `/tmp`, the source
+read-only and the browser's install directory bound read-only for HTML only.
+On this machine (Linux 6.18.44, Bubblewrap 0.9.0, Chromium 153.0.8010.12, Python
+3.13) a workspace output with inline CSS and JavaScript answered `passed` with
+`pages: 1`, and the console showed its 1280 by 1024 image. Chromium crashed
+(exit -5) under the helper's 2 GiB address-space limit, so the launcher applies
+none to an HTML source and keeps the CPU, file-size, descriptor and 45-second
+limits. "Open" runs the page in a sandboxed iframe, [below](#run-an-html-output).
+Hermetic: `tests/test_artifact_previews.py` with a fake Chromium, the Rust
+namespace-argument and service tests with a fake `bwrap`. Not done: the Docker
+backend (its image has no Chromium), pages that need a network, a page taller
+than one screen, other Chromium versions.
+
 ## Open a preview
 
 An authorized client requests:
@@ -55,17 +121,46 @@ so an upload form can show the server's limits before sending a document.
 Query options apply to both requests:
 
 - `view=auto`, `table` or `pages`. Auto selects tables for CSV/XLSX and pages
-  for documents and raster images.
+  for documents, HTML and raster images.
 - `page=1` selects a document page or presentation slide, starting at one.
+  The first answer includes `pages`; request each later page with
+  `view=pages&page=N`. At most <!-- fact:artifact_preview.page_cap -->64<!-- /fact --> pages are available. Longer documents expose
+  their first <!-- fact:artifact_preview.page_cap -->64<!-- /fact --> pages and warn to download the original for the remaining
+  pages; requesting any later page gives a clear page-limit error.
 - `sheet=NAME` selects an XLSX sheet.
-- `offset=0&limit=100` selects table rows. The maximum limit is 500 and maximum
+- `offset=0&limit=200` selects table rows in the document viewer. The API default
+  is 100. The maximum limit is 500 and maximum
   offset is 100000. Table cells remain inert, including formula-looking text.
 
 The table response includes columns, rows, selected sheet, next offset and
-warnings. The page response includes a PNG basename, dimensions, selected page,
+warnings. XLSX also includes `column_widths` in pixels, one-based absolute
+`merges` (`min_row`, `max_row`, `min_col`, `max_col`), `frozen_rows`, and
+`header_details`/`cell_details` with `formatted`, `formula` and `number_format`.
+Row one supplies the table header; `offset` counts subsequent rows. The grid
+uses the saved number/date formats for display and exposes formulas on hover.
+Formula values come from the workbook's stored calculation cache, never from
+executing a formula in the browser. If requested cells lack cached values, the
+helper attempts one private LibreOffice recalculation with its hardened profile,
+a 20-second timeout and the existing sandbox bounds. It fills only missing
+cached values and preserves original formulas, layout and existing cached
+results. If recalculation is unavailable or fails, missing values remain blank
+with a warning; download and recalculate the original to populate them. Common numeric,
+percentage, currency and date/time formats are supported; unusual custom format
+codes can be inspected in the metadata and the native print view preserves
+LibreOffice's layout.
+
+XLSX print view uses `view=pages&sheet=NAME`. The helper stages a private copy
+with only that sheet visible before invoking the same sandboxed LibreOffice
+and Poppler path. The source workbook is never rewritten. The page response includes a PNG basename, dimensions, selected page,
 total page count and warnings. Use the same options when requesting its image.
-CSV and XLSX values are shown without executing formulas. XLSX print preview,
-DOCX pages and PPTX slides use the native rendering helper; PDF and raster
+A table shows at most 100 columns. The warning "Truncated columns to 100"
+means a cell beyond column 100 holds a value. Empty cells there do not count:
+trailing empty CSV fields, or workbook cells that carry only a style. An XLSX
+sheet is read row by row at each row's own width, so a stored dimension that
+understates the used range hides nothing.
+CSV and XLSX values are shown without executing formulas in the grid. XLSX print preview,
+DOCX pages and PPTX slides use the native rendering helper; an HTML page is one
+screenshot (1280 by 1024) from headless Chromium in the same namespace; PDF and raster
 images use the same bounded page response.
 
 Table JSON has a 2 MiB encoded response budget. A wide table can return fewer
@@ -73,10 +168,32 @@ rows than `limit`; continue at `next_offset`. The response includes a warning,
 and cell strings remain unchanged. Plain text and Markdown use an inert text
 response. JSON-only modes need no image output directory from the helper.
 
+## Run an HTML output
+
+The page image shows what a page looks like; the page itself runs only in the
+console's sandboxed iframe. An authorized client posts
+`POST /v1/workspaces/{workspace}/artifacts/{artifact}/frame` (the artifact's
+read grant, an `.html` or `.htm` name, at most 8 MiB) and receives
+`{"path": "/app/frame/{ticket}"}`. The path needs no bearer token, since an
+iframe cannot send one; the ticket is a random capability held in memory for ten
+minutes, and each request rechecks the caller's grant and membership. It answers
+`Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src
+'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors
+'self'`, `private, no-store` and `nosniff`, and no `X-Frame-Options`; the rest
+of the console keeps `DENY`. The console frames it with `sandbox="allow-scripts"`
+and no `allow-same-origin`. See the [security model](companion.md#security-model).
+
 Missing tools produce `preview_unavailable` with setup guidance. Busy converters
 produce `preview_busy` with a retry interval. Conversion timeouts produce
 `preview_timeout`. These failures preserve the original download. They never
 enable an unsandboxed fallback or install software.
+
+The default Python regression suite uses fake converters. The optional direct
+native-converter suite in `tests/test_artifact_previews.py` runs only with
+`BRANCHYARD_TEST_LIVE_PREVIEWS=1`; it is separate from the hermetic gate. The
+console browser test opts into its real converter with the documented
+`BRANCHYARD_PREVIEW_BWRAP` and `BRANCHYARD_PREVIEW_PYTHON` settings; without those
+settings it selects an unavailable renderer and asserts the explanatory state.
 
 ## Prepare the rendering server
 
@@ -104,6 +221,17 @@ loader configuration, `/etc/libreoffice` when installed, and the selected Python
 installation are available.
 The helper disables Office macros and external updates; OS network isolation
 holds even if document content attempts an external fetch.
+
+The cleared environment holds only `HOME`, `TMPDIR`, `PATH`, `LANG`, `LC_ALL`,
+`PYTHONDONTWRITEBYTECODE` and `SAL_USE_VCLPLUGIN=svp`. `svp` is LibreOffice's
+display-less drawing backend, the one headless conversion needs. The `gen`
+backend is its X11 backend: it overrides `--headless`, finds no display in the
+empty namespace and exits 0 without writing a PDF, which a preview reports as
+"LibreOffice completed without producing the requested PDF". Selecting `svp`
+adds no binding, no socket and no capability: it only chooses a code path inside
+the already isolated process, and no `DISPLAY` or X11 socket is ever provided.
+When a converter exits cleanly without a PDF, the failure message now quotes
+its first diagnostic line.
 
 ## Container rendering on hosts with restricted user namespaces
 
@@ -176,13 +304,23 @@ pipes. Timeout and normal exit tear down its process group. A disconnected reque
 retains its conversion slot until the bounded conversion and cleanup complete.
 The format helper also checks archives, page counts, dimensions and table sizes.
 
-Successful derivatives are published by atomic directory rename. Their key binds
+Successful derivatives are published by atomic directory rename. Each page and
+selected sheet has its own cache entry; a page image request reuses the metadata
+request's entry when its options match. Their key binds
 the authenticated tenant, source identity and bytes, format, options, embedded
 renderer payload, package version and Python runtime, or the Docker image content
 ID and its selected interpreter. Failed or unavailable
 conversions are not cached. Cache entries are private, expire after one day,
 and are evicted before exceeding the entry/byte budget. Each rendering server
 owns its derivative cache; the cache is not a source of artifact authority.
+
+For shared Cargo targets in multiple worktrees, also touch
+`crates/branchyard-provision/src/skills.rs` when the artifact Python helpers
+change: `branchyard_setup::skills` re-exports that module's embedded toolkit.
+Touching only the setup build script refreshes its plugin bundle, not this
+separate embed. The server's helper-materialization test compares the embedded
+native and preview modules with the canonical SDK sources so a stale embed
+fails before browser checks.
 
 Servers sharing a cache root use one short cross-process file lock for lookup,
 eviction and publication. Conversion runs outside that lock. Image bytes are

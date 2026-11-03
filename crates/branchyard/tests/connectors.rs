@@ -347,8 +347,10 @@ fn rules_in(settings: &serde_json::Value, list: &str) -> Vec<String> {
         .collect()
 }
 
-/// A delegated, granted turn on Antigravity, whose driver has no session
-/// channel: the delegation server goes into its `mcp_config.json`, the
+/// A delegated, granted turn on Antigravity's headless stream profile,
+/// whose driver has no session channel (its default, `agy acp`, takes the
+/// servers and instructions on the session and asks before each tool, so
+/// the profile is named): the delegation server goes into its `mcp_config.json`, the
 /// skill and the connectors' line into its `GEMINI.md`, the gateway's
 /// variables onto its process, and the branch's policy (`full`) becomes the
 /// CLI's permission rules, recorded with the turn. The command is a shell
@@ -362,7 +364,7 @@ fn antigravity_gets_its_grant_the_delegation_tools_and_its_policy_as_rules() {
     let branch = f
         .task("go")
         .options(TaskOptions {
-            harness: Some("antigravity".into()),
+            harness: Some("antigravity-stream-json".into()),
             command: Some(vec!["/bin/sh".into(), "-c".into(), script.into()]),
             unapproved_tools: true,
             delegation: Some(Envelope::default()),

@@ -4,8 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use branchyard::skills::Layer;
 use branchyard::{
-    Activity, BranchInfo, BranchStatus, CandidateInfo, Event, HarnessInfo, RecordedEvent,
+    Activity, BranchInfo, BranchStatus, CandidateInfo, Event, HarnessInfo, RecordedEvent, SkillSet,
     TurnOutcome, Usage,
 };
 use serde_json::Value;
@@ -442,6 +443,30 @@ pub fn workspace_line(report: &branchyard::WorkspaceReport, style: Style) -> Str
     style.paint(tone, &line)
 }
 
+/// A turn's skills in its `provisioned:` line: the set's digest, how many
+/// built-in skills and each custom one's label, and the repository skills
+/// withheld and why. Nothing for an empty record.
+fn skills_parts(skills: &SkillSet) -> Vec<String> {
+    let mut parts = Vec::new();
+    if !skills.entries.is_empty() {
+        let (built_in, custom): (Vec<_>, Vec<_>) = skills
+            .entries
+            .iter()
+            .partition(|entry| entry.layer == Layer::BuiltIn);
+        let mut named = vec![format!("{} built-in", built_in.len())];
+        named.extend(custom.iter().map(|entry| entry.label()));
+        parts.push(format!(
+            "skills {} ({})",
+            skills.set.get(..12).unwrap_or(&skills.set),
+            named.join(", ")
+        ));
+    }
+    if let Some(withheld) = &skills.withheld {
+        parts.push(format!("repository skills withheld: {}", withheld.reason));
+    }
+    parts
+}
+
 /// One line for recorded activity. Message deltas are text, not lines, and
 /// return `None`.
 pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
@@ -468,6 +493,9 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
                 candidate_text(Some(candidate))
             ),
         ),
+        Activity::TurnCost { cost_usd } => {
+            style.paint(Tone::Dim, &format!("turn cost {}", usd(*cost_usd)))
+        }
         Activity::Status(status) => {
             let (text, tone) = status_text(status);
             style.paint(tone, &format!("status: {text}"))
@@ -496,6 +524,7 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             unused_secrets,
             connectors,
             knowledge,
+            skills,
             managed,
             permissions,
         } => {
@@ -581,6 +610,7 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
                     exposed.join(", ")
                 ));
             }
+            parts.extend(skills_parts(skills));
             style.paint(Tone::Dim, &format!("provisioned: {}", parts.join("; ")))
         }
         Activity::Steered { by, text, .. } => style.paint(
@@ -1090,13 +1120,27 @@ pub fn status_text(status: &BranchStatus) -> (String, Tone) {
     }
 }
 
-/// [`status_text`], with a `stalled` marker while the branch's running turn
-/// has had no harness activity for its stall window.
+/// [`status_text`], with what a running turn is parked on when it waits
+/// for an approval (`waiting for approval: …`), or else a `stalled` marker
+/// while it has had no harness activity for its stall window. Before
+/// either, a running turn whose engine is no longer heard from says so
+/// (`running (no heartbeat for 14s)`, `running (engine lost: …)`).
 pub fn branch_status_text(info: &BranchInfo) -> (String, Tone) {
     let (text, tone) = status_text(&info.status);
-    match info.stalled {
-        true => (format!("{text} (stalled)"), Tone::Yellow),
-        false => (text, tone),
+    let silent = info
+        .liveness
+        .as_ref()
+        .and_then(|l| l.describe(branchyard_support::time::now_ms()));
+    if let Some(silent) = silent {
+        return (format!("{text} ({silent})"), Tone::Yellow);
+    }
+    match (&info.awaiting, info.stalled) {
+        (Some(awaiting), _) => (
+            format!("waiting for approval: {}", awaiting.about),
+            Tone::Yellow,
+        ),
+        (None, true) => (format!("{text} (stalled)"), Tone::Yellow),
+        (None, false) => (text, tone),
     }
 }
 
@@ -2106,6 +2150,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_running_branch_whose_engine_is_silent_or_lost_says_so() {
+        let now = branchyard_support::time::now_ms();
+        let mut branch = info("b", None);
+        branch.status = BranchStatus::Running;
+        branch.stalled = true;
+        let silent = |state, heard_ms, reason: Option<&str>| branchyard::Liveness {
+            state,
+            heard_ms,
+            known_until_ms: heard_ms + 30_000,
+            reason: reason.map(str::to_owned),
+        };
+        branch.liveness = Some(silent(branchyard::LivenessState::Live, now, None));
+        assert_eq!(branch_status_text(&branch).0, "running (stalled)");
+        branch.liveness = Some(silent(
+            branchyard::LivenessState::Unknown,
+            now - 14_500,
+            None,
+        ));
+        let (text, tone) = branch_status_text(&branch);
+        assert_eq!(text, "running (no heartbeat for 14s)");
+        assert_eq!(tone, Tone::Yellow);
+        branch.liveness = Some(silent(
+            branchyard::LivenessState::Lost,
+            now - 40_000,
+            Some("its engine (pid 7) is no longer running"),
+        ));
+        assert_eq!(
+            branch_status_text(&branch).0,
+            "running (engine lost: its engine (pid 7) is no longer running)"
+        );
+    }
+
+    #[test]
     fn blank_handoff_note_still_displays_frozen_evidence() {
         let mut message: branchyard::Message = serde_json::from_value(serde_json::json!({
             "id": 1, "from": "lead", "to": "writer", "kind": "answer",
@@ -2172,6 +2249,17 @@ mod tests {
 
     const PLAIN: Style = Style::PLAIN;
 
+    /// A turn's own cost is a line of `by log`, and an object of
+    /// `by log --json`.
+    #[test]
+    fn a_turns_cost_is_a_line_of_its_own() {
+        let activity = Activity::TurnCost { cost_usd: 0.03 };
+        assert_eq!(activity_line(&activity, PLAIN).unwrap(), "turn cost $0.03");
+        let recorded = crate::json::recorded(&branchyard::RecordedEvent { at_ms: 7, activity });
+        assert_eq!(recorded["activity"], "turn_cost");
+        assert_eq!(recorded["cost_usd"], 0.03);
+    }
+
     #[test]
     fn sandbox_events_say_which_path_a_turn_took() {
         use branchyard::{SandboxEvent, SandboxOrigin, SnapshotMethod};
@@ -2185,6 +2273,7 @@ mod tests {
                     turn: 3,
                     method: SnapshotMethod::LiveBranch,
                 },
+                placed: None,
             }),
             "sandbox: branched from a's checkpoint 3 (microsandbox live branch)"
         );
@@ -2195,6 +2284,7 @@ mod tests {
                 origin: SandboxOrigin::Fresh {
                     reason: Some("provider can't branch: it declares neither".into()),
                 },
+                placed: None,
             }),
             "sandbox: fresh (provider can't branch: it declares neither)"
         );
@@ -2240,6 +2330,7 @@ mod tests {
                 unused_secrets: Vec::new(),
                 connectors: Vec::new(),
                 knowledge: Vec::new(),
+                skills: SkillSet::default(),
                 managed: None,
                 permissions: None,
             };
@@ -2280,6 +2371,7 @@ mod tests {
             unused_secrets: Vec::new(),
             connectors: Vec::new(),
             knowledge: Vec::new(),
+            skills: SkillSet::default(),
             managed: None,
             permissions: None,
         };
@@ -2287,6 +2379,67 @@ mod tests {
             activity_line(&provisioned, PLAIN).unwrap(),
             "provisioned: auth zai; set OPENAI_API_KEY, OPENAI_BASE_URL; ZAI_API_KEY (as \
              OPENAI_API_KEY), GH_TOKEN in the environment of its tool commands"
+        );
+    }
+
+    #[test]
+    fn a_turns_skills_name_their_set_and_the_repository_skills_withheld() {
+        use branchyard::skills::SkillEntry;
+        let entry = |layer, name: &str| SkillEntry {
+            layer,
+            name: name.into(),
+            digest: "0".repeat(64),
+        };
+        let provisioned = |skills| Activity::Provisioned {
+            auth: None,
+            files: Vec::new(),
+            env: vec!["A".into()],
+            secrets: Vec::new(),
+            unused_secrets: Vec::new(),
+            connectors: Vec::new(),
+            knowledge: Vec::new(),
+            skills,
+            managed: None,
+            permissions: None,
+        };
+        let staged = SkillSet {
+            set: "3f2a9c1d0e4b5a6978".into(),
+            entries: vec![
+                entry(Layer::BuiltIn, "pdf"),
+                entry(Layer::BuiltIn, "docx"),
+                entry(Layer::Repository, "style-guide"),
+            ],
+            withheld: None,
+        };
+        assert_eq!(
+            activity_line(&provisioned(staged.clone()), PLAIN).unwrap(),
+            "provisioned: set A; skills 3f2a9c1d0e4b (2 built-in, repository:style-guide)"
+        );
+        let withheld = SkillSet {
+            entries: staged.entries[..2].to_vec(),
+            withheld: Some(branchyard::WithheldSkills {
+                entries: vec![entry(Layer::Repository, "style-guide")],
+                reason: "you have not trusted this repository's skills".into(),
+            }),
+            ..staged
+        };
+        assert_eq!(
+            activity_line(&provisioned(withheld.clone()), PLAIN).unwrap(),
+            "provisioned: set A; skills 3f2a9c1d0e4b (2 built-in); repository skills withheld: \
+             you have not trusted this repository's skills"
+        );
+        let recorded = crate::json::recorded(&RecordedEvent {
+            at_ms: 1,
+            activity: provisioned(withheld),
+        });
+        assert_eq!(
+            recorded["skills"]["withheld"]["reason"],
+            "you have not trusted this repository's skills"
+        );
+        assert_eq!(recorded["skills"]["entries"][0]["layer"], "built_in");
+        assert_eq!(
+            activity_line(&provisioned(SkillSet::default()), PLAIN).unwrap(),
+            "provisioned: set A"
         );
     }
 
@@ -2368,6 +2521,8 @@ mod tests {
             cost_usd: None,
             created_at: 10_000,
             stalled: false,
+            awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: "local".into(),

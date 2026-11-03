@@ -13,6 +13,8 @@ import inspect
 import json
 import os
 import re
+import select
+import socket
 import sys
 import tempfile
 import threading
@@ -114,6 +116,13 @@ class Fake:
         self.hold: float = 0.0
         self.stream_opens: list[int | None] = []
         self.lock = threading.Lock()
+        # `idle_close`: close each connection after its answer, with no Connection header.
+        # `hang_up[(method, path)]`: how many requests to read and then close without an answer.
+        # `stall`: paths whose request waits on `gate` (bounded) and is then closed unanswered.
+        self.idle_close = False
+        self.hang_up: dict[tuple[str, str], int] = {}
+        self.stall: set[str] = set()
+        self.gate = threading.Event()
 
     def answer(self, method: str, path: str, *answers: tuple[int, Any]) -> None:
         self.routes[(method, path)] = deque(answers)
@@ -171,11 +180,24 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == f"{REPO}/events/stream":
             self._stream(url.query, headers)
             return
+        with self.fake.lock:
+            hang_up = self.fake.hang_up.get((method, url.path), 0)
+            if hang_up:
+                self.fake.hang_up[(method, url.path)] = hang_up - 1
+        if hang_up:
+            self.close_connection = True
+            return
+        if url.path in self.fake.stall:
+            self.fake.gate.wait(30)
+            self.close_connection = True
+            return
         status, answer = self.fake.response(method, url.path, body)
         extra: dict[str, str] = {}
         if isinstance(answer, tuple):
             answer, extra = answer
         self._send(status, answer, extra)
+        if self.fake.idle_close:
+            self.close_connection = True
 
     def _stream(self, query: str, headers: dict[str, str]) -> None:
         cursor = headers.get("last-event-id")
@@ -219,11 +241,33 @@ class Handler(BaseHTTPRequestHandler):
         self._handle("DELETE")
 
 
+class Tracking(ThreadingHTTPServer):
+    """A threaded server that keeps the connections it accepts: a test counts
+    them, and `ServerCase.stop` closes the ones still open, as a stopped
+    server's sockets go."""
+
+    def __init__(self, address: tuple[str, int], handler: type) -> None:
+        self.accepted: list[socket.socket] = []
+        super().__init__(address, handler)
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        conn, addr = super().get_request()
+        self.accepted.append(conn)
+        return conn, addr
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        # A client that closes a kept-alive connection while a request is being read is what
+        # the tests do on purpose; that is not an error to print.
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class ServerCase(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = Fake()
         handler = type("H", (Handler,), {"fake": self.fake})
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.server = Tracking(("127.0.0.1", 0), handler)
         self.server.daemon_threads = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -237,8 +281,14 @@ class ServerCase(unittest.TestCase):
             self.stopped = True
             self.server.shutdown()
             self.server.server_close()
+            # A kept-alive connection outlives `shutdown`; close it as a stopped server's sockets go.
+            for conn in self.server.accepted:
+                with contextlib.suppress(OSError):
+                    conn.shutdown(socket.SHUT_RDWR)
+                conn.close()
 
     def tearDown(self) -> None:
+        self.client.close()
         self.stop()
 
     def op(self, id: str, state: str, branch: str = "b", cursor: int = 0, end: int | None = None, **extra: Any) -> dict:
@@ -772,6 +822,43 @@ class WorkspaceRequests(unittest.TestCase):
         self.assertEqual(result, [project])
         self.assertIsInstance(result[0], bc.Record)
         self.assert_request(lambda: c.project("p /one"), project, "GET", "/v1/projects/p%20%2Fone", query=None)
+        output = {
+            "kind": "output",
+            "branch": "analyst",
+            "waits": "delivery",
+            "since_ms": 7000,
+            "status": {"state": "ready"},
+            "workspace": "w1",
+            "workspace_title": "Backlog review",
+            "session": "s1",
+            "session_name": "Analyst",
+            "output": {"id": "a1", "name": "backlog.csv", "media_type": "text/csv", "size": 42, "turn": 1},
+        }
+        stopped = {
+            "kind": "session",
+            "branch": "reviewer",
+            "waits": "nobody",
+            "status": {"state": "failed", "reason": "harness exited"},
+            "workspace": "w1",
+            "workspace_title": "Backlog review",
+            "session": "s2",
+            "session_name": "Reviewer",
+            "phase": "Failed: harness exited",
+        }
+        decisions = self.assert_request(
+            lambda: c.project_decisions("p /one"),
+            {"decisions": [output, stopped]},
+            "GET",
+            "/v1/projects/p%20%2Fone/decisions",
+            query=None,
+        )
+        self.assertIsInstance(decisions[0], bc.Decision)
+        self.assertEqual(
+            [(d.kind, d.waits, d.session) for d in decisions],
+            [("output", "delivery", "s1"), ("session", "nobody", "s2")],
+        )
+        self.assertEqual(decisions[0].output["name"], "backlog.csv")
+        self.assertEqual(decisions[1].phase, "Failed: harness exited")
         workspace = {"id": "w1", "revision": 0, "sources": [], "accepted_deliverables": []}
         self.assert_request(
             lambda: c.workspaces("p & one"),
@@ -869,6 +956,43 @@ class WorkspaceRequests(unittest.TestCase):
             "/v1/workspaces/w1/sessions",
             {"name": "Writer", "prompt": "Draft", "harness": "agy", "access": "writer", "unapproved_tools": False},
             key="no-ack",
+            query=None,
+        )
+
+    def test_execution_presets_are_discovered_and_named_on_session_start(self):
+        c = self.client
+        offered = {"required": True, "presets": [{"id": "substrate-gke", "can_start": True}]}
+        listed = self.assert_request(
+            lambda: c.execution_presets("w /1"),
+            offered,
+            "GET",
+            "/v1/execution-presets",
+            query={"workspace": "w /1"},
+        )
+        self.assertTrue(listed.required)
+        self.assertEqual(listed.presets[0]["id"], "substrate-gke")
+        self.assert_request(
+            c.execution_presets,
+            {"required": False, "presets": []},
+            "GET",
+            "/v1/execution-presets",
+            query={"workspace": None},
+        )
+        self.assert_request(
+            lambda: c.start_workspace_session(
+                "w1", "Analyst", "Summarise", harness="antigravity", preset="substrate-gke", key="preset"
+            ),
+            self.operation(),
+            "POST",
+            "/v1/workspaces/w1/sessions",
+            {
+                "name": "Analyst",
+                "prompt": "Summarise",
+                "harness": "antigravity",
+                "preset": "substrate-gke",
+                "access": "writer",
+            },
+            key="preset",
             query=None,
         )
 
@@ -1004,7 +1128,12 @@ class WorkspaceRequests(unittest.TestCase):
             "/v1/workspaces/w1/sources",
             original,
             key="upload",
-            headers={"X-Source-Title": "Quarterly source", "X-Workspace-Revision": "7", "Content-Type": "text/csv"},
+            headers={
+                "X-Source-Title-Encoded": "UTF-8''Quarterly%20source",
+                "X-Source-Title": "Quarterly source",
+                "X-Workspace-Revision": "7",
+                "Content-Type": "text/csv",
+            },
         )
         self.assertEqual(result.digest, "abc")
         self.assertEqual(
@@ -1198,6 +1327,37 @@ class WorkspaceRequests(unittest.TestCase):
 
 
 class WorkspaceTransport(ServerCase):
+    def test_a_unicode_source_title_travels_encoded_beside_an_ascii_fallback(self):
+        source = "/v1/workspaces/w1/sources"
+        self.fake.always("POST", source, 200, {"id": "src1"})
+        titles = {
+            "Étude d'été (T3) — 季度报告 📊.csv": (
+                "UTF-8''%C3%89tude%20d%27%C3%A9t%C3%A9%20%28T3%29%20%E2%80%94%20"
+                "%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A%20%F0%9F%93%8A.csv",
+                "_tude d'_t_ (T3) _ ____ _.csv",
+            ),
+            'reports/Q3\\Board "draft"*.txt': (
+                "UTF-8''reports%2FQ3%5CBoard%20%22draft%22%2A.txt",
+                'reports/Q3\\Board "draft"*.txt',
+            ),
+            "attr-char !#$&+^`|~._ stays": (
+                "UTF-8''attr-char%20!#$&+^`|~._%20stays",
+                "attr-char !#$&+^`|~._ stays",
+            ),
+        }
+        for title in titles:
+            self.client.upload_workspace_source("w1", b"x", title, revision=1)
+        for (_, _, headers, _), (encoded, fallback) in zip(self.requests("POST", source), titles.values(), strict=True):
+            self.assertEqual(headers["x-source-title-encoded"], encoded)
+            self.assertEqual(headers["x-source-title"], fallback)
+
+    def test_a_refused_source_title_is_an_invalid_request(self):
+        source = "/v1/workspaces/w1/sources"
+        self.fake.answer("POST", source, (400, _error("invalid_source_title", "decodes to 513 bytes")))
+        with self.assertRaises(bc.InvalidRequestError) as raised:
+            self.client.upload_workspace_source("w1", b"x", "a" * 513, revision=1)
+        self.assertEqual(raised.exception.code, "invalid_source_title")
+
     def test_source_upload_download_and_revision_delete_use_authenticated_http(self):
         source = "/v1/workspaces/w1/sources"
         original = b"name,value\noriginal,\xff\n"
@@ -1208,6 +1368,7 @@ class WorkspaceTransport(ServerCase):
         ((_, _, headers, body),) = self.requests("POST", source)
         self.assertEqual(body, original)
         self.assertEqual(headers["authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(headers["x-source-title-encoded"], "UTF-8''Input.csv")
         self.assertEqual(headers["x-source-title"], "Input.csv")
         self.assertEqual(headers["x-workspace-revision"], "3")
         self.assertEqual(headers["content-type"], "text/csv")
@@ -1326,23 +1487,27 @@ class Errors(ServerCase):
             self.app.exists("b")
 
     def test_a_refused_connection_says_what_to_start(self):
-        # What urllib raises when nothing listens at the address; no port is freed to get it.
-        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
-        with mock.patch("urllib.request.urlopen", side_effect=refused):
+        # What the connection raises when nothing listens at the address; no port is freed to get it.
+        refused = ConnectionRefusedError(111, "Connection refused")
+        with mock.patch("http.client.HTTPConnection.connect", side_effect=refused):
             with self.assertRaises(bc.TransportError) as raised:
                 self.app.branches()
             message = raised.exception.message
             self.assertIn(f"GET {self.url}/v1/repos/app/branches", message)
             self.assertIn("Nothing is listening there. to fix: start a server with `by serve --repo app=.`", message)
             self.assertIn('Client.local(".")', message)
-            # The stream says the same when it cannot connect.
+        # The stream goes through urllib, which says the same when it cannot connect.
+        unreachable = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        with mock.patch("urllib.request.urlopen", side_effect=unreachable):
             with self.assertRaises(bc.TransportError) as streamed:
                 for _ in self.app.stream(0, read_timeout=1.0, max_failures=0):
                     pass
             self.assertIn("to fix: start a server", streamed.exception.message)
         # Other failures to connect keep their own words, with no advice that does not apply.
-        timed_out = urllib.error.URLError(TimeoutError("timed out"))
-        with mock.patch("urllib.request.urlopen", side_effect=timed_out), self.assertRaises(bc.TransportError) as other:
+        with (
+            mock.patch("http.client.HTTPConnection.connect", side_effect=TimeoutError("timed out")),
+            self.assertRaises(bc.TransportError) as other,
+        ):
             self.app.branches()
         self.assertNotIn("to fix", other.exception.message)
 
@@ -1375,6 +1540,184 @@ class Errors(ServerCase):
             bc.Client("http://x")
         with self.assertRaises(ValueError):
             bc.Client("http://x", "t", ca_file="/dev/null")
+
+
+class KeepAlive(ServerCase):
+    """`Client.request` over one kept-alive connection per thread: reuse, what
+    a server's close costs, what is sent again, the per-call timeout, proxies
+    and redirects."""
+
+    PROXY_VARIABLES = frozenset({"http_proxy", "https_proxy", "all_proxy", "no_proxy"})
+
+    def setUp(self) -> None:
+        # A proxy in the environment would send these calls to urllib's proxy; none may apply here.
+        environ = {k: v for k, v in os.environ.items() if k.lower() not in self.PROXY_VARIABLES}
+        patch = mock.patch.dict(os.environ, environ, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        super().setUp()
+
+    def test_sequential_calls_share_one_connection_and_send_the_same_headers(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        for _ in range(3):
+            self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 1)
+        headers = self.fake.requests[-1][2]
+        self.assertEqual(headers["authorization"], f"Bearer {TOKEN}")
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(headers["user-agent"], "branchyard-client-python")
+        self.assertNotIn("connection", headers)
+
+    def test_a_response_that_closes_the_connection_is_not_reused(self):
+        path = f"{REPO}/branches/b"
+        self.fake.answer("GET", path, (200, ({"n": 1}, {"Connection": "close"})), (200, ({"n": 2}, {})))
+        self.assertEqual(self.client.request("GET", path), {"n": 1})
+        self.assertEqual(self.client.request("GET", path), {"n": 2})
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_connection_the_server_closed_while_idle_is_replaced_for_a_get(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        # Every connection is closed after its answer, with no Connection header: the next call finds it gone.
+        self.fake.idle_close = True
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 2)
+        self.assertEqual(len(self.requests("GET", path)), 2)
+
+    def test_a_post_on_a_stale_connection_is_not_sent_again_unless_it_has_a_key(self):
+        branch = f"{REPO}/branches/b"
+        send = f"{REPO}/branches/b/send"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("POST", send, 200, {"ok": True})
+        self.client.request("GET", branch)
+        # The server reads the POST and closes without an answer: it may have acted, so it is not sent again.
+        self.fake.hang_up[("POST", send)] = 1
+        with self.assertRaises(bc.TransportError):
+            self.client.request("POST", send, {"text": "x"})
+        self.assertEqual(len(self.requests("POST", send)), 1)
+        # A key makes the server answer a replay with the first result, so one retry on a new connection is allowed.
+        self.client.request("GET", branch)
+        self.fake.hang_up[("POST", send)] = 1
+        self.assertEqual(self.client.request("POST", send, {"text": "x"}, key="k1"), {"ok": True})
+        self.assertEqual(len(self.requests("POST", send)), 3)
+
+    def wait_until_the_server_has_closed(self) -> None:
+        """Block (up to ten seconds) until this thread's kept connection is readable, which for an idle
+        socket means the server's close has arrived; no fixed sleep."""
+        sock = self.client._local.held[1].sock
+        readable, _, _ = select.select([sock], [], [], 10)
+        self.assertTrue(readable, "the server did not close the connection")
+
+    def test_a_post_or_delete_after_the_server_closed_the_idle_connection_goes_out_on_a_new_one(self):
+        branch = f"{REPO}/branches/b"
+        send = f"{REPO}/branches/b/send"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("POST", send, 200, {"ok": True})
+        self.fake.always("DELETE", branch, 200, {})
+        self.fake.idle_close = True
+        # Neither call has a key, so neither may be sent twice: the dead connection must be noticed
+        # before the request goes out, not after it has failed.
+        self.client.request("GET", branch)
+        self.wait_until_the_server_has_closed()
+        self.assertEqual(self.client.request("POST", send, {"text": "x"}), {"ok": True})
+        self.wait_until_the_server_has_closed()
+        self.client.request("DELETE", branch)
+        self.assertEqual(len(self.server.accepted), 3)
+        self.assertEqual(len(self.requests("POST", send)), 1)
+        self.assertEqual(len(self.requests("DELETE", branch)), 1)
+
+    def test_a_connection_idle_for_too_long_is_replaced(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        with mock.patch.object(bc, "_IDLE_MAX", -1.0):
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_forked_child_does_not_use_its_parents_connection(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        parent = os.getpid()
+        # In a forked child `os.getpid()` differs from the pid the connection was made under.
+        with mock.patch("os.getpid", return_value=parent + 1):
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_per_call_timeout_applies_to_a_kept_connection(self):
+        branch = f"{REPO}/branches/b"
+        slow = f"{REPO}/branches/slow"
+        self.fake.always("GET", branch, 200, {"name": "b"})
+        self.fake.always("GET", slow, 200, {})
+        self.fake.stall.add(slow)
+        self.addCleanup(self.fake.gate.set)
+        self.client.timeout = 60.0
+        self.client.request("GET", branch)
+        started = time.monotonic()
+        with self.assertRaises(bc.TransportError):
+            self.client.request("GET", slow, timeout=0.2)
+        # The client's own 60 seconds did not apply; the call's 0.2 did, and its connection was dropped.
+        self.assertLess(time.monotonic() - started, 30.0)
+        self.assertEqual(self.client.request("GET", branch), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 2)
+
+    def test_a_proxy_in_the_environment_sends_the_call_through_urllib(self):
+        path = f"{REPO}/branches/b"
+        sent: list[str] = []
+
+        def opened(request: Any, **_options: Any) -> Any:
+            sent.append(request.full_url)
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+        # The proxy is a dead address: urllib is replaced by a spy, so nothing is sent anywhere.
+        with (
+            mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9"}),
+            mock.patch("urllib.request.urlopen", side_effect=opened),
+            self.assertRaises(bc.TransportError),
+        ):
+            self.client.request("GET", path)
+        self.assertEqual(sent, [self.url + path])
+        self.assertEqual(self.server.accepted, [])
+
+    def test_a_proxy_that_bypasses_the_host_is_not_used(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1"}):
+            self.client.request("GET", path)
+            self.client.request("GET", path)
+        self.assertEqual(len(self.server.accepted), 1)
+
+    def test_a_redirect_is_followed_as_urllib_follows_it(self):
+        old = f"{REPO}/branches/old"
+        new = f"{REPO}/branches/new"
+        # The kept connection gets the 302; urllib then asks the old path again, gets it and follows it.
+        self.fake.answer("GET", old, (302, ({}, {"Location": new})), (302, ({}, {"Location": new})))
+        self.fake.always("GET", new, 200, {"name": "new"})
+        self.assertEqual(self.client.request("GET", old), {"name": "new"})
+
+    def test_a_post_answered_with_a_redirect_is_sent_once(self):
+        path = f"{REPO}/branches/b/send"
+        # A POST the server answered with a redirect may already have been acted on:
+        # it is reported, not sent again the way a GET is.
+        self.fake.always("POST", path, 307, {"error": "moved"})
+        with self.assertRaises(bc.BranchyardError):
+            self.client.request("POST", path, body={"text": "hi"})
+        self.assertEqual(len(self.requests("POST", path)), 1)
+
+    def test_each_thread_keeps_its_own_connection_and_close_ends_them(self):
+        path = f"{REPO}/branches/b"
+        self.fake.always("GET", path, 200, {"name": "b"})
+        self.client.request("GET", path)
+        worker = threading.Thread(target=self.client.request, args=("GET", path))
+        worker.start()
+        worker.join()
+        self.assertEqual(len(self.server.accepted), 2)
+        self.client.close()
+        # After close the client still works; it opens a new connection.
+        self.assertEqual(self.client.request("GET", path), {"name": "b"})
+        self.assertEqual(len(self.server.accepted), 3)
 
 
 class Waiting(ServerCase):
@@ -1790,6 +2133,56 @@ class Surfaces(ServerCase):
 
 
 class Approvals(ServerCase):
+    def test_decisions_come_in_the_servers_order_with_what_each_is_about(self):
+        ask = {
+            "id": "ap1",
+            "branch": "b",
+            "turn": 2,
+            "subject": "tester",
+            "about": {"kind": "tool", "tool": "write"},
+            "created_ms": 5,
+        }
+        parked = {
+            "kind": "approval",
+            "branch": "b",
+            "waits": "agent",
+            "since_ms": 5,
+            "status": {"state": "running"},
+            "approval": ask,
+        }
+        ready = {
+            "kind": "merge",
+            "branch": "c",
+            "waits": "delivery",
+            "status": {"state": "ready"},
+            "candidate": {"commit": "abc", "files_changed": 1, "insertions": 2, "deletions": 0},
+        }
+        self.fake.answer("GET", f"{REPO}/decisions", (200, {"decisions": [parked, ready]}))
+        decisions = self.app.decisions()
+        self.assertEqual(
+            [(d.kind, d.branch, d.waits) for d in decisions], [("approval", "b", "agent"), ("merge", "c", "delivery")]
+        )
+        self.assertEqual(decisions[0].approval["id"], "ap1")
+        self.assertEqual(decisions[1].candidate["commit"], "abc")
+
+    def test_the_ground_names_the_branches_that_share_a_file(self):
+        ready = {"state": "ready"}
+        ground = {
+            "files": [
+                {"path": "only.txt", "branches": [{"name": "c", "status": ready}]},
+                {"path": "shared.txt", "branches": [{"name": "a", "status": ready}, {"name": "b", "status": ready}]},
+            ],
+            "skipped": ["gone"],
+        }
+        self.fake.answer("GET", f"{REPO}/ground", (200, ground))
+        got = self.app.ground()
+        self.assertEqual([f.path for f in got.shared], ["shared.txt"])
+        self.assertEqual(got.holders("shared.txt"), ["a", "b"])
+        self.assertEqual(got.holders("only.txt"), ["c"])
+        self.assertEqual(got.holders("absent.txt"), [])
+        self.assertEqual(got.skipped, ["gone"])
+        self.assertEqual(got.files[1]["branches"][0]["status"], ready)
+
     def test_approvals_are_listed_and_answered_as_the_caller(self):
         ask = {
             "id": "ap1",
@@ -2236,6 +2629,10 @@ class GrantsAndNames(unittest.TestCase):
         self.assertIsNone(entry.status)
         self.assertEqual(
             bc.FeedEntry({"seq": 2, "branch": "a", "activity": {"status": {"state": "ready"}}}).status, "ready"
+        )
+        self.assertIsNone(entry.turn_cost)
+        self.assertEqual(
+            bc.FeedEntry({"seq": 3, "branch": "a", "activity": {"turn_cost": {"cost_usd": 0.25}}}).turn_cost, 0.25
         )
 
 
@@ -3040,6 +3437,7 @@ class OneApi(ServerCase):
             for name in ("BRANCHYARD_DELEGATION", "BRANCHYARD_REPO", "BRANCHYARD_CA_FILE"):
                 os.environ.pop(name, None)
             by = bc.connect()
+        self.addCleanup(by.repo.client.close)
         self.assertFalse(by.inside)
         self.assertEqual((by.repo.name if by.repo else None, by.branch), ("app", "lead"))
 
@@ -3090,6 +3488,7 @@ class OneErrorHierarchy(unittest.TestCase):
 COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/projects": [lambda c, _r: c.projects(), lambda c, _r: c.create_project("Research")],
     "/v1/projects/{project}": [lambda c, _r: c.project("p1")],
+    "/v1/projects/{project}/decisions": [lambda c, _r: c.project_decisions("p1")],
     "/v1/workspaces": [lambda c, _r: c.workspaces(), lambda c, _r: c.create_workspace("p1", "Brief")],
     "/v1/workspaces/{workspace}": [lambda c, _r: c.workspace("w1")],
     "/v1/workspaces/{workspace}/sessions": [
@@ -3101,6 +3500,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
         lambda c, _r: c.send_workspace_message("w1", "s1", "Continue"),
     ],
     "/v1/workspaces/{workspace}/sessions/{session}/cancel": [lambda c, _r: c.cancel_workspace_session("w1", "s1")],
+    "/v1/execution-presets": [lambda c, _r: c.execution_presets(), lambda c, _r: c.execution_presets("w1")],
     "/v1/workspaces/{workspace}/actions/{action}": [lambda c, _r: c.workspace_action("w1", "archive", revision=1)],
     "/v1/workspaces/{workspace}/finalize": [lambda c, _r: c.finalize_workspace("w1", ["a1"], revision=1)],
     "/v1/workspaces/{workspace}/members": [lambda c, _r: c.workspace_members("w1")],
@@ -3162,6 +3562,8 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/operations": [lambda c, _r: c.operation_by_key("k")],
     "/v1/operations/{id}": [lambda c, _r: c.operation("op1")],
     "/v1/repos": [lambda c, _r: c.repos()],
+    "/v1/repos/{repo}/decisions": [lambda _c, r: r.decisions()],
+    "/v1/repos/{repo}/ground": [lambda _c, r: r.ground()],
     "/v1/repos/{repo}/approvals": [lambda _c, r: r.approvals()],
     "/v1/repos/{repo}/approvals/{id}/allow": [lambda _c, r: r.allow("ap1")],
     "/v1/repos/{repo}/approvals/{id}/deny": [lambda _c, r: r.deny("ap1")],
@@ -3266,8 +3668,12 @@ EXCUSED: dict[str, str] = {
     "/app/": f"{NOT_A_CLIENT_ROUTE}: the companion web app's pages, for a browser",
     "/app/pair": f"{NOT_A_CLIENT_ROUTE}: the companion's pairing, a phone redeeming a one-time code for "
     "a token of its own; a client already holds one",
+    "/app/frame/{ticket}": f"{NOT_A_CLIENT_ROUTE}: an HTML output for the console's sandboxed iframe, which "
+    "cannot send a bearer token",
     "/app/{file}": f"{NOT_A_CLIENT_ROUTE}: the companion web app's files, for a browser",
     "/metrics": f"{NOT_A_CLIENT_ROUTE}: Prometheus scrapes it",
+    "/v1/workspaces/{workspace}/artifacts/{artifact}/frame": f"{NOT_A_CLIENT_ROUTE}: mints the console's "
+    "iframe address for an HTML output",
     "/v1/triggers/{t}/fire": f"{NOT_A_CLIENT_ROUTE}: a webhook sender's, signed rather than bearer-authenticated",
     "/v1/triggers/{t}/fire/{token}": f"{NOT_A_CLIENT_ROUTE}: a webhook sender's, its token in the path",
 }

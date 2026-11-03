@@ -16,7 +16,10 @@ workspace = true
 schema = ["dep:schemars"]
 
 [dependencies]
-agent-client-protocol-schema = { version = "1.9", default-features = false }
+agent-client-protocol-schema = { version = "1.9", default-features = false, features = [
+    # The prompt response's `usage`, read only for a profile that verified it.
+    "unstable_end_turn_token_usage",
+] }
 branchyard-controls = { path = "../branchyard-controls" }
 # For `conformance::assert_conforms` and serializable events; already in the
 # tree through serde_json.

@@ -43,7 +43,7 @@ How much stands between a harness and your machine, in steps. [`docs/modes.md`](
 
 ## Branch states
 
-`by ls` prints the words in the second column; `by show NAME --json` has them as `{"state": "…"}`. A running turn that has had no harness activity for its stall window also shows `(stalled)`. After every run, send and fork, the `next` lines list the commands that fit the state. A branch in a bad state keeps its worktree and session until `by rm`; [troubleshooting](troubleshooting.md) has the fixes.
+`by ls` prints the words in the second column; `by show NAME --json` has them as `{"state": "…"}`. A running turn parked on an [approval](effects.md#approvals) shows `waiting for approval: …` instead, with what it asks (`awaiting` in the JSON, with the ask's id and when it parked); it moves only when someone answers, and is never stalled. A running turn that has had no harness activity for its stall window shows `(stalled)`. After every run, send and fork, the `next` lines list the commands that fit the state. A branch in a bad state keeps its worktree and session until `by rm`; [troubleshooting](troubleshooting.md) has the fixes.
 
 | State | Shows as | Meaning | Do next |
 |---|---|---|---|

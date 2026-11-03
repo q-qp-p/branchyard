@@ -2605,12 +2605,23 @@ mod tests {
             Some(Effort::Medium)
         );
 
-        // [defaults] harness goes first, by harness or profile ID; a judge
-        // that cannot route permission requests is passed over.
+        // [defaults] harness goes first, by harness or profile ID, and is
+        // the judge when its profile routes permission requests (Antigravity's
+        // `agy acp` does; its headless stream, named as a profile, does not
+        // and is passed over).
         let preferred = inventory_default(&machine(), Some("antigravity"), false);
         assert_eq!(preferred.names(), ["antigravity", "codex", "gemini-cli"]);
         assert_eq!(
             preferred.entry.judge.map(|j| j.harness),
+            Some("antigravity".to_owned())
+        );
+        let stream = inventory_default(&machine(), Some("antigravity-stream-json"), false);
+        assert_eq!(
+            stream.names(),
+            ["antigravity-stream-json", "codex", "gemini-cli"]
+        );
+        assert_eq!(
+            stream.entry.judge.map(|j| j.harness),
             Some("codex".to_owned())
         );
         let profile = inventory_default(&machine(), Some("gemini-cli-acp"), false);

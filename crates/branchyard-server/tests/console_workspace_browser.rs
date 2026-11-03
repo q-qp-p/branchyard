@@ -1,11 +1,17 @@
 //! The console's knowledge workspaces in headless Chromium against a real
 //! server with managed knowledge on: a knowledge-only token loads the
 //! console, a paired browser creates a project and a workspace, uploads
-//! sources, runs two fake-agent sessions (one steered, cancelled and
-//! resumed), finds four captured outputs, renders intercepted table and PNG previews,
-//! downloads and accepts the actual immutable originals, and the branch routes still work
-//! beside it. Driven by Playwright (`console_workspace_browser.js`) with
-//! documents from `tools/console_fixtures.py`; skipped, saying so, when
+//! sources (one under a Unicode name that is listed, previewed and
+//! downloaded exactly), runs two fake-agent sessions (one steered,
+//! cancelled and resumed), finds four captured outputs, previews sources
+//! and outputs with whatever this server's renderer answers (a table or
+//! page where it renders, otherwise the matching unavailable, unsupported
+//! or failed state), downloads and accepts the actual immutable originals,
+//! continues a session so a stale page's acceptance of an earlier turn's
+//! output is refused, Needs you shows the current outputs as cards with their
+//! previews and accepts one, and the branch routes still work beside it. Driven
+//! by Playwright (`console_workspace_browser.js`) with documents from
+//! `tools/console_fixtures.py`; skipped, saying so, when
 //! Node or Playwright's module is not installed. `BY_TEST_PLAYWRIGHT`
 //! names the module's directory; otherwise `$(npm root -g)/playwright` is
 //! tried, with `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers` when
@@ -42,6 +48,17 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         return;
     };
     let f = Fixture::new();
+    let real_previews = std::env::var_os("BRANCHYARD_PREVIEW_BWRAP").is_some()
+        && std::env::var_os("BRANCHYARD_PREVIEW_PYTHON").is_some();
+    if !real_previews {
+        // This binary has one test. Select a missing namespace command before
+        // starting any server threads so the default run stays hermetic even on
+        // a machine whose system Python happens to include Office libraries.
+        std::env::set_var(
+            "BRANCHYARD_PREVIEW_BWRAP",
+            f.dir.join("missing-preview-renderer"),
+        );
+    }
     let fixtures = f.dir.join("fixtures");
     let generated = branchyard_testkit::hermetic(&mut Command::new("python3"))
         .arg("-I")
@@ -132,6 +149,10 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         .env("BY_CODE", &code)
         .env("BY_KNOWLEDGE_TOKEN", KNOWLEDGE_TOKEN)
         .env("BY_FIXTURES", &fixtures)
+        .env(
+            "BY_EXPECT_DOCUMENT_PREVIEWS",
+            if real_previews { "1" } else { "0" },
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -160,8 +181,12 @@ fn a_knowledge_workspace_runs_sessions_and_accepts_outputs_in_the_browser() {
         "WORKSPACE",
         "SOURCES",
         "SESSIONS",
+        "HTML",
         "OUTPUTS",
+        "DOCUMENTS",
         "ACCEPTED",
+        "STALE",
+        "DECK",
         "DONE",
     ] {
         expect(step);

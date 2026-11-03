@@ -632,7 +632,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-bridge"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "branchyard-sandbox",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "branchyard",
@@ -736,11 +736,12 @@ dependencies = [
 
 [[package]]
 name = "branchyard-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "backon",
  "blake3",
  "branchyard",
+ "branchyard-support",
  "branchyard-testkit",
  "branchyard-wire",
  "percent-encoding",
@@ -754,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-harness",
  "branchyard-provision",
@@ -771,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-controls"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -780,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-harness"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "agent-client-protocol-schema",
  "branchyard-controls",
@@ -792,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-herdr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard",
  "branchyard-client",
@@ -809,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard",
  "branchyard-client",
@@ -823,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-microsandbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-sandbox",
  "branchyard-support",
@@ -835,8 +836,9 @@ dependencies = [
 
 [[package]]
 name = "branchyard-provision"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
+ "blake3",
  "branchyard-controls",
  "branchyard-harness",
  "branchyard-support",
@@ -849,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-qualify"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-harness",
  "branchyard-runtime",
@@ -860,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-recipe"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-sandbox",
  "branchyard-support",
@@ -872,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-runtime"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-harness",
  "branchyard-sandbox",
@@ -890,14 +892,14 @@ dependencies = [
 
 [[package]]
 name = "branchyard-sandbox"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-support",
 ]
 
 [[package]]
 name = "branchyard-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "backon",
@@ -906,6 +908,8 @@ dependencies = [
  "branchyard",
  "branchyard-bridge",
  "branchyard-client",
+ "branchyard-harness",
+ "branchyard-provision",
  "branchyard-runtime",
  "branchyard-sandbox",
  "branchyard-setup",
@@ -922,6 +926,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "jsonwebtoken",
+ "percent-encoding",
  "postgres",
  "prost",
  "reqwest",
@@ -944,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-setup"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-config",
  "branchyard-harness",
@@ -962,7 +967,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-substrate"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-bridge",
  "branchyard-sandbox",
@@ -985,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-support"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-support",
  "branchyard-testkit",
@@ -998,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -1021,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "branchyard-testkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-support",
  "branchyard-wire",
@@ -1031,14 +1036,14 @@ dependencies = [
 
 [[package]]
 name = "branchyard-wire"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "httparse",
 ]
 
 [[package]]
 name = "branchyard-workspace"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "branchyard-support",
  "branchyard-testkit",
@@ -4660,9 +4665,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags 2.13.2",
  "memchr",

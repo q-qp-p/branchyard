@@ -24,14 +24,27 @@ pub(super) enum Settings {
 
 /// A resolved renderer whose identity is included in every cache key.
 pub(super) enum Renderer {
-    Bubblewrap { bwrap: PathBuf, runtime: Runtime },
+    Bubblewrap {
+        bwrap: PathBuf,
+        runtime: Runtime,
+        /// Headless Chromium for HTML pages, when the host has one.
+        chromium: Option<PathBuf>,
+    },
     Docker(super::docker::Runtime),
 }
 
 impl Renderer {
     pub(super) fn identity(&self) -> String {
         match self {
-            Self::Bubblewrap { runtime, .. } => runtime.identity(),
+            Self::Bubblewrap {
+                runtime, chromium, ..
+            } => format!(
+                "{}\n{}",
+                runtime.identity(),
+                chromium
+                    .as_deref()
+                    .map_or(String::new(), |c| c.display().to_string())
+            ),
             Self::Docker(runtime) => runtime.identity(),
         }
     }
@@ -79,8 +92,52 @@ impl Settings {
         Ok(Renderer::Bubblewrap {
             bwrap: bwrap.clone(),
             runtime,
+            chromium: find_chromium(),
         })
     }
+}
+
+/// The entries of a directory this host may not have; a directory that cannot be read has none.
+fn children_of(directory: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    entries.flatten().map(|entry| entry.path()).collect()
+}
+
+/// The headless Chromium HTML pages render with: `BRANCHYARD_PREVIEW_CHROMIUM`,
+/// else the one under `PLAYWRIGHT_BROWSERS_PATH` (default `/opt/pw-browsers`).
+/// It is bound read-only into the namespace; nothing is downloaded.
+fn find_chromium() -> Option<PathBuf> {
+    if let Some(chosen) = std::env::var_os("BRANCHYARD_PREVIEW_CHROMIUM") {
+        let chosen = PathBuf::from(chosen);
+        return (chosen.is_absolute() && chosen.is_file()).then_some(chosen);
+    }
+    let root = std::env::var_os("PLAYWRIGHT_BROWSERS_PATH")
+        .map_or_else(|| PathBuf::from("/opt/pw-browsers"), PathBuf::from);
+    let mut installs = children_of(&root);
+    installs.sort();
+    for (prefix, binary) in [
+        ("chromium_headless_shell-", "chrome-headless-shell"),
+        ("chromium-", "chrome"),
+    ] {
+        for install in installs.iter().filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix))
+        }) {
+            let mut children = children_of(install);
+            children.sort();
+            if let Some(found) = children
+                .into_iter()
+                .map(|dir| dir.join(binary))
+                .find(|candidate| candidate.is_file())
+            {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 /// The interpreter and its explicitly bound, trusted toolchain directories.
@@ -137,13 +194,17 @@ pub(super) async fn convert(
     output: &Path,
     options: &PreviewOptions,
 ) -> Result<Value, ApiError> {
-    let (bwrap, runtime) = match renderer {
-        Renderer::Bubblewrap { bwrap, runtime } => (bwrap, runtime),
+    let (bwrap, runtime, chromium) = match renderer {
+        Renderer::Bubblewrap {
+            bwrap,
+            runtime,
+            chromium,
+        } => (bwrap, runtime, chromium.as_deref()),
         Renderer::Docker(runtime) => {
             return super::docker::convert(runtime, source, helper, output, options).await
         }
     };
-    let args = arguments(runtime, source, helper, output, options)?;
+    let args = arguments(runtime, chromium, source, helper, output, options)?;
     let (status, bytes) = run(bwrap, &args, TIMEOUT).await?;
     let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable(
         "The isolated renderer could not start or returned no preview. Configure the documented Bubblewrap policy and artifact runtime, or explicitly select BRANCHYARD_PREVIEW_BACKEND=docker with a pinned local image. No unsandboxed conversion was attempted."
@@ -181,6 +242,11 @@ pub(super) fn remove_internal_paths(value: &mut Value) {
         "height",
         "text",
         "truncated",
+        "column_widths",
+        "merges",
+        "frozen_rows",
+        "header_details",
+        "cell_details",
     ];
     if let Some(object) = value.as_object_mut() {
         object.retain(|key, _| FIELDS.contains(&key.as_str()));
@@ -189,6 +255,7 @@ pub(super) fn remove_internal_paths(value: &mut Value) {
 
 fn arguments(
     runtime: &Runtime,
+    chromium: Option<&Path>,
     source: &Path,
     helper: &Path,
     output: &Path,
@@ -239,6 +306,13 @@ fn arguments(
             push(&[os("--ro-bind"), os(path), os(path)]);
         }
     }
+    let browser = chromium.filter(|_| source.extension().is_some_and(|e| e == "html"));
+    if let Some(binary) = browser {
+        // The browser's install directory, read-only, and only for HTML sources.
+        if let Some(install) = binary.parent() {
+            push(&[os("--ro-bind"), install.as_os_str(), install.as_os_str()]);
+        }
+    }
     let source_name = source
         .file_name()
         .ok_or_else(|| ApiError::internal("preview source has no basename"))?;
@@ -263,9 +337,19 @@ fn arguments(
         ("LANG", "C.UTF-8"),
         ("LC_ALL", "C.UTF-8"),
         ("PYTHONDONTWRITEBYTECODE", "1"),
-        ("SAL_USE_VCLPLUGIN", "gen"),
+        // `svp` is LibreOffice's display-less backend. `gen` is its X11 backend: it
+        // overrides `--headless`, finds no display in the empty namespace and
+        // exits 0 without writing a PDF.
+        ("SAL_USE_VCLPLUGIN", "svp"),
     ] {
         push(&[os("--setenv"), os(name), os(value)]);
+    }
+    if let Some(binary) = browser {
+        push(&[
+            os("--setenv"),
+            os("BRANCHYARD_CHROMIUM"),
+            binary.as_os_str(),
+        ]);
     }
     push(&[
         os("--"),
@@ -413,6 +497,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn spreadsheet_layout_survives_response_sanitization_without_internal_paths() {
+        let layout = serde_json::json!({
+            "status": "passed", "kind": "table", "format": "xlsx",
+            "columns": ["Total"], "rows": [[12.5]],
+            "column_widths": [201], "merges": [], "frozen_rows": 1,
+            "header_details": [{"formatted": "Total", "formula": null, "number_format": "General"}],
+            "cell_details": [[{"formatted": "$12.50", "formula": "=SUM(A1:A2)", "number_format": "$0.00"}]],
+        });
+        let mut answer = layout.clone();
+        answer["preview_dir"] = serde_json::json!("/private/output");
+        answer["source"] = serde_json::json!("/private/input.xlsx");
+        remove_internal_paths(&mut answer);
+        assert_eq!(answer, layout);
+    }
+
+    #[test]
     fn namespace_arguments_bind_only_explicit_runtime_and_document_paths() {
         let runtime = Runtime {
             executable: "/usr/bin/python3".into(),
@@ -422,6 +522,7 @@ mod tests {
         };
         let args = arguments(
             &runtime,
+            None,
             Path::new("/owned/input/source.csv"),
             Path::new("/owned/helper"),
             Path::new("/owned/output"),
@@ -445,6 +546,92 @@ mod tests {
                 .windows(3)
                 .any(|a| a == ["--ro-bind", "/etc/libreoffice", "/etc/libreoffice"]));
         }
+    }
+
+    #[test]
+    fn libreoffice_gets_the_display_less_backend_and_nothing_wider() {
+        let runtime = Runtime {
+            executable: "/usr/bin/python3".into(),
+            prefix: "/usr".into(),
+            base_prefix: "/usr".into(),
+            version: "fixture".into(),
+        };
+        let args = arguments(
+            &runtime,
+            None,
+            Path::new("/owned/input/source.docx"),
+            Path::new("/owned/helper"),
+            Path::new("/owned/output"),
+            &PreviewOptions::default(),
+        )
+        .unwrap();
+        let values: Vec<_> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let before_command = values.iter().position(|a| a == "--").unwrap();
+        let environment: Vec<(&str, &str)> = values[..before_command]
+            .windows(3)
+            .filter(|a| a[0] == "--setenv")
+            .map(|a| (a[1].as_str(), a[2].as_str()))
+            .collect();
+        assert!(environment.contains(&("SAL_USE_VCLPLUGIN", "svp")));
+        let names: Vec<_> = environment.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "TMPDIR",
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "PYTHONDONTWRITEBYTECODE",
+                "SAL_USE_VCLPLUGIN"
+            ]
+        );
+        assert!(!values.iter().any(|a| a == "gen" || a == "DISPLAY"));
+        assert!(values.contains(&"--unshare-all".to_owned()));
+        assert!(!values.contains(&"--share-net".to_owned()));
+    }
+
+    #[test]
+    fn chromium_is_bound_read_only_for_html_sources_and_nothing_else() {
+        let runtime = Runtime {
+            executable: "/usr/bin/python3".into(),
+            prefix: "/usr".into(),
+            base_prefix: "/usr".into(),
+            version: "fixture".into(),
+        };
+        let chromium = Path::new("/opt/pw-browsers/headless/chrome-headless-shell");
+        let values = |source: &str| -> Vec<String> {
+            arguments(
+                &runtime,
+                Some(chromium),
+                Path::new(source),
+                Path::new("/owned/helper"),
+                Path::new("/owned/output"),
+                &PreviewOptions::default(),
+            )
+            .unwrap()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+        };
+        let html = values("/owned/input/source.html");
+        let dir = "/opt/pw-browsers/headless";
+        assert!(html.windows(3).any(|a| a == ["--ro-bind", dir, dir]));
+        assert!(html.windows(3).any(|a| a
+            == [
+                "--setenv",
+                "BRANCHYARD_CHROMIUM",
+                "/opt/pw-browsers/headless/chrome-headless-shell"
+            ]));
+        assert!(html.contains(&"--unshare-all".to_owned()));
+        assert!(!html.contains(&"--share-net".to_owned()));
+        assert!(!html.contains(&"DISPLAY".to_owned()));
+        let docx = values("/owned/input/source.docx");
+        assert!(!docx.iter().any(|a| a.contains("pw-browsers")));
+        assert!(!docx.contains(&"BRANCHYARD_CHROMIUM".to_owned()));
     }
 
     #[test]
@@ -473,6 +660,7 @@ mod tests {
         };
         let args = arguments(
             &runtime,
+            None,
             Path::new("/owned/source.csv"),
             Path::new("/owned/helper"),
             Path::new("/owned/output"),

@@ -8471,6 +8471,1189 @@
         }
       }
     },
+    "DecisionList": {
+      "type": "object",
+      "properties": {
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Decision"
+          },
+          "description": "In the order to take them."
+        }
+      },
+      "required": [
+        "decisions"
+      ],
+      "description": "`GET /v1/repos/{repo}/decisions` and `GET /v1/projects/{project}/decisions`:\nwhat waits for a person, in the order to take it. A branch parked on an\napproval or a question comes first, the one that has waited longest\nbefore the rest, because it moves only when someone answers; then the\nbranches ready to merge, oldest first, because delivery waits on them;\nthen the stopped and the stalled, which nothing waits on. A project's\nlist has the same order over its workspaces: an `output` waiting to be\naccepted is delivery, a `session` that stopped is nobody's. Nothing here\nexpires.",
+      "title": "DecisionList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "Decision": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/DecisionKind",
+              "description": "What shape the decision takes."
+            },
+            "branch": {
+              "type": "string",
+              "description": "The branch it is about. For an `output` or a `session` decision it is\nthe session's branch in the workspace's source, which a stopped\nsession that never started names before it exists."
+            },
+            "waits": {
+              "$ref": "#/$defs/Waits",
+              "description": "Who waits on the person for it."
+            },
+            "since_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Since when, milliseconds since the Unix epoch, when the server\nknows: when the ask opened or the question was sent."
+            },
+            "status": {
+              "$ref": "#/$defs/BranchStatus",
+              "description": "The branch's status at the time. For a `session` that never started\nit is the failure or interruption of the operation that should have\nstarted it."
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CandidateInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Its candidate commit, when it has one."
+            },
+            "approval": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApprovalAsk"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For an `approval`: the ask, as `GET …/approvals` lists it."
+            },
+            "question": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Message"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For a `question`: the message, as the asker's parent's inbox holds it."
+            },
+            "workspace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's id."
+            },
+            "workspace_title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the workspace's title."
+            },
+            "session": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's id."
+            },
+            "session_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For an `output` or a `session` decision: the session's name."
+            },
+            "phase": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For a `session`: where the session stands, in the words the\nworkspace page uses (`Failed: the harness exited`, `Did not start`,\n`Interrupted`)."
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionOutput"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "For an `output`: the file waiting to be accepted."
+            }
+          },
+          "required": [
+            "kind",
+            "branch",
+            "waits",
+            "status"
+          ],
+          "description": "One thing a person can decide; see [`DecisionList`]."
+        },
+        "DecisionKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "A running turn parked on an approval: allow or deny it."
+            },
+            {
+              "type": "string",
+              "const": "question",
+              "description": "A question or an escalation a branch sent and nobody answered."
+            },
+            {
+              "type": "string",
+              "const": "merge",
+              "description": "A ready branch: merge it, follow up, or discard it."
+            },
+            {
+              "type": "string",
+              "const": "stop",
+              "description": "A failed, interrupted or over-budget branch: resume it or let it be."
+            },
+            {
+              "type": "string",
+              "const": "stall",
+              "description": "A running turn with no harness activity for its stall window."
+            },
+            {
+              "type": "string",
+              "const": "output",
+              "description": "A workspace session's output waiting to be accepted: the deliverable\nof a knowledge session, a document rather than a diff."
+            },
+            {
+              "type": "string",
+              "const": "session",
+              "description": "A workspace session that failed, was interrupted or never started."
+            }
+          ],
+          "description": "The shapes a decision takes."
+        },
+        "Waits": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "agent",
+              "description": "An agent is parked mid-turn until the person answers."
+            },
+            {
+              "type": "string",
+              "const": "delivery",
+              "description": "Nothing runs, but the work is not delivered until the person acts."
+            },
+            {
+              "type": "string",
+              "const": "nobody",
+              "description": "Nobody: the branch stopped, and the person decides at leisure."
+            }
+          ],
+          "description": "Who a decision keeps waiting."
+        },
+        "BranchStatus": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "running"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegated child created with prerequisites that have not all\nsettled yet: it has no worktree and has run no turn. See\n`docs/graph.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "blocked"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "A child that will not start because a prerequisite failed, was\ninterrupted, stopped at a limit, is blocked itself or was removed.\nChanging its dependencies with a graph proposal reopens it."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "ready"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed and produced a candidate."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "awaiting_plan_approval"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A planning turn proposed a plan, and the branch waits for it to be\napproved, edited or rejected before anything changes; see\n[`Yard::approve_plan`]."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting_on_children"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegating branch whose turn ended while children it delegated\nwere still running or waiting: it is parked, and its next turn\nstarts on its own once they have all settled, with a summary of\nwhat they did (`docs/delegation.md`, \"Waiting on children\"). Not\nfinished: a wait for its subtree waits for that turn too."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "no_changes"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed without changing any file."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "limit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "budget_exceeded"
+                }
+              },
+              "required": [
+                "state",
+                "limit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                },
+                "commit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "merged"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "commit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "Why, as whoever discarded it said."
+                },
+                "state": {
+                  "type": "string",
+                  "const": "discarded"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "Settled and set aside on purpose, with the reason (`by discard`):\nit runs no more turns and is never integrated, its record and cost\nare kept, and it no longer counts against its parent's\n`max_children`."
+            }
+          ],
+          "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "CandidateInfo": {
+          "type": "object",
+          "properties": {
+            "commit": {
+              "type": "string"
+            },
+            "files_changed": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "insertions": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "deletions": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "commit",
+            "files_changed",
+            "insertions",
+            "deletions"
+          ]
+        },
+        "ApprovalAsk": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "subject": {
+              "type": "string",
+              "description": "Who the branch acts for."
+            },
+            "about": {
+              "$ref": "#/$defs/AskAbout"
+            },
+            "effect": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The ledger entry it is about, when there is one."
+            },
+            "resolved": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Resolved"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the policy decided, and which layer."
+            },
+            "request": {
+              "description": "The tool's input or the call's arguments, so the person sees what\nthey approve; for a call held in the outbox, what is performed."
+            },
+            "created_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the waiting turn gives up: its budget."
+            },
+            "answer": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AskAnswer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "branch",
+            "turn",
+            "subject",
+            "about",
+            "created_ms"
+          ],
+          "description": "A question in the person's inbox: allow this, or not."
+        },
+        "AskAbout": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "tool"
+                }
+              },
+              "required": [
+                "kind",
+                "tool"
+              ],
+              "description": "A harness's tool."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string"
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "class": {
+                  "$ref": "#/$defs/EffectClass"
+                },
+                "deletion": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "operation"
+                }
+              },
+              "required": [
+                "kind",
+                "connector",
+                "operation",
+                "class"
+              ],
+              "description": "A connector operation, before it is called."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string"
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "class": {
+                  "$ref": "#/$defs/EffectClass"
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "promote"
+                }
+              },
+              "required": [
+                "kind",
+                "connector",
+                "operation",
+                "class"
+              ],
+              "description": "Performing a staged effect for real."
+            }
+          ],
+          "description": "What an ask is about."
+        },
+        "EffectClass": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "read",
+              "description": "Changes nothing: lists, searches, fetches."
+            },
+            {
+              "type": "string",
+              "const": "reversible",
+              "description": "The upstream offers a true inverse."
+            },
+            {
+              "type": "string",
+              "const": "compensable",
+              "description": "The upstream offers an action that cancels the effect, leaving a\ntrace."
+            },
+            {
+              "type": "string",
+              "const": "irreversible",
+              "description": "No undo exists. What an operation that declares nothing is taken to\nbe."
+            }
+          ],
+          "description": "What an effect does to the world, as the operation that causes it\ndeclares (Anvil's `effect.class`); never guessed by a harness."
+        },
+        "Resolved": {
+          "type": "object",
+          "properties": {
+            "approval": {
+              "$ref": "#/$defs/Approval"
+            },
+            "layer": {
+              "$ref": "#/$defs/Layer"
+            },
+            "rule": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The rule's pattern, or `class:<class>`, when one decided."
+            }
+          },
+          "required": [
+            "approval",
+            "layer"
+          ],
+          "description": "A decision and what made it."
+        },
+        "Approval": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "allow",
+              "description": "Done without asking."
+            },
+            {
+              "type": "string",
+              "const": "stage",
+              "description": "Done as a draft (or held in the outbox) until a person approves it."
+            },
+            {
+              "type": "string",
+              "const": "ask",
+              "description": "A person is asked first; the turn waits within its budget."
+            },
+            {
+              "type": "string",
+              "const": "block",
+              "description": "Refused."
+            }
+          ],
+          "description": "What a tool or an operation resolves to."
+        },
+        "Layer": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "admin",
+              "description": "An administrator's locked policy."
+            },
+            {
+              "type": "string",
+              "const": "seat",
+              "description": "The seat's or rig's (a delegating parent's included)."
+            },
+            {
+              "type": "string",
+              "const": "person",
+              "description": "The person's."
+            },
+            {
+              "type": "string",
+              "const": "preset",
+              "description": "The permission preset's."
+            },
+            {
+              "type": "string",
+              "const": "default",
+              "description": "The effect class's default."
+            },
+            {
+              "type": "string",
+              "const": "deletion",
+              "description": "A deletion, asked about whatever the policy said."
+            }
+          ],
+          "description": "Which layer decided."
+        },
+        "AskAnswer": {
+          "type": "object",
+          "properties": {
+            "allow": {
+              "type": "boolean"
+            },
+            "by": {
+              "type": "string"
+            },
+            "surface": {
+              "type": "string",
+              "description": "`cli`, `watch`, `companion`, `api`, `parent`, `sdk`, or `expired`\nwhen the turn's budget ran out first."
+            },
+            "at_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "allow",
+            "by",
+            "surface",
+            "at_ms"
+          ],
+          "description": "The answer to an ask."
+        },
+        "Message": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Assigned by the store when it is sent; counts from 1 across the\nwhole repository."
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/MessageKind"
+            },
+            "text": {
+              "type": "string"
+            },
+            "in_reply_to": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The question this answers, for an `answer`."
+            },
+            "at_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch, when it was sent."
+            },
+            "delivered": {
+              "type": "boolean",
+              "description": "Whether it has been delivered to its recipient's turn (at the start\nof one, or through a running turn's delivery hook). `inbox --unread`\nis the messages for which this is `false`.",
+              "default": false
+            },
+            "handoff": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Handoff"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A frozen result and artifact handoff, delivered only at the recipient's next turn."
+            },
+            "next_turn": {
+              "type": "boolean",
+              "description": "Leave this message for the next turn instead of steering a running one."
+            }
+          },
+          "required": [
+            "id",
+            "from",
+            "to",
+            "kind",
+            "text",
+            "at_ms"
+          ],
+          "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
+        },
+        "MessageKind": {
+          "type": "string",
+          "enum": [
+            "question",
+            "report",
+            "escalation",
+            "answer"
+          ],
+          "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id."
+        },
+        "Handoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "string",
+              "description": "Producer branch name, for display; version binds its incarnation."
+            },
+            "version": {
+              "$ref": "#/$defs/SourceVersion",
+              "description": "Producer identity, turn and accepted result event."
+            },
+            "result": {
+              "description": "Accepted result JSON, copied rather than read again at delivery."
+            },
+            "candidate": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Candidate commit at handoff, when the producer has code changes."
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "description": "Store-provided metadata for the explicitly selected artifacts."
+            }
+          },
+          "required": [
+            "source",
+            "version",
+            "result",
+            "artifacts"
+          ],
+          "description": "An immutable result snapshot carried by one durable inbox message."
+        },
+        "SourceVersion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "incarnation": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Never-reused producer identity in this repository."
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Producer turn containing the result."
+            },
+            "result_event": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Per-branch event sequence of the accepted result."
+            }
+          },
+          "required": [
+            "incarnation",
+            "turn",
+            "result_event"
+          ],
+          "description": "One producer incarnation and its accepted current-turn result event."
+        },
+        "ArtifactRef": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "name": {
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "publisher_branch": {
+              "type": "string"
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The publisher's turn count when it published, from its record."
+            },
+            "created_at": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {}
+            }
+          },
+          "required": [
+            "id",
+            "digest",
+            "size",
+            "name",
+            "media_type",
+            "publisher_branch",
+            "turn",
+            "created_at"
+          ],
+          "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "DecisionOutput": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The artifact's id."
+            },
+            "name": {
+              "type": "string",
+              "description": "The file's name."
+            },
+            "media_type": {
+              "type": "string",
+              "description": "The file's media type."
+            },
+            "size": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Its size in bytes."
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The turn of the session that published it."
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "media_type",
+            "size",
+            "turn"
+          ],
+          "description": "The output an `output` decision is about: a file a workspace session\npublished from its current turn, not yet accepted. Its bytes are at\n`GET /v1/workspaces/{workspace}/artifacts/{id}/content` and a preview at\n`…/preview`; `POST /v1/workspaces/{workspace}/finalize` accepts it."
+        }
+      }
+    },
+    "Ground": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GroundFile"
+          },
+          "description": "Every path an open branch changed, sorted by path."
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Open branches whose diff could not be read, sorted by name: their\nfiles are missing from `files`, and the request still succeeds.",
+          "default": []
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "description": "`GET /v1/repos/{repo}/ground`: the ground plan, which files are in\nwhose hands. Every path an open branch's candidate changed, with the\nopen branches that changed it; a path held by two or more is one a\nperson merging wants to know about first. Open means not merged and\nnot discarded; the goal judge's `judge-…` scratch branches are left\nout. The server computes it when asked, by reading every open\nbranch's diff, so a call costs what reading those diffs costs; nothing\nis stored for it.",
+      "title": "Ground",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "GroundFile": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "The path, relative to the repository's root, as the diff names it\n(a renamed file under its old path)."
+            },
+            "branches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GroundBranch"
+              },
+              "description": "The open branches whose candidate changes it, sorted by name; two\nor more means the file is in two hands."
+            }
+          },
+          "required": [
+            "path",
+            "branches"
+          ],
+          "description": "One path in the [`Ground`] and the open branches that changed it."
+        },
+        "GroundBranch": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "The branch's name."
+            },
+            "status": {
+              "$ref": "#/$defs/BranchStatus",
+              "description": "Its status when the ground was read."
+            }
+          },
+          "required": [
+            "name",
+            "status"
+          ],
+          "description": "An open branch holding a [`GroundFile`]."
+        },
+        "BranchStatus": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "running"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegated child created with prerequisites that have not all\nsettled yet: it has no worktree and has run no turn. See\n`docs/graph.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "blocked"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "A child that will not start because a prerequisite failed, was\ninterrupted, stopped at a limit, is blocked itself or was removed.\nChanging its dependencies with a graph proposal reopens it."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "ready"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed and produced a candidate."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "awaiting_plan_approval"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A planning turn proposed a plan, and the branch waits for it to be\napproved, edited or rejected before anything changes; see\n[`Yard::approve_plan`]."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "waiting_on_children"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "A delegating branch whose turn ended while children it delegated\nwere still running or waiting: it is parked, and its next turn\nstarts on its own once they have all settled, with a summary of\nwhat they did (`docs/delegation.md`, \"Waiting on children\"). Not\nfinished: a wait for its subtree waits for that turn too."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "no_changes"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "description": "The last turn completed without changing any file."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "interrupted"
+                }
+              },
+              "required": [
+                "state"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "limit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "budget_exceeded"
+                }
+              },
+              "required": [
+                "state",
+                "limit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "failed"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string"
+                },
+                "commit": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "const": "merged"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "commit"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "Why, as whoever discarded it said."
+                },
+                "state": {
+                  "type": "string",
+                  "const": "discarded"
+                }
+              },
+              "required": [
+                "state",
+                "reason"
+              ],
+              "description": "Settled and set aside on purpose, with the reason (`by discard`):\nit runs no more turns and is never integrated, its record and cost\nare kept, and it no longer counts against its parent's\n`max_children`."
+            }
+          ],
+          "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        }
+      }
+    },
     "ApprovalAnswerRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -19732,6 +20915,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -19993,6 +21198,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -21571,6 +22870,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -21832,6 +23153,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -23441,6 +24856,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -23702,6 +25139,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -25507,6 +27038,13 @@
                 "null"
               ],
               "description": "Stable verified subject that admitted the session."
+            },
+            "preset": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Execution preset the session started with."
             }
           },
           "required": [
@@ -25805,6 +27343,13 @@
             "null"
           ],
           "description": "Stable verified subject that admitted the session."
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Execution preset the session started with."
         }
       },
       "required": [
@@ -25930,7 +27475,14 @@
               "type": "null"
             }
           ],
-          "description": "Existing typed execution backend; still subject to operator provider policy."
+          "description": "Existing typed execution backend; still subject to operator provider policy.\nRefused beside `preset`."
+        },
+        "preset": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Operator execution preset ID from `GET /v1/execution-presets`. The\nserver supplies its provider, secrets and worker labels; the request\nmay then not carry `provider` or `provision`."
         },
         "name": {
           "type": "string",
@@ -27813,6 +29365,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -28074,6 +29648,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -29698,6 +31366,13 @@
                 "null"
               ],
               "description": "Stable verified subject that admitted the session."
+            },
+            "preset": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Execution preset the session started with."
             }
           },
           "required": [
@@ -30014,6 +31689,13 @@
                 "null"
               ],
               "description": "Stable verified subject that admitted the session."
+            },
+            "preset": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Execution preset the session started with."
             }
           },
           "required": [
@@ -30117,6 +31799,810 @@
             "manifest"
           ],
           "description": "Bounded files collected from a producer's worktree after provider transfer."
+        }
+      }
+    },
+    "workspace.PresetOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "operator",
+          "description": "Written by the operator in `execution_presets`."
+        },
+        {
+          "type": "string",
+          "const": "default",
+          "description": "The implicit `local` preset of a server that configures none."
+        }
+      ],
+      "description": "Where an execution preset came from.",
+      "title": "PresetOrigin",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ReadyState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ready",
+          "description": "Checked and usable."
+        },
+        {
+          "type": "string",
+          "const": "not_ready",
+          "description": "Checked and not usable from where it was measured."
+        },
+        {
+          "type": "string",
+          "const": "unknown",
+          "description": "Not checked before a session starts."
+        }
+      ],
+      "description": "What a readiness value found.",
+      "title": "ReadyState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ReadinessScope": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "api_host",
+          "description": "The server answering the request, which may not be the worker that\nruns the session."
+        },
+        {
+          "type": "string",
+          "const": "environment",
+          "description": "The preset's execution environment."
+        }
+      ],
+      "description": "Where a readiness value was measured.",
+      "title": "ReadinessScope",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.PresetCredentials": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "configured",
+          "description": "The preset supplies a secret the harness accepts as its key."
+        },
+        {
+          "type": "string",
+          "const": "none",
+          "description": "The preset supplies no key for the harness."
+        }
+      ],
+      "description": "Whether a preset supplies a harness's key.",
+      "title": "PresetCredentials",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.Readiness": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/ReadyState",
+          "description": "What was found."
+        },
+        "scope": {
+          "$ref": "#/$defs/ReadinessScope",
+          "description": "Where it was measured."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Fixed text chosen by the server; never an error message, path,\nendpoint or secret name."
+        },
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Fixed text saying what an operator can do, when anything."
+        },
+        "checked_ms_ago": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Age of a cached check, in milliseconds."
+        }
+      },
+      "required": [
+        "state",
+        "scope",
+        "reason"
+      ],
+      "description": "One readiness observation. It informs a person and never refuses a start.",
+      "title": "Readiness",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ReadyState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Checked and usable."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Checked and not usable from where it was measured."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "Not checked before a session starts."
+            }
+          ],
+          "description": "What a readiness value found."
+        },
+        "ReadinessScope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "api_host",
+              "description": "The server answering the request, which may not be the worker that\nruns the session."
+            },
+            {
+              "type": "string",
+              "const": "environment",
+              "description": "The preset's execution environment."
+            }
+          ],
+          "description": "Where a readiness value was measured."
+        }
+      }
+    },
+    "workspace.PresetHarnessView": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "description": "Harness or profile ID a session start names."
+        },
+        "models": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Models a session may choose; absent means it may not choose one."
+        },
+        "default_model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Model a session that names none runs."
+        },
+        "tool_approvals": {
+          "type": "boolean",
+          "description": "The harness routes tool permission requests to the session's policy."
+        },
+        "writer": {
+          "type": "boolean",
+          "description": "A writer session can start on it."
+        },
+        "reviewer": {
+          "type": "boolean",
+          "description": "A reviewer session can start on it."
+        },
+        "effort": {
+          "type": "boolean",
+          "description": "A session may choose an effort."
+        },
+        "credentials": {
+          "$ref": "#/$defs/PresetCredentials",
+          "description": "Whether the preset supplies the harness's key."
+        },
+        "executable": {
+          "$ref": "#/$defs/Readiness",
+          "description": "Whether the harness's executable is where the session runs."
+        },
+        "auth": {
+          "$ref": "#/$defs/Readiness",
+          "description": "Whether the harness can sign in; verified when a session starts."
+        }
+      },
+      "required": [
+        "harness",
+        "tool_approvals",
+        "writer",
+        "reviewer",
+        "effort",
+        "credentials",
+        "executable",
+        "auth"
+      ],
+      "description": "A harness an execution preset offers.",
+      "title": "PresetHarnessView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "PresetCredentials": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "configured",
+              "description": "The preset supplies a secret the harness accepts as its key."
+            },
+            {
+              "type": "string",
+              "const": "none",
+              "description": "The preset supplies no key for the harness."
+            }
+          ],
+          "description": "Whether a preset supplies a harness's key."
+        },
+        "Readiness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/ReadyState",
+              "description": "What was found."
+            },
+            "scope": {
+              "$ref": "#/$defs/ReadinessScope",
+              "description": "Where it was measured."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Fixed text chosen by the server; never an error message, path,\nendpoint or secret name."
+            },
+            "action": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Fixed text saying what an operator can do, when anything."
+            },
+            "checked_ms_ago": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Age of a cached check, in milliseconds."
+            }
+          },
+          "required": [
+            "state",
+            "scope",
+            "reason"
+          ],
+          "description": "One readiness observation. It informs a person and never refuses a start."
+        },
+        "ReadyState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Checked and usable."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Checked and not usable from where it was measured."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "Not checked before a session starts."
+            }
+          ],
+          "description": "What a readiness value found."
+        },
+        "ReadinessScope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "api_host",
+              "description": "The server answering the request, which may not be the worker that\nruns the session."
+            },
+            {
+              "type": "string",
+              "const": "environment",
+              "description": "The preset's execution environment."
+            }
+          ],
+          "description": "Where a readiness value was measured."
+        }
+      }
+    },
+    "workspace.ExecutionPresetView": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID a session start names."
+        },
+        "label": {
+          "type": "string",
+          "description": "Plain-language name."
+        },
+        "description": {
+          "type": "string",
+          "description": "Plain-language description."
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider kind: `local`, `substrate` or `microsandbox`."
+        },
+        "origin": {
+          "$ref": "#/$defs/PresetOrigin",
+          "description": "Operator-written or the implicit default."
+        },
+        "can_start": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the caller's workspace role can start a session on it; only\nwhen the request named a workspace."
+        },
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PresetHarnessView"
+          },
+          "description": "Harnesses it offers."
+        },
+        "environment": {
+          "$ref": "#/$defs/Readiness",
+          "description": "Whether the environment's settings are usable."
+        },
+        "reachability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Readiness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether the environment can be reached; only for remote ones."
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "provider",
+        "origin",
+        "harnesses",
+        "environment"
+      ],
+      "description": "An execution preset as the console offers it.",
+      "title": "ExecutionPresetView",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "PresetOrigin": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "operator",
+              "description": "Written by the operator in `execution_presets`."
+            },
+            {
+              "type": "string",
+              "const": "default",
+              "description": "The implicit `local` preset of a server that configures none."
+            }
+          ],
+          "description": "Where an execution preset came from."
+        },
+        "PresetHarnessView": {
+          "type": "object",
+          "properties": {
+            "harness": {
+              "type": "string",
+              "description": "Harness or profile ID a session start names."
+            },
+            "models": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Models a session may choose; absent means it may not choose one."
+            },
+            "default_model": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Model a session that names none runs."
+            },
+            "tool_approvals": {
+              "type": "boolean",
+              "description": "The harness routes tool permission requests to the session's policy."
+            },
+            "writer": {
+              "type": "boolean",
+              "description": "A writer session can start on it."
+            },
+            "reviewer": {
+              "type": "boolean",
+              "description": "A reviewer session can start on it."
+            },
+            "effort": {
+              "type": "boolean",
+              "description": "A session may choose an effort."
+            },
+            "credentials": {
+              "$ref": "#/$defs/PresetCredentials",
+              "description": "Whether the preset supplies the harness's key."
+            },
+            "executable": {
+              "$ref": "#/$defs/Readiness",
+              "description": "Whether the harness's executable is where the session runs."
+            },
+            "auth": {
+              "$ref": "#/$defs/Readiness",
+              "description": "Whether the harness can sign in; verified when a session starts."
+            }
+          },
+          "required": [
+            "harness",
+            "tool_approvals",
+            "writer",
+            "reviewer",
+            "effort",
+            "credentials",
+            "executable",
+            "auth"
+          ],
+          "description": "A harness an execution preset offers."
+        },
+        "PresetCredentials": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "configured",
+              "description": "The preset supplies a secret the harness accepts as its key."
+            },
+            {
+              "type": "string",
+              "const": "none",
+              "description": "The preset supplies no key for the harness."
+            }
+          ],
+          "description": "Whether a preset supplies a harness's key."
+        },
+        "Readiness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/ReadyState",
+              "description": "What was found."
+            },
+            "scope": {
+              "$ref": "#/$defs/ReadinessScope",
+              "description": "Where it was measured."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Fixed text chosen by the server; never an error message, path,\nendpoint or secret name."
+            },
+            "action": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Fixed text saying what an operator can do, when anything."
+            },
+            "checked_ms_ago": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Age of a cached check, in milliseconds."
+            }
+          },
+          "required": [
+            "state",
+            "scope",
+            "reason"
+          ],
+          "description": "One readiness observation. It informs a person and never refuses a start."
+        },
+        "ReadyState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Checked and usable."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Checked and not usable from where it was measured."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "Not checked before a session starts."
+            }
+          ],
+          "description": "What a readiness value found."
+        },
+        "ReadinessScope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "api_host",
+              "description": "The server answering the request, which may not be the worker that\nruns the session."
+            },
+            {
+              "type": "string",
+              "const": "environment",
+              "description": "The preset's execution environment."
+            }
+          ],
+          "description": "Where a readiness value was measured."
+        }
+      }
+    },
+    "workspace.ExecutionPresetList": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "description": "Workspace session starts must name a preset."
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionPresetView"
+          },
+          "description": "Presets offered to the caller's tenant."
+        }
+      },
+      "required": [
+        "required",
+        "presets"
+      ],
+      "description": "`GET /v1/execution-presets` response.",
+      "title": "ExecutionPresetList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ExecutionPresetView": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "ID a session start names."
+            },
+            "label": {
+              "type": "string",
+              "description": "Plain-language name."
+            },
+            "description": {
+              "type": "string",
+              "description": "Plain-language description."
+            },
+            "provider": {
+              "type": "string",
+              "description": "Provider kind: `local`, `substrate` or `microsandbox`."
+            },
+            "origin": {
+              "$ref": "#/$defs/PresetOrigin",
+              "description": "Operator-written or the implicit default."
+            },
+            "can_start": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether the caller's workspace role can start a session on it; only\nwhen the request named a workspace."
+            },
+            "harnesses": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PresetHarnessView"
+              },
+              "description": "Harnesses it offers."
+            },
+            "environment": {
+              "$ref": "#/$defs/Readiness",
+              "description": "Whether the environment's settings are usable."
+            },
+            "reachability": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Readiness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether the environment can be reached; only for remote ones."
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "description",
+            "provider",
+            "origin",
+            "harnesses",
+            "environment"
+          ],
+          "description": "An execution preset as the console offers it."
+        },
+        "PresetOrigin": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "operator",
+              "description": "Written by the operator in `execution_presets`."
+            },
+            {
+              "type": "string",
+              "const": "default",
+              "description": "The implicit `local` preset of a server that configures none."
+            }
+          ],
+          "description": "Where an execution preset came from."
+        },
+        "PresetHarnessView": {
+          "type": "object",
+          "properties": {
+            "harness": {
+              "type": "string",
+              "description": "Harness or profile ID a session start names."
+            },
+            "models": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "Models a session may choose; absent means it may not choose one."
+            },
+            "default_model": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Model a session that names none runs."
+            },
+            "tool_approvals": {
+              "type": "boolean",
+              "description": "The harness routes tool permission requests to the session's policy."
+            },
+            "writer": {
+              "type": "boolean",
+              "description": "A writer session can start on it."
+            },
+            "reviewer": {
+              "type": "boolean",
+              "description": "A reviewer session can start on it."
+            },
+            "effort": {
+              "type": "boolean",
+              "description": "A session may choose an effort."
+            },
+            "credentials": {
+              "$ref": "#/$defs/PresetCredentials",
+              "description": "Whether the preset supplies the harness's key."
+            },
+            "executable": {
+              "$ref": "#/$defs/Readiness",
+              "description": "Whether the harness's executable is where the session runs."
+            },
+            "auth": {
+              "$ref": "#/$defs/Readiness",
+              "description": "Whether the harness can sign in; verified when a session starts."
+            }
+          },
+          "required": [
+            "harness",
+            "tool_approvals",
+            "writer",
+            "reviewer",
+            "effort",
+            "credentials",
+            "executable",
+            "auth"
+          ],
+          "description": "A harness an execution preset offers."
+        },
+        "PresetCredentials": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "configured",
+              "description": "The preset supplies a secret the harness accepts as its key."
+            },
+            {
+              "type": "string",
+              "const": "none",
+              "description": "The preset supplies no key for the harness."
+            }
+          ],
+          "description": "Whether a preset supplies a harness's key."
+        },
+        "Readiness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/ReadyState",
+              "description": "What was found."
+            },
+            "scope": {
+              "$ref": "#/$defs/ReadinessScope",
+              "description": "Where it was measured."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Fixed text chosen by the server; never an error message, path,\nendpoint or secret name."
+            },
+            "action": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Fixed text saying what an operator can do, when anything."
+            },
+            "checked_ms_ago": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Age of a cached check, in milliseconds."
+            }
+          },
+          "required": [
+            "state",
+            "scope",
+            "reason"
+          ],
+          "description": "One readiness observation. It informs a person and never refuses a start."
+        },
+        "ReadyState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Checked and usable."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Checked and not usable from where it was measured."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "Not checked before a session starts."
+            }
+          ],
+          "description": "What a readiness value found."
+        },
+        "ReadinessScope": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "api_host",
+              "description": "The server answering the request, which may not be the worker that\nruns the session."
+            },
+            {
+              "type": "string",
+              "const": "environment",
+              "description": "The preset's execution environment."
+            }
+          ],
+          "description": "Where a readiness value was measured."
         }
       }
     },
@@ -30283,6 +32769,29 @@
             {
               "type": "object",
               "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "status": {
                   "$ref": "#/$defs/BranchStatus"
                 }
@@ -30397,6 +32906,14 @@
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
+                      }
+                    },
+                    "skills": {
+                      "description": "The skills staged for the turn, built-in and the repository's,\neach by layer, name and digest, with the set's digest; and the\nrepository's skills that were found and withheld, and why.\nRecorded on every turn that reaches provisioning, whether or not\na file changed; an event from before it was kept reads empty.\nSee `docs/knowledge-skills.md`.",
+                      "$ref": "#/$defs/SkillSet",
+                      "default": {
+                        "set": "",
+                        "entries": []
                       }
                     },
                     "managed": {
@@ -32158,6 +34675,97 @@
           ],
           "description": "How one secret reaches the harness. Names and paths only."
         },
+        "SkillSet": {
+          "type": "object",
+          "properties": {
+            "set": {
+              "type": "string",
+              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Every skill staged for the turn, built-in and custom."
+            },
+            "withheld": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WithheldSkills"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The repository's skills that were found and not staged, and why."
+            }
+          },
+          "required": [
+            "set",
+            "entries"
+          ],
+          "description": "The skills a turn ran with, as its `Provisioned` activity records them\non every turn, changed on disk or not."
+        },
+        "SkillEntry": {
+          "type": "object",
+          "properties": {
+            "layer": {
+              "$ref": "#/$defs/Layer2",
+              "description": "Where it came from."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "digest": {
+              "type": "string",
+              "description": "BLAKE3 over its files' relative paths and contents ([`digest`])."
+            }
+          },
+          "required": [
+            "layer",
+            "name",
+            "digest"
+          ],
+          "description": "One skill of a set: where it came from, its name and its digest."
+        },
+        "Layer2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "repository",
+              "description": "Committed to the repository under `.agents/skills/`, read from the\nbranch's base commit."
+            },
+            {
+              "type": "string",
+              "const": "built_in",
+              "description": "Shipped in the `by` binary."
+            }
+          ],
+          "description": "Where a skill came from, most specific first."
+        },
+        "WithheldSkills": {
+          "type": "object",
+          "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Those found; empty when they were refused."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why they were not staged."
+            }
+          },
+          "required": [
+            "entries",
+            "reason"
+          ],
+          "description": "Repository skills a turn did not stage."
+        },
         "ManagedWritten": {
           "type": "object",
           "properties": {
@@ -33533,6 +36141,17 @@
                 "origin": {
                   "$ref": "#/$defs/SandboxOrigin"
                 },
+                "placed": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Placed"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How long a copied sandbox (Substrate, a recipe) took to be ready\nand what was copied into it; `None` for Microsandbox, which\nmounts the worktree and home."
+                },
                 "event": {
                   "type": "string",
                   "const": "started"
@@ -33545,6 +36164,34 @@
                 "origin"
               ],
               "description": "The turn's sandbox, and where it came from."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "`substrate` or `recipe`."
+                },
+                "sandbox": {
+                  "type": "string",
+                  "description": "The sandbox the home came back from."
+                },
+                "home_pull": {
+                  "$ref": "#/$defs/Transfer",
+                  "description": "The home's copy out: the size of the regular files received."
+                },
+                "event": {
+                  "type": "string",
+                  "const": "returned"
+                }
+              },
+              "required": [
+                "event",
+                "provider",
+                "sandbox",
+                "home_pull"
+              ],
+              "description": "A copied sandbox's home, brought back to the branch's private home\nwhen the turn ended. Not recorded when that copy failed: the turn\nwarns instead."
             },
             {
               "type": "object",
@@ -33829,6 +36476,53 @@
             }
           ],
           "description": "Where a turn's sandbox came from."
+        },
+        "Placed": {
+          "type": "object",
+          "properties": {
+            "ready_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds from asking for the sandbox (after the workspace's\ninput files were copied on this host) to its being created, resumed\nor handed over, before anything was copied in."
+            },
+            "worktree_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The worktree's copy in: the size of the git bundle sent, and the\nwhole push (snapshot, bundle, the sandbox's fetch and checkout)."
+            },
+            "home_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The private home's copy in."
+            }
+          },
+          "required": [
+            "ready_ms",
+            "worktree_push",
+            "home_push"
+          ],
+          "description": "How a copied sandbox (a Substrate actor, a recipe's machine) was made\nready for the turn."
+        },
+        "Transfer": {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The size of what was copied: the git bundle for a worktree, the\nregular files of the tree for a home."
+            },
+            "ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "How long the copy took, in milliseconds."
+            }
+          },
+          "required": [
+            "bytes",
+            "ms"
+          ],
+          "description": "The bytes and duration of one copy into or out of a copied sandbox."
         },
         "FleetActivity": {
           "oneOf": [
@@ -35694,6 +38388,29 @@
             {
               "type": "object",
               "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "status": {
                   "$ref": "#/$defs/BranchStatus"
                 }
@@ -35808,6 +38525,14 @@
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
+                      }
+                    },
+                    "skills": {
+                      "description": "The skills staged for the turn, built-in and the repository's,\neach by layer, name and digest, with the set's digest; and the\nrepository's skills that were found and withheld, and why.\nRecorded on every turn that reaches provisioning, whether or not\na file changed; an event from before it was kept reads empty.\nSee `docs/knowledge-skills.md`.",
+                      "$ref": "#/$defs/SkillSet",
+                      "default": {
+                        "set": "",
+                        "entries": []
                       }
                     },
                     "managed": {
@@ -37569,6 +40294,97 @@
           ],
           "description": "How one secret reaches the harness. Names and paths only."
         },
+        "SkillSet": {
+          "type": "object",
+          "properties": {
+            "set": {
+              "type": "string",
+              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Every skill staged for the turn, built-in and custom."
+            },
+            "withheld": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WithheldSkills"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The repository's skills that were found and not staged, and why."
+            }
+          },
+          "required": [
+            "set",
+            "entries"
+          ],
+          "description": "The skills a turn ran with, as its `Provisioned` activity records them\non every turn, changed on disk or not."
+        },
+        "SkillEntry": {
+          "type": "object",
+          "properties": {
+            "layer": {
+              "$ref": "#/$defs/Layer2",
+              "description": "Where it came from."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "digest": {
+              "type": "string",
+              "description": "BLAKE3 over its files' relative paths and contents ([`digest`])."
+            }
+          },
+          "required": [
+            "layer",
+            "name",
+            "digest"
+          ],
+          "description": "One skill of a set: where it came from, its name and its digest."
+        },
+        "Layer2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "repository",
+              "description": "Committed to the repository under `.agents/skills/`, read from the\nbranch's base commit."
+            },
+            {
+              "type": "string",
+              "const": "built_in",
+              "description": "Shipped in the `by` binary."
+            }
+          ],
+          "description": "Where a skill came from, most specific first."
+        },
+        "WithheldSkills": {
+          "type": "object",
+          "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Those found; empty when they were refused."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why they were not staged."
+            }
+          },
+          "required": [
+            "entries",
+            "reason"
+          ],
+          "description": "Repository skills a turn did not stage."
+        },
         "ManagedWritten": {
           "type": "object",
           "properties": {
@@ -38944,6 +41760,17 @@
                 "origin": {
                   "$ref": "#/$defs/SandboxOrigin"
                 },
+                "placed": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Placed"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How long a copied sandbox (Substrate, a recipe) took to be ready\nand what was copied into it; `None` for Microsandbox, which\nmounts the worktree and home."
+                },
                 "event": {
                   "type": "string",
                   "const": "started"
@@ -38956,6 +41783,34 @@
                 "origin"
               ],
               "description": "The turn's sandbox, and where it came from."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "`substrate` or `recipe`."
+                },
+                "sandbox": {
+                  "type": "string",
+                  "description": "The sandbox the home came back from."
+                },
+                "home_pull": {
+                  "$ref": "#/$defs/Transfer",
+                  "description": "The home's copy out: the size of the regular files received."
+                },
+                "event": {
+                  "type": "string",
+                  "const": "returned"
+                }
+              },
+              "required": [
+                "event",
+                "provider",
+                "sandbox",
+                "home_pull"
+              ],
+              "description": "A copied sandbox's home, brought back to the branch's private home\nwhen the turn ended. Not recorded when that copy failed: the turn\nwarns instead."
             },
             {
               "type": "object",
@@ -39240,6 +42095,53 @@
             }
           ],
           "description": "Where a turn's sandbox came from."
+        },
+        "Placed": {
+          "type": "object",
+          "properties": {
+            "ready_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds from asking for the sandbox (after the workspace's\ninput files were copied on this host) to its being created, resumed\nor handed over, before anything was copied in."
+            },
+            "worktree_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The worktree's copy in: the size of the git bundle sent, and the\nwhole push (snapshot, bundle, the sandbox's fetch and checkout)."
+            },
+            "home_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The private home's copy in."
+            }
+          },
+          "required": [
+            "ready_ms",
+            "worktree_push",
+            "home_push"
+          ],
+          "description": "How a copied sandbox (a Substrate actor, a recipe's machine) was made\nready for the turn."
+        },
+        "Transfer": {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The size of what was copied: the git bundle for a worktree, the\nregular files of the tree for a home."
+            },
+            "ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "How long the copy took, in milliseconds."
+            }
+          },
+          "required": [
+            "bytes",
+            "ms"
+          ],
+          "description": "The bytes and duration of one copy into or out of a copied sandbox."
         },
         "FleetActivity": {
           "oneOf": [
@@ -41091,6 +43993,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -41352,6 +44276,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -41791,6 +44809,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -42052,6 +45092,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -44120,6 +47254,28 @@
           "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
           "default": false
         },
+        "awaiting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Awaiting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+        },
+        "liveness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Liveness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+        },
         "superseded_by": {
           "type": [
             "string",
@@ -44383,6 +47539,100 @@
             }
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
+        },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -45595,6 +48845,28 @@
               "description": "A running turn has had no harness activity for its\n[`Budget::stall_after`] window; see [`Activity::Stalled`]. Always\n`false` once the turn has ended.",
               "default": false
             },
+            "awaiting": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Awaiting"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
+            },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -45857,6 +49129,100 @@
           ],
           "description": "Serialized as an object tagged by `state`, such as\n`{\"state\": \"failed\", \"reason\": \"...\"}`."
         },
+        "Awaiting": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/AwaitingKind",
+              "description": "What kind of answer it waits for."
+            },
+            "id": {
+              "type": "string",
+              "description": "The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`."
+            },
+            "about": {
+              "type": "string",
+              "description": "What it asks, in words, as [`effects::AskAbout::describe`] puts it."
+            },
+            "since_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the turn parked, milliseconds since the Unix epoch."
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "about",
+            "since_ms"
+          ],
+          "description": "What a running turn waits on a person for; see [`BranchInfo::awaiting`]."
+        },
+        "AwaitingKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "approval",
+              "description": "An [`effects::ApprovalAsk`]: may the turn run a tool or a call?"
+            }
+          ],
+          "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
+        },
         "Guard": {
           "oneOf": [
             {
@@ -46069,6 +49435,29 @@
             {
               "type": "object",
               "properties": {
+                "turn_cost": {
+                  "type": "object",
+                  "properties": {
+                    "cost_usd": {
+                      "description": "The turn's own cost.",
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "cost_usd"
+                  ]
+                }
+              },
+              "required": [
+                "turn_cost"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn that is ending cost on its own, in US dollars,\nrecorded once its metering has settled (the harness's closing\nfigure folded in) and before the branch's closing status. For a\nharness that reports its session's running total, the part of it\nthis turn added, never the total; on the model gateway, the turn's\nmetered calls. Recorded only for a turn whose spend something\nmeasured: a harness that reports no usage records none. The\nbranch's running total stays [`BranchInfo::cost_usd`]. A record of\nits own rather than a field of the harness's `turn_ended`, which\narrives before the harness's closing figure, or of\n[`Activity::Checkpoint`], which a turn whose snapshot failed does\nnot record. See `docs/delegation.md#budgets`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "status": {
                   "$ref": "#/$defs/BranchStatus"
                 }
@@ -46183,6 +49572,14 @@
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
+                      }
+                    },
+                    "skills": {
+                      "description": "The skills staged for the turn, built-in and the repository's,\neach by layer, name and digest, with the set's digest; and the\nrepository's skills that were found and withheld, and why.\nRecorded on every turn that reaches provisioning, whether or not\na file changed; an event from before it was kept reads empty.\nSee `docs/knowledge-skills.md`.",
+                      "$ref": "#/$defs/SkillSet",
+                      "default": {
+                        "set": "",
+                        "entries": []
                       }
                     },
                     "managed": {
@@ -47944,6 +51341,97 @@
           ],
           "description": "How one secret reaches the harness. Names and paths only."
         },
+        "SkillSet": {
+          "type": "object",
+          "properties": {
+            "set": {
+              "type": "string",
+              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Every skill staged for the turn, built-in and custom."
+            },
+            "withheld": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WithheldSkills"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The repository's skills that were found and not staged, and why."
+            }
+          },
+          "required": [
+            "set",
+            "entries"
+          ],
+          "description": "The skills a turn ran with, as its `Provisioned` activity records them\non every turn, changed on disk or not."
+        },
+        "SkillEntry": {
+          "type": "object",
+          "properties": {
+            "layer": {
+              "$ref": "#/$defs/Layer2",
+              "description": "Where it came from."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "digest": {
+              "type": "string",
+              "description": "BLAKE3 over its files' relative paths and contents ([`digest`])."
+            }
+          },
+          "required": [
+            "layer",
+            "name",
+            "digest"
+          ],
+          "description": "One skill of a set: where it came from, its name and its digest."
+        },
+        "Layer2": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "repository",
+              "description": "Committed to the repository under `.agents/skills/`, read from the\nbranch's base commit."
+            },
+            {
+              "type": "string",
+              "const": "built_in",
+              "description": "Shipped in the `by` binary."
+            }
+          ],
+          "description": "Where a skill came from, most specific first."
+        },
+        "WithheldSkills": {
+          "type": "object",
+          "properties": {
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "description": "Those found; empty when they were refused."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why they were not staged."
+            }
+          },
+          "required": [
+            "entries",
+            "reason"
+          ],
+          "description": "Repository skills a turn did not stage."
+        },
         "ManagedWritten": {
           "type": "object",
           "properties": {
@@ -49319,6 +52807,17 @@
                 "origin": {
                   "$ref": "#/$defs/SandboxOrigin"
                 },
+                "placed": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Placed"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "How long a copied sandbox (Substrate, a recipe) took to be ready\nand what was copied into it; `None` for Microsandbox, which\nmounts the worktree and home."
+                },
                 "event": {
                   "type": "string",
                   "const": "started"
@@ -49331,6 +52830,34 @@
                 "origin"
               ],
               "description": "The turn's sandbox, and where it came from."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "`substrate` or `recipe`."
+                },
+                "sandbox": {
+                  "type": "string",
+                  "description": "The sandbox the home came back from."
+                },
+                "home_pull": {
+                  "$ref": "#/$defs/Transfer",
+                  "description": "The home's copy out: the size of the regular files received."
+                },
+                "event": {
+                  "type": "string",
+                  "const": "returned"
+                }
+              },
+              "required": [
+                "event",
+                "provider",
+                "sandbox",
+                "home_pull"
+              ],
+              "description": "A copied sandbox's home, brought back to the branch's private home\nwhen the turn ended. Not recorded when that copy failed: the turn\nwarns instead."
             },
             {
               "type": "object",
@@ -49615,6 +53142,53 @@
             }
           ],
           "description": "Where a turn's sandbox came from."
+        },
+        "Placed": {
+          "type": "object",
+          "properties": {
+            "ready_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds from asking for the sandbox (after the workspace's\ninput files were copied on this host) to its being created, resumed\nor handed over, before anything was copied in."
+            },
+            "worktree_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The worktree's copy in: the size of the git bundle sent, and the\nwhole push (snapshot, bundle, the sandbox's fetch and checkout)."
+            },
+            "home_push": {
+              "$ref": "#/$defs/Transfer",
+              "description": "The private home's copy in."
+            }
+          },
+          "required": [
+            "ready_ms",
+            "worktree_push",
+            "home_push"
+          ],
+          "description": "How a copied sandbox (a Substrate actor, a recipe's machine) was made\nready for the turn."
+        },
+        "Transfer": {
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The size of what was copied: the git bundle for a worktree, the\nregular files of the tree for a home."
+            },
+            "ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "How long the copy took, in milliseconds."
+            }
+          },
+          "required": [
+            "bytes",
+            "ms"
+          ],
+          "description": "The bytes and duration of one copy into or out of a copied sandbox."
         },
         "FleetActivity": {
           "oneOf": [

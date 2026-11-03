@@ -352,6 +352,19 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
     }
     let workspace = client.workspace(&operation.workspace_id).unwrap();
     assert_eq!(workspace.title, "Typed workspace");
+    let offered = client.execution_presets(Some(&workspace.id)).unwrap();
+    assert!(!offered.required);
+    assert_eq!(offered.presets.len(), 1, "{offered:?}");
+    assert_eq!(offered.presets[0].id, "local");
+    assert_eq!(
+        offered.presets[0].origin,
+        branchyard_client::workspace_api::PresetOrigin::Default
+    );
+    assert_eq!(offered.presets[0].can_start, Some(true));
+    assert_eq!(
+        client.execution_presets(None).unwrap().presets[0].can_start,
+        None
+    );
     assert_eq!(client.workspaces(Some(&project.id)).unwrap().len(), 1);
     let started = client
         .start_workspace_session(
@@ -359,6 +372,7 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
             &StartSessionRequest {
                 unapproved_tools: false,
                 provider: None,
+                preset: None,
                 name: "Writer".into(),
                 prompt: "Hello".into(),
                 harness: "gemini-cli".into(),
@@ -393,6 +407,10 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
     let sessions = client.workspace_sessions(&workspace.id).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, session);
+    // A repository project's finished session is a branch of its
+    // repository, and no output waits: nothing in the project's own list.
+    assert_eq!(client.project_decisions(&project.id).unwrap(), vec![]);
+    assert!(client.project_decisions("no-such-project").is_err());
     let page = client
         .workspace_messages(&workspace.id, &session, None)
         .unwrap();

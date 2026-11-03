@@ -132,11 +132,13 @@ mod judge;
 mod knowledge;
 mod land;
 mod lifecycle;
+mod liveness;
 mod lock;
 mod map;
 mod map_input;
 pub mod models;
 mod names;
+mod obligations;
 pub mod operations;
 mod ops;
 #[cfg(feature = "postgres")]
@@ -160,6 +162,7 @@ mod schema_parity;
 pub mod scope;
 mod seats;
 pub mod services;
+pub mod skills;
 mod snapshots;
 mod spotlight;
 mod sqlite;
@@ -265,6 +268,7 @@ pub use knowledge::{
 };
 pub use land::{Landing, FIXES as LAND_FIXES};
 pub use lifecycle::{Parked, Resting};
+pub use liveness::{Liveness, LivenessState};
 pub use map::{
     check_spec as check_map_spec, default_name as map_default_name,
     follow_up_prompt as map_follow_up_prompt, item_prompt as map_item_prompt,
@@ -278,6 +282,7 @@ pub use map_input::{
     parse_items as parse_map_items, render as render_map_prompt, ItemFormat, MapItem,
     TemplateContext,
 };
+pub use obligations::{Obligation, ObligationKind};
 pub use plan::{
     approved_prompt, from_events as plan_from_events, parse_tasks as parse_plan_tasks,
     planning_prompt, read_only as read_only_policy, Plan, PlanActivity, PlanInfo, PlanPhase,
@@ -299,12 +304,13 @@ pub use reported::{Reported, ReportedState, StatusReport};
 pub use review::ReviewSpec;
 pub use seats::{Seat, Seats};
 use serde::{Deserialize, Serialize};
+pub use skills::{BranchSkills, SkillGate, SkillSet, WithheldSkills};
 pub use snapshots::{
-    SandboxConsistency, SandboxEvent, SandboxKeep, SandboxOrigin, SandboxScope, SandboxSnapshot,
-    SnapshotMethod,
+    Placed, SandboxConsistency, SandboxEvent, SandboxKeep, SandboxOrigin, SandboxScope,
+    SandboxSnapshot, SnapshotMethod, Transfer,
 };
 pub use spotlight::{TryEntry, TryFile, TryState};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 pub use storage::{ArtifactRef, ScratchArea, ScratchLock, DEFAULT_ARTIFACT_LIMIT};
 pub use workspace::{
     check_glob as check_workspace_glob, RanIn, WorkspaceInfo, WorkspacePhase, WorkspaceReport,
@@ -683,23 +689,75 @@ impl Yard {
         }
     }
 
-    /// Every branch Branchyard knows, oldest first.
+    /// Every branch Branchyard knows, oldest first, each with what its
+    /// running turn waits on a person for ([`BranchInfo::awaiting`]) and
+    /// whether its engine is still heard from ([`BranchInfo::liveness`]).
     pub fn branches(&self) -> Result<Vec<BranchInfo>, Error> {
+        let parked = self.parked()?;
+        let alive = self.liveness()?;
         Ok(self
             .store()
             .list()?
             .into_iter()
-            .map(|record| record.info)
+            .map(|record| with_liveness(with_awaiting(record.info, &parked), &alive))
             .collect())
     }
 
     /// Look up one branch by name.
     pub fn branch(&self, name: &str) -> Result<Branch, Error> {
         let record = self.store().read(name)?;
+        let parked = self.parked()?;
+        let alive = self.liveness()?;
         Ok(Branch {
             yard: self.clone(),
-            info: record.info,
+            info: with_liveness(with_awaiting(record.info, &parked), &alive),
         })
+    }
+
+    /// What branches still owe, or what `branch` and the branches
+    /// delegated below it owe: unknown and staged effects, closing undo
+    /// windows, waiting approvals, lost turns and engines, blocked and
+    /// waiting children, parked parents and ready children nobody
+    /// integrated. Read from the ledger, the asks, the records and the
+    /// leases; nothing is stored. See `docs/obligations.md`.
+    pub fn obligations(&self, branch: Option<&str>) -> Result<Vec<Obligation>, Error> {
+        self.obligations_at(branch, branchyard_support::time::now_ms())
+    }
+
+    /// [`Yard::obligations`] as of `now_ms`, for an undo window's deadline
+    /// and an engine's lease.
+    pub fn obligations_at(
+        &self,
+        branch: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Vec<Obligation>, Error> {
+        obligations::list(&self.store(), branch, now_ms)
+    }
+
+    /// The liveness of each branch holding a lease, by branch.
+    fn liveness(&self) -> Result<HashMap<String, Liveness>, Error> {
+        let leases = self.store().backend().leases()?;
+        Ok(liveness::by_branch(
+            &leases,
+            branchyard_support::time::now_ms(),
+        ))
+    }
+
+    /// The oldest pending ask of each branch that has one, by branch: what
+    /// a running turn is parked on.
+    fn parked(&self) -> Result<HashMap<String, Awaiting>, Error> {
+        let mut parked = HashMap::new();
+        for ask in self.store().effects().asks(true)? {
+            parked
+                .entry(ask.branch.clone())
+                .or_insert_with(|| Awaiting {
+                    kind: AwaitingKind::Approval,
+                    id: ask.id.clone(),
+                    about: ask.about.describe(),
+                    since_ms: ask.created_ms,
+                });
+        }
+        Ok(parked)
     }
 
     /// Merge `branch`'s candidate into the local branch `target`, running the
@@ -831,6 +889,15 @@ impl Yard {
         on_fill: impl Fn(&PoolFill) + Send + 'static,
     ) -> PoolKeeper {
         PoolKeeper::start(self.clone(), Box::new(spec), every, Box::new(on_fill))
+    }
+
+    /// The repository skills `branch` runs with, fixed when it (or the
+    /// branch it was forked or delegated from) was created: the commit they
+    /// are read from, their entries and digest, and whether they are staged
+    /// or withheld and why. `None` when its base commit had none. See
+    /// [`skills`].
+    pub fn branch_skills(&self, branch: &str) -> Result<Option<BranchSkills>, Error> {
+        Ok(self.store().read(branch)?.skills)
     }
 
     /// The variables `branch`'s scripts and harness get:
@@ -1498,6 +1565,16 @@ pub struct TaskOptions {
     /// parent's denials bound a spawned child (`by spawn --deny`). Read
     /// only when a branch is created.
     pub deny: Vec<String>,
+    /// Whether a new branch stages the repository's own skills
+    /// (`.agents/skills/` at its base commit), and why not when it does
+    /// not. Read only when a branch is created by `run`, a fan or
+    /// `run_attempts`; a fork, reincarnation or delegated child inherits
+    /// its parent's. Withheld by default. Whether a repository's skills
+    /// may be staged is the caller's decision: `by` stages a set you
+    /// trusted by its digest (`by skills trust`), a server one its
+    /// operator allows (`allow_repository_skills`). See
+    /// `docs/knowledge-skills.md`.
+    pub repository_skills: SkillGate,
 }
 
 /// The variable a turn's harness gets [`TaskOptions::trace_parent`] in.
@@ -2192,6 +2269,22 @@ pub struct BranchInfo {
     /// `false` once the turn has ended.
     #[serde(default)]
     pub stalled: bool,
+    /// What the running turn is parked on, waiting for a person: the
+    /// oldest approval ask it has open (`docs/effects.md#approvals`).
+    /// Read from the pending asks when the record is listed or looked up,
+    /// never stored, so it is exact: `None` the moment the ask is
+    /// answered, and `None` whenever the branch is not running. A parked
+    /// turn is never stalled; it moves only when someone answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting: Option<Awaiting>,
+    /// Whether a running turn's engine is still heard from: `live`,
+    /// `unknown` once its lease renewals stopped, `lost` once the lease no
+    /// longer protects it and recovery will end the turn. Read from the
+    /// branch's lease when the record is listed or looked up, never stored;
+    /// `None` whenever the branch is not running. See
+    /// `docs/durability.md#liveness`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<Liveness>,
     /// The branch [`Branch::reincarnate`] started from this one's latest
     /// candidate, with a fresh session and a handoff brief.
     #[serde(default)]
@@ -2223,6 +2316,49 @@ pub struct BranchInfo {
 /// The `provider` of a record that predates the field.
 fn local_provider() -> String {
     "local".to_owned()
+}
+
+/// `info` with what its turn is parked on, if it is running and has an
+/// ask open; any other state waits on nobody.
+fn with_awaiting(mut info: BranchInfo, parked: &HashMap<String, Awaiting>) -> BranchInfo {
+    info.awaiting = match info.status {
+        BranchStatus::Running => parked.get(&info.name).cloned(),
+        _ => None,
+    };
+    info
+}
+
+/// `info` with its engine's liveness, if it is running and its lease is
+/// held; any other state has no engine to hear from.
+fn with_liveness(mut info: BranchInfo, alive: &HashMap<String, Liveness>) -> BranchInfo {
+    info.liveness = match info.status {
+        BranchStatus::Running => alive.get(&info.name).cloned(),
+        _ => None,
+    };
+    info
+}
+
+/// What a running turn waits on a person for; see [`BranchInfo::awaiting`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Awaiting {
+    /// What kind of answer it waits for.
+    pub kind: AwaitingKind,
+    /// The ask's id: `by approvals allow ID`, `…/approvals/{id}/allow`.
+    pub id: String,
+    /// What it asks, in words, as [`effects::AskAbout::describe`] puts it.
+    pub about: String,
+    /// When the turn parked, milliseconds since the Unix epoch.
+    pub since_ms: u64,
+}
+
+/// The kinds of answer a parked turn waits for.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AwaitingKind {
+    /// An [`effects::ApprovalAsk`]: may the turn run a tool or a call?
+    Approval,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -2595,6 +2731,22 @@ pub enum Activity {
     },
     /// A new candidate commit.
     Snapshot(CandidateInfo),
+    /// What the turn that is ending cost on its own, in US dollars,
+    /// recorded once its metering has settled (the harness's closing
+    /// figure folded in) and before the branch's closing status. For a
+    /// harness that reports its session's running total, the part of it
+    /// this turn added, never the total; on the model gateway, the turn's
+    /// metered calls. Recorded only for a turn whose spend something
+    /// measured: a harness that reports no usage records none. The
+    /// branch's running total stays [`BranchInfo::cost_usd`]. A record of
+    /// its own rather than a field of the harness's `turn_ended`, which
+    /// arrives before the harness's closing figure, or of
+    /// [`Activity::Checkpoint`], which a turn whose snapshot failed does
+    /// not record. See `docs/delegation.md#budgets`.
+    TurnCost {
+        /// The turn's own cost.
+        cost_usd: f64,
+    },
     /// The branch's status changed.
     Status(BranchStatus),
     /// Something the engine noticed, such as descendants that outlived the
@@ -2637,6 +2789,14 @@ pub enum Activity {
         /// `docs/knowledge.md`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         knowledge: Vec<u64>,
+        /// The skills staged for the turn, built-in and the repository's,
+        /// each by layer, name and digest, with the set's digest; and the
+        /// repository's skills that were found and withheld, and why.
+        /// Recorded on every turn that reaches provisioning, whether or not
+        /// a file changed; an event from before it was kept reads empty.
+        /// See `docs/knowledge-skills.md`.
+        #[serde(default)]
+        skills: skills::SkillSet,
         /// The managed settings written into a sandbox for a Claude Code
         /// turn, before the harness started, when the turn's sandbox took
         /// them; see `docs/provisioning.md#managed-settings`. Names and

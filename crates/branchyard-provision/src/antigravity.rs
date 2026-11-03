@@ -19,11 +19,15 @@
 // files and hooks, which serve Scion's interactive terminal launch rather
 // than the headless stream Branchyard drives.
 
-//! Antigravity CLI: `antigravity-stream-json`. Its driver has no channel
-//! for MCP servers or instructions, so they go into its configuration, in
-//! a private home.
+//! Antigravity CLI, two profiles. `antigravity-acp` (`agy acp`, the
+//! default) has a session channel: MCP servers and instructions go on
+//! `session/new` and the first prompt, and the CLI asks Branchyard before
+//! each tool through `session/request_permission`, so no permission rule
+//! is written for it; the key and `modelProvider` still are, in a private
+//! home. `antigravity-stream-json`'s driver has no channel for MCP servers
+//! or instructions, so they go into its configuration, in a private home.
 //!
-//! Its headless stream carries no permission requests either: a tool that
+//! The headless stream carries no permission requests either: a tool that
 //! needs approval is soft-denied unless a rule under `permissions.allow` in
 //! `~/.gemini/antigravity-cli/settings.json` allows it
 //! (<https://antigravity.google/docs/cli/headless/>). The branch's policy
@@ -35,8 +39,8 @@ use crate::auth::{Method, Spec};
 use crate::edit::{path, Edit, JsonEdit};
 use crate::permissions::{Permissions, PermissionsWritten};
 use crate::{
-    needs_private_home, unsupported, unused, Context, McpServer, Plan, Provisioner, Refused,
-    RemoteMcpServer, RemoteTransport,
+    needs_private_home, pass_session, unsupported, unused, Context, McpServer, Plan, Protocol,
+    Provisioner, Refused, RemoteMcpServer, RemoteTransport,
 };
 
 const MCP_CONFIG: &str = ".gemini/config/mcp_config.json";
@@ -269,6 +273,10 @@ impl Provisioner for Antigravity {
         }
         let mut plan = Plan::default();
         plan.session.model = context.model.clone();
+        // Over ACP the driver carries MCP servers and instructions on the
+        // session and answers the CLI's permission requests itself: the
+        // rules below would only let the CLI skip asking.
+        let acp = context.protocol == Protocol::Acp;
         let given: Vec<&str> = context.secrets.iter().map(|s| s.name.as_str()).collect();
         if let Some(resolved) = AUTH.select(&given, context.auth.as_deref())? {
             plan.auth = Some(resolved.method.to_owned());
@@ -295,16 +303,24 @@ impl Provisioner for Antigravity {
         }
         plan.unused_secrets = unused(context, &AUTH.names());
 
+        if acp {
+            pass_session(context, &mut plan);
+        }
         // MCP servers: merged by name; stale ones Branchyard installed go.
-        if !context.mcp_servers.is_empty() || !context.remote_mcp_servers.is_empty() {
+        // Over ACP none is installed, and ones an earlier stream-json turn
+        // installed in this home are taken back.
+        if !acp && (!context.mcp_servers.is_empty() || !context.remote_mcp_servers.is_empty()) {
             needs_private_home(context, "MCP servers")?;
         }
-        let names: Vec<String> = context
-            .mcp_servers
-            .iter()
-            .map(|s| s.name.clone())
-            .chain(context.remote_mcp_servers.iter().map(|s| s.name.clone()))
-            .collect();
+        let names: Vec<String> = match acp {
+            true => Vec::new(),
+            false => context
+                .mcp_servers
+                .iter()
+                .map(|s| s.name.clone())
+                .chain(context.remote_mcp_servers.iter().map(|s| s.name.clone()))
+                .collect(),
+        };
         if context.private_home && (!names.is_empty() || !context.installed.mcp_servers.is_empty())
         {
             let mut edits: Vec<JsonEdit> = context
@@ -339,13 +355,15 @@ impl Provisioner for Antigravity {
         }
 
         // Permission rules: the branch's policy, in a private home only. A
-        // home that is yours keeps the rules you set.
+        // home that is yours keeps the rules you set. Over ACP, none: the
+        // CLI asks Branchyard, and rules an earlier stream-json turn wrote
+        // into this home are taken back.
         if context.private_home
             && (context.permissions.is_some() || context.installed.permissions.is_some())
         {
             let written = match &context.permissions {
-                Some(permissions) => rules(context, permissions),
-                None => PermissionsWritten {
+                Some(permissions) if !acp => rules(context, permissions),
+                _ => PermissionsWritten {
                     path: SETTINGS.into(),
                     ..PermissionsWritten::default()
                 },
@@ -381,19 +399,22 @@ impl Provisioner for Antigravity {
             plan.permissions = Some(written);
         }
 
-        // Instructions: Branchyard's block in GEMINI.md.
+        // Instructions: Branchyard's block in GEMINI.md, for the stream;
+        // over ACP they went on the session above, and a block an earlier
+        // stream-json turn left in this home is removed.
         match (&context.instructions, context.private_home) {
-            (Some(_), false) => needs_private_home(context, "Standing instructions")?,
+            (Some(_), false) if !acp => needs_private_home(context, "Standing instructions")?,
+            (_, false) => {}
             (instructions, true) => plan.edit(
                 INSTRUCTIONS,
                 false,
                 Edit::Block(
                     instructions
                         .as_ref()
+                        .filter(|_| !acp)
                         .map(|i| crate::instructions::section("Agent Instructions", &i.text)),
                 ),
             ),
-            (None, false) => {}
         }
         Ok(plan)
     }
@@ -403,7 +424,6 @@ impl Provisioner for Antigravity {
 mod tests {
     use super::*;
     use crate::permissions::{Fallback, PermissionRule, DELEGATION_SERVER};
-    use crate::Protocol;
 
     fn rule(tool: &str, allow: bool) -> PermissionRule {
         PermissionRule {
@@ -434,6 +454,50 @@ mod tests {
 
     /// `full`, with Branchyard's server and `by` on the harness's path:
     /// every command, which covers `by`, and every tool of each server.
+    /// Over ACP the CLI asks Branchyard, so the policy becomes no rule,
+    /// and MCP servers and instructions travel on the session, with or
+    /// without a private home; rules and servers an earlier stream-json
+    /// turn wrote into the same home are taken back.
+    #[test]
+    fn over_acp_the_session_carries_servers_and_instructions_and_no_rule_is_written() {
+        let mut context = context(&[DELEGATION_SERVER]);
+        context.protocol = Protocol::Acp;
+        context.instructions = Some(crate::Instructions {
+            text: "Be brief.".into(),
+            plugin_dir: None,
+        });
+        context.permissions = Some(Permissions::new(Fallback::Allow));
+        // Local mode: nothing is written, nothing is refused.
+        let plan = Antigravity.plan(&context).unwrap();
+        assert_eq!(plan.session.mcp_servers, context.mcp_servers);
+        assert_eq!(plan.session.instructions, context.instructions);
+        let paths: Vec<&str> = plan.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.is_empty(), "{paths:?}");
+        assert_eq!(plan.permissions, None);
+        // A private home with a stream-json turn's leftovers.
+        context.private_home = true;
+        context.installed.mcp_servers = vec![DELEGATION_SERVER.into()];
+        context.installed.permissions = Some(PermissionsWritten {
+            path: SETTINGS.into(),
+            allow: vec!["command(*)".into()],
+            deny: Vec::new(),
+        });
+        let plan = Antigravity.plan(&context).unwrap();
+        assert_eq!(plan.session.mcp_servers, context.mcp_servers);
+        let written = plan.permissions.unwrap();
+        assert!(written.allow.is_empty() && written.deny.is_empty());
+        assert_eq!(plan.installed_mcp_servers, Some(Vec::new()));
+        let paths: Vec<&str> = plan.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, [MCP_CONFIG, SETTINGS, INSTRUCTIONS]);
+        let text = plan
+            .files
+            .iter()
+            .map(|f| format!("{:?}", f.edits))
+            .collect::<String>();
+        assert!(text.contains("Pull") && text.contains("Remove"), "{text}");
+        assert!(!text.contains("Be brief."), "{text}");
+    }
+
     #[test]
     fn an_allowed_shell_gets_every_command() {
         let permissions = Permissions {

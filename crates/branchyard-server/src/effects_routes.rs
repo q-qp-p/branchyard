@@ -8,6 +8,8 @@
 //! answer is one store write the waiting turn sees, and a promotion or an
 //! inverse is one gateway call recorded on its entry.
 
+use std::collections::{BTreeMap, HashSet};
+
 use axum::extract::{Path, RawQuery, State};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -15,9 +17,10 @@ use axum::{Extension, Json, Router};
 use branchyard::effects::reconcile::Reconciled;
 use branchyard::effects::undo::UndoPlan;
 use branchyard::effects::{ApprovalAsk, EffectEntry};
+use branchyard::{BranchStatus, MessageKind, TaskOptions, Yard};
 use branchyard_client::effects_api::{
-    ApprovalAnswerRequest, ApprovalList, EffectActionRequest, EffectDetail, EffectList, UndoReport,
-    UndoRequest,
+    ApprovalAnswerRequest, ApprovalList, Decision, DecisionKind, DecisionList, EffectActionRequest,
+    EffectDetail, EffectList, Ground, GroundBranch, GroundFile, UndoReport, UndoRequest, Waits,
 };
 
 use crate::api::{blocking, Caller, JsonBody, Shared};
@@ -25,6 +28,8 @@ use crate::error::{self, ApiError};
 
 pub(crate) fn router() -> Router<Shared> {
     Router::new()
+        .route("/v1/repos/{repo}/decisions", get(decisions))
+        .route("/v1/repos/{repo}/ground", get(ground))
         .route("/v1/repos/{repo}/approvals", get(approvals))
         .route("/v1/repos/{repo}/approvals/{id}/allow", post(allow))
         .route("/v1/repos/{repo}/approvals/{id}/deny", post(deny))
@@ -48,6 +53,189 @@ fn query(raw: Option<&str>, key: &str) -> Option<String> {
         .split('&')
         .find_map(|pair| pair.strip_prefix(&format!("{key}=")))
         .map(branchyard_client::http::decode_form)
+}
+
+/// `GET /v1/repos/{repo}/decisions`: what waits for a person, in the order
+/// to take it ([`DecisionList`]).
+async fn decisions(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<DecisionList>, ApiError> {
+    let yard = app.authorized_repo(&caller, &repo, "read")?.yard.clone();
+    let decisions = sdk(blocking(move || decide(&yard)).await?)?;
+    Ok(Json(DecisionList { decisions }))
+}
+
+/// The decisions of `yard`'s branches: parked turns first, oldest wait
+/// first; then the ready branches and the stopped ones, oldest branch
+/// first. A question counts once nobody has answered it: the asker's own
+/// inbox holds the replies.
+fn decide(yard: &Yard) -> Result<Vec<Decision>, branchyard::Error> {
+    let branches = yard.branches()?;
+    let mut parked = Vec::new();
+    let mut merges = Vec::new();
+    let mut stops = Vec::new();
+    let decision = |b: &branchyard::BranchInfo, kind, waits, since_ms| Decision {
+        kind,
+        branch: b.name.clone(),
+        waits,
+        since_ms,
+        status: b.status.clone(),
+        candidate: b.candidate.clone(),
+        approval: None,
+        question: None,
+        workspace: None,
+        workspace_title: None,
+        session: None,
+        session_name: None,
+        phase: None,
+        output: None,
+    };
+    for b in &branches {
+        if let Some(awaiting) = &b.awaiting {
+            let mut d = decision(
+                b,
+                DecisionKind::Approval,
+                Waits::Agent,
+                Some(awaiting.since_ms),
+            );
+            d.approval = Some(yard.approval(&awaiting.id)?);
+            parked.push(d);
+        }
+        match &b.status {
+            BranchStatus::Ready if b.candidate.is_some() => {
+                merges.push((
+                    b.created_at,
+                    decision(b, DecisionKind::Merge, Waits::Delivery, None),
+                ));
+            }
+            BranchStatus::Failed { .. }
+            | BranchStatus::Interrupted
+            | BranchStatus::BudgetExceeded { .. } => {
+                stops.push((
+                    b.created_at,
+                    decision(b, DecisionKind::Stop, Waits::Nobody, None),
+                ));
+            }
+            BranchStatus::Running if b.stalled && b.awaiting.is_none() => {
+                stops.push((
+                    b.created_at,
+                    decision(b, DecisionKind::Stall, Waits::Nobody, None),
+                ));
+            }
+            _ => {}
+        }
+    }
+    let inbox_of = |name: &str| {
+        yard.branch(name)
+            .and_then(|b| b.delegate(TaskOptions::default()))
+            .and_then(|d| d.inbox())
+            .map(|inbox| inbox.messages)
+    };
+    let mut asked = Vec::new();
+    for parent in branches.iter().filter(|b| !b.children.is_empty()) {
+        // A parent whose inbox cannot be read has no question to show.
+        if let Ok(messages) = inbox_of(&parent.name) {
+            asked.extend(
+                messages
+                    .into_iter()
+                    .filter(|m| matches!(m.kind, MessageKind::Question | MessageKind::Escalation)),
+            );
+        }
+    }
+    let askers: HashSet<String> = asked.iter().map(|m| m.from.clone()).collect();
+    let mut answered = HashSet::new();
+    for name in askers {
+        if let Ok(messages) = inbox_of(&name) {
+            answered.extend(messages.iter().filter_map(|m| m.in_reply_to));
+        }
+    }
+    for m in asked.into_iter().filter(|m| !answered.contains(&m.id)) {
+        let Some(b) = branches.iter().find(|b| b.name == m.from) else {
+            continue;
+        };
+        let mut d = decision(b, DecisionKind::Question, Waits::Agent, Some(m.at_ms));
+        d.question = Some(m);
+        parked.push(d);
+    }
+    parked.sort_by_key(|d| d.since_ms);
+    merges.sort_by_key(|(created, _)| *created);
+    stops.sort_by_key(|(created, _)| *created);
+    Ok(parked
+        .into_iter()
+        .chain(merges.into_iter().map(|(_, d)| d))
+        .chain(stops.into_iter().map(|(_, d)| d))
+        .collect())
+}
+
+/// `GET /v1/repos/{repo}/ground`: which files are in whose hands
+/// ([`Ground`]). It reads every open branch's diff when asked, one `git
+/// diff` per branch, so a call costs what those reads cost; nothing is
+/// stored for it.
+async fn ground(
+    State(app): State<Shared>,
+    Path(repo): Path<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Ground>, ApiError> {
+    let yard = app.authorized_repo(&caller, &repo, "read")?.yard.clone();
+    let ground = sdk(blocking(move || survey(&yard)).await?)?;
+    Ok(Json(ground))
+}
+
+/// Whether `info` still holds its files: not merged, not discarded, and
+/// not one of the goal judge's scratch branches (`judge-…`, removed once
+/// it answers).
+fn open(info: &branchyard::BranchInfo) -> bool {
+    !matches!(
+        info.status,
+        BranchStatus::Merged { .. } | BranchStatus::Discarded { .. }
+    ) && !info.name.starts_with("judge-")
+}
+
+/// The ground of `yard`'s open branches, from each one's diff. Only
+/// listing the branches can fail the call; a diff that cannot be read
+/// skips its branch.
+fn survey(yard: &Yard) -> Result<Ground, branchyard::Error> {
+    let held = yard.branches()?.into_iter().filter(open).map(|b| {
+        let files = yard
+            .branch(&b.name)
+            .and_then(|branch| branch.diff())
+            .map(|diff| branchyard::diff_files(&diff));
+        (b.name, b.status, files)
+    });
+    Ok(tally(held))
+}
+
+/// Group each branch's changed paths by path: paths sorted, each path's
+/// branches sorted by name, and the branches whose files are an error
+/// listed, sorted, in `skipped`.
+fn tally<E>(
+    held: impl IntoIterator<Item = (String, BranchStatus, Result<Vec<String>, E>)>,
+) -> Ground {
+    let mut by_path: BTreeMap<String, Vec<GroundBranch>> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for (name, status, files) in held {
+        let Ok(files) = files else {
+            skipped.push(name);
+            continue;
+        };
+        for path in files {
+            by_path.entry(path).or_default().push(GroundBranch {
+                name: name.clone(),
+                status: status.clone(),
+            });
+        }
+    }
+    skipped.sort();
+    let files = by_path
+        .into_iter()
+        .map(|(path, mut branches)| {
+            branches.sort_by(|a, b| a.name.cmp(&b.name));
+            GroundFile { path, branches }
+        })
+        .collect();
+    Ground { files, skipped }
 }
 
 async fn approvals(
@@ -203,7 +391,8 @@ async fn undo(
 
 #[cfg(test)]
 mod tests {
-    use super::query;
+    use super::{query, tally};
+    use branchyard::BranchStatus;
 
     #[test]
     fn query_values_decode_like_every_other_call_site() {
@@ -213,5 +402,45 @@ mod tests {
         );
         assert_eq!(query(Some("k=%zz%4"), "k").as_deref(), Some("%zz%4"));
         assert_eq!(query(None, "k"), None);
+    }
+
+    #[test]
+    fn ground_groups_paths_and_skips_a_branch_whose_diff_failed() {
+        let files =
+            |paths: &[&str]| Ok::<_, String>(paths.iter().map(|p| (*p).to_owned()).collect());
+        let ground = tally([
+            (
+                "lib".to_owned(),
+                BranchStatus::Running,
+                files(&["shared.txt", "b.txt"]),
+            ),
+            (
+                "app".to_owned(),
+                BranchStatus::Ready,
+                files(&["shared.txt"]),
+            ),
+            (
+                "gone".to_owned(),
+                BranchStatus::Ready,
+                Err("no such commit".to_owned()),
+            ),
+            ("empty".to_owned(), BranchStatus::Waiting, files(&[])),
+        ]);
+        let shape: Vec<(&str, Vec<&str>)> = ground
+            .files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    f.branches.iter().map(|b| b.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [("b.txt", vec!["lib"]), ("shared.txt", vec!["app", "lib"])]
+        );
+        assert_eq!(ground.files[1].branches[0].status, BranchStatus::Ready);
+        assert_eq!(ground.skipped, ["gone"]);
     }
 }

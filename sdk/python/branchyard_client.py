@@ -9,7 +9,8 @@ work, keep a conversation going on one branch, stream what the harness
 says, answer approvals, and give or inspect connector grants, all under
 the constraints the server enforces.
 
-Standard library only (`urllib`, `json`, `ssl`); Python 3.9 or newer.
+Standard library only (`http.client`, `urllib`, `json`, `ssl`); Python 3.9 or newer.
+Ordinary calls reuse one kept-alive connection per thread; see `Client.request`.
 
     from branchyard_client import Client, Grant
 
@@ -53,6 +54,7 @@ authority; what a token may do, the server decides.
 import base64
 import contextlib
 import dataclasses
+import http.client
 import json
 import os
 import re
@@ -437,6 +439,7 @@ _BY_CODE: dict[str, Callable[..., BranchyardError]] = {
     "unsupported_media_type": InvalidRequestError,
     "body_too_large": InvalidRequestError,
     "invalid_pairing_code": InvalidRequestError,
+    "invalid_source_title": InvalidRequestError,
     "branch_busy": BranchBusyError,
     "running": RunningError,
     "not_running": NotRunningError,
@@ -693,6 +696,7 @@ class BranchInfo(Record):
     cost_usd: Optional[float]  # None when the harness reports none
     created_at: int
     stalled: bool
+    liveness: Optional[JSON]  # {state: live|unknown|lost, heard_ms, known_until_ms, reason?}; None unless running
 
     @property
     def status(self) -> Status:
@@ -879,6 +883,36 @@ class Approval(Record):
         return self.get("answer") is None
 
 
+class Decision(Record):
+    """One thing that waits for a person (`Decision`): `kind` (`approval`,
+    `question`, `merge`, `stop`, `stall`, and for a project's workspaces
+    `output` and `session`), `branch`, `waits` (`agent`, `delivery`,
+    `nobody`), `since_ms`, `status`, `candidate`, and the `approval` or
+    `question` it is about. An `output` or `session` decision also names its
+    `workspace`, `workspace_title`, `session` and `session_name`; a `session`
+    carries the `phase` text, and an `output` its `output` (`id`, `name`,
+    `media_type`, `size`, `turn`)."""
+
+
+class Ground(Record):
+    """Which files are in whose hands (`Ground`): `files`, every path an
+    open branch changed, sorted, each `{"path": ..., "branches": [{"name":
+    ..., "status": {...}}, ...]}` with the open branches that changed it;
+    and `skipped`, the open branches whose diff could not be read."""
+
+    @property
+    def shared(self) -> list[Record]:
+        """The files two or more open branches changed: the ones to look at before merging either."""
+        return [Record(f) for f in self.get("files") or [] if len(f.get("branches") or []) > 1]
+
+    def holders(self, path: str) -> list[str]:
+        """The names of the open branches that changed `path`; empty when none did."""
+        for f in self.get("files") or []:
+            if f.get("path") == path:
+                return [b.get("name") for b in f.get("branches") or []]
+        return []
+
+
 class Effect(Record):
     """`EffectEntry`: `id`, `task`, `branch`, `turn`, `subject`, `connector`,
     `operation`, `account`, `class`, `state`, `undo`, `approval`, ..."""
@@ -922,10 +956,24 @@ class FeedEntry(Record):
         value = activity.get("status") if isinstance(activity, dict) else None
         return Status(value) if isinstance(value, dict) else None
 
+    @property
+    def turn_cost(self) -> Optional[float]:
+        """What the turn that is ending cost on its own, in US dollars, when
+        the activity is the engine's record of it (`{"turn_cost":
+        {"cost_usd": ...}}`, after the turn's metering settled and before
+        its closing status); else `None`. A turn nothing measured records
+        none. The branch's running total stays `BranchInfo.cost_usd`."""
+        activity = self.get("activity")
+        value = activity.get("turn_cost") if isinstance(activity, dict) else None
+        cost = value.get("cost_usd") if isinstance(value, dict) else None
+        return float(cost) if isinstance(cost, (int, float)) else None
+
 
 class BranchEvents(Record):
     """`{"events": [RecordedEvent], "cursor": M}`: pass `cursor` back for
-    the events after these."""
+    the events after these. Each event is `{"at_ms", "activity"}`, the
+    activity tagged as in `FeedEntry` (`FeedEntry(event).turn_cost` reads a
+    turn's own cost)."""
 
     @property
     def events(self) -> list[JSON]:
@@ -1052,6 +1100,14 @@ class TerminalOutput(Record):
         return base64.b64decode(self.get("data", ""), validate=True)
 
 
+# The statuses `urllib` follows (HTTPRedirectHandler); `request` sends those again through it.
+_REDIRECTS = (301, 302, 303, 307, 308)
+
+# A kept connection idle longer than this is dropped, not reused: the server closes idle
+# connections after a while, and a request sent on a closed one fails.
+_IDLE_MAX = 5.0
+
+
 class Client:
     """A connection to one `by serve`: `url` such as `http://127.0.0.1:8421`,
     the bearer `token` or the `token_file` holding it on its first line
@@ -1085,6 +1141,12 @@ class Client:
             self._context = ssl.create_default_context(cafile=ca_file)
         elif ca_file is not None:
             raise ValueError("ca_file needs an https:// url")
+        # Kept-alive connections (see `_connection`): each thread holds one in `_local`
+        # as (generation, connection, pid, idle-since); `close` ends them all by moving to a new generation.
+        self._local = threading.local()
+        self._pool_lock = threading.Lock()
+        self._generation = 0
+        self._pool: list[tuple[threading.Thread, http.client.HTTPConnection]] = []
         # Set by `Client.local`: the server this client started, its data
         # directory and its log; `close` stops it and removes them.
         self.server: Optional[subprocess.Popen] = None
@@ -1163,8 +1225,14 @@ class Client:
         return client
 
     def close(self) -> None:
-        """Stop the server `Client.local` started and remove its directory;
-        nothing to do for a client made with a URL."""
+        """Stop the server `Client.local` started and remove its directory,
+        and close the connections `request` kept open (a later call opens
+        new ones)."""
+        with self._pool_lock:
+            self._generation += 1
+            pool, self._pool = self._pool, []
+        for _owner, connection in pool:
+            connection.close()
         process, self.server = self.server, None
         if process is not None:
             _stop(process)
@@ -1198,12 +1266,14 @@ class Client:
         removes a default header. Returns the parsed JSON body, with
         `_replayed` set when `Idempotent-Replayed` came back, or with `raw`
         the tuple `(status, headers, bytes)`. Raises a `BranchyardError` for
-        an error status."""
-        url = self.url + path
+        an error status. The connection is kept for the thread's next call;
+        a proxy from the environment or a redirect goes through `urllib`."""
+        target = path
         if query:
             pairs = {k: v for k, v in query.items() if v is not None}
             if pairs:
-                url += "?" + urllib.parse.urlencode(pairs, doseq=True)
+                target += "?" + urllib.parse.urlencode(pairs, doseq=True)
+        url = self.url + target
         data: Optional[bytes] = None
         request_headers = {
             "Authorization": f"Bearer {self.token}",
@@ -1224,24 +1294,176 @@ class Client:
                 request_headers.pop(name, None)
             else:
                 request_headers[name] = value
-        req = urllib.request.Request(url, data=data, method=method, headers=request_headers)
+        effective_timeout = timeout or self.timeout
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout, context=self._context) as response:
-                content = response.read()
-                status = response.status
-                response_headers = {k.lower(): v for k, v in response.headers.items()}
-        except urllib.error.HTTPError as error:
-            content = error.read()
-            response_headers = {k.lower(): v for k, v in error.headers.items()}
-            raise error_for(error.code, _json_or_text(content), response_headers) from None
+            if self._through_urlopen(url):
+                status, response_headers, content = self._via_urlopen(
+                    method, url, data, request_headers, effective_timeout
+                )
+            else:
+                # A GET or HEAD may be sent again, and so may one carrying a key: the server
+                # answers a replayed key with the first operation.
+                retry = method in ("GET", "HEAD") or "Idempotency-Key" in request_headers
+                status, response_headers, content = self._send(
+                    method, target, data, request_headers, effective_timeout, retry
+                )
+                if status in _REDIRECTS and retry:
+                    # urllib follows a redirect; send the request once more the way it does.
+                    # Only a request that may be sent twice is replayed: a POST the server
+                    # answered with a redirect may already have been acted on, so its
+                    # status is reported as an error instead.
+                    status, response_headers, content = self._via_urlopen(
+                        method, url, data, request_headers, effective_timeout
+                    )
         except (urllib.error.URLError, OSError, ssl.SSLError) as error:
             raise TransportError(_unreachable(f"{method} {url}: {error}", error)) from None
+        if not 200 <= status < 300:
+            raise error_for(status, _json_or_text(content), response_headers) from None
         if raw:
             return status, response_headers, content
         parsed = _json_or_text(content) if content else {}
         if isinstance(parsed, dict) and response_headers.get("idempotent-replayed", "").lower() == "true":
             parsed["_replayed"] = True
         return parsed
+
+    def _connection(self, timeout: float) -> http.client.HTTPConnection:
+        """This thread's connection to the server, made on first use and kept for
+        the next call. A connection the server closed is replaced by `_send`."""
+        held = getattr(self._local, "held", None)
+        if held is not None and held[0] == self._generation:
+            _, kept, owner_pid, since = held
+            # A forked child shares its parent's socket: it must never use it.
+            if owner_pid == os.getpid() and self._still_good(kept, since):
+                kept.timeout = timeout
+                return kept
+            self._drop(kept)
+        parsed = urllib.parse.urlsplit(self.url)
+        host = parsed.hostname or ""
+        connection: http.client.HTTPConnection
+        if parsed.scheme == "https":
+            connection = http.client.HTTPSConnection(host, parsed.port or 443, timeout=timeout, context=self._context)
+        else:
+            connection = http.client.HTTPConnection(host, parsed.port or 80, timeout=timeout)
+        with self._pool_lock:
+            owner = threading.current_thread()
+            # Connections of threads that have ended are closed here, not left to the garbage collector.
+            kept = []
+            for other, old in self._pool:
+                if other.is_alive():
+                    kept.append((other, old))
+                else:
+                    old.close()
+            kept.append((owner, connection))
+            self._pool = kept
+            self._local.held = (self._generation, connection, os.getpid(), time.monotonic())
+        return connection
+
+    @staticmethod
+    def _still_good(connection: http.client.HTTPConnection, since: float) -> bool:
+        """Whether a kept connection, idle since `since` (monotonic), may carry
+        the next request: it is young enough, and nothing is waiting to be read
+        from it. A readable idle socket means the server closed it, or sent
+        something nobody asked for; either way the next answer would be wrong."""
+        sock = connection.sock
+        if sock is None:
+            return True  # not connected (a `Connection: close` answer closed it): `http.client` reconnects
+        if time.monotonic() - since > _IDLE_MAX:
+            return False
+        try:
+            if isinstance(sock, ssl.SSLSocket) and sock.pending():
+                return False
+            readable, _, _ = select.select([sock], [], [], 0)
+        except (OSError, ValueError):
+            return False
+        return not readable
+
+    def _checked_in(self, connection: http.client.HTTPConnection) -> None:
+        """Note that `connection` finished an exchange now, so its idle age starts over."""
+        held = getattr(self._local, "held", None)
+        if held is not None and held[1] is connection:
+            self._local.held = (held[0], connection, held[2], time.monotonic())
+
+    def _drop(self, connection: http.client.HTTPConnection) -> None:
+        """Close `connection` and forget it, so the next call makes a new one."""
+        connection.close()
+        with self._pool_lock:
+            self._pool = [(owner, old) for owner, old in self._pool if old is not connection]
+        held = getattr(self._local, "held", None)
+        if held is not None and held[1] is connection:
+            self._local.held = None
+
+    def _send(
+        self,
+        method: str,
+        target: str,
+        data: Optional[bytes],
+        headers: dict[str, str],
+        timeout: float,
+        retry: bool,
+    ) -> tuple[int, dict[str, str], bytes]:
+        """One exchange over this thread's kept-alive connection, returning
+        `(status, headers lowercased, body)` with the body read in full, so the
+        connection can carry the next call. A connection the server closed while
+        it was idle answers nothing (`RemoteDisconnected`, a reset or a broken
+        pipe before any response byte); when `retry` allows, the request is sent
+        once more on a new connection, otherwise the error propagates. A request
+        that reached the server is never sent again here."""
+        while True:
+            connection = self._connection(timeout)
+            sock = connection.sock
+            reused = sock is not None
+            if sock is not None:
+                sock.settimeout(timeout)
+            try:
+                connection.putrequest(method, target, skip_accept_encoding=True)
+                for name, value in headers.items():
+                    connection.putheader(name, value)
+                if data is not None:
+                    connection.putheader("Content-Length", str(len(data)))
+                connection.endheaders(data)
+                response = connection.getresponse()
+            except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+                self._drop(connection)
+                if reused and retry:
+                    retry = False
+                    continue
+                raise
+            except BaseException:
+                self._drop(connection)
+                raise
+            try:
+                content = response.read()
+            except BaseException:
+                self._drop(connection)
+                raise
+            # A `Connection: close` answer has already closed the socket; the next call reconnects.
+            self._checked_in(connection)
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, content
+
+    def _through_urlopen(self, url: str) -> bool:
+        """Whether `url` must go through `urllib`: a proxy from the environment
+        applies to it (`http.client` does not read proxies), or it is not an
+        http(s) URL."""
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return True
+        if parsed.scheme not in urllib.request.getproxies():
+            return False
+        return not urllib.request.proxy_bypass(parsed.hostname)
+
+    def _via_urlopen(
+        self, method: str, url: str, data: Optional[bytes], headers: dict[str, str], timeout: float
+    ) -> tuple[int, dict[str, str], bytes]:
+        """The request through `urllib`, as `request` made every call before
+        connections were kept. An HTTP error status is returned like any other
+        answer; a failure to connect propagates."""
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=self._context) as response:
+                content = response.read()
+                return response.status, {k.lower(): v for k, v in response.headers.items()}, content
+        except urllib.error.HTTPError as error:
+            return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
 
     def get(self, path: str, **query: Any) -> Any:
         """`GET path` with `query` parameters; the parsed JSON. The escape hatch for a route with no method, as
@@ -1303,6 +1525,15 @@ class Client:
         """One project, including its source and result acceptance policy."""
         return Record(self.get(f"/v1/projects/{_q(project)}"))
 
+    def project_decisions(self, project: str) -> list[Decision]:
+        """What waits for a person in one project's workspaces, in the order
+        to take it (`docs/server.md`, `GET /v1/projects/{project}/decisions`):
+        `output` decisions (a session's file waiting to be accepted, `waits`
+        `delivery`) and `session` decisions (a session that failed, was
+        interrupted or never started, `waits` `nobody`). Accept an output with
+        `finalize_workspace`. Nothing in it expires."""
+        return [Decision(d) for d in self.get(f"/v1/projects/{_q(project)}/decisions").get("decisions", [])]
+
     def create_project(
         self, name: str, *, source: Optional[JSON] = None, result_mode: str = "artifacts", key: Optional[str] = None
     ) -> Record:
@@ -1334,6 +1565,13 @@ class Client:
         wait for initialization before starting sessions or uploading sources."""
         return self._operation("/v1/workspaces", {"project_id": project, "title": title}, key)
 
+    def execution_presets(self, workspace: Optional[str] = None) -> Record:
+        """Operator execution presets offered to this tenant: `required` and
+        `presets`, each with its harnesses and readiness. With `workspace`,
+        the caller must be a member and each preset says in `can_start`
+        whether its role can start a session there."""
+        return Record(self.get("/v1/execution-presets", workspace=workspace))
+
     def workspace_sessions(self, workspace: str) -> list[Record]:
         """Named native attempts with their current result and provenance."""
         return [Record(value) for value in self.get(self._workspace(workspace, "/sessions")).get("sessions", [])]
@@ -1345,6 +1583,7 @@ class Client:
         prompt: str,
         *,
         harness: str,
+        preset: Optional[str] = None,
         provider: Optional[JSON] = None,
         unapproved_tools: Optional[bool] = None,
         model: Optional[str] = None,
@@ -1362,7 +1601,9 @@ class Client:
         Omitted policy retains the server's deny default. Sources and review
         artifacts are immutable IDs; candidate is an exact workspace commit.
         Provisioning names operator-known secrets and connector grants.
-        Provider choices retain the server operator's backend policy.
+        Provider choices retain the server operator's backend policy. A
+        preset from execution_presets() supplies the provider and secrets
+        instead; it is refused beside provider or provision.
         Unapproved tools require explicit acknowledgment and operator permission;
         reviewers always require enforced tool approvals."""
         return self._operation(
@@ -1371,6 +1612,7 @@ class Client:
                 "name": name,
                 "prompt": prompt,
                 "harness": harness,
+                "preset": preset,
                 "provider": provider,
                 "unapproved_tools": unapproved_tools,
                 "model": model,
@@ -1491,8 +1733,11 @@ class Client:
         media_type: str = "application/octet-stream",
         key: Optional[str] = None,
     ) -> Record:
-        """Upload original bytes at revision, retaining the server's media type
-        and title header contract. This does not read any client filesystem path."""
+        """Upload original bytes at revision under title, which may be any
+        Unicode text: it travels in X-Source-Title-Encoded as an RFC 8187
+        value, beside an ASCII copy in X-Source-Title (each other character
+        `_`) that a server without the encoded header reads instead. This does
+        not read any client filesystem path."""
         return Record(
             self.request(
                 "POST",
@@ -1500,7 +1745,8 @@ class Client:
                 data,
                 key=key or new_key(),
                 headers={
-                    "X-Source-Title": title,
+                    "X-Source-Title-Encoded": "UTF-8''" + urllib.parse.quote(title, safe="!#$&+^`|"),
+                    "X-Source-Title": re.sub(r"[^\x20-\x7e]", "_", title),
                     "X-Workspace-Revision": str(revision),
                     "Content-Type": media_type,
                 },
@@ -2770,6 +3016,21 @@ class Repo:
         return Record(self.client.post(self._branch(branch, "/distill"), {}, key=new_key()))
 
     # -- approvals and effects ---------------------------------------------
+
+    def decisions(self) -> list[Decision]:
+        """What waits for a person, in the order to take it: a branch parked
+        on an approval or a question first, oldest wait first, then the
+        ready branches, then the stopped and stalled ones
+        (`docs/server.md`, `GET …/decisions`). Nothing in it expires."""
+        return [Decision(d) for d in self.client.get(f"{self._base}/decisions").get("decisions", [])]
+
+    def ground(self) -> Ground:
+        """Which files are in whose hands: every path an open branch (not
+        merged, not discarded) changed, with the branches that changed it
+        (`docs/server.md`, `GET …/ground`). The server reads every open
+        branch's diff to answer; a branch whose diff it cannot read is
+        named in `skipped`."""
+        return Ground(self.client.get(f"{self._base}/ground"))
 
     def approvals(self, all: bool = False) -> list[Approval]:
         """The approvals waiting (every one with `all`): a branch's turn

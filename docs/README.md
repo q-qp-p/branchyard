@@ -88,6 +88,8 @@ Why it is built this way. Some pages describe a target rather than what exists; 
 |---|---|
 | [Architecture](design.md) | What does the SDK own, where do harnesses run, and how do topology, budgets, storage, recovery, and merging work? |
 | [Durable execution](durability.md) | What survives a crash, how leases, journaled steps, cancellation and recovery work, what is never replayed, and how the store maps onto PostgreSQL? |
+| [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |
+| [Durability contract](durability-contract.md) | Which rules about turns, effects, ownership, signals and obligations does a durable agent runtime keep, which does Branchyard keep today, and which test shows each? |
 | [Branch lifecycle](lifecycle.md) | How are stalled turns detected, how does an operator get webhook notifications, and how does a branch change harness or model by reincarnation? |
 | [Task graphs](graph.md) | How do child branches depend on one another, and how does a branch change its graph of children in one atomic step? |
 | [Effects, approvals and undo](effects.md) | How is every connector call that changes the world written to a ledger before it is made, decided by policy, staged, reconciled after a crash and undone where the upstream allows? |
@@ -105,6 +107,10 @@ Why it is built this way. Some pages describe a target rather than what exists; 
 | [Egress policy](egress.md) | Which hosts may a branch reach, how is that enforced, and which permission presets name common tool policies? |
 | [Agent Substrate](substrate.md) | How does Branchyard run harnesses in Agent Substrate actors: the bridge and its protocol, per-attempt credentials, git transfer, and what is still unqualified? |
 | [Desktop console design](superpowers/specs/2026-10-29-desktop-console-design.md) | Why did the web companion become a three-pane desktop console, and what decides a branch's lane, its one primary action and the verb of its message box? |
+| [Dispatch console design](superpowers/specs/2026-10-31-dispatch-console-design.md) | Why the console stopped being an inbox and became Decide, Watch and Work, how those surfaces shaped `BranchInfo::awaiting` and `GET …/decisions`, and what was built and tested |
+| [Durability primitives design](superpowers/specs/2026-11-02-durability-primitives-design.md) | Why ideas from Tape and Durable Actors are built inside Branchyard rather than taken as a dependency, what was built (lost-turn effects, liveness, obligations) and what comes next, in order |
+| [Console execution presets and source titles](superpowers/specs/2026-10-29-console-execution-presets-contract.md) | How does an operator name the environments console sessions may run in, what does discovery report without side effects, how does a preset resolve through the existing checks, and how are Unicode source titles sent? |
+| [Skill delivery design](superpowers/specs/2026-10-29-skill-delivery-design.md) | How do people add their own skills for a repository, workspace, themselves or a team, how does each turn record the skills it ran with, and why does the document runtime go into the actor image rather than a bucket mount? |
 | [Sandbox snapshots](sandbox-snapshots.md) | How does a branch keep its sandbox paused between turns, take a provider snapshot with each checkpoint, and fork, rewind, delegate and fan from it, with git and setup as the fallback? |
 | [Observability](observability.md) | What metrics, traces and summaries does a server give about itself, and how does a turn's trace reach its harness? |
 | [Sync](sync.md) | How are tasks copied to Cloud Storage, S3, Azure Blob, a git remote or a directory, with one manifest per task, conflict branches, leases and client-side encryption? |
@@ -131,6 +137,8 @@ Kept for the record; not current guidance.
 | Read | What it answers |
 |---|---|
 | [Implementation plan (history)](implementation-plan.md) | What did the first plan say to build, in what order? It is history; the live plan is the [roadmap](roadmap.md). |
+| [Dogfood round 6](dogfood/round6/README.md) | What happened when Branchyard had Claude Code, Codex, Antigravity and GLM through Z.ai build a Branchyard feature (HTML outputs previewed and run in a sandboxed iframe) through `by fan` and `by run`, judged, compared and landed, on 1 November 2026, with the four drivers qualified live the same day? Feature 2 of the round (Office documents in a real viewer) is recorded in `dogfood/round6/feature2-office-viewer.md` by its own agent |
+| [Dogfood round 6, feature 2](dogfood/round6/feature2-office-viewer.md) | How did five real harnesses build the Office document viewer through `by fan` and `by run`, what did the judges and the tests say of each attempt, and what did the console show while they ran? |
 | [Dogfood round 5](dogfood/round5/README.md) | How did Branchyard score as a delegation substrate on the real-harness battery after round 5 ([checks](dogfood/round5/checks.md), [progress](dogfood/round5/progress.md))? |
 | [Dogfood round 4](dogfood/round4/README.md) | How did Branchyard score on the same battery after round 4 ([checks](dogfood/round4/checks.md), [progress](dogfood/round4/progress.md))? |
 

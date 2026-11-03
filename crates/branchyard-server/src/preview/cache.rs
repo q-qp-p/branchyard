@@ -35,13 +35,14 @@ pub(super) fn suffix(name: &str) -> Result<&str, ApiError> {
         "png" => Ok("png"),
         "jpg" | "jpeg" => Ok("jpg"),
         "webp" => Ok("webp"),
+        "html" | "htm" => Ok("html"),
         "txt" => Ok("txt"),
         "md" | "markdown" => Ok("md"),
         "json" => Ok("json"),
         _ => Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "preview_unsupported",
-            "preview supports CSV, XLSX, DOCX, PPTX, PDF and raster images",
+            "preview supports CSV, XLSX, DOCX, PPTX, PDF, HTML and raster images",
         )),
     }
 }
@@ -172,7 +173,7 @@ pub(super) fn validate_response(value: &Value, output: &FilePath) -> Result<(), 
                 || value
                     .get("pages")
                     .and_then(Value::as_u64)
-                    .is_none_or(|pages| pages == 0 || pages > 500)
+                    .is_none_or(|pages| pages == 0 || pages > 64)
             {
                 return Err(invalid());
             }

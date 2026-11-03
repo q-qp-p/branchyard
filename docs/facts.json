@@ -28,6 +28,10 @@
       "branchyard-workspace"
     ]
   },
+  "artifact_preview": {
+    "page_cap": 64,
+    "row_page": 200
+  },
   "vendor": {
     "files": 259,
     "by_source": {
@@ -65,11 +69,11 @@
     }
   },
   "tests": {
-    "total": 3074,
+    "total": 3255,
     "ignored": 34,
     "by_crate": {
       "branchyard": {
-        "tests": 953,
+        "tests": 998,
         "ignored": 17
       },
       "branchyard-bridge": {
@@ -77,11 +81,11 @@
         "ignored": 0
       },
       "branchyard-cli": {
-        "tests": 735,
+        "tests": 758,
         "ignored": 3
       },
       "branchyard-client": {
-        "tests": 30,
+        "tests": 45,
         "ignored": 0
       },
       "branchyard-config": {
@@ -93,7 +97,7 @@
         "ignored": 0
       },
       "branchyard-harness": {
-        "tests": 154,
+        "tests": 168,
         "ignored": 0
       },
       "branchyard-herdr": {
@@ -101,7 +105,7 @@
         "ignored": 0
       },
       "branchyard-mcp": {
-        "tests": 39,
+        "tests": 41,
         "ignored": 0
       },
       "branchyard-microsandbox": {
@@ -109,7 +113,7 @@
         "ignored": 8
       },
       "branchyard-provision": {
-        "tests": 181,
+        "tests": 195,
         "ignored": 0
       },
       "branchyard-qualify": {
@@ -121,7 +125,7 @@
         "ignored": 0
       },
       "branchyard-runtime": {
-        "tests": 50,
+        "tests": 55,
         "ignored": 0
       },
       "branchyard-sandbox": {
@@ -129,15 +133,15 @@
         "ignored": 0
       },
       "branchyard-server": {
-        "tests": 430,
+        "tests": 476,
         "ignored": 1
       },
       "branchyard-setup": {
-        "tests": 89,
+        "tests": 90,
         "ignored": 0
       },
       "branchyard-substrate": {
-        "tests": 64,
+        "tests": 77,
         "ignored": 5
       },
       "branchyard-support": {
@@ -149,7 +153,7 @@
         "ignored": 0
       },
       "branchyard-testkit": {
-        "tests": 21,
+        "tests": 24,
         "ignored": 0
       },
       "branchyard-wire": {
@@ -163,12 +167,13 @@
     }
   },
   "http": {
-    "route_count": 123,
+    "route_count": 129,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
       "/app",
       "/app/",
+      "/app/frame/{ticket}",
       "/app/pair",
       "/app/{file}",
       "/healthz",
@@ -177,12 +182,14 @@
       "/v1/app/push",
       "/v1/app/push/subscriptions",
       "/v1/app/push/test",
+      "/v1/execution-presets",
       "/v1/harnesses",
       "/v1/inventory",
       "/v1/operations",
       "/v1/operations/{id}",
       "/v1/projects",
       "/v1/projects/{project}",
+      "/v1/projects/{project}/decisions",
       "/v1/repos",
       "/v1/repos/{repo}/approvals",
       "/v1/repos/{repo}/approvals/{id}/allow",
@@ -228,11 +235,13 @@
       "/v1/repos/{repo}/branches/{branch}/spawn",
       "/v1/repos/{repo}/branches/{branch}/steer",
       "/v1/repos/{repo}/branches/{branch}/undo",
+      "/v1/repos/{repo}/decisions",
       "/v1/repos/{repo}/effects",
       "/v1/repos/{repo}/effects/reconcile",
       "/v1/repos/{repo}/effects/{id}",
       "/v1/repos/{repo}/effects/{id}/promote",
       "/v1/repos/{repo}/events/stream",
+      "/v1/repos/{repo}/ground",
       "/v1/repos/{repo}/knowledge",
       "/v1/repos/{repo}/knowledge/export",
       "/v1/repos/{repo}/knowledge/{id}",
@@ -265,6 +274,7 @@
       "/v1/workspaces/{workspace}/actions/{action}",
       "/v1/workspaces/{workspace}/artifacts",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/content",
+      "/v1/workspaces/{workspace}/artifacts/{artifact}/frame",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/preview",
       "/v1/workspaces/{workspace}/artifacts/{artifact}/preview/assets/{asset}",
       "/v1/workspaces/{workspace}/comments",
@@ -310,8 +320,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/claude-code-stream-json.json",
-        "date": "2026-10-25",
-        "version": "2.1.310 (Claude Code)"
+        "date": "2026-11-01",
+        "version": "2.1.316 (Claude Code)"
       },
       "status": "live-qualified"
     },
@@ -342,8 +352,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/codex-app-server.json",
-        "date": "2026-10-25",
-        "version": "codex-cli 0.164.0"
+        "date": "2026-11-01",
+        "version": "codex-cli 0.166.0"
       },
       "status": "live-qualified"
     },
@@ -359,16 +369,32 @@
     {
       "harness": "Antigravity",
       "id": "antigravity",
-      "profile": "antigravity-stream-json",
+      "profile": "antigravity-acp",
       "role": "default",
+      "permissions_answered": "live-tested",
+      "steer": "not verified",
+      "live": {
+        "passed": 9,
+        "total": 9,
+        "report": "qualification/antigravity-acp.json",
+        "date": "2026-11-01",
+        "version": "1.4.12"
+      },
+      "status": "live-qualified"
+    },
+    {
+      "harness": "Antigravity",
+      "id": "antigravity",
+      "profile": "antigravity-stream-json",
+      "role": "alternate",
       "permissions_answered": "\u2014",
       "steer": "\u2014",
       "live": {
         "passed": 9,
         "total": 9,
         "report": "qualification/antigravity-stream-json.json",
-        "date": "2026-10-25",
-        "version": "1.4.7"
+        "date": "2026-11-01",
+        "version": "1.4.12"
       },
       "status": "live-qualified"
     },
@@ -383,8 +409,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/oh-my-pi-acp.json",
-        "date": "2026-10-25",
-        "version": "omp/18.12.6"
+        "date": "2026-11-01",
+        "version": "omp/18.15.0"
       },
       "status": "live-qualified"
     },
@@ -396,13 +422,13 @@
       "permissions_answered": "live-tested",
       "steer": "not verified",
       "live": {
-        "passed": 6,
+        "passed": 9,
         "total": 9,
         "report": "qualification/deepseek-harness-acp.json",
-        "date": "2026-10-25",
-        "version": "0.2.1-rc.2"
+        "date": "2026-11-01",
+        "version": "0.2.1-rc.5"
       },
-      "status": "partial"
+      "status": "live-qualified"
     },
     {
       "harness": "Gemini CLI",
@@ -415,8 +441,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/gemini-cli-acp.json",
-        "date": "2026-10-25",
-        "version": "0.65.0"
+        "date": "2026-11-01",
+        "version": "0.66.0"
       },
       "status": "live-qualified"
     },
@@ -431,8 +457,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/opencode-acp.json",
-        "date": "2026-10-25",
-        "version": "1.19.4"
+        "date": "2026-11-01",
+        "version": "1.19.5"
       },
       "status": "live-qualified"
     },
@@ -530,13 +556,13 @@
       "permissions_answered": "live-tested",
       "steer": "not verified",
       "live": {
-        "passed": 6,
+        "passed": 9,
         "total": 9,
         "report": "qualification/hermes-acp.json",
-        "date": "2026-10-25",
+        "date": "2026-11-02",
         "version": "Hermes Agent v0.19.0 (2026.7.20)"
       },
-      "status": "partial"
+      "status": "live-qualified"
     }
   ],
   "cli": {

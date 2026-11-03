@@ -17,13 +17,37 @@
     return /^[a-zA-Z0-9_\-\.]+$/.test(filename);
   }
 
-  function formatBytes(bytes) {
-    if (typeof bytes !== 'number' || isNaN(bytes)) return '';
-    if (bytes < 1024) return bytes + ' B';
-    var kb = bytes / 1024;
-    if (kb < 1024) return kb.toFixed(1) + ' KB';
-    var mb = kb / 1024;
-    return mb.toFixed(1) + ' MB';
+  var MAX_RETRIES = 5;
+
+  // What a refused or failed preview means to the person reading it, by the
+  // server's error code. `server` shows the server's own message and next
+  // step; `operator` keeps them under a disclosure, since they are setup
+  // instructions for whoever runs the server; `retry` offers Try again.
+  var FAILURES = {
+    preview_unsupported: { title: 'No preview for this format', hint: 'Download the original to open it on this device.' },
+    preview_unavailable: { title: 'This server cannot make previews right now', hint: 'Download the original to open it on this device.', operator: true },
+    conversion_failed: { title: 'This file could not be converted for preview', server: true },
+    preview_timeout: { title: 'The preview took too long to make', hint: 'Try again, or download the original.', retry: true },
+    preview_too_large: { title: 'This file is too large to preview', server: true },
+    preview_output_limit: { title: 'This preview is too large to show', hint: 'Download the original to open it on this device.' },
+    preview_busy: { title: 'The server is busy making other previews', hint: 'Try again in a moment.', retry: true },
+    not_found: { title: 'This file is no longer available', server: true },
+    unknown_preview_asset: { title: 'This page of the preview is no longer available', retry: true },
+    unreachable: { title: 'The server cannot be reached', hint: 'Check the connection, then try again.', retry: true },
+    error: { title: 'The preview could not be shown', server: true, retry: true }
+  };
+
+  // The server's answer as preview data, or as a failure with the server's
+  // words. A refusal is a JSON error envelope; a conversion that failed, or
+  // whose renderer lacks a component, is a 200 whose status says so.
+  function outcome(status, body) {
+    var error = (body && body.error) || {};
+    if (status === 200 && body && body.status === 'passed') return { data: body };
+    if (status === 200 && body && (body.status === 'failed' || body.status === 'unavailable')) {
+      return { code: body.status === 'failed' ? 'conversion_failed' : 'preview_unavailable', message: error.message, next: error.next };
+    }
+    var detail = error.detail || {};
+    return { code: error.code || 'error', message: error.message || 'HTTP ' + status, next: detail.next || error.next, retryAfter: detail.retry_after };
   }
 
   function mount(container, options) {
@@ -35,6 +59,7 @@
     var fetchAuthenticated = options.fetchAuthenticated;
     var displayName = options.displayName || '';
     var mediaType = options.mediaType || '';
+    var viewer = options.viewer === true;
 
     if (typeof baseUrl !== 'string' || typeof fetchAuthenticated !== 'function') {
       throw new Error('mount options require baseUrl (string) and fetchAuthenticated (function)');
@@ -45,19 +70,23 @@
     var activeAbortControllers = new Set();
     var retryTimerId = null;
     var activeBlobUrls = [];
-    var pendingRevokeTimerIds = new Set();
     var generation = 0;
 
     // View state
-    var currentView = 'auto'; // 'auto' | 'table' | 'pages'
+    var currentView = viewer && /wordprocessingml|presentationml|application\/pdf/.test(mediaType) ? 'pages' : 'auto'; // 'auto' | 'table' | 'pages'
     var currentPage = 1;
     var currentSheet = '';
     var currentOffset = 0;
-    var limit = 100;
+    var limit = viewer ? 200 : 100;
+    var pageObserver = null;
+    var currentDocument = null;
+    var pageImages = new Map();
+    var pageQueue = Promise.resolve();
+    var goToPage = null;
 
     // Component DOM structure
     var rootEl = document.createElement('div');
-    rootEl.className = 'by-artifact-preview';
+    rootEl.className = 'by-artifact-preview' + (viewer ? ' by-document-preview' : '');
 
     var liveRegion = document.createElement('div');
     liveRegion.className = 'by-preview-sr-only';
@@ -100,12 +129,6 @@
     }
 
     function revokeAllBlobs() {
-      // Clear pending delayed revocation timers
-      pendingRevokeTimerIds.forEach(function (tid) {
-        clearTimeout(tid);
-      });
-      pendingRevokeTimerIds.clear();
-
       for (var i = 0; i < activeBlobUrls.length; i++) {
         try {
           URL.revokeObjectURL(activeBlobUrls[i]);
@@ -117,6 +140,12 @@
     }
 
     function cancelPendingRequests() {
+      if (pageObserver) pageObserver.disconnect();
+      pageObserver = null;
+      goToPage = null;
+      currentDocument = null;
+      pageImages.clear();
+      pageQueue = Promise.resolve();
       activeAbortControllers.forEach(function (ctrl) {
         try {
           ctrl.abort();
@@ -221,7 +250,24 @@
           currentOffset = 0;
           loadPreview();
         });
-        leftGroup.appendChild(sheetSelect);
+        if (!viewer) leftGroup.appendChild(sheetSelect);
+        else {
+          var tabs = document.createElement('div');
+          tabs.className = 'by-preview-sheet-tabs';
+          tabs.setAttribute('role', 'tablist');
+          tabs.setAttribute('aria-label', 'Worksheets');
+          data.sheets.forEach(function (name) {
+            var tab = document.createElement('button');
+            tab.type = 'button';
+            tab.className = 'by-preview-btn';
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('aria-selected', String(name === data.sheet));
+            tab.textContent = name;
+            tab.addEventListener('click', function () { currentSheet = name; currentOffset = 0; loadPreview(); });
+            tabs.appendChild(tab);
+          });
+          leftGroup.appendChild(tabs);
+        }
       }
 
       // Page navigation for pages kind
@@ -237,8 +283,8 @@
         prevBtn.disabled = activePage <= 1;
         prevBtn.addEventListener('click', function () {
           if (activePage > 1) {
-            currentPage = activePage - 1;
-            loadPreview();
+            if (viewer && goToPage) goToPage(activePage - 1);
+            else { currentPage = activePage - 1; loadPreview(); }
           }
         });
 
@@ -254,26 +300,31 @@
         nextBtn.disabled = activePage >= pageCount;
         nextBtn.addEventListener('click', function () {
           if (activePage < pageCount) {
-            currentPage = activePage + 1;
-            loadPreview();
+            if (viewer && goToPage) goToPage(activePage + 1);
+            else { currentPage = activePage + 1; loadPreview(); }
           }
         });
 
+        if (viewer) {
+          var zoom = document.createElement('select');
+          zoom.className = 'by-preview-select';
+          zoom.setAttribute('aria-label', 'Zoom');
+          [['fit', 'Fit to width'], ['75', '75%'], ['100', '100%'], ['125', '125%'], ['150', '150%']].forEach(function (entry) {
+            var option = document.createElement('option');
+            option.value = entry[0]; option.textContent = entry[1];
+            zoom.appendChild(option);
+          });
+          zoom.value = rootEl.dataset.zoom || 'fit';
+          zoom.addEventListener('change', function () {
+            rootEl.dataset.zoom = zoom.value;
+            rootEl.style.setProperty('--by-document-width', zoom.value === 'fit' ? '100%' : zoom.value + '%');
+          });
+          leftGroup.appendChild(zoom);
+        }
         rightGroup.appendChild(prevBtn);
         rightGroup.appendChild(pageLabel);
         rightGroup.appendChild(nextBtn);
       }
-
-      // Download Original Button (always available)
-      var downloadBtn = document.createElement('button');
-      downloadBtn.type = 'button';
-      downloadBtn.className = 'by-preview-btn by-preview-btn-primary';
-      downloadBtn.textContent = 'Download Original';
-      downloadBtn.setAttribute('aria-label', 'Download original file');
-      downloadBtn.addEventListener('click', function () {
-        handleDownloadOriginal();
-      });
-      rightGroup.appendChild(downloadBtn);
 
       toolbarEl.appendChild(leftGroup);
       toolbarEl.appendChild(rightGroup);
@@ -313,70 +364,55 @@
 
       var text = document.createElement('div');
       text.className = 'by-preview-state-message';
-      text.textContent = msg || 'Preparing preview...';
+      text.textContent = msg || 'Making a preview…';
       container.appendChild(text);
 
       contentEl.appendChild(container);
       announce(text.textContent);
     }
 
-    function renderUnavailableOrError(titleMsg, detailNext, showSetup, showRetry) {
+    function textBlock(tag, className, text) {
+      var el = document.createElement(tag);
+      el.className = className;
+      el.textContent = text;
+      return el;
+    }
+
+    // One failure as `outcome` reads it: a plain title, then the server's
+    // words where they help the reader, or under a disclosure for the
+    // server's operator.
+    function renderFailure(failure) {
+      var meaning = FAILURES[failure.code] || FAILURES.error;
       contentEl.textContent = '';
       toolbarEl.textContent = '';
       renderWarnings([]);
 
       var container = document.createElement('div');
-      container.className = 'by-preview-state-container';
-
-      var titleEl = document.createElement('div');
-      titleEl.className = 'by-preview-state-message';
-      titleEl.textContent = titleMsg || 'Preview unavailable';
-      container.appendChild(titleEl);
-
-      if (detailNext) {
-        var subtext = document.createElement('div');
-        subtext.className = 'by-preview-state-subtext';
-        subtext.textContent = detailNext;
-        container.appendChild(subtext);
+      container.className = 'by-preview-state-container by-preview-failure';
+      container.appendChild(textBlock('p', 'by-preview-state-message', meaning.title));
+      if (meaning.server && failure.message) container.appendChild(textBlock('p', 'by-preview-state-subtext', failure.message));
+      if (meaning.server && failure.next) container.appendChild(textBlock('p', 'by-preview-state-subtext', 'Next: ' + failure.next));
+      if (meaning.hint) container.appendChild(textBlock('p', 'by-preview-state-subtext', meaning.hint));
+      if (meaning.operator && (failure.message || failure.next)) {
+        var details = document.createElement('details');
+        details.className = 'by-preview-operator';
+        details.appendChild(textBlock('summary', '', 'Details for the server\'s operator'));
+        if (failure.message) details.appendChild(textBlock('p', '', failure.message));
+        if (failure.next) details.appendChild(textBlock('p', '', failure.next));
+        container.appendChild(details);
       }
-
-      var actions = document.createElement('div');
-      actions.className = 'by-preview-state-actions';
-
-      if (showRetry) {
+      if (meaning.retry) {
         var retryBtn = document.createElement('button');
         retryBtn.type = 'button';
         retryBtn.className = 'by-preview-btn';
-        retryBtn.textContent = 'Retry Preview';
+        retryBtn.textContent = 'Try again';
         retryBtn.addEventListener('click', function () {
           loadPreview();
         });
-        actions.appendChild(retryBtn);
+        container.appendChild(retryBtn);
       }
-
-      if (showSetup) {
-        var setupBtn = document.createElement('button');
-        setupBtn.type = 'button';
-        setupBtn.className = 'by-preview-btn';
-        setupBtn.textContent = 'Setup Instructions';
-        setupBtn.addEventListener('click', function () {
-          alert('Setup action: ' + (detailNext || 'Please configure the required preview service.'));
-        });
-        actions.appendChild(setupBtn);
-      }
-
-      var dlBtn = document.createElement('button');
-      dlBtn.type = 'button';
-      dlBtn.className = 'by-preview-btn by-preview-btn-primary';
-      dlBtn.textContent = 'Download Original';
-      dlBtn.addEventListener('click', function () {
-        handleDownloadOriginal();
-      });
-      actions.appendChild(dlBtn);
-
-      container.appendChild(actions);
       contentEl.appendChild(container);
-      announce(titleEl.textContent);
+      announce(meaning.title);
     }
 
     function renderTable(data) {
@@ -390,6 +426,31 @@
       var table = document.createElement('table');
       table.className = 'by-preview-table';
       table.setAttribute('role', 'table');
+      if (viewer && data.format === 'xlsx') {
+        table.classList.add('by-preview-sheet-grid');
+        table.classList.toggle('by-preview-frozen-header', data.frozen_rows > 0);
+        var colgroup = document.createElement('colgroup');
+        (data.column_widths || []).forEach(function (width) {
+          var col = document.createElement('col');
+          if (typeof width === 'number' && isFinite(width)) col.style.width = Math.max(16, Math.min(2000, width)) + 'px';
+          colgroup.appendChild(col);
+        });
+        table.appendChild(colgroup);
+      }
+      function fillCell(cell, value, detail, row, col) {
+        cell.textContent = detail && detail.formatted != null ? String(detail.formatted) : (value != null ? String(value) : '');
+        if (detail && detail.formula) cell.title = String(detail.formula);
+        var merges = viewer && Array.isArray(data.merges) ? data.merges : [];
+        for (var m = 0; m < merges.length; m++) {
+          var merge = merges[m];
+          if (row < merge.min_row || row > merge.max_row || col < merge.min_col || col > merge.max_col) continue;
+          if (row !== merge.min_row || col !== merge.min_col) return false;
+          // Do not merge through the independently frozen header or outside this row window.
+          cell.colSpan = Math.min(100, merge.max_col - merge.min_col + 1);
+          cell.rowSpan = row === 1 ? 1 : Math.min(merge.max_row - row + 1, (data.offset || 0) + data.rows.length + 2 - row);
+        }
+        return true;
+      }
 
       var thead = document.createElement('thead');
       var headerRow = document.createElement('tr');
@@ -398,8 +459,7 @@
       for (var c = 0; c < columns.length; c++) {
         var th = document.createElement('th');
         th.setAttribute('scope', 'col');
-        th.textContent = columns[c] != null ? String(columns[c]) : '';
-        headerRow.appendChild(th);
+        if (fillCell(th, columns[c], (data.header_details || [])[c], 1, c + 1)) headerRow.appendChild(th);
       }
       thead.appendChild(headerRow);
       table.appendChild(thead);
@@ -414,8 +474,7 @@
           for (var i = 0; i < rowData.length; i++) {
             var td = document.createElement('td');
             // Strict inert textContent - prevent CSV injection formula / script execution
-            td.textContent = rowData[i] != null ? String(rowData[i]) : '';
-            tr.appendChild(td);
+            if (fillCell(td, rowData[i], ((data.cell_details || [])[r] || [])[i], (data.offset || 0) + r + 2, i + 1)) tr.appendChild(td);
           }
         }
         tbody.appendChild(tr);
@@ -426,13 +485,13 @@
 
       // Pagination footer if offset or next_offset
       var hasPagination = (typeof data.offset === 'number' && data.offset > 0) || (typeof data.next_offset === 'number');
-      if (hasPagination) {
+      if (hasPagination || (viewer && data.kind === 'table')) {
         var footer = document.createElement('div');
         footer.className = 'by-preview-table-footer';
 
         var rowsInfo = document.createElement('span');
-        var startRow = (data.offset || 0) + 1;
-        var endRow = (data.offset || 0) + rows.length;
+        var startRow = (data.offset || 0) + (viewer && data.format === 'xlsx' ? 2 : 1);
+        var endRow = startRow + rows.length - 1;
         rowsInfo.textContent = rows.length > 0 ? ('Showing rows ' + startRow + '–' + endRow) : 'No rows';
         footer.appendChild(rowsInfo);
 
@@ -467,17 +526,18 @@
         contentEl.appendChild(footer);
       }
 
-      announce('Loaded table preview, ' + rows.length + ' rows displayed.');
+      announce('Preview ready: ' + rows.length + (rows.length === 1 ? ' row.' : ' rows.'));
     }
 
     function renderPages(data, currentGen, previewQuery) {
+      if (viewer) { renderDocumentPages(data, currentGen); return; }
       renderToolbar(data);
       renderWarnings(data.warnings);
       contentEl.textContent = '';
 
       var imageFilename = data.image;
       if (!imageFilename || !isSafeBasename(imageFilename)) {
-        renderUnavailableOrError('Security Error: Invalid or unsafe page asset reference.', null, false, false);
+        renderFailure({ code: 'error', message: 'The page image has an unexpected name.' });
         return;
       }
 
@@ -501,11 +561,11 @@
         activeAbortControllers.delete(assetAbort);
         if (currentGen !== generation || isDisposed) return;
         if (!res.ok) {
-          throw new Error('Failed to load page image: ' + res.status);
+          throw new Error('the server answered ' + res.status + '.');
         }
         var ctype = res.headers && res.headers.get ? (res.headers.get('content-type') || '') : '';
         if (ctype.toLowerCase().indexOf('image/png') === -1) {
-          throw new Error('Unsafe content type for page preview: ' + ctype);
+          throw new Error('it is not a PNG image.');
         }
         return res.blob();
       }).then(function (blob) {
@@ -522,7 +582,7 @@
           img.style.maxWidth = data.width + 'px';
         }
         pagesContainer.appendChild(img);
-        announce('Loaded page ' + (data.page || currentPage) + ' of ' + (data.pages || 1));
+        announce('Preview ready: page ' + (data.page || currentPage) + ' of ' + (data.pages || 1) + '.');
       }).catch(function (err) {
         activeAbortControllers.delete(assetAbort);
         if (currentGen !== generation || isDisposed) return;
@@ -530,8 +590,169 @@
         pagesContainer.textContent = '';
         var errBox = document.createElement('div');
         errBox.className = 'by-preview-state-message';
-        errBox.textContent = 'Error loading page visual: ' + err.message;
+        errBox.textContent = 'The page image did not load: ' + err.message;
         pagesContainer.appendChild(errBox);
+        announce(errBox.textContent);
+      });
+    }
+
+    // Each visible page enters one serial queue. The service caches derivatives
+    // per artifact and page; an instance also shares the image between slide and thumbnail.
+    function pageImage(number, first, gen) {
+      if (pageImages.has(number)) return pageImages.get(number);
+      var result = pageQueue.then(function () {
+        if (gen !== generation || isDisposed) return null;
+        var query = '?view=pages&page=' + number + (currentSheet ? '&sheet=' + encodeURIComponent(currentSheet) : '') + '&limit=' + limit;
+        var ctrl = new AbortController();
+        activeAbortControllers.add(ctrl);
+        var metadata = number === first.page ? Promise.resolve({ data: first }) : fetchAuthenticated(baseUrl + '/preview' + query, { signal: ctrl.signal }).then(function (res) {
+          return res.json().then(function (body) { return outcome(res.status, body); });
+        });
+        return metadata.then(function (answer) {
+          if (!answer.data) throw new Error(answer.message || (FAILURES[answer.code] || FAILURES.error).title);
+          var page = answer.data;
+          if (!isSafeBasename(page.image)) throw new Error('The page image has an unexpected name.');
+          return fetchAuthenticated(baseUrl + '/preview/assets/' + encodeURIComponent(page.image) + query, { signal: ctrl.signal });
+        }).then(function (res) {
+          if (!res.ok || (res.headers.get('content-type') || '').toLowerCase().indexOf('image/png') === -1) throw new Error('The page image did not load.');
+          return res.blob();
+        }).then(function (blob) {
+          if (gen !== generation || isDisposed) return null;
+          var url = URL.createObjectURL(blob);
+          activeBlobUrls.push(url);
+          return url;
+        }).finally(function () { activeAbortControllers.delete(ctrl); });
+      });
+      // A refused page does not prevent another page from being requested.
+      pageQueue = result.catch(function () {});
+      pageImages.set(number, result);
+      return result;
+    }
+
+    function renderDocumentPages(data, gen) {
+      currentDocument = data;
+      currentPage = data.page || 1;
+      var slides = data.format === 'pptx';
+      var count = Math.min(64, Math.max(1, data.pages || 1));
+      contentEl.textContent = '';
+      contentEl.classList.toggle('by-preview-slide-content', slides);
+      renderWarnings(data.warnings);
+      var canvas = document.createElement('div');
+      canvas.className = slides ? 'by-preview-slide-stage' : 'by-preview-page-stack';
+      var slots = [];
+      function putImage(slot, number, thumbnail) {
+        if (slot.dataset.loading) return;
+        slot.dataset.loading = 'true';
+        pageImage(number, data, gen).then(function (url) {
+          if (!url || gen !== generation || isDisposed || (slot.classList.contains('by-preview-slide') && Number(slot.dataset.page) !== number)) return;
+          slot.textContent = '';
+          var img = document.createElement('img');
+          img.src = url;
+          img.alt = (slides ? 'Slide ' : 'Page ') + number + ' of ' + count;
+          img.className = thumbnail ? 'by-preview-thumbnail-img' : 'by-preview-page-img';
+          slot.appendChild(img);
+          if (!thumbnail) announce('Preview ready: ' + (slides ? 'slide ' : 'page ') + number + ' of ' + count + '.');
+        }).catch(function (error) {
+          if (gen !== generation || isDisposed || error.name === 'AbortError') return;
+          slot.textContent = error.message;
+          delete slot.dataset.loading;
+          var retry = document.createElement('button');
+          retry.className = 'by-preview-btn'; retry.textContent = 'Try again';
+          retry.addEventListener('click', function () { pageImages.delete(number); slot.textContent = ''; putImage(slot, number, thumbnail); });
+          slot.appendChild(retry);
+        });
+      }
+      if (slides) {
+        var folded = document.createElement('details');
+        folded.className = 'by-preview-thumbnails';
+        folded.open = window.matchMedia('(min-width: 601px)').matches;
+        var summary = document.createElement('summary');
+        summary.textContent = 'Slides';
+        folded.appendChild(summary);
+        var strip = document.createElement('div');
+        strip.className = 'by-preview-thumbnail-strip';
+        strip.setAttribute('aria-label', 'Slide thumbnails');
+        folded.appendChild(strip);
+        contentEl.appendChild(folded);
+        var stage = document.createElement('div');
+        stage.className = 'by-preview-slide';
+        canvas.appendChild(stage);
+        goToPage = function (number) {
+          currentPage = Math.max(1, Math.min(count, number));
+          stage.textContent = ''; delete stage.dataset.loading;
+          stage.dataset.page = String(currentPage);
+          strip.querySelectorAll('button').forEach(function (button) { button.setAttribute('aria-current', String(Number(button.dataset.page) === currentPage)); });
+          renderToolbar(Object.assign({}, data, { page: currentPage }));
+          putImage(stage, currentPage, false);
+        };
+        for (var n = 1; n <= count; n++) {
+          var button = document.createElement('button');
+          button.type = 'button'; button.className = 'by-preview-thumbnail';
+          button.dataset.page = String(n);
+          button.setAttribute('aria-label', 'Slide ' + n);
+          var thumb = document.createElement('span');
+          thumb.className = 'by-preview-thumbnail-image';
+          thumb.dataset.page = String(n);
+          button.appendChild(thumb);
+          var label = document.createElement('span'); label.textContent = String(n); button.appendChild(label);
+          button.addEventListener('click', function (event) { goToPage(Number(event.currentTarget.dataset.page)); });
+          strip.appendChild(button); slots.push(thumb);
+        }
+        contentEl.appendChild(canvas);
+        pageObserver = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) { if (entry.isIntersecting) putImage(entry.target, Number(entry.target.dataset.page), true); });
+        }, { root: strip, rootMargin: '100px' });
+        slots.forEach(function (slot) { pageObserver.observe(slot); });
+        goToPage(currentPage);
+      } else {
+        for (var p = 1; p <= count; p++) {
+          var slot = document.createElement('section');
+          slot.className = 'by-preview-document-page';
+          slot.dataset.page = String(p);
+          slot.setAttribute('aria-label', 'Page ' + p);
+          if (data.width > 0 && data.height > 0) slot.style.aspectRatio = data.width + ' / ' + data.height;
+          slot.textContent = 'Page ' + p;
+          slots.push(slot); canvas.appendChild(slot);
+        }
+        contentEl.appendChild(canvas);
+        goToPage = function (number) {
+          number = Math.max(1, Math.min(count, number));
+          slots[number - 1].scrollIntoView({ block: 'start' });
+          currentPage = number;
+          renderToolbar(Object.assign({}, data, { page: currentPage }));
+          putImage(slots[number - 1], number, false);
+        };
+        pageObserver = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) { if (entry.isIntersecting) putImage(entry.target, Number(entry.target.dataset.page), false); });
+        }, { root: contentEl, rootMargin: '100px' });
+        slots.forEach(function (slot) { pageObserver.observe(slot); });
+        renderToolbar(data);
+        putImage(slots[currentPage - 1], currentPage, false);
+      }
+    }
+
+    function viewerKey(event) {
+      if (!viewer || !goToPage || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.target.closest('input, select, textarea, [contenteditable]')) return;
+      var delta = ['ArrowRight', 'ArrowDown', 'PageDown'].includes(event.key) ? 1 : ['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key) ? -1 : 0;
+      if (delta) { event.preventDefault(); goToPage(currentPage + delta); }
+      else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); goToPage(event.key === 'Home' ? 1 : currentDocument.pages); }
+    }
+    if (viewer) {
+      document.addEventListener('keydown', viewerKey);
+      contentEl.addEventListener('scroll', function () {
+        if (!currentDocument || currentDocument.format === 'pptx') return;
+        var viewport = contentEl.getBoundingClientRect();
+        var visible = null;
+        var largestOverlap = 0;
+        contentEl.querySelectorAll('.by-preview-document-page').forEach(function (slot) {
+          var bounds = slot.getBoundingClientRect();
+          var overlap = Math.max(0, Math.min(bounds.bottom, viewport.bottom) - Math.max(bounds.top, viewport.top));
+          if (overlap > largestOverlap) { visible = slot; largestOverlap = overlap; }
+        });
+        if (visible && Number(visible.dataset.page) !== currentPage) {
+          currentPage = Number(visible.dataset.page);
+          renderToolbar(Object.assign({}, currentDocument, { page: currentPage }));
+        }
       });
     }
 
@@ -549,56 +770,7 @@
       textContainer.appendChild(pre);
 
       contentEl.appendChild(textContainer);
-      announce('Loaded text preview.');
-    }
-
-    function handleDownloadOriginal() {
-      if (isDisposed) return;
-      var contentPath = baseUrl + '/content';
-      var dlAbort = new AbortController();
-      activeAbortControllers.add(dlAbort);
-
-      fetchAuthenticated(contentPath, {
-        method: 'GET',
-        signal: dlAbort.signal
-      }).then(function (res) {
-        activeAbortControllers.delete(dlAbort);
-        if (isDisposed) return;
-        if (!res.ok) {
-          throw new Error('Download failed: ' + res.status);
-        }
-        return res.blob();
-      }).then(function (blob) {
-        if (isDisposed || !blob) return;
-        var blobUrl = URL.createObjectURL(blob);
-        activeBlobUrls.push(blobUrl);
-
-        var a = document.createElement('a');
-        a.style.display = 'none';
-        a.href = blobUrl;
-        a.download = displayName || 'download';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-
-        var timerId = setTimeout(function () {
-          pendingRevokeTimerIds.delete(timerId);
-          try {
-            URL.revokeObjectURL(blobUrl);
-            var idx = activeBlobUrls.indexOf(blobUrl);
-            if (idx !== -1) {
-              activeBlobUrls.splice(idx, 1);
-            }
-          } catch (e) {
-            // ignore
-          }
-        }, 1000);
-        pendingRevokeTimerIds.add(timerId);
-      }).catch(function (err) {
-        activeAbortControllers.delete(dlAbort);
-        if (isDisposed || err.name === 'AbortError') return;
-        alert('Could not download original document: ' + err.message);
-      });
+      announce('Preview ready.');
     }
 
     function loadPreview() {
@@ -608,13 +780,10 @@
       revokeAllBlobs();
 
       var thisGen = ++generation;
-      var fetchAbort = new AbortController();
-      activeAbortControllers.add(fetchAbort);
-
-      renderLoading('Loading document preview...');
+      renderLoading();
 
       var queryParts = ['view=' + encodeURIComponent(currentView)];
-      if (currentPage > 1) {
+      if (currentPage > 1 || viewer) {
         queryParts.push('page=' + encodeURIComponent(currentPage));
       }
       if (currentSheet) {
@@ -628,9 +797,7 @@
       }
       var previewQuery = '?' + queryParts.join('&');
       var previewUrl = baseUrl + '/preview' + previewQuery;
-
-      var retryCount = 0;
-      var MAX_RETRIES = 5;
+      var retries = 0;
 
       function executeFetch() {
         if (thisGen !== generation || isDisposed) return;
@@ -642,124 +809,49 @@
           method: 'GET',
           signal: reqAbort.signal
         }).then(function (res) {
+          return res.json().catch(function () { return null; }).then(function (body) {
+            return outcome(res.status, body);
+          });
+        }, function (err) {
+          if (err.name === 'AbortError') throw err;
+          return { code: 'unreachable' };
+        }).then(function (result) {
           activeAbortControllers.delete(reqAbort);
           if (thisGen !== generation || isDisposed) return;
 
-          // 202 Accepted: Still preparing preview with Retry-After
-          if (res.status === 202) {
-            retryCount++;
-            if (retryCount > MAX_RETRIES) {
-              renderUnavailableOrError('Preview generation timed out.', 'The preview took too long to prepare.', false, true);
-              return;
-            }
-            var retrySec = 1;
-            var headerVal = res.headers && res.headers.get ? res.headers.get('Retry-After') : null;
-            if (headerVal) {
-              var parsed = parseInt(headerVal, 10);
-              if (!isNaN(parsed) && parsed > 0 && parsed <= 10) {
-                retrySec = parsed;
-              }
-            }
-            renderLoading('Preparing preview (attempt ' + retryCount + ')...');
+          // Both of the server's conversion slots are taken; it says when to ask again.
+          var wait = result.retryAfter;
+          if (result.code === 'preview_busy' && typeof wait === 'number' && wait > 0 && wait <= 10 && retries < MAX_RETRIES) {
+            retries++;
+            renderLoading('The server is busy making other previews. Trying again in ' + wait + (wait === 1 ? ' second…' : ' seconds…'));
             retryTimerId = setTimeout(function () {
               retryTimerId = null;
-              if (thisGen === generation && !isDisposed) {
-                executeFetch();
-              }
-            }, retrySec * 1000);
+              executeFetch();
+            }, wait * 1000);
+            return;
+          }
+          if (!result.data) {
+            renderFailure(result);
             return;
           }
 
-          return res.json().then(function (body) {
-            return { ok: res.ok, status: res.status, headers: res.headers, body: body };
-          }).catch(function (parseErr) {
-            return { ok: res.ok, status: res.status, headers: res.headers, body: null };
-          });
-        }).then(function (result) {
-          if (!result || thisGen !== generation || isDisposed) return;
-
-          // Handle 429 Too Many Requests (e.g. preview_busy)
-          if (result.status === 429) {
-            var body = result.body || {};
-            var errObj = body.error || body;
-            var isBusy = errObj.code === 'preview_busy' || (errObj.detail && errObj.detail.retry_after != null);
-            var retryAfterSec = null;
-
-            if (errObj.detail && typeof errObj.detail.retry_after === 'number') {
-              retryAfterSec = errObj.detail.retry_after;
-            } else if (result.headers && result.headers.get && result.headers.get('Retry-After')) {
-              var hSec = parseInt(result.headers.get('Retry-After'), 10);
-              if (!isNaN(hSec) && hSec > 0) {
-                retryAfterSec = hSec;
-              }
+          var payload = result.data;
+          if (payload.kind === 'table') {
+            if (payload.sheet) {
+              currentSheet = payload.sheet;
             }
-
-            if (isBusy && retryAfterSec !== null && retryAfterSec > 0 && retryAfterSec <= 10 && retryCount < MAX_RETRIES) {
-              retryCount++;
-              renderLoading('Preview service busy; retrying in ' + retryAfterSec + 's (attempt ' + retryCount + ')...');
-              retryTimerId = setTimeout(function () {
-                retryTimerId = null;
-                if (thisGen === generation && !isDisposed) {
-                  executeFetch();
-                }
-              }, retryAfterSec * 1000);
-              return;
-            }
-
-            var busyMsg = errObj.message || 'Preview service is busy.';
-            var busyNext = (errObj.detail && errObj.detail.next) || 'Please retry in a moment.';
-            renderUnavailableOrError(busyMsg, busyNext, false, true);
-            return;
-          }
-
-          if (!result.ok) {
-            var errMsg = 'Preview request failed (' + result.status + ')';
-            var nextAction = null;
-            if (result.body && result.body.error) {
-              errMsg = result.body.error.message || errMsg;
-              if (result.body.error.detail && result.body.error.detail.next) {
-                nextAction = result.body.error.detail.next;
-              }
-            }
-            renderUnavailableOrError(errMsg, nextAction, Boolean(nextAction), result.status >= 500);
-            return;
-          }
-
-          var payload = result.body;
-          if (!payload) {
-            renderUnavailableOrError('Empty preview response received.', null, false, false);
-            return;
-          }
-
-          if (payload.status === 'failed' || payload.status === 'unavailable') {
-            var msg = payload.message || 'Preview unavailable for this artifact.';
-            var detailNext = (payload.detail && payload.detail.next) || (payload.error && payload.error.detail && payload.error.detail.next) || null;
-            var showSetup = Boolean(payload.setup || detailNext);
-            renderUnavailableOrError(msg, detailNext, showSetup, false);
-            return;
-          }
-
-          if (payload.status === 'passed') {
-            if (payload.kind === 'table') {
-              if (payload.sheet) {
-                currentSheet = payload.sheet;
-              }
-              renderTable(payload);
-            } else if (payload.kind === 'pages') {
-              renderPages(payload, thisGen, previewQuery);
-            } else if (payload.kind === 'text') {
-              renderText(payload);
-            } else {
-              renderUnavailableOrError('Unsupported preview kind: ' + payload.kind, null, false, false);
-            }
+            renderTable(payload);
+          } else if (payload.kind === 'pages') {
+            renderPages(payload, thisGen, previewQuery);
+          } else if (payload.kind === 'text') {
+            renderText(payload);
           } else {
-            renderUnavailableOrError('Unexpected preview status: ' + payload.status, null, false, false);
+            renderFailure({ code: 'error', message: 'The server sent a kind of preview this page does not show: ' + payload.kind + '.' });
           }
         }).catch(function (err) {
           activeAbortControllers.delete(reqAbort);
-          if (thisGen !== generation || isDisposed) return;
-          if (err.name === 'AbortError') return;
-          renderUnavailableOrError('Preview error: ' + err.message, null, false, true);
+          if (thisGen !== generation || isDisposed || err.name === 'AbortError') return;
+          renderFailure({ code: 'error', message: err.message });
         });
       }
 
@@ -773,6 +865,7 @@
       dispose: function () {
         if (isDisposed) return;
         isDisposed = true;
+        if (viewer) document.removeEventListener('keydown', viewerKey);
         generation++;
         cancelPendingRequests();
         revokeAllBlobs();

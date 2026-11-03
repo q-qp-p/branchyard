@@ -21,8 +21,8 @@ additional tools before creating resources.
 To install a particular version or prepare a headless machine:
 
 ```sh
-sh install.sh --version 0.3.0 --prefix "$HOME/.local" --no-setup
-sh install.sh --version 0.3.0 --setup --yes
+sh install.sh --version 0.4.0 --prefix "$HOME/.local" --no-setup
+sh install.sh --version 0.4.0 --setup --yes
 ```
 
 `--yes` follows the existing noninteractive setup defaults and readiness checks;
@@ -216,27 +216,71 @@ entrypoint assets and built archives. Build provenance is attached to the
 platform artifacts. For a manual check, use `gh attestation verify` with the
 archive and `--repo vamsiramakrishnan/branchyard`.
 
-### Release maintenance
+### Cutting a release
 
-Use the pinned dist tool, then run:
+`tools/release_cut.py` turns the changelog's `## Unreleased` section into a
+release and sets every version field, so a release commit is one command and
+its diff. The release notes are the Unreleased section as it stands; write them
+first.
 
 ```sh
-python3 tools/release_workflow.py
+python3 tools/release_cut.py VERSION [--date YYYY-MM-DD]   # changelog, every version field, docs facts
+python3 tools/check.py --fast                              # the gates (without --fast, the cargo steps too)
+git add -u && git commit -m "Release VERSION"
+gh workflow run release.yml --ref BRANCH                   # rehearse the build on the PR's branch
+# after the PR merges, on the merge commit:
+python3 tools/release_version.py --tag vVERSION            # the tag names the workspace version
+git tag vVERSION && git push origin vVERSION               # builds, smoke-tests and drafts the release
+```
+
+Then review the draft GitHub release and publish it; publication is manual.
+
+The cut moves the body of `## Unreleased` under `## VERSION - DATE` (today's
+date unless `--date`) and leaves a fresh empty `## Unreleased` above it, runs
+`release_version.py --set VERSION` and `docs_facts.py --write`, and prints the
+files it changed and these steps. It refuses a version that is not `X.Y.Z` (or
+`-alpha.N`, `-beta.N`, `-rc.N`), one not greater than the newest released
+section (so a second cut of the same version), a date in the future, and an
+empty Unreleased section; a refusal writes nothing.
+
+`python3 tools/release_cut.py --check` is the gate `tools/check.py` runs
+(`release_cut`): it writes nothing and fails when CHANGELOG.md's newest released
+heading is not the workspace version, when a released date is malformed or in
+the future, when the released versions are not newest first, or when
+`## Unreleased` is missing or not first. Notes under Unreleased are fine: that
+is work after the release. A release commit that sets the version and forgets
+the changelog fails here, before the Release workflow does.
+
+### Release maintenance
+
+Use the pinned dist tool (the release binary of the version
+`dist-workspace.toml` names, checked against the `.sha256` file published beside
+it), then run:
+
+```sh
+python3 tools/release_workflow.py --dist PATH/TO/dist
 python3 tools/release_workflow.py --check
 ```
 
 The first command regenerates dist's CI and adds the required package-smoke
 publication gate. `allow-dirty = ["ci"]` records this explicit CI customization;
 installer and binary packaging remain owned by dist. Native build caches are
-retained after a failed external attestation. A failed attestation gets one
-required retry; a second failure prevents publication. `release-smoke.yml` installs
+written by `main`'s rehearsals alone, which a tag can read (a cache a tag wrote
+would serve no other run), and are kept after a failed external attestation. A
+failed attestation gets one required retry; a second failure prevents
+publication. `release-smoke.yml` installs
 actual artifacts on matching native runners, checks reinstall, setup,
 readiness and checksum refusal, and calls no model. Publication depends on its
 successful result. The image job runs executable probes, also without a model.
 
-macOS ARM builds and installation checks use `macos-15`; Intel checks use
-`macos-15-intel`. Keep the build mapping in `dist-workspace.toml` and the native
-smoke matrix aligned when a runner image retires. GitHub's
+Both macOS targets build on `macos-15`, Apple silicon: dist cross-compiles
+`x86_64-apple-darwin` there, which Apple's toolchain does natively, instead of
+building it on the slower and scarcer `macos-15-intel`. The Intel binary is
+still installed and run on `macos-15-intel` by the smoke job. Each smoke entry
+names the target it executes, and `tools/release_smoke.py --target` refuses a
+runner that would install another target's archive; `tests/test_distribution.py`
+fails unless every packaged target has an entry. When a runner image retires,
+change `dist-workspace.toml` and the smoke matrix together. GitHub's
 [macOS 14 retirement schedule](https://github.com/actions/runner-images/issues/13518)
 includes outages before removal, so a queued or cancelled job is not packaging
 validation.
@@ -271,8 +315,15 @@ The release plan runs this check before building any artifact.
 Use the Release workflow's manual run on a branch to rehearse the complete
 build, installation and SDK packaging before tagging. A rehearsal creates a
 `release` run artifact containing the files a tag would draft. It creates no
-GitHub release, image push or provenance attestation. Pull requests changing
-release inputs run the same rehearsal.
+GitHub release, image push or provenance attestation. A push to `main` that
+changes a release input (the list is `RELEASE_INPUTS` in
+`tools/release_workflow.py`: the release workflows, `Cargo.lock`, the root
+`Cargo.toml`, `rust-toolchain.toml`, `dist-workspace.toml`, `install.sh`,
+`packaging/`, the agy image's inputs and the release scripts) runs the same
+rehearsal. A pull request that changes one runs `dist plan` alone, which checks
+the configuration and the version in about a minute; to rehearse a pull
+request's builds before it merges, run the workflow by hand on its branch
+(`gh workflow run release.yml --ref BRANCH`).
 
 After a successful rehearsal, push a matching `vVERSION` tag. The workflow
 builds and checks the artifacts, publishes the tested worker image, and creates

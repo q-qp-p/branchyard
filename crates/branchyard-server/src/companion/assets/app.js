@@ -49,15 +49,37 @@
     branchError: null,
     filter: '',
     doneOpen: false,
+    boardDoneOpen: false,
     seen: new Set(),
     statusSeen: new Map(),
     permissions: [],
     inbox: [],
     approvals: [],
     effects: [],
+    // What waits for a person, as the server orders it (`GET …/decisions`).
+    decisions: [],
+    // Which files are in whose hands (`GET …/ground`), with the repository
+    // it was read for; null until read.
+    ground: null,
+    // The same for the listed project's workspaces (`GET /v1/projects/{id}/decisions`):
+    // outputs waiting to be accepted and sessions that stopped; and the
+    // sessions its board shows running.
+    projectDecisions: { project: null, list: [] },
+    projectSessions: { project: null, list: [] },
+    // The deck: cards sent to the back, the one brought to the front, the
+    // answers held for their undo window, and the evidence fetched for a
+    // card (a branch's last turn and its diff).
+    deck: { later: [], front: null, holding: [], evidence: new Map() },
     pending: new Map(),
     merged: new Set(),
     route: { name: 'home' },
+    // The branch whose board row has its steer box open.
+    steering: null,
+    // Each branch's turns on the board's clock, read from its latest
+    // events: { at, turns: [{ start, end, tools: [ms] }], merged }.
+    tracks: new Map(),
+    // Approvals already answered, newest first: the deck's record of the day.
+    answered: [],
     pushInfo: null,
     pushOn: false,
   };
@@ -145,6 +167,46 @@
     return svg;
   }
 
+  // Inline icons: strokes on a 16-unit grid, drawn here so the page loads
+  // no file for them. Each is decorative; the text beside it says what it is.
+  const ICONS = {
+    plus: 'M8 3.5v9M3.5 8h9',
+    dots: 'M3.5 8h.01M8 8h.01M12.5 8h.01',
+    copy: 'M6 6h7v7H6zM3 10V3h7',
+    search: 'M7 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zM10.6 10.6L14 14',
+    terminal: 'M3 4l4 4-4 4M8.5 12H13',
+    eye: 'M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8zM8 9.8a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6z',
+    pencil: 'M11.5 2.5l2 2L5 13H3v-2zM9.5 4.5l2 2',
+    globe: 'M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM1.5 8h13M8 1.5c2 2 2 11 0 13M8 1.5c-2 2-2 11 0 13',
+    bolt: 'M9 1.5L3 9h4l-1 5.5L13 7H9z',
+    check: 'M3 8.5l3.2 3L13 4.5',
+    cross: 'M4 4l8 8M12 4l-8 8',
+    merge: 'M2.5 8h7.5M7 5l3 3-3 3M13 2.5v11',
+    wrench: 'M9.6 2.4a3.3 3.3 0 0 0 4 4.2l-5.8 5.8a1.5 1.5 0 0 1-2.2-2.2l5.8-5.8a3.3 3.3 0 0 0-1.8-2z',
+  };
+  function icon(name, small) {
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 16 16');
+    svg.setAttribute('class', small ? 'icon small' : 'icon');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', ICONS[name]);
+    svg.append(path);
+    return svg;
+  }
+  // A tool call's icon, from the verb its name opens with.
+  const TOOL_ICONS = [
+    [/^(run|bash|sh|shell|exec|execute|cargo|npm|make|python|node|git)\b/i, 'terminal'],
+    [/^(read|view|cat|open|inspect|show)\b/i, 'eye'],
+    [/^(edit|write|create|patch|replace|apply|update|delete|move|rename)\b/i, 'pencil'],
+    [/^(search|grep|glob|find|list|ls)\b/i, 'search'],
+    [/^(fetch|web|http|browse|curl|download)\b/i, 'globe'],
+    [/^(mcp|tool|call|task|agent|delegate)\b/i, 'bolt'],
+  ];
+  const toolIcon = (name) => (TOOL_ICONS.find(([re]) => re.test(name)) || [null, 'wrench'])[1];
+  // What the page shows where a conversation will be: a few quiet bars.
+  const skeleton = () => h('div', { class: 'skeleton', role: 'status', 'aria-label': 'Loading the conversation' }, h('i'), h('i'), h('i'), h('i'));
+
   // Only what the person did here gets a toast: the branch list is the
   // notice for everything else.
   function toast(text, href) {
@@ -152,7 +214,7 @@
     const toasts = $('toasts');
     toasts.append(box);
     while (toasts.children.length > 2) toasts.firstChild.remove();
-    setTimeout(() => box.remove(), 6000);
+    setTimeout(() => box.remove(), 5000);
   }
 
   function setLive(which, text) {
@@ -344,7 +406,7 @@
       key: 'needs', label: 'Needs you', collapsed: false,
       test: (b, attention) => attention.has(b.name) || b.stalled ||
         ['blocked', 'failed', 'interrupted', 'budget_exceeded', 'awaiting_plan_approval'].includes(b.status.state),
-      meta: (b, attention) => attention.get(b.name) || (b.stalled ? 'stalled' : statusOf(b).text.split(/[:(]/)[0].trim()),
+      meta: (b, attention) => (b.awaiting ? 'waiting for you' : attention.get(b.name) || (b.stalled ? 'stalled' : statusOf(b).text.split(/[:(]/)[0].trim())),
     },
     {
       key: 'running', label: 'Running', collapsed: false,
@@ -367,6 +429,7 @@
     const waiting = new Map();
     for (const m of state.inbox) waiting.set(m.from, m.kind);
     for (const a of state.approvals) waiting.set(a.branch, 'approval');
+    for (const b of state.branches.values()) if (b.awaiting) waiting.set(b.name, 'approval');
     return waiting;
   }
 
@@ -394,6 +457,8 @@
   function money(v) {
     return v == null ? '—' : `$${Number(v).toFixed(v < 1 ? 4 : 2)}`;
   }
+  // Dollars to the cent, for a column of them.
+  const cents = (v) => (v == null ? '—' : v > 0 && v < 0.005 ? '<$0.01' : `$${Number(v).toFixed(2)}`);
 
   function since(ms) {
     const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -487,7 +552,8 @@
       repos: [], repo: null, source: { kind: 'none' }, projects: null,
       workspaces: { project: null, list: [], loaded: false, error: null },
       branches: new Map(), lastActive: new Map(), loaded: false, branchError: null,
-      permissions: [], inbox: [], approvals: [], effects: [],
+      permissions: [], inbox: [], approvals: [], answered: [], effects: [], decisions: [], tracks: new Map(),
+      projectDecisions: { project: null, list: [] }, projectSessions: { project: null, list: [] },
     });
     $('sidebar').hidden = true;
     document.title = 'Branchyard';
@@ -699,12 +765,33 @@
     if (state.workspaces.project !== project) return;
     state.workspaces = { project, list: workspaces, loaded: true, error: null };
     workspacesChanged();
+    loadProjectWork(project, workspaces);
     if (workspaces.some((w) => workspaceLane(w).key === 'running')) {
       workspacesTimer = setTimeout(() => {
         if (state.source.kind === 'project' && state.source.id === project) loadWorkspaces(project);
       }, 3000);
     }
   }
+
+  // What the project's workspaces ask of a person (the server's decisions)
+  // and the sessions running in them (for the board), read together after
+  // each workspace list.
+  async function loadProjectWork(project, workspaces) {
+    const current = () => state.source.kind === 'project' && state.source.id === project;
+    const open = workspaces.filter((w) => ['ready', 'running'].includes(w.state));
+    const [decisions, ...sessions] = await Promise.all([
+      api('GET', `/v1/projects/${enc(project)}/decisions`).then((r) => r.decisions, () => null),
+      ...open.map((w) => api('GET', `${workspacePath(w.id)}/sessions`).then((r) => r.sessions.map((s) => ({ ...s, workspace: w })), () => [])),
+    ]);
+    if (!current()) return;
+    if (decisions) state.projectDecisions = { project, list: decisions };
+    state.projectSessions = { project, list: sessions.flat().filter(sessionActive) };
+    branchesChanged();
+    updateProjectGlance();
+  }
+
+  // The listed project's decisions, once it is the listed source.
+  const projectCards = () => (state.source.kind === 'project' && state.projectDecisions.project === state.source.id ? state.projectDecisions.list : []);
 
   function workspacesChanged() {
     renderLanes();
@@ -722,6 +809,8 @@
     save(REPO_KEY, repo);
     state.branches = new Map();
     state.lastActive = new Map();
+    state.tracks = new Map();
+    state.answered = [];
     state.cursor = null;
     state.loaded = false;
     state.branchError = null;
@@ -751,7 +840,7 @@
     if (repo !== state.repo) return;
     state.branches = new Map(branches.map((b) => [b.name, b]));
     state.loaded = true;
-    refreshInbox();
+    refreshDecisions();
     refreshApprovals();
     branchesChanged();
     if (state.route.name === 'queue') renderQueue();
@@ -861,8 +950,8 @@
       const p = state.permissions.find((x) => x.branch === entry.branch && x.decision == null);
       if (p) p.decision = a.decision.allowed ? 'allowed' : 'denied';
     }
-    if (a.message) refreshInbox();
-    if (a.effect) refreshApprovals();
+    if (a.message) refreshDecisions();
+    if (a.effect || a.status || a.snapshot) refreshApprovals();
     if (state.loaded && Date.now() - entry.at_ms < 60000) {
       const n = notice(entry);
       // On screen the branch list is the notice; a hidden tab gets the system's.
@@ -883,13 +972,19 @@
     home: renderHome,
     branch: renderBranch,
     new: renderNew,
-    attention: renderAttention,
+    attention: () => {
+      // The project's cards are read again on arrival; the repository's
+      // are kept current by its stream.
+      if (state.source.kind === 'project') loadWorkspaces(state.source.id);
+      return renderAttention();
+    },
     triggers: renderTriggers,
     queue: renderQueue,
     settings: renderSettings,
     newProject: renderNewProject,
     project: renderProject,
     workspace: renderWorkspace,
+    document: renderDocument,
   };
 
   function parseRoute() {
@@ -898,9 +993,10 @@
     if (parts[0] === 'b') return { name: 'branch', repo: parts[1], branch: parts.slice(2).join('/') };
     if (parts[0] === 'p' && parts[1] === 'new') return { name: 'newProject' };
     if (parts[0] === 'p' && parts[1]) return { name: 'project', project: parts[1], creating: parts[2] === 'new' };
+    if (parts[0] === 'w' && parts[1] && parts[2] === 'doc' && parts[3]) return { name: 'document', workspace: parts[1], artifact: parts[3] };
     if (parts[0] === 'w' && parts[1]) return { name: 'workspace', workspace: parts[1], session: parts[2] === 's' && parts[3] ? parts[3] : null };
     const name = ALIASES[parts[0]] || parts[0];
-    return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace'].includes(name) ? name : 'home' };
+    return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace', 'document'].includes(name) ? name : 'home' };
   }
 
   async function route() {
@@ -950,7 +1046,7 @@
 
   function renderLanes() {
     const list = $('branch-list');
-    const needs = lanes(Array.from(state.branches.values()))[0].branches.length;
+    const needs = lanes(Array.from(state.branches.values()))[0].branches.length + projectCards().length;
     document.title = needs ? `(${needs}) Branchyard` : 'Branchyard';
     $('attention-count').hidden = !needs;
     $('attention-count').textContent = String(needs);
@@ -1081,7 +1177,199 @@
 
   function homeSignature() {
     const groups = lanes(Array.from(state.branches.values()));
-    return JSON.stringify([state.loaded, state.branchError, groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled])), Array.from(attention())]);
+    return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 30000),
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering]);
+  }
+
+  // The board's clock: the smallest of these windows that holds the
+  // oldest thing it draws, now at the right edge. A yard whose work began
+  // minutes ago is drawn over minutes, not lost in an hour. Each window's
+  // quarters are round numbers.
+  const MINUTE = 60 * 1000;
+  const BOARD_WINDOWS = [4, 8, 20, 40, 60, 120, 240, 480, 720, 1440].map((m) => m * MINUTE);
+  function boardScale(oldest, now) {
+    const span = Math.max(0, now - oldest) * 1.06;
+    const win = BOARD_WINDOWS.find((w) => w >= span) || BOARD_WINDOWS[BOARD_WINDOWS.length - 1];
+    const x = (ms) => Math.max(0, Math.min(100, ((ms - (now - win)) / win) * 100));
+    const minus = (ms) => {
+      const m = Math.round(ms / MINUTE);
+      return m < 60 ? `−${m}m` : `−${Math.floor(m / 60)}h${m % 60 ? `${m % 60}m` : ''}`;
+    };
+    const label = win < 60 * MINUTE ? `last ${win / MINUTE} min` : win < 1440 * MINUTE ? `last ${plural(win / 60 / MINUTE, 'hour')}` : 'last day';
+    return { window: win, now, x, label, ticks: [1, 0.75, 0.5, 0.25].map((f) => minus(win * f)) };
+  }
+  const place = (el, scale, from, to) => {
+    const left = scale.x(from);
+    el.style.left = `${left}%`;
+    el.style.width = `${Math.max(0.4, scale.x(to) - left)}%`;
+    return el;
+  };
+  const at = (el, scale, ms) => { el.style.left = `${scale.x(ms)}%`; return el; };
+
+  // A branch's turns from its latest events: when each began and ended,
+  // when each tool call started, and when the branch merged.
+  function trackOf(events) {
+    const turns = [];
+    let turn = null;
+    let merged = null;
+    for (const { activity: a, at_ms: ms } of events) {
+      const ev = a.harness || {};
+      if (a.prompt != null || a.steered) {
+        if (turn && turn.end == null && a.steered) continue;
+        turn = { start: ms, end: null, tools: [] };
+        turns.push(turn);
+      } else if (ev.type === 'tool_started') {
+        if (!turn) { turn = { start: ms, end: null, tools: [] }; turns.push(turn); }
+        turn.tools.push(ms);
+      } else if (a.status) {
+        if (a.status.state === 'merged') merged = ms;
+        if (turn && turn.end == null && !['running', 'waiting'].includes(a.status.state)) turn.end = ms;
+      }
+    }
+    return { turns, merged };
+  }
+
+  // Read the tracks the board draws, each once per change of its branch:
+  // a branch's activity marks its track stale, and the next home redraw
+  // reads it again.
+  const trackKey = (b) => JSON.stringify([b.status, b.turns, activeAt(b)]);
+  function trackFor(b) {
+    const key = trackKey(b);
+    const found = state.tracks.get(b.name);
+    if (found && (found.key === key || found.loading)) return found.track;
+    const entry = { key, loading: true, track: found ? found.track : null };
+    state.tracks.set(b.name, entry);
+    const repo = state.repo;
+    api('GET', `${branchPath(b.name)}/event-page?limit=200`)
+      .then((page) => { entry.track = trackOf(page.events); })
+      .catch(() => {})
+      .finally(() => {
+        entry.loading = false;
+        if (repo === state.repo) branchesChanged();
+      });
+    return entry.track;
+  }
+
+  function homeSignature() {
+    const groups = lanes(Array.from(state.branches.values()));
+    return JSON.stringify([state.loaded, state.branchError, Math.floor(Date.now() / 15000),
+      groups.map((g) => g.branches.map((b) => [b.name, b.status, b.stalled, b.awaiting, b.cost_usd, activeAt(b)])), Array.from(attention()), state.steering,
+      Array.from(state.tracks.entries()).map(([k, t]) => [k, t.loading, t.track && t.track.turns.length]), state.answered.length]);
+  }
+
+  // One branch on the clock: its name and what it is doing, its turns on
+  // the rail (a turn a bar, each tool call a tick on it, a wait on you
+  // filled amber from when it parked, a merge a green tick), what it cost
+  // and the one thing to do with it. The row opens the branch.
+  function boardRow(b, lane, scale) {
+    const s = statusOf(b);
+    const now = scale.now;
+    const track = trackFor(b) || { turns: [{ start: b.created_at * 1000, end: lane.key === 'running' ? null : activeAt(b), tools: [] }], merged: null };
+    const open = !['merged', 'no_changes', 'discarded'].includes(b.status.state);
+    const rail = h('span', { class: 'rail' });
+    const first = track.turns.length ? track.turns[0].start : b.created_at * 1000;
+    if (first < now - scale.window) rail.append(h('i', { class: 'rail-before', title: `started ${clock(first)}` }));
+    const calls = track.turns.reduce((n, t) => n + t.tools.length, 0);
+    track.turns.forEach((t, i) => {
+      const last = i === track.turns.length - 1;
+      const end = t.end != null ? t.end : (open && last ? now : activeAt(b));
+      rail.append(place(h('i', { class: `seg seg-${lane.key}${t.end == null && open && last ? ' seg-live' : ''}`, title: `turn ${i + 1}: ${clock(t.start)}${t.end != null ? `–${clock(t.end)}` : ', running'} · ${plural(t.tools.length, 'call')}` }), scale, t.start, end));
+      for (const ms of t.tools) rail.append(at(h('i', { class: 'call' }), scale, ms));
+    });
+    for (const a of state.answered.filter((x) => x.branch === b.name && x.answer)) {
+      rail.append(place(h('i', { class: 'wait wait-past', title: `waited on you ${clock(a.created_ms)}–${clock(a.answer.at_ms)}, ${a.answer.allow ? 'allowed' : 'denied'}` }), scale, a.created_ms, a.answer.at_ms));
+    }
+    if (b.awaiting) rail.append(place(h('i', { class: 'wait', title: `waiting for you since ${clock(b.awaiting.since_ms)}` }), scale, b.awaiting.since_ms, now));
+    const lastTurn = track.turns[track.turns.length - 1];
+    if (lane.key === 'ready' && lastTurn && lastTurn.end) rail.append(place(h('i', { class: 'rail-ready', title: 'ready, waiting to be merged' }), scale, lastTurn.end, now));
+    if (track.merged) rail.append(at(h('i', { class: 'tick-merge', title: `merged ${clock(track.merged)}` }), scale, track.merged));
+    if (lane.key === 'needs' && !b.awaiting && lastTurn && lastTurn.end) rail.append(at(h('i', { class: 'stop', title: `${s.text} ${clock(lastTurn.end)}` }), scale, lastTurn.end));
+    else if (open) rail.append(h('i', { class: `head head-${lane.key}` }));
+    let meta;
+    if (b.awaiting) meta = [h('b', { text: 'waiting for you' }), ` · ${since(b.awaiting.since_ms)}`];
+    else if (lane.key === 'running') meta = b.status.state === 'running' ? `${b.stalled ? 'silent' : 'working'} · turn ${b.turns + 1} · ${plural(calls, 'call')}` : s.text;
+    else if (lane.key === 'ready') meta = ['ready · ', b.candidate ? counts(b.candidate.insertions, b.candidate.deletions) : null, ` · ${plural(b.turns, 'turn')}`];
+    else if (lane.key === 'done') meta = [s.text, track.merged ? ` · ${clock(track.merged).slice(0, 5)}` : ''];
+    else meta = [s.text, calls ? ` after ${plural(calls, 'call')}` : ''];
+    let action = null;
+    if (b.awaiting || attention().has(b.name)) action = h('a', { class: 'button small needs', href: '#/attention', text: 'Answer' });
+    else if (lane.key === 'ready' && applies(ACTIONS.merge, b)) action = h('button', { type: 'button', class: 'small primary', text: 'Merge', onclick: () => runAction(ACTIONS.merge, b.name) });
+    else if (lane.key === 'running' && applies(COMPOSER.steer, b)) action = h('button', { type: 'button', class: 'small', text: 'Steer', 'aria-pressed': String(state.steering === b.name), onclick: () => { state.steering = state.steering === b.name ? null : b.name; redraw(homeSignature(), renderHome); } });
+    else if (lane.key === 'needs' && applies(ACTIONS.resume, b)) action = h('button', { type: 'button', class: 'small', text: 'Resume', onclick: () => runAction(ACTIONS.resume, b.name) });
+    else action = h('a', { class: 'button small', href: branchHref(b.name), text: 'Open' });
+    const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name },
+      h('span', { class: 'board-name' }, dot(lane.key),
+        h('span', { class: 'board-id' }, h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta))),
+      rail,
+      h('span', { class: `board-cost mono${b.cost_usd == null ? ' muted' : ''}`, title: b.cost_usd == null ? 'its harness reports no cost' : `what ${b.harness} reported spending` }, cents(b.cost_usd)),
+      h('span', { class: 'board-act' }, action));
+    row.addEventListener('click', (ev) => {
+      if (ev.target.closest('a, button, input')) return;
+      location.hash = branchHref(b.name);
+    });
+    if (state.steering === b.name) return [row, steerRow(b)];
+    return row;
+  }
+
+  // One line under a running row: say something to the turn without
+  // opening the branch.
+  function steerRow(b) {
+    const field = h('input', { type: 'text', id: `steer-${b.name}`, placeholder: `Say something to ${b.name} while it works…`, autocomplete: 'off' });
+    const send = async () => {
+      const text = field.value.trim();
+      if (!text) { field.focus(); return; }
+      field.disabled = true;
+      const result = await act(COMPOSER.steer, b.name, text);
+      if (result) { state.steering = null; redraw(homeSignature(), renderHome); } else field.disabled = false;
+    };
+    field.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); send(); } if (ev.key === 'Escape') { state.steering = null; redraw(homeSignature(), renderHome); } });
+    const row = h('div', { class: 'board-steer' },
+      h('label', { class: 'visually-hidden', for: `steer-${b.name}`, text: `Steer ${b.name}` }), field,
+      h('button', { type: 'button', class: 'small', text: 'Steer', onclick: send }));
+    setTimeout(() => field.focus(), 0);
+    return row;
+  }
+
+  // The axis over the rails: where the window starts, its quarters, and
+  // now, with the time.
+  function boardAxis(scale, name) {
+    return h('div', { class: 'board-axis', 'aria-hidden': 'true' },
+      h('span', { class: 'board-name' }, name, h('span', { class: 'board-window', text: scale.label })),
+      h('span', { class: 'rail-axis' }, scale.ticks.map((t) => h('span', { text: t })),
+        h('span', { class: 'axis-now' }, 'now ', h('b', { text: clock(scale.now).slice(0, 5) }))),
+      h('span', { class: 'board-cost', text: 'Cost' }),
+      h('span', { class: 'board-act' }));
+  }
+
+  // A number with its meaning: the yard's summary tiles.
+  function tile(key, label, value, meaning, href) {
+    const body = [h('span', { class: 'tile-label' }, dot(key), label), h('b', { class: 'tile-value', text: value }), h('span', { class: 'tile-meaning', title: typeof meaning === 'string' ? meaning : null }, meaning)];
+    return h('li', { class: `tile tile-${key}` }, href ? h('a', { class: 'tile-link', href }, body) : h('div', { class: 'tile-body' }, body));
+  }
+
+  // Under the board: what was decided today, and where the money went,
+  // each branch's reported cost as a bar against the largest.
+  function homeLower(all, groups) {
+    const recent = recentDecisions();
+    const spent = all.filter((b) => b.cost_usd != null).sort((x, y) => y.cost_usd - x.cost_usd);
+    const top = spent.length ? spent[0].cost_usd : 0;
+    const laneKey = (b) => groups.find((g) => g.branches.includes(b)).lane.key;
+    return h('div', { class: 'home-lower' },
+      h('section', { class: 'recent-box', 'aria-labelledby': 'home-recent-h' },
+        h('h2', { id: 'home-recent-h' }, 'Decided today', recent.length ? h('span', { class: 'lane-count', text: String(recent.length) }) : null),
+        recent.length ? recentList(recent) : h('p', { class: 'muted recent-none', text: 'Nothing allowed, denied or merged yet today.' })),
+      h('section', { class: 'recent-box', 'aria-labelledby': 'home-spend-h' },
+        h('h2', { id: 'home-spend-h', text: 'Where the money went' }),
+        spent.length ? h('ul', { class: 'spend' }, spent.slice(0, 6).map((b) => {
+          const bar = h('i');
+          bar.style.width = `${top ? Math.max(2, (b.cost_usd / top) * 100) : 0}%`;
+          return h('li', { class: `spend-${laneKey(b)}` },
+            h('a', { class: 'spend-name', href: branchHref(b.name), text: b.name }),
+            h('span', { class: 'spend-track', title: `${b.name}: ${money(b.cost_usd)}` }, bar),
+            h('span', { class: 'spend-cost', text: cents(b.cost_usd) }));
+        }), h('li', { class: 'spend-total' }, h('span', { text: spent.length > 6 ? `${spent.length - 6} more` : 'In all' }), h('span'),
+          h('span', { class: 'spend-cost', text: cents(spent.reduce((n, b) => n + b.cost_usd, 0)) })))
+          : h('p', { class: 'muted recent-none', text: 'No branch here reports what it spends. A harness that reports cost, such as Claude Code, shows it here.' })));
   }
 
   function renderHome() {
@@ -1090,28 +1378,76 @@
     const all = Array.from(state.branches.values());
     const groups = lanes(all);
     const needs = groups[0].branches;
+    const ready = groups[2].branches;
+    const done = groups[3].branches;
     const waiting = attention();
+    const now = Date.now();
+    const midnight = new Date(now).setHours(0, 0, 0, 0);
+    const reporting = all.filter((b) => b.cost_usd != null);
+    const cost = reporting.reduce((sum, b) => sum + b.cost_usd, 0);
+    const inflight = groups[1].branches;
+    const parked = needs.filter((b) => b.awaiting || waiting.has(b.name)).length;
+    const mergedToday = done.filter((b) => b.status.state === 'merged' && activeAt(b) >= midnight);
+    const added = ready.reduce((n, b) => n + (b.candidate ? b.candidate.insertions : 0), 0);
+    const removed = ready.reduce((n, b) => n + (b.candidate ? b.candidate.deletions : 0), 0);
     const lede = !state.loaded
       ? state.branchError ? 'The branch list did not load.' : 'Loading…'
       : !all.length ? 'Nothing has run here yet.'
-        : needs.length ? `${plural(needs.length, 'branch', 'branches')} ${needs.length === 1 ? 'needs' : 'need'} you.` : 'Nothing needs you right now.';
-    const card = (b) => {
-      const s = statusOf(b);
-      const why = waiting.get(b.name);
-      return h('li', {}, h('a', { class: 'card card-link', href: why === 'approval' || why === 'question' || why === 'escalation' ? '#/attention' : branchHref(b.name) },
-        h('span', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: b.name }), ago(activeAt(b))),
-        h('span', { class: 'card-text', text: why ? `${cap(why)} waiting for you` : cap(s.text) }),
-        b.prompt ? h('span', { class: 'card-prompt', text: b.prompt.length > 160 ? `${b.prompt.slice(0, 159)}…` : b.prompt }) : null));
-    };
-    main(h('div', { class: 'page' },
+        : [needs.length ? `${plural(needs.length, 'branch', 'branches')} ${needs.length === 1 ? 'needs' : 'need'} you` : 'Nothing needs you right now',
+          `${inflight.length} in flight`, `${ready.length} ready`, reporting.length ? `${cents(cost)} spent so far` : null].filter(Boolean).join(' · ');
+    const open = groups.slice(0, 3).flatMap((g) => g.branches);
+    const starts = all.filter((b) => open.includes(b) || activeAt(b) >= now - 1440 * MINUTE).map((b) => {
+      const t = trackFor(b);
+      return t && t.turns.length ? t.turns[0].start : b.created_at * 1000;
+    });
+    const scale = boardScale(starts.length ? Math.min(...starts) : now, now);
+    const tiles = state.loaded && all.length ? h('ul', { class: 'tiles', 'aria-label': 'The yard at a glance' },
+      tile('running', 'In flight', String(inflight.length), inflight.length ? `${plural(inflight.filter((b) => b.status.state === 'running').length, 'agent')} working now` : 'no agent is working'),
+      tile('needs', 'Need you', String(needs.length), needs.length ? [parked ? `${parked} parked on you` : null, parked && needs.length > parked ? ', ' : null, needs.length > parked ? `${needs.length - parked} stopped` : null] : 'nothing waits on you', needs.length ? '#/attention' : null),
+      tile('ready', 'Ready', String(ready.length), ready.length ? ['to merge · ', counts(added, removed)] : 'nothing to merge'),
+      tile('done', 'Merged today', String(mergedToday.length), mergedToday.length ? mergedToday.slice(0, 2).map((b) => b.name).join(', ') + (mergedToday.length > 2 ? ` +${mergedToday.length - 2}` : '') : `${plural(done.length, 'branch', 'branches')} done in all`),
+      tile('cost', 'Spent', reporting.length ? cents(cost) : '—', reporting.length ? `by ${plural(reporting.length, 'branch', 'branches')} that report it` : 'no harness here reports cost')) : null;
+    const doneCost = done.reduce((sum, b) => sum + (b.cost_usd || 0), 0);
+    const doneGroup = done.length ? (() => {
+      const ticks = h('span', { class: 'rail rail-done' }, done.map((b) => {
+        const t = trackFor(b);
+        const ms = (t && t.merged) || activeAt(b);
+        return at(h('i', { class: b.status.state === 'merged' ? 'tick-merge' : 'tick-done', title: `${b.name}: ${statusOf(b).text}, ${clock(ms)}` }), scale, ms);
+      }));
+      const box = h('details', { class: 'board-done', open: state.boardDoneOpen },
+        h('summary', { class: 'board-row board-done-head' },
+          h('span', { class: 'board-name' }, h('span', { class: 'fold', 'aria-hidden': 'true' }),
+            h('span', { class: 'board-id' }, h('span', { class: 'board-done-title', text: `Done · ${done.length}` }),
+              h('span', { class: 'board-meta', text: done.map((b) => b.name).slice(0, 3).join(', ') + (done.length > 3 ? ` +${done.length - 3}` : '') }))),
+          ticks,
+          h('span', { class: 'board-cost mono muted', text: doneCost ? cents(doneCost) : '' }),
+          h('span', { class: 'board-act' })),
+        done.map((b) => boardRow(b, groups[3].lane, scale)));
+      box.addEventListener('toggle', () => { state.boardDoneOpen = box.open; });
+      return box;
+    })() : null;
+    main(h('div', { class: 'page full home' },
       h('header', { class: 'page-head' },
-        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede }))),
-      state.loaded && all.length ? h('ul', { class: 'glance', 'aria-label': 'Branches by lane' }, groups.map(({ lane, branches }) =>
-        h('li', { class: 'glance-item' }, h('span', { class: 'glance-label' }, dot(branches.length ? lane.key : 'done'), lane.label), h('b', { text: String(branches.length) })))) : null,
-      needs.length ? [h('h2', { text: 'Needs you' }), h('ul', { class: 'cards' }, needs.map(card))] : null,
-      state.loaded && !all.length && can('run') ? h('div', { class: 'welcome' },
-        h('p', { text: 'Start a task and it gets a branch of its own, with its conversation, its changes and a merge button.' }),
-        h('a', { class: 'button primary', href: '#/new', text: 'Start a task' })) : null));
+        h('div', {}, h('h1', { text: state.repo }), h('p', { class: 'lede', text: lede })),
+        state.loaded && all.length && can('run') ? h('a', { class: 'button primary', href: '#/new' }, icon('plus', true), 'New task') : null),
+      tiles,
+      state.loaded && all.length ? h('section', { class: 'board', 'aria-label': 'Every branch on one clock' },
+        boardAxis(scale, 'Branch'),
+        open.length ? groups.slice(0, 3).map(({ lane, branches }) => branches.map((b) => boardRow(b, lane, scale)))
+          : h('p', { class: 'board-calm' }, checkMark(false), 'Nothing is open. Every branch here is done.'),
+        doneGroup) : null,
+      state.loaded && all.length ? h('p', { class: 'board-legend', 'aria-label': 'How to read the board' },
+        h('span', { class: 'key' }, h('i', { class: 'key-seg' }), 'a turn'),
+        h('span', { class: 'key' }, h('i', { class: 'key-call' }), 'a tool call'),
+        h('span', { class: 'key' }, h('i', { class: 'key-wait' }), 'waiting on you'),
+        h('span', { class: 'key' }, h('i', { class: 'key-merge' }), 'merged'),
+        needs.length ? h('span', { class: 'key-note' }, h('a', { href: '#/attention', text: 'Decide' }), ' takes what waits on you one at a time.') : null) : null,
+      state.loaded && all.length ? homeLower(all, groups) : null,
+      state.loaded && !all.length ? h('section', { class: 'empty' },
+        h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('bolt')),
+        h('h2', { text: 'An empty yard' }),
+        h('p', { text: can('run') ? 'Start a task and it gets a branch of its own: its conversation, its changes and a merge button. Every branch then shows here on one clock.' : 'Branches started from the CLI or another browser show here on one clock. This token can read, not start.' }),
+        can('run') ? h('div', { class: 'row' }, h('a', { class: 'button primary', href: '#/new', text: 'Start a task' }), h('span', { class: 'hint' }, 'or ', h('code', { text: 'by run "…"' }), ' from a terminal')) : null) : null));
   }
 
   // A token that reaches no repository, before its first project.
@@ -1223,6 +1559,7 @@
         h('h1', { text: project.name }),
         h('p', { class: 'lede', id: 'project-lede' }))),
       h('ul', { class: 'glance', id: 'project-glance', 'aria-label': 'Workspaces by state' }),
+      h('section', { class: 'board', id: 'project-board', 'aria-label': 'Everything open in this project on one clock', hidden: true }),
       can('run') ? h('section', { class: 'card new-workspace', 'aria-label': 'New workspace' },
         h('label', { class: 'block', for: 'workspace-title', text: 'Workspace title' }),
         h('div', { class: 'row inline-form' }, titleField, create),
@@ -1245,6 +1582,7 @@
       const n = list.filter((w) => workspaceLane(w) === lane).length;
       return h('li', { class: 'glance-item' }, h('span', { class: 'glance-label' }, dot(n ? lane.key : 'done'), lane.label), h('b', { text: String(n) }));
     }) : null);
+    updateProjectBoard();
     const sorted = list.slice().sort((x, y) => y.created_at_ms - x.created_at_ms);
     fill($('project-cards'), error ? h('p', { class: 'error', text: error })
       : !loaded ? h('p', { class: 'muted', text: 'Loading…' })
@@ -1256,6 +1594,48 @@
               h('span', { class: 'card-text', text: cap(workspaceStateText(w)) }),
               w.error ? h('span', { class: 'card-prompt', text: w.error.message }) : null));
           })));
+  }
+
+  // Everything open in the project, on the board's clock: a row for each
+  // session running or waiting, each output delivered and waiting to be
+  // accepted, and each session that stopped. The same decisions the deck
+  // takes one at a time.
+  function updateProjectBoard() {
+    const board = $('project-board');
+    if (!board) return;
+    const id = state.workspaces.project;
+    const running = state.projectSessions.project === id ? state.projectSessions.list : [];
+    const cards = state.projectDecisions.project === id ? state.projectDecisions.list : [];
+    const now = Date.now();
+    const rows = [
+      ...cards.filter((d) => d.kind === 'session').map((d) => ({ lane: 'needs', d })),
+      ...running.map((s) => ({ lane: 'running', s })),
+      ...cards.filter((d) => d.kind === 'output').map((d) => ({ lane: 'ready', d })),
+    ];
+    board.hidden = !rows.length;
+    if (!rows.length) { fill(board); return; }
+    const startOf = ({ d, s }) => (s ? s.created_at_ms : d.kind === 'output' ? d.since_ms : now);
+    const scale = boardScale(Math.min(...rows.map(startOf)), now);
+    const row = ({ lane, d, s }) => {
+      const started = s ? s.created_at_ms : d.kind === 'output' ? d.since_ms : now;
+      const name = s ? s.name : d.session_name;
+      const where = s ? s.workspace.title : d.workspace_title;
+      const href = s ? workspaceHref(s.workspace.id, s.id) : workspaceHref(d.workspace, d.session);
+      const meta = s ? `${where} · ${sessionPhase(s).label.toLowerCase()}` : d.kind === 'output' ? `${where} · delivered ${d.output.name}` : `${where} · ${d.phase.toLowerCase()}`;
+      const rail = h('span', { class: 'rail' });
+      if (started < now - scale.window) rail.append(h('i', { class: 'rail-before', title: `started ${clock(started)}` }));
+      if (lane === 'ready') rail.append(place(h('i', { class: 'rail-ready', title: 'delivered, waiting to be accepted' }), scale, started, now));
+      else rail.append(place(h('i', { class: `seg seg-${lane}${lane === 'running' ? ' seg-live' : ''}`, title: `since ${clock(started)}` }), scale, started, now));
+      if (lane !== 'needs') rail.append(h('i', { class: `head head-${lane}` }));
+      const action = lane === 'running' ? h('a', { class: 'button small', href, text: 'Open' })
+        : h('a', { class: 'button small needs', href: '#/attention', text: lane === 'ready' ? 'Review' : 'Decide' });
+      return h('div', { class: `board-row board-${lane}`, 'data-session': s ? s.id : d.session, 'data-lane': lane },
+        h('span', { class: 'board-name' }, dot(lane), h('span', { class: 'board-id' }, h('a', { href, text: name }), h('span', { class: 'board-meta', text: meta }))),
+        rail,
+        h('span', { class: 'board-cost' }),
+        h('span', { class: 'board-act' }, action));
+    };
+    fill(board, boardAxis(scale, 'Session'), rows.map(row));
   }
 
   // A workspace is reserved at once and set up by a queued operation; it
@@ -1317,6 +1697,7 @@
       case 'status': return `status: ${statusOf({ status: v }).text}`;
       case 'warning': return `warning: ${v}`;
       case 'checkpoint': return `checkpoint ${v.turn} at ${v.commit.slice(0, 10)}`;
+      case 'turn_cost': return `turn cost ${money(v.cost_usd)}`;
       case 'steered': return `steered by ${v.by}: ${v.text}`;
       case 'stalled': return 'stalled: no harness activity';
       case 'resumed': return 'active again';
@@ -1361,29 +1742,288 @@
     const turns = [];
     let turn = null;
     let cut = true;
-    const open = (text, steer) => {
-      turn = { text, steer, said: [], tools: [], status: null, checkpoint: null, candidate: null };
+    const open = (text, steer, at) => {
+      turn = {
+        text, steer, said: [], tools: [], parts: [], pending: [], status: null, checkpoint: null, candidate: null,
+        cost: null, started_ms: at || null, ended_ms: null,
+      };
       turns.push(turn);
       cut = true;
       return turn;
     };
-    for (const { activity: a } of events) {
+    for (const { activity: a, at_ms: at } of events) {
       const ev = a.harness || {};
-      if (a.prompt != null) open(a.prompt, false);
-      else if (a.steered) open(a.steered.text, true);
+      if (a.prompt != null) open(a.prompt, false, at);
+      else if (a.steered) open(a.steered.text, true, at);
       else if (ev.type === 'message_delta') {
-        const t = turn || open(null, false);
-        if (cut) t.said.push(ev.text); else t.said[t.said.length - 1] += ev.text;
+        const t = turn || open(null, false, at);
+        if (cut) { t.said.push(ev.text); t.parts.push({ tools: t.pending, text: ev.text }); t.pending = []; }
+        else { t.said[t.said.length - 1] += ev.text; t.parts[t.parts.length - 1].text += ev.text; }
         cut = false;
       } else if (ev.type === 'tool_started') {
-        (turn || open(null, false)).tools.push(ev.name);
+        const t = turn || open(null, false, at);
+        t.tools.push(ev.name);
+        t.pending.push(ev.name);
         cut = true;
-      } else if (a.snapshot) (turn || open(null, false)).candidate = a.snapshot;
-      else if (a.checkpoint) (turn || open(null, false)).checkpoint = a.checkpoint;
-      else if (a.status && turn && !['running', 'waiting'].includes(a.status.state)) turn.status = a.status;
+      } else if (a.snapshot) (turn || open(null, false, at)).candidate = a.snapshot;
+      else if (a.checkpoint) (turn || open(null, false, at)).checkpoint = a.checkpoint;
+      else if (a.turn_cost) (turn || open(null, false, at)).cost = a.turn_cost.cost_usd;
+      else if (a.status && turn && !['running', 'waiting'].includes(a.status.state)) { turn.status = a.status; turn.ended_ms = at || null; }
     }
-    for (const t of turns) t.said = t.said.map((s) => s.trim()).filter(Boolean);
+    for (const t of turns) {
+      // Calls after the last paragraph are notes with nothing beside them.
+      if (t.pending.length) t.parts.push({ tools: t.pending, text: '' });
+      t.pending = [];
+      t.said = t.said.map((s) => s.trim()).filter(Boolean);
+      for (const part of t.parts) part.text = part.text.trim();
+    }
     return turns;
+  }
+
+  // How many of a turn's calls read, edited and ran, by the verb each
+  // name opens with; the rest are counted as "other".
+  function toolCounts(names) {
+    const counts = { read: 0, edit: 0, run: 0, other: 0 };
+    for (const name of names) {
+      const kind = toolIcon(name);
+      counts[kind === 'eye' ? 'read' : kind === 'pencil' ? 'edit' : kind === 'terminal' ? 'run' : 'other'] += 1;
+    }
+    return counts;
+  }
+  const countsText = (counts) => Object.entries(counts).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(', ');
+  function spanText(ms) {
+    if (ms == null || ms < 0) return null;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return m < 60 ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${Math.floor(m / 60)}h ${m % 60}m`;
+  }
+
+  // ---------------------------------------------------------------
+  // The agent's text as a small markdown, built as elements and never
+  // parsed as HTML: paragraphs, headings, lists, quotes, rules, pipe
+  // tables, inline code, emphasis, and links to http(s) addresses only.
+  // A fenced block is code under a header with a copy button; one that
+  // holds JSON is shown as the facts it holds, its text one click away.
+
+  const FENCE = /^ {0,3}(`{3,}|~{3,})\s*([\w.+-]*)\s*$/;
+  const LIST = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+  const RULE = /^ {0,3}([-*_])(\s*\1){2,}\s*$/;
+  const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+  const QUOTE = /^ {0,3}>/;
+  const TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+  const INLINE = /(`+)([^`][\s\S]*?)\1(?!`)|\*\*([^*]+?)\*\*|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])|(?<![\w])_([^_\s][^_]*?)_(?![\w])|~~([^~]+?)~~|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+
+  function rich(text) {
+    const out = [];
+    const lines = text.split('\n');
+    let para = [];
+    const flush = () => {
+      if (para.length) out.push(h('p', {}, inline(para.join('\n'))));
+      para = [];
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = FENCE.exec(line);
+      if (fence) {
+        flush();
+        const close = new RegExp(`^ {0,3}\\${fence[1][0]}{${fence[1].length},}\\s*$`);
+        const body = [];
+        i += 1;
+        while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
+        i += 1;
+        out.push(codeBlock(body.join('\n'), fence[2].toLowerCase()));
+        continue;
+      }
+      if (!line.trim()) { flush(); i += 1; continue; }
+      const heading = HEADING.exec(line);
+      if (heading) {
+        flush();
+        out.push(h(heading[1].length <= 2 ? 'h3' : 'h4', { class: 'md-h' }, inline(heading[2])));
+        i += 1;
+        continue;
+      }
+      if (RULE.test(line)) { flush(); out.push(h('hr')); i += 1; continue; }
+      if (QUOTE.test(line)) {
+        flush();
+        const quoted = [];
+        while (i < lines.length && QUOTE.test(lines[i])) quoted.push(lines[i++].replace(/^ {0,3}> ?/, ''));
+        out.push(h('blockquote', {}, rich(quoted.join('\n'))));
+        continue;
+      }
+      if (LIST.test(line)) {
+        flush();
+        const [el, next] = list(lines, i);
+        out.push(el);
+        i = next;
+        continue;
+      }
+      if (line.includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1])) {
+        flush();
+        const rows = [];
+        while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(lines[i++]);
+        out.push(table(rows));
+        continue;
+      }
+      para.push(line);
+      i += 1;
+    }
+    flush();
+    return out;
+  }
+
+  // A list from line `i`: items at the first item's indent; a deeper item
+  // nests under the one before it; a shallower one ends this list. An
+  // indented line that is not an item continues the last item; one at the
+  // margin ends the list, as agents mean it to. Returns the element and
+  // the line after the list.
+  function list(lines, i) {
+    const first = LIST.exec(lines[i]);
+    const base = first[1].length;
+    const ordered = /\d/.test(first[2]);
+    const start = ordered ? parseInt(first[2], 10) : 1;
+    const el = h(ordered ? 'ol' : 'ul', { start: start !== 1 ? String(start) : null });
+    let item = null;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!line.trim()) {
+        const next = lines[i + 1];
+        const continues = next != null && (LIST.test(next) ? LIST.exec(next)[1].length >= base : /^\s{2,}\S/.test(next));
+        if (!continues) break;
+        i += 1;
+        continue;
+      }
+      const m = LIST.exec(line);
+      if (m && m[1].length < base) break;
+      if (m && m[1].length === base) {
+        item = h('li', {}, inline(m[3]));
+        el.append(item);
+        i += 1;
+      } else if (m && item) {
+        const [sub, next] = list(lines, i);
+        item.append(sub);
+        i = next;
+      } else if (item && /^\s/.test(line)) {
+        item.append(' ', ...inline(line.trim()));
+        i += 1;
+      } else break;
+    }
+    return [el, i];
+  }
+
+  const cells = (row) => {
+    let t = row.trim();
+    if (t.startsWith('|')) t = t.slice(1);
+    if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+  };
+  function table(rows) {
+    const head = cells(rows[0]);
+    const numeric = cells(rows[1]).map((c) => c.endsWith(':') && !c.startsWith(':'));
+    const tr = (cols, tag) => h('tr', {}, head.map((_, k) => h(tag, { class: numeric[k] ? 'num' : null }, inline(cols[k] || ''))));
+    return h('div', { class: 'md-table-wrap' }, h('table', { class: 'md-table' },
+      h('thead', {}, tr(head, 'th')), h('tbody', {}, rows.slice(2).map((r) => tr(cells(r), 'td')))));
+  }
+
+  const breaks = (text) => text.split('\n').flatMap((part, k) => (k ? [h('br'), part] : [part]));
+  function inline(text) {
+    const out = [];
+    let last = 0;
+    for (const m of text.matchAll(INLINE)) {
+      if (m.index > last) out.push(...breaks(text.slice(last, m.index)));
+      if (m[2] != null) out.push(h('code', { text: m[2].replace(/^ (?=\S)| (?<=\S)$/g, '') }));
+      else if (m[3] != null) out.push(h('strong', {}, inline(m[3])));
+      else if (m[4] != null || m[5] != null) out.push(h('em', {}, inline(m[4] != null ? m[4] : m[5])));
+      else if (m[6] != null) out.push(h('s', {}, inline(m[6])));
+      else out.push(link(m[7], m[8]));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(...breaks(text.slice(last)));
+    return out;
+  }
+  // Only an absolute web address becomes a link, opened in a new tab; any
+  // other target stays as the text it was written as.
+  function link(label, href) {
+    let url = null;
+    if (/^https?:/i.test(href)) { try { url = new URL(href); } catch (_) { url = null; } }
+    if (!url) return [`[`, ...inline(label), `](${href})`];
+    return h('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer' }, inline(label));
+  }
+
+  function codeBlock(text, lang) {
+    const parsed = lang === 'json' || lang === '' ? parseJson(text) : undefined;
+    if (parsed !== undefined) return jsonBlock(parsed);
+    return h('figure', { class: 'code-block' }, codeHead(lang || 'Code', text), h('pre', {}, h('code', { text })));
+  }
+  function parseJson(text) {
+    const t = text.trim();
+    if (!/^[[{]/.test(t)) return undefined;
+    try { return JSON.parse(t); } catch (_) { return undefined; }
+  }
+  function codeHead(label, text) {
+    const copy = h('button', { type: 'button', class: 'copy', 'aria-label': `Copy ${label}` }, icon('copy', true), 'Copy');
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(text); } catch (_) { return; }
+      copy.dataset.done = '';
+      copy.lastChild.textContent = 'Copied';
+      setTimeout(() => { delete copy.dataset.done; copy.lastChild.textContent = 'Copy'; }, 1500);
+    });
+    return h('div', { class: 'code-head' }, h('span', { class: 'code-lang', text: label }), h('span', { class: 'spacer' }), copy);
+  }
+  // JSON: a flat object is a list of its keys and values; anything else is
+  // its text, pretty-printed, with keys, strings and numbers told apart.
+  const scalar = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+  const jsonClass = (v) => (v === null ? 'j-null' : typeof v === 'boolean' ? 'j-bool' : typeof v === 'number' ? 'j-num' : 'j-str');
+  const JSON_TOKEN = /("(?:[^"\\]|\\.)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false)\b|\b(null)\b|([{}[\],:])/g;
+  function jsonTokens(text) {
+    const out = [];
+    let last = 0;
+    for (const m of text.matchAll(JSON_TOKEN)) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      if (m[1] != null) {
+        out.push(h('span', { class: m[2] ? 'j-key' : 'j-str', text: m[1] }));
+        if (m[2]) out.push(h('span', { class: 'j-punct', text: m[2] }));
+      } else if (m[3] != null) out.push(h('span', { class: 'j-num', text: m[3] }));
+      else if (m[4] != null) out.push(h('span', { class: 'j-bool', text: m[4] }));
+      else if (m[5] != null) out.push(h('span', { class: 'j-null', text: m[5] }));
+      else out.push(h('span', { class: 'j-punct', text: m[6] }));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+  function jsonBlock(value) {
+    const pretty = JSON.stringify(value, null, 2);
+    const keys = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [];
+    const flat = keys.length > 0 && keys.length <= 24 && keys.every((k) => scalar(value[k]));
+    const pre = h('pre', {}, h('code', {}, jsonTokens(pretty)));
+    if (!flat) return h('figure', { class: 'code-block is-json' }, codeHead('JSON', pretty), pre);
+    const facts = h('dl', { class: 'json-facts' }, keys.map((k) => [h('dt', { text: k }),
+      h('dd', {}, typeof value[k] === 'string' ? value[k] : h('span', { class: jsonClass(value[k]), text: JSON.stringify(value[k]) }))]));
+    return h('figure', { class: 'code-block is-json' }, codeHead('JSON', pretty), facts,
+      h('details', {}, h('summary', { text: 'Show as text' }), pre));
+  }
+
+  // What the agent said, under a small head that names it as the agent's
+  // and which harness it was.
+  function agentBlock(said, harness) {
+    return h('div', { class: 'agent' },
+      h('div', { class: 'agent-head' },
+        h('img', { class: 'agent-mark', src: 'icon.svg', alt: '', width: '18', height: '18' }),
+        h('span', { class: 'agent-name', text: harness || 'Agent' }),
+        h('span', { class: 'ai-tag', text: 'AI', title: 'Written by the agent' })),
+      said.map((s) => h('div', { class: 'rich' }, rich(s))));
+  }
+
+  // Five blocks that show how much of a file's change adds and removes.
+  function fileBar(add, del) {
+    const total = add + del;
+    let adds = total ? Math.round((add / total) * 5) : 0;
+    if (add && del) adds = Math.min(4, Math.max(1, adds));
+    const dels = total ? 5 - adds : 0;
+    return h('span', { class: 'file-bar', 'aria-hidden': 'true' },
+      Array.from({ length: 5 }, (_, k) => h('i', { class: k < adds ? 'add' : k < adds + dels ? 'del' : null })));
   }
 
   // A unified diff split at each file: its path, its counts, and its lines
@@ -1549,17 +2189,19 @@
     const v = {
       name, events: [], first: 0, next: null, chain: null, queued: false,
       forking: false, tab: 'changes', file: null, files: null, diffFor: undefined, truncated: 0,
-      open: new Set(), signature: null, operations: null,
+      open: new Set(), signature: null, operations: null, groundFor: null,
     };
     view = v;
     main(h('div', { class: 'branch' },
       h('section', { class: 'focus', 'aria-label': 'Conversation' },
         h('header', { class: 'strip', id: 'strip' }),
-        h('div', { class: 'convo', id: 'convo' }, h('p', { class: 'muted', text: 'Loading the conversation…' })),
+        h('div', { class: 'convo', id: 'convo' }, skeleton()),
         composer(() => submitComposer())),
       h('aside', { class: 'inspector', id: 'inspector', 'aria-label': 'Inspector' },
         tablist(BRANCH_TABS, () => v.tab, (k) => selectTab(v, k)),
         h('div', { class: 'panel', role: 'tabpanel', id: 'panel-changes', 'aria-labelledby': 'tab-changes' }, h('div', { id: 'changes' })),
+        h('div', { class: 'panel', role: 'tabpanel', id: 'panel-ground', 'aria-labelledby': 'tab-ground', hidden: true },
+          h('div', { id: 'ground' }, h('p', { class: 'muted', text: 'Loading…' }))),
         h('div', { class: 'panel', role: 'tabpanel', id: 'panel-details', 'aria-labelledby': 'tab-details', hidden: true },
           h('dl', { class: 'facts', id: 'facts' }),
           h('h2', { text: 'Checkpoints' }), h('div', { id: 'checkpoints' }, h('p', { class: 'muted', text: 'Loading…' })),
@@ -1573,9 +2215,10 @@
       fill($('events'), h('li', { class: 'error', text: e.message }));
     });
     loadOperations(v);
+    loadGround().then(() => drawGround(v));
   }
 
-  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['details', 'Details'], ['activity', 'Activity']];
+  const BRANCH_TABS = [['changes', 'Changes', 'changes-count'], ['ground', 'Ground', 'ground-count'], ['details', 'Details'], ['activity', 'Activity', 'activity-count']];
 
   // The inspector's tabs: [key, label, id of a count beside it]. Arrow keys
   // move between them.
@@ -1641,14 +2284,22 @@
     const box = $('convo');
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
     const turns = conversation(v.events);
+    // A turn's number counts the prompts before it, not the steers.
+    v.turnsBefore = (i) => turns.slice(0, i).filter((t) => !t.steer && t.text != null).length;
     const info = state.branches.get(v.name);
     const working = info && ['running', 'waiting'].includes(info.status.state);
     fill(box,
       v.first > 0 ? h('p', { class: 'convo-note', text: `Earlier turns are not shown here: this is the latest of ${plural(v.first + v.events.length, 'event')}.` }) : null,
-      turns.length ? turns.map((t, i) => turnItem(t, i, v, working && i === turns.length - 1)) : h('p', { class: 'muted', text: 'No turns yet.' }),
+      turns.length ? turns.map((t, i) => turnItem(t, i, v, working && i === turns.length - 1))
+        : working ? null : h('section', { class: 'empty convo-empty' },
+          h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('terminal')),
+          h('h2', { text: 'No turns yet' }),
+          h('p', { text: 'A turn starts when the agent gets a prompt. What it says reads here as a report, its tool calls in the margin beside the paragraph they led to, and each turn ends with a receipt. Write the first prompt below.' })),
       working && !turns.length ? workingLine(info) : null);
     if (atEnd || !v.scrolled) box.scrollTop = box.scrollHeight;
     v.scrolled = true;
+    const calls = v.events.filter((e) => e.activity.harness && e.activity.harness.type === 'tool_started').length;
+    if ($('activity-count')) $('activity-count').textContent = calls ? String(calls) : '';
     if (v.tab === 'activity') {
       const events = coalesce(v.events);
       fill($('events'), ...(events.length ? events.slice().reverse().map(eventItem) : [h('li', { class: 'muted', text: 'No events yet.' })]));
@@ -1665,28 +2316,63 @@
     return h('p', { class: 'outcome' }, dot('running'), info.status.state === 'waiting' ? 'Waiting for its prerequisites…' : 'Working…');
   }
 
-  function turnItem(t, i, v, last) {
-    let tools = null;
-    if (t.tools.length) {
-      tools = h('details', { class: 'tools', open: v.open.has(i) },
-        h('summary', { text: plural(t.tools.length, 'tool call') }),
-        h('ol', {}, t.tools.map((name) => h('li', { class: 'mono', text: name }))));
-      tools.addEventListener('toggle', () => { if (tools.open) v.open.add(i); else v.open.delete(i); });
-    }
+  // A tool call as a note in the margin: the name the harness gave it, with
+  // the icon for its verb. Clicking opens the Activity tab, where the call
+  // is one of the events.
+  function note(name, v) {
+    return h('button', {
+      type: 'button', class: 'note', title: name,
+      onclick: () => { if (v) selectTab(v, 'activity'); },
+    }, icon(toolIcon(name), true), h('span', { text: name }));
+  }
+
+  // The turn's receipt: how long it took, what it cost (the engine's own
+  // record of the turn's spend, when something measured it), what its
+  // calls did, what it changed, and how it ended.
+  function receipt(t) {
     const c = t.checkpoint || t.candidate;
     const lane = t.status ? laneOf({ name: '', status: t.status }, new Map()).key : null;
-    const outcome = t.status || c ? h('p', { class: `outcome outcome-${lane || 'done'}` },
-      lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
-      t.status ? cap(statusOf({ status: t.status }).text) : null,
-      c ? [t.status ? ' · ' : '', h('span', { class: 'mono', text: c.commit.slice(0, 7) }), ` · ${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null) : null;
+    if (!t.status && !c) return null;
+    const took = t.started_ms && t.ended_ms && t.ended_ms - t.started_ms >= 1000 ? spanText(t.ended_ms - t.started_ms) : null;
+    const did = t.tools.length ? countsText(toolCounts(t.tools)) : null;
+    const figure = (label, ...value) => h('span', { class: 'figure' }, h('span', { class: 'figure-label', text: label }), h('span', { class: 'figure-value' }, value));
+    return h('div', { class: `outcome receipt outcome-${lane || 'done'}` },
+      h('span', { class: 'receipt-state' },
+        lane === 'ready' ? h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }) : lane ? dot(lane) : null,
+        t.status ? cap(statusOf({ status: t.status }).text) : 'Checkpoint'),
+      h('span', { class: 'receipt-figures' },
+        took ? figure('took', took) : null,
+        did ? figure('calls', did) : null,
+        c ? figure('commit', h('span', { class: 'mono', text: c.commit.slice(0, 7) })) : null,
+        c ? figure('changed', `${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)) : null,
+        t.cost != null ? figure('cost', money(t.cost)) : null));
+  }
+
+  function turnItem(t, i, v, last) {
     const info = state.branches.get(v.name);
+    const number = v.first > 0 ? null : 1 + v.turnsBefore(i);
+    const outcome = receipt(t);
     return h('article', { class: 'turn' },
-      t.text != null ? h('div', { class: t.steer ? 'you steer' : 'you' },
-        t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text })) : null,
-      t.said.length ? h('div', { class: 'agent' }, t.said.map((s) => h('p', { text: s }))) : null,
-      tools,
+      t.text != null ? h('div', { class: 'turn-row turn-ask' },
+        h('span', { class: 'turn-when' }, h('b', { text: t.steer ? 'Steered' : number ? `Turn ${number}` : 'Turn' }), t.started_ms ? ` · ${clock(t.started_ms).slice(0, 5)}` : null),
+        h('div', { class: t.steer ? 'you steer' : 'you' },
+          t.steer ? h('span', { class: 'you-label', text: 'Steered' }) : null, h('p', { text: t.text }))) : null,
+      t.parts.length ? reportBlock(t.parts, info && info.harness, v) : null,
       outcome,
       last && !outcome && info ? workingLine(info) : null);
+  }
+
+  // What the agent said as a report: each paragraph beside the calls that
+  // came before it, in the margin.
+  function reportBlock(parts, harness, v) {
+    return h('div', { class: 'agent report' },
+      h('div', { class: 'agent-head' },
+        h('img', { class: 'agent-mark', src: 'icon.svg', alt: '', width: '18', height: '18' }),
+        h('span', { class: 'agent-name', text: harness || 'Agent' }),
+        h('span', { class: 'ai-tag', text: 'AI', title: 'Written by the agent' })),
+      parts.map((part) => h('div', { class: 'turn-row' },
+        h('aside', { class: 'notes', 'aria-label': part.tools.length ? plural(part.tools.length, 'tool call') : null }, part.tools.map((name) => note(name, v))),
+        part.text ? h('div', { class: 'rich' }, rich(part.text)) : h('div', { class: 'rich rich-empty' }))));
   }
 
   function composer(submit) {
@@ -1706,8 +2392,11 @@
           $('composer-text').focus();
         } }),
         h('span', { class: 'spacer' }),
+        h('span', { class: 'kbd-hint', 'aria-hidden': 'true' }, h('kbd', { text: MOD_KEY }), h('kbd', { text: '↵' })),
         h('button', { type: 'button', class: 'primary', id: 'composer-go', onclick: () => submit() })));
   }
+  // The modifier that sends with Enter, as the platform names it.
+  const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '⌘' : 'Ctrl';
 
   function applyComposer(info) {
     const { mode, why } = composerMode(info, view.forking);
@@ -1762,14 +2451,13 @@
       s.key === 'merged'
         ? h('p', { class: 'state state-merged' }, checkMark(state.merged.has(info.name)), cap(s.text))
         : h('p', { class: `state state-${lane}` }, dot(lane), cap(s.text)),
-      action,
-      menu.length ? menuOf(menu, info) : null,
+      action || menu.length ? h('div', { class: 'strip-actions' }, action, menu.length ? menuOf(menu, info) : null) : null,
     ];
   }
 
   function menuOf(items, info) {
     const menu = h('details', { class: 'menu' },
-      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, icon('dots')),
       h('div', { class: 'menu-list' }, items.map((a) => h('button', {
         type: 'button', class: a.danger ? 'menu-item danger-text' : 'menu-item', text: a.label,
         onclick: () => { menu.open = false; if (a.pick) a.pick(); else runAction(a, info.name); },
@@ -1816,6 +2504,40 @@
     $('changes-count').textContent = info.candidate ? String(info.candidate.files_changed) : '';
     const commit = info.candidate ? info.candidate.commit : null;
     if (commit !== v.diffFor) loadDiff(v, info);
+    drawGround(v);
+  }
+
+  // The branch's files as the ground plan has them: each with the other
+  // open branches that changed it too, or "only here". The tab counts the
+  // files in two hands.
+  function drawGround(v) {
+    const slot = $('ground');
+    if (view !== v || !slot) return;
+    const held = groundOf(v.name);
+    const info = state.branches.get(v.name);
+    const closed = info && ['merged', 'discarded'].includes(info.status.state) ? info.status.state : null;
+    const skipped = state.ground && state.ground.repo === state.repo ? state.ground.skipped.filter((n) => n !== v.name) : [];
+    const signature = JSON.stringify([held, skipped, closed]);
+    if (signature === v.groundFor) return;
+    v.groundFor = signature;
+    const shared = held && !closed ? held.filter((f) => f.others.length).length : 0;
+    $('ground-count').textContent = shared ? String(shared) : '';
+    // A merged or discarded branch holds nothing, whatever an older read says.
+    if (closed) { fill(slot, h('p', { class: 'hint ground-lede', text: `${cap(closed)}, this branch holds no files.` })); return; }
+    if (!held) { fill(slot, h('p', { class: 'muted', text: 'Loading…' })); return; }
+    const link = (name) => h('a', { href: branchHref(name), text: name });
+    fill(slot,
+      h('p', { class: 'hint ground-lede', text: held.length
+        ? `Which of this branch's files another open branch has changed too.${shared ? ` ${plural(shared, 'file')} in two hands.` : ''}`
+        : 'This branch has changed no file, so it holds none.' }),
+      held.length ? h('ul', { class: 'ground', 'aria-label': 'Who else holds these files' }, held.map((f) => {
+        const at = f.path.lastIndexOf('/');
+        return h('li', { class: f.others.length ? 'ground-shared' : '', 'data-path': f.path },
+          h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
+          f.others.length ? h('span', { class: 'ground-others' }, 'also in ', f.others.map((n, i) => [i ? ', ' : '', link(n)]))
+            : h('span', { class: 'ground-others muted', text: 'only here' }));
+      })) : null,
+      skipped.length ? h('p', { class: 'hint', text: `Not counted: the diff of ${skipped.join(', ')} could not be read.` }) : null);
   }
 
   async function loadDiff(v, info) {
@@ -1848,13 +2570,19 @@
         type: 'button', class: 'file-row', 'aria-pressed': String(f === file), 'data-path': f.path, title: f.path,
         onclick: () => { v.file = f.path; renderChanges(v, true); },
       }, h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
-      h('span', { class: 'file-counts' }, counts(f.add, f.del))));
+      h('span', { class: 'file-counts' }, counts(f.add, f.del)), fileBar(f.add, f.del)));
     }));
     const pre = h('pre', { class: 'diff', tabindex: '0', 'aria-label': `Diff of ${file.path}` },
       file.lines.map((l) => h('span', { class: l.kind }, l.text)));
+    const cut = file.path.lastIndexOf('/');
+    // The file's header stays in view while its diff scrolls under it.
+    const head = h('div', { class: 'diff-head' },
+      h('span', { class: 'path' }, h('span', { class: 'dir', text: file.path.slice(0, cut + 1) }), h('b', { text: file.path.slice(cut + 1) })),
+      h('span', { class: 'file-counts' }, counts(file.add, file.del)),
+      v.files.length > 1 ? h('span', { class: 'diff-of muted', text: `${v.files.indexOf(file) + 1} of ${v.files.length}` }) : null);
     fill(slot,
       v.truncated ? h('p', { class: 'hint pad', text: `Showing the first ${DIFF_LIMIT} characters of ${v.truncated}.` }) : null,
-      list, pre);
+      list, h('div', { class: 'diff-box' }, head, pre));
     if (focus) list.querySelector('[aria-pressed="true"]').focus();
   }
 
@@ -1895,8 +2623,8 @@
     return `${(n / 1024 / 1024).toFixed(1)} MB`;
   }
 
-  // Short names for formats people know; any other shows its media type,
-  // which a row's tooltip always gives in full.
+  // Short names for formats people know; any other shows its file name's
+  // extension, and a row's tooltip always gives the media type in full.
   const FORMATS = {
     'text/csv': 'CSV',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'XLSX',
@@ -1909,29 +2637,81 @@
     'image/png': 'PNG',
     'image/jpeg': 'JPEG',
   };
-  const formatOf = (type) => FORMATS[(type || '').split(';')[0].trim().toLowerCase()] || type || 'File';
+  function formatOf(type, name) {
+    const known = FORMATS[(type || '').split(';')[0].trim().toLowerCase()];
+    if (known) return known;
+    const extension = /\.([a-z0-9]{1,8})$/i.exec(name || '');
+    return extension ? extension[1].toUpperCase() : 'File';
+  }
 
-  // The server reads a source's title from a header, which carries printable
-  // ASCII only: accents are dropped and any other character becomes `_`.
-  const asciiTitle = (name) => name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x20-\x7e]/g, '_').slice(0, 512);
+  // A source's title travels as an RFC 8187 extended value, so any name
+  // arrives as written. encodeURIComponent would leave ' ( ) * bare, which
+  // attr-char excludes, so each UTF-8 byte outside attr-char is escaped
+  // here. X-Source-Title keeps an ASCII copy for a server that reads only it.
+  const ATTR_CHAR = /^[A-Za-z0-9!#$&+\-.^_`|~]$/;
+  const encodedTitle = (name) => `UTF-8''${Array.from(new TextEncoder().encode(name), (byte) => {
+    const c = String.fromCharCode(byte);
+    return ATTR_CHAR.test(c) ? c : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }).join('')}`;
+  const asciiTitle = (name) => name.replace(/[^\x20-\x7e]/gu, '_');
+  // The server keeps a title to 512 UTF-8 bytes, so a longer name keeps its
+  // extension and loses whole characters from the end of the rest.
+  const utf8Length = (text) => new TextEncoder().encode(text).length;
+  function sourceTitle(name) {
+    if (utf8Length(name) <= 512) return name;
+    const extension = (/\.[a-z0-9]{1,8}$/i.exec(name) || [''])[0];
+    const stem = Array.from(name.slice(0, name.length - extension.length));
+    while (stem.length && utf8Length(stem.join('') + extension) > 512) stem.pop();
+    return stem.join('') + extension;
+  }
 
   // A session's native status once its turn exists. Before that it has no
   // `status_detail`, and `status` is its admission operation's state.
   const sessionStatus = (s) => (s.status_detail ? { name: s.name, status: s.status_detail } : null);
-  const unstarted = (s) => !s.status_detail && ['failed', 'interrupted'].includes(s.status);
-  function sessionActive(s) {
-    const info = sessionStatus(s);
-    return info ? ['running', 'waiting', 'waiting_on_children'].includes(info.status.state) : !unstarted(s);
+
+  // Where a session stands, in the words every part of the page uses: its
+  // tab, its outputs' heading, Details, the facts line, the conversation
+  // and the next-step line. `next` is what to do about it.
+  const RECOVER = 'Try again, choosing another environment or harness if this one cannot run it.';
+  const PHASES = {
+    queued: { label: 'Waiting to start', lane: 'running', next: 'It starts as soon as the server admits it.' },
+    starting: { label: 'Starting', lane: 'running', next: 'Its first turn begins in a moment.' },
+    running: { label: 'Running', lane: 'running', next: 'Steer it from the message box, or wait for the turn to end.' },
+    waiting: { label: 'Waiting', lane: 'running', next: 'It continues when what it waits for finishes.' },
+    interrupted: { label: 'Interrupted', lane: 'needs', next: 'Resume it from the message box.' },
+    completed: { label: 'Completed', lane: 'done', next: 'Review its outputs, or continue it from the message box.' },
+    failed: { label: 'Failed', lane: 'needs', next: RECOVER },
+    not_started: { label: 'Did not start', lane: 'needs', next: RECOVER },
+  };
+  // A native state's phase, and an admission operation's before the
+  // session's branch exists.
+  const NATIVE_PHASE = {
+    running: 'running', waiting: 'waiting', waiting_on_children: 'waiting', interrupted: 'interrupted',
+    ready: 'completed', no_changes: 'completed', merged: 'completed',
+    failed: 'failed', blocked: 'failed', budget_exceeded: 'failed', awaiting_plan_approval: 'failed',
+  };
+  const ADMISSION_PHASE = { queued: 'queued', running: 'starting', succeeded: 'starting', failed: 'not_started', interrupted: 'not_started' };
+  const ACTIVE_PHASES = ['queued', 'starting', 'running', 'waiting'];
+  const RECOVERABLE_PHASES = ['not_started', 'failed'];
+
+  function sessionPhase(s) {
+    const native = s.status_detail;
+    const key = native ? NATIVE_PHASE[native.state] || 'running' : ADMISSION_PHASE[s.status] || 'starting';
+    const phase = PHASES[key];
+    let lane = phase.lane;
+    let detail = null;
+    if (key === 'not_started') detail = s.error ? s.error.message : null;
+    else if (key === 'completed' && native.state === 'ready') lane = 'ready';
+    else if (key === 'completed' || (key === 'failed' && native.state !== 'failed')) detail = statusOf({ status: native }).text;
+    else if (key === 'failed') detail = native.reason || null;
+    return { key, label: phase.label, lane, next: phase.next, detail };
   }
-  function sessionLane(s) {
-    const info = sessionStatus(s);
-    if (!info) return unstarted(s) ? 'needs' : 'running';
-    return info.status.state === 'waiting_on_children' ? 'running' : laneOf(info, new Map()).key;
-  }
+  const unstarted = (s) => sessionPhase(s).key === 'not_started';
+  const sessionActive = (s) => ACTIVE_PHASES.includes(sessionPhase(s).key);
+  const sessionLane = (s) => sessionPhase(s).lane;
   function sessionText(s) {
-    if (unstarted(s)) return `did not start${s.error ? `: ${s.error.message}` : ''}`;
-    const info = sessionStatus(s);
-    return info ? statusOf(info).text : 'starting';
+    const { label, detail } = sessionPhase(s);
+    return detail ? `${label}: ${detail}` : label;
   }
   const sessionsOf = (v) => (v.workspace.sessions || []).slice().sort((x, y) => x.created_at_ms - y.created_at_ms);
   const selectedSession = (v) => sessionsOf(v).find((s) => s.id === v.session) || null;
@@ -2012,6 +2792,242 @@
     return c.available ? null : c.reason || 'not available';
   }
 
+  // Why a workspace takes no new session, by its state (or, for a view
+  // state such as `running`, the lifecycle state behind it); null when it
+  // takes one.
+  const NOT_READY = {
+    pending: 'The workspace is starting; sessions can start once it is ready.',
+    restoring: 'The workspace is being restored; sessions can start once it is ready.',
+    archiving: 'The workspace is being archived.',
+    archived: 'The workspace is archived: restore it from ⋯, then start.',
+    failed: 'The workspace\'s setup failed: restore it from ⋯, then start.',
+    interrupted: 'The workspace\'s setup was interrupted: restore it from ⋯, then start.',
+  };
+  const notReady = (ws) => NOT_READY[ws.state] || NOT_READY[ws.lifecycle_intent] || null;
+  const said = (text) => (/[.!?]$/.test(text) ? cap(text) : `${cap(text)}.`);
+
+  // Readiness in fixed words: a state's word and the dot that repeats it,
+  // and where it was measured. Text is always shown, and readiness never
+  // disables anything.
+  const READY = { ready: ['Ready', 'ready'], not_ready: ['Not ready', 'needs'], unknown: ['Unknown', 'done'] };
+  const SCOPE = { api_host: 'checked on this server', environment: 'in the environment itself' };
+  // Whether an environment supplies a harness's key is configuration, not a
+  // measurement: its row has a fact and no state.
+  const KEY = { configured: 'This environment supplies its key', none: 'This environment supplies no key' };
+  const PROVIDERS = { local: 'Local', substrate: 'Substrate', microsandbox: 'Microsandbox' };
+  const EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+  const readinessRow = (name, r) => ({
+    name, state: r.state, scope: r.scope, reason: r.reason, action: r.action, checkedMsAgo: r.checked_ms_ago == null ? null : r.checked_ms_ago,
+  });
+
+  // Discovery's presets as the environments a session can start in. Which
+  // `preset` a start sends is decided here and nowhere else: the server's
+  // implicit default environment sends none (today's start, so coding
+  // projects are unchanged) unless the server requires one.
+  function environmentsOf(list) {
+    return list.presets.map((p) => {
+      const preset = p.origin === 'default' && !list.required ? null : p.id;
+      return {
+        key: p.id, label: p.label, description: p.description || '', provider: p.provider, origin: p.origin, preset,
+        canStart: p.can_start !== false,
+        readiness: [readinessRow('Environment', p.environment), p.reachability ? readinessRow('Reachability', p.reachability) : null].filter(Boolean),
+        harnesses: p.harnesses.map((x) => ({
+          id: x.harness, models: x.models || null, defaultModel: x.default_model || null, freeModel: preset === null,
+          toolApprovals: x.tool_approvals, writer: x.writer, reviewer: x.reviewer, effort: x.effort === true, credentials: x.credentials,
+          readiness: [readinessRow('Executable', x.executable), readinessRow('Sign-in', x.auth), { name: 'Key', fact: KEY[x.credentials] || x.credentials }],
+        })),
+      };
+    });
+  }
+
+  // The environment a session started in: its preset's, or the default
+  // environment's when it sent none.
+  const environmentOf = (v, s) => v.environments.list.find((env) => env.preset === (s.preset || null)) || null;
+
+  const WRITER_CANNOT = 'it cannot ask before each tool, and this server does not accept that for writers';
+  const REVIEWER_CANNOT = 'reviewers need a harness that routes each tool request for approval';
+  // Why each access is closed for a harness and the caller's role, or null.
+  const accessWhy = (x, roles) => ({
+    writer: !roles.run ? 'your role in this workspace cannot start writers' : x.writer === false ? WRITER_CANNOT : null,
+    reviewer: !roles.comment ? 'your role in this workspace cannot start reviewers' : x.reviewer === false ? REVIEWER_CANNOT : null,
+  });
+
+  // Everything the new-session form offers for a draft, what is closed and
+  // why, and the first thing still missing. Pure: the form draws it and
+  // Start checks it.
+  function startChoices(environments, roles, draft, outputs) {
+    const envs = environments.list.map((env) => ({ env, why: env.canStart ? null : 'Your role in this workspace cannot start sessions here.' }));
+    const open = envs.filter((e) => !e.why);
+    const picked = open.find((e) => e.env.key === draft.env) || (open.length === 1 ? open[0] : null);
+    const env = picked ? picked.env : null;
+    const harnesses = (env ? env.harnesses : []).map((x) => {
+      const w = accessWhy(x, roles);
+      const why = w.writer && w.reviewer ? [roles.run ? w.writer : null, roles.comment ? w.reviewer : null].filter(Boolean).join('; ') || w.writer : null;
+      return { harness: x, why };
+    });
+    const usable = harnesses.filter((x) => !x.why);
+    // The default environment of a server that lists no harness keeps
+    // today's typed harness.
+    const typed = !!env && env.preset === null && !env.harnesses.length;
+    const typedHarness = draft.harness && draft.harness.trim();
+    const chosen = usable.find((x) => x.harness.id === draft.harness) || usable[0];
+    const harness = typed
+      ? (typedHarness ? { id: typedHarness, models: null, freeModel: true, toolApprovals: null, writer: null, reviewer: null, effort: false, readiness: [] } : null)
+      : chosen ? chosen.harness : null;
+    const base = accessWhy(harness || {}, roles);
+    const other = draft.access === 'writer' ? 'reviewer' : 'writer';
+    const value = base[draft.access] && !base[other] ? other : draft.access;
+    // `fixed` when the role or the harness closes the other access, so the
+    // choice is not the person's; `forced` when that leaves reviewer.
+    const fixed = !!base[value === 'writer' ? 'reviewer' : 'writer'];
+    const access = {
+      value, writer: base.writer, reviewer: base.reviewer || (outputs.length ? null : 'no outputs to review yet'),
+      fixed, forced: value === 'reviewer' && fixed,
+    };
+    let model = { kind: 'none', options: [], value: '' };
+    if (harness && harness.freeModel) model = { kind: 'free', options: [], value: draft.model };
+    else if (harness && harness.models && harness.models.length) {
+      model = { kind: 'select', options: harness.models, value: harness.models.includes(draft.model) ? draft.model : harness.defaultModel || harness.models[0] };
+    }
+    const offered = !!harness && harness.effort;
+    const effort = { offered, value: offered && EFFORTS.includes(draft.effort) ? draft.effort : '' };
+    const acknowledgement = value === 'writer' && !!harness && harness.toolApprovals === false;
+    // The first thing the start still needs, in the form's order.
+    const firstMissing = () => {
+      if (environments.state !== 'ready') {
+        return { field: 'environments', text: environments.state === 'failed' ? `The environments did not load: ${said(environments.error)} Retry, then start.` : 'Loading the environments this server offers…' };
+      }
+      if (!env) return { field: 'environment', text: open.length ? 'Choose where it runs.' : 'No environment here can start a session for your role.' };
+      if (!harness) {
+        return { field: 'harness', text: typed ? 'Type a harness this server runs.' : usable.length ? 'Choose a harness.' : `No harness in ${env.label} can start a session for your role; choose another environment.` };
+      }
+      if (acknowledgement && !draft.ack) return { field: 'ack', text: `Tick “I accept tools without per-tool approval” to start ${harness.id} as a writer, or choose another harness.` };
+      if (!draft.name.trim()) return { field: 'name', text: 'Name the session.' };
+      if (!draft.prompt.trim()) return { field: 'prompt', text: 'Give it a first prompt.' };
+      if (value === 'reviewer' && !outputs.some((a) => draft.outputs.has(a.id))) {
+        return { field: 'outputs', text: outputs.length ? 'Choose at least one output to review (under Advanced).' : 'No outputs to review yet: a reviewer needs at least one.' };
+      }
+      return null;
+    };
+    return { envs, env, harnesses, harness, typed, access, model, effort, acknowledgement, missing: firstMissing() };
+  }
+
+  // The body of a start for a draft whose choices miss nothing.
+  function startRequest(c, draft, sources, outputs) {
+    const writer = c.access.value === 'writer';
+    const body = { name: draft.name.trim(), prompt: draft.prompt.trim(), harness: c.harness.id, access: c.access.value };
+    if (c.env.preset !== null) body.preset = c.env.preset;
+    const model = c.model.kind === 'none' ? '' : c.model.value.trim();
+    if (model) body.model = model;
+    if (c.effort.offered && c.effort.value) body.effort = c.effort.value;
+    const ticked = sources.filter((src) => draft.sources.get(src.id) !== false).map((src) => src.id);
+    if (ticked.length) body.sources = ticked;
+    if (!writer) body.artifacts = outputs.filter((a) => draft.outputs.has(a.id)).map((a) => a.id);
+    if (writer && draft.collect) body.result_contract = OUTPUT_CONTRACT;
+    if (writer && draft.allowAll) body.policy = { mode: 'allow' };
+    if (writer && c.acknowledgement && draft.ack) body.unapproved_tools = true;
+    return body;
+  }
+
+  // A new session's draft. A source missing from `sources` has not been
+  // seen by the draft, so it starts ticked.
+  function freshDraft(v, keep = {}) {
+    return {
+      name: '', prompt: '', env: keep.env || null, harness: keep.harness || null, model: keep.model || '', effort: '',
+      access: workspaceCanRun(v) ? 'writer' : 'reviewer', sources: new Map(), outputs: new Set(),
+      collect: v.workspace.result_mode !== 'code', allowAll: false, ack: false,
+    };
+  }
+
+  // A draft that starts `s` again: its first prompt from its messages, or
+  // from what this tab sent when it never ran. Consents (the tool
+  // acknowledgement, Allow every tool) are asked for again.
+  function draftFrom(v, s) {
+    const m = v.messages.get(s.id);
+    const first = m && m.list.find((x) => x.role === 'user');
+    const sent = v.sent.get(s.id);
+    const env = environmentOf(v, s);
+    return {
+      ...freshDraft(v),
+      name: `${s.name} (again)`, prompt: first ? first.text : sent ? sent.prompt : '',
+      env: env ? env.key : null, harness: s.harness, model: s.model || '', effort: s.effort || '', access: s.access || 'writer',
+      sources: new Map(sourcesOf(v).map((src) => [src.id, (s.sources || []).includes(src.id)])),
+      outputs: new Set((s.artifacts || []).map((a) => a.id)),
+      collect: s.result_contract != null,
+    };
+  }
+
+  const sourcesOf = (v) => (v.workspace.sources || []).slice().sort((x, y) => x.created_at_ms - y.created_at_ms);
+
+  // The one next useful step for this workspace and person, first match
+  // first, with at most one button.
+  const needsAttention = (v) => sessionsOf(v).find((s) => ['not_started', 'failed', 'interrupted'].includes(sessionPhase(s).key)) || null;
+  const awaitingReview = (v) => (v.artifacts ? outputGroups(v).flatMap((g) => g.rows).filter((r) => r.standing === 'current').length : 0);
+  const NEXT_STEPS = [
+    { when: (v) => !!notReady(v.workspace), text: (v) => notReady(v.workspace), action: () => null },
+    {
+      when: (v) => !workspaceCanRun(v) && !workspaceCanComment(v),
+      text: () => 'You can read and download here; an owner can make you an editor.', action: () => null,
+    },
+    {
+      when: (v) => v.workspace.result_mode !== 'code' && !sourcesOf(v).length && workspaceCanRun(v),
+      text: () => 'Upload the files its sessions should read, such as a spreadsheet, a document or a CSV.',
+      action: () => ({ label: 'Upload sources', run: () => $('source-file').click() }),
+    },
+    {
+      when: (v) => !sessionsOf(v).length, text: () => 'Start its first session.',
+      action: (v) => (v.composing ? null : { label: '+ Session', run: () => composeSession(v) }),
+    },
+    { when: (v) => v.selected.size > 0, text: (v) => `${plural(v.selected.size, 'output')} ticked: ready to accept.`, action: () => null },
+    {
+      when: (v) => !!needsAttention(v),
+      text: (v) => {
+        const s = needsAttention(v);
+        const phase = sessionPhase(s);
+        return `${s.name}: ${phase.label.toLowerCase()}. ${phase.next}`;
+      },
+      action: (v) => {
+        const s = needsAttention(v);
+        return s.id === v.session && !v.composing ? null : { label: `Open ${s.name}`, run: () => go(workspaceHref(v.id, s.id)) };
+      },
+    },
+    {
+      when: (v) => awaitingReview(v) > 0, text: (v) => `${plural(awaitingReview(v), 'output')} waiting for review.`,
+      action: (v) => (v.tab === 'outputs' ? null : { label: 'Review outputs', run: () => selectWorkspaceTab(v, 'outputs') }),
+    },
+    { when: (v) => sessionsOf(v).some(sessionActive), text: () => 'Sessions are running: outputs appear under each session when its turn ends.', action: () => null },
+    { when: () => true, text: () => 'Continue a session from the message box, or start another with + Session.', action: () => null },
+  ];
+  function nextStep(v) {
+    const step = NEXT_STEPS.find((s) => s.when(v));
+    return { text: step.text(v), action: step.action(v) };
+  }
+
+  // A refused start, by the server's code: what to say and what to read
+  // again first. The draft is never touched.
+  const OPERATOR_REFUSED = { text: (e) => `${said(e.message)} Choose another environment or harness, or ask the operator.` };
+  const RELOAD_PRESETS = { reload: 'environments', text: () => 'Start in one of the environments this server offers. They are reloaded; choose one.' };
+  const START_REFUSED = {
+    preset_choice_unavailable: {
+      reload: 'environments',
+      text: (e) => {
+        const d = e.detail || {};
+        const allowed = (d.allowed || []).length ? `It offers ${d.allowed.join(', ')}.` : 'It offers none.';
+        return `This environment does not offer that ${d.field || 'choice'}. ${allowed} The environments are reloaded; choose again.`;
+      },
+    },
+    unknown_preset: { reload: 'environments', text: () => 'That environment is no longer offered. The environments are reloaded; choose another.' },
+    preset_required: RELOAD_PRESETS,
+    preset_conflict: RELOAD_PRESETS,
+    workspace_not_ready: { reload: 'workspace', text: (e, v) => `${notReady(v.workspace) || said(e.message)} Your draft is kept.` },
+    quota_exceeded: { text: (e) => `${said(e.message)} Wait for a running session to finish, or ask the operator for more room. Your draft is kept.` },
+    provider_not_allowed: OPERATOR_REFUSED,
+    unapproved_tools_not_allowed: OPERATOR_REFUSED,
+    unsupported: OPERATOR_REFUSED,
+    forbidden: OPERATOR_REFUSED,
+  };
+
   // The open workspace, kept across polls and session switches.
   let wsView = null;
 
@@ -2020,20 +3036,19 @@
     wsView = null;
   }
 
-  // The one live preview, disposed on every route, tab, output and source
-  // change and on signing out, so no hidden preview keeps fetching.
+  // The one live preview, of a source or an output, disposed on every route,
+  // tab, item and source change and on signing out, so no hidden preview
+  // keeps fetching.
   let livePreview = null;
-  function disposePreview() {
-    if (livePreview && livePreview.handle) livePreview.handle.dispose();
-    livePreview = null;
-  }
   function closePreview() {
-    disposePreview();
+    closeDeckPreview();
+    if (livePreview) livePreview.dispose();
+    livePreview = null;
     if (!wsView) return;
     wsView.previewing = null;
     const slot = $('preview');
     if (slot) fill(slot);
-    for (const b of document.querySelectorAll('#outputs .output-name')) b.setAttribute('aria-pressed', 'false');
+    for (const b of document.querySelectorAll('#inspector button[data-preview]')) b.setAttribute('aria-pressed', 'false');
   }
 
   // Every write the server checks against the workspace's revision reads it
@@ -2068,6 +3083,10 @@
       composing: false, busy: null, sending: false, following: 0, drafts: new Map(),
       timer: null, refreshing: false, again: false, failures: 0, failure: null,
       asked: 0, applied: 0, drawn: {},
+      // The new session's draft, the body of every start this tab sent (so
+      // Try again has a prompt that never ran), and the environments.
+      draft: null, sent: new Map(), syncForm: null,
+      environments: { state: 'loading', list: [], error: null, at: 0 }, environmentsAsked: 0,
     };
     wsView = v;
     main(h('div', { class: 'page' }, h('p', { class: 'muted', role: 'status', text: 'Opening the workspace…' })));
@@ -2082,18 +3101,40 @@
     if (wsView !== v) return;
     workspaceLayout(v);
     selectSession(v, session);
-    loadArtifacts(v).then(() => { if (wsView === v) drawOutputs(v); });
+    loadArtifacts(v).then(() => { if (wsView === v) drawWorkspace(v); });
+    loadEnvironments(v);
     scheduleWorkspace(v);
   }
 
+  // The environments a session here can start in. A later read replaces
+  // an earlier one, never the reverse; a reload keeps the list shown until
+  // it answers.
+  async function loadEnvironments(v) {
+    const asked = (v.environmentsAsked += 1);
+    v.environments = { ...v.environments, state: 'loading', error: null };
+    if (v.composing && v.syncForm) v.syncForm();
+    let next;
+    try {
+      const list = await api('GET', `/v1/execution-presets?workspace=${enc(v.id)}`);
+      next = { state: 'ready', list: environmentsOf(list), error: null, at: Date.now() };
+    } catch (e) {
+      next = { state: 'failed', list: [], error: e.message, at: 0 };
+    }
+    if (wsView !== v || asked !== v.environmentsAsked) return;
+    v.environments = next;
+    drawWorkspace(v);
+  }
+
   // Reads overlap (a poll, an upload's reload): one asked earlier never
-  // replaces one asked later.
+  // replaces one asked later. Outputs are read again whenever a session's
+  // turn or status moved since they were last read.
   async function reloadDetail(v) {
     const asked = (v.asked += 1);
     const ws = await api('GET', workspacePath(v.id));
     if (wsView !== v || asked < v.applied) return;
     v.applied = asked;
     v.workspace = ws;
+    prune(v);
     if (!projectOf(ws.project_id)) {
       const project = await api('GET', `/v1/projects/${enc(ws.project_id)}`);
       state.projects = (state.projects || []).filter((p) => p.id !== project.id).concat(project);
@@ -2107,6 +3148,7 @@
     } else if (!row && state.workspaces.loaded && state.workspaces.project === ws.project_id) {
       loadWorkspaces(ws.project_id);
     }
+    if (v.artifacts !== null && turnsOf(v) !== v.artifactsFor) await loadArtifacts(v);
   }
 
   const INSPECTOR = [['sources', 'Sources', 'sources-count'], ['outputs', 'Outputs', 'outputs-count'], ['details', 'Details']];
@@ -2130,7 +3172,9 @@
     main(h('div', { class: 'branch workspace', id: 'workspace' },
       h('section', { class: 'focus', 'aria-label': 'Conversation' },
         h('header', { class: 'strip', id: 'strip' }),
+        h('div', { class: 'guide', id: 'guide', role: 'status' }),
         h('nav', { class: 'sessions', id: 'sessions', 'aria-label': 'Sessions' }),
+        h('ul', { class: 'session-facts', id: 'session-facts', 'aria-label': 'Selected session', hidden: true }),
         h('div', { class: 'convo', id: 'convo' }),
         composer(() => submitSession(v))),
       h('aside', { class: 'inspector', id: 'inspector', 'aria-label': 'Inspector' },
@@ -2139,10 +3183,10 @@
           h('div', { class: 'panel-tools' },
             h('button', { type: 'button', id: 'upload-sources', text: 'Upload sources', disabled: !workspaceCanRun(v), onclick: () => files.click() }),
             files, workspaceCanRun(v) ? drop : null),
-          h('ul', { class: 'files file-list', id: 'sources', 'aria-label': 'Sources' })),
-        h('div', { class: 'panel', role: 'tabpanel', id: 'panel-outputs', 'aria-labelledby': 'tab-outputs', hidden: true },
-          h('div', { id: 'outputs-list' }),
+          h('ul', { class: 'files file-list', id: 'sources', 'aria-label': 'Sources' }),
           h('div', { class: 'preview', id: 'preview', 'aria-label': 'Preview' })),
+        h('div', { class: 'panel', role: 'tabpanel', id: 'panel-outputs', 'aria-labelledby': 'tab-outputs', hidden: true },
+          h('div', { id: 'outputs-list' })),
         h('div', { class: 'panel', role: 'tabpanel', id: 'panel-details', 'aria-labelledby': 'tab-details', hidden: true },
           h('dl', { class: 'facts', id: 'ws-facts' }),
           h('h2', { text: 'Sessions' }), h('ul', { class: 'events', id: 'ws-sessions' }),
@@ -2169,7 +3213,7 @@
     }
     v.session = chosen ? chosen.id : null;
     if (v.composing || !chosen) {
-      v.composing = !chosen && (workspaceCanRun(v) || workspaceCanComment(v)) && v.workspace.state === 'ready';
+      v.composing = !chosen && (workspaceCanRun(v) || workspaceCanComment(v)) && !notReady(v.workspace);
       v.drawn.convo = null;
     }
     drawWorkspace(v);
@@ -2207,9 +3251,10 @@
     return m.loading;
   }
 
+  const turnsOf = (v) => JSON.stringify((v.workspace.sessions || []).map((s) => [s.id, s.status, s.turns]));
   async function loadArtifacts(v) {
     const sessions = v.workspace.sessions || [];
-    v.artifactsFor = JSON.stringify(sessions.map((s) => [s.id, s.status, s.turns]));
+    v.artifactsFor = turnsOf(v);
     if (!sessions.length) { v.artifacts = []; return; }
     try {
       v.artifacts = (await api('GET', `${workspacePath(v.id)}/artifacts`)).artifacts;
@@ -2218,7 +3263,7 @@
       v.artifactsError = e.message;
       if (v.artifacts === null) v.artifacts = [];
     }
-    for (const id of v.selected) if (!v.artifacts.some((a) => a.id === id)) v.selected.delete(id);
+    prune(v);
   }
 
   // While anything here is starting, running or settling, the page reads
@@ -2239,8 +3284,6 @@
       await reloadDetail(v);
       const s = wsView === v ? selectedSession(v) : null;
       if (s && sessionStatus(s)) await loadMessages(v, s.id);
-      const settled = JSON.stringify((v.workspace.sessions || []).map((x) => [x.id, x.status, x.turns]));
-      if (wsView === v && settled !== v.artifactsFor) await loadArtifacts(v);
       v.failures = 0;
       v.failure = null;
     } catch (e) {
@@ -2271,7 +3314,9 @@
   function drawWorkspace(v) {
     if (wsView !== v || !$('strip')) return;
     drawStrip(v);
+    drawGuide(v);
     drawSessions(v);
+    drawSessionFacts(v);
     if (v.composing && v.syncForm) v.syncForm();
     $('upload-sources').disabled = !workspaceCanRun(v);
     const drop = $('source-drop');
@@ -2314,7 +3359,7 @@
 
   function workspaceMenu(v, s, items) {
     const menu = h('details', { class: 'menu' },
-      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, h('span', { 'aria-hidden': 'true', text: '⋯' })),
+      h('summary', { 'aria-label': 'More actions', title: 'More actions' }, icon('dots')),
       h('div', { class: 'menu-list' }, items.map(({ item, why }) => h('button', {
         type: 'button', class: item.danger ? 'menu-item danger-text' : 'menu-item', disabled: why != null,
         onclick: () => { menu.open = false; item.run(v, s); },
@@ -2335,8 +3380,59 @@
     }, dot(sessionLane(s)), h('span', { class: 'session-name', text: s.name }))),
     workspaceCanRun(v) || workspaceCanComment(v) ? h('button', {
       type: 'button', class: 'ghost new-session', id: 'new-session', 'aria-pressed': String(v.composing), text: '+ Session',
-      onclick: () => { v.composing = true; v.drawn.convo = null; drawWorkspace(v); openSessionForm(v); },
+      onclick: () => composeSession(v),
     }) : null);
+  }
+
+  function composeSession(v) {
+    v.composing = true;
+    v.drawn.convo = null;
+    drawWorkspace(v);
+    openSessionForm(v);
+  }
+
+  // Try again: the form, with a draft taken from `s`.
+  function tryAgain(v, s) {
+    v.draft = draftFrom(v, s);
+    composeSession(v);
+  }
+
+  // The next useful step, redrawn only when what it says changes, so it is
+  // announced once.
+  function drawGuide(v) {
+    const { text, action } = nextStep(v);
+    const signature = JSON.stringify([text, action && action.label]);
+    if (signature === v.drawn.guide) return;
+    v.drawn.guide = signature;
+    const guide = $('guide');
+    const focused = guide.contains(document.activeElement);
+    fill(guide, h('span', { class: 'guide-text', text }),
+      action ? h('button', { type: 'button', id: 'guide-action', text: action.label, onclick: action.run }) : null);
+    if (focused) ($('guide-action') || $('workspace').querySelector('h1')).focus({ preventScroll: true });
+  }
+
+  // What the selected session is: where it runs, on what, what it reads,
+  // and where it stands. Hidden while composing.
+  function drawSessionFacts(v) {
+    const s = v.composing ? null : selectedSession(v);
+    const box = $('session-facts');
+    const phase = s && sessionPhase(s);
+    const env = s && environmentOf(v, s);
+    let where = null;
+    if (env) where = `${env.label} (${PROVIDERS[env.provider] || env.provider})`;
+    else if (s && s.preset) where = s.preset;
+    else if (s && v.environments.state === 'ready') where = 'started without a preset';
+    const facts = s ? [
+      where, s.harness, s.model || 'harness default model', s.access,
+      s.access === 'reviewer' ? `reviews ${plural((s.artifacts || []).length, 'output')}` : null,
+      `reads ${plural((s.sources || []).length, 'source')}`,
+      s.access === 'reviewer' ? null : s.result_contract ? 'collects outputs' : 'collects no outputs',
+    ].filter(Boolean) : [];
+    const signature = JSON.stringify([facts, phase && [phase.label, phase.lane]]);
+    if (signature === v.drawn.facts) return;
+    v.drawn.facts = signature;
+    box.hidden = !s;
+    fill(box, facts.map((text) => h('li', { text })), s ? h('li', { class: 'fact-phase' }, dot(phase.lane), phase.label) : null);
   }
 
   // Messages are turned into turns by the branch conversation's reducer:
@@ -2346,16 +3442,23 @@
     const box = $('convo');
     const s = selectedSession(v);
     const m = s ? v.messages.get(s.id) : null;
-    const signature = JSON.stringify([s && s.id, s && sessionText(s), m && [m.list.length, m.error, m.loaded]]);
+    const restart = workspaceCanRun(v) || workspaceCanComment(v);
+    const signature = JSON.stringify([s && s.id, s && sessionText(s), m && [m.list.length, m.error, m.loaded], restart]);
     if (signature === v.drawn.convo) return;
     const fresh = !v.drawn.convo || JSON.parse(v.drawn.convo)[0] !== (s && s.id);
     v.drawn.convo = signature;
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
     if (!s) {
-      fill(box, h('p', { class: 'muted', text: workspaceCanRun(v) || workspaceCanComment(v) ? 'No sessions yet. Start one with + Session.' : 'No sessions yet.' }));
+      fill(box, h('section', { class: 'empty convo-empty' },
+        h('span', { class: 'empty-mark', 'aria-hidden': 'true' }, icon('plus')),
+        h('h2', { text: 'No sessions yet' }),
+        h('p', { text: workspaceCanRun(v) || workspaceCanComment(v)
+          ? 'A session is one agent working on this workspace\'s sources. Start one with + Session; what it says reads here, and the files it delivers wait under Outputs.'
+          : 'Sessions that members start appear here, with what each agent said and delivered.' })));
       return;
     }
     const working = sessionActive(s);
+    const phase = sessionPhase(s);
     const turns = conversation((m ? m.list : []).map((x) => ({
       activity: x.role === 'user' ? { prompt: x.text } : { harness: { type: 'message_delta', text: x.text } },
     })));
@@ -2364,10 +3467,13 @@
       m && m.error ? h('p', { class: 'error', text: m.error }) : null,
       turns.map((t, i) => h('article', { class: 'turn' },
         t.text != null ? h('div', { class: 'you' }, h('p', { text: t.text })) : null,
-        t.said.length ? h('div', { class: 'agent' }, t.said.map((x) => h('p', { text: x }))) : null,
+        t.said.length ? agentBlock(t.said, s.harness) : null,
         working && i === turns.length - 1 ? workingLine() : null)),
       working && !turns.length ? workingLine() : null,
-      unstarted(s) ? h('p', { class: 'outcome outcome-needs' }, dot('needs'), cap(sessionText(s))) : null,
+      RECOVERABLE_PHASES.includes(phase.key) ? h('section', { class: 'recovery', 'aria-label': `${s.name}: ${phase.label}` },
+        h('p', { class: 'recovery-head' }, dot(phase.lane), h('span', { text: sessionText(s) })),
+        h('p', { class: 'recovery-next', text: phase.next }),
+        restart ? h('button', { type: 'button', id: 'try-again', text: 'Try again', onclick: () => tryAgain(v, s) }) : null) : null,
       !working && !unstarted(s) && !turns.length && m && m.loaded ? h('p', { class: 'muted', text: 'No messages yet.' }) : null);
     if (atEnd || fresh) box.scrollTop = box.scrollHeight;
   }
@@ -2462,13 +3568,15 @@
     let unsent = [];
     for (const [i, file] of files.entries()) {
       let source = null;
+      const title = sourceTitle(file.name);
       try {
         source = await revised(v, `Could not upload ${file.name}`, (revision) => call(`${workspacePath(v.id)}/sources`, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
             'Content-Type': file.type || 'application/octet-stream',
-            'X-Source-Title': asciiTitle(file.name),
+            'X-Source-Title-Encoded': encodedTitle(title),
+            'X-Source-Title': asciiTitle(title),
             'X-Workspace-Revision': String(revision),
             'Idempotency-Key': key(),
           },
@@ -2491,6 +3599,13 @@
     drawWorkspace(v);
   }
 
+  // Refusals that mean the page's list was out of date: what happened, and
+  // what to do once the outputs are read again.
+  const ACCEPT_REFUSED = {
+    deliverable_not_current: ['an output you chose is no longer its session\'s current result', 'The outputs are reloaded; accept the ones marked Current.'],
+    producer_busy: ['the session that made these outputs is working on a newer turn', 'The outputs are reloaded; accept the ones marked Current once that turn finishes.'],
+  };
+
   async function acceptSelected(v) {
     const ids = Array.from(v.selected);
     const names = ids.map((id) => ((v.artifacts || []).find((a) => a.id === id) || { name: id }).name);
@@ -2503,7 +3618,15 @@
     try {
       result = await revised(v, 'Could not accept', (revision) => api('POST', `${workspacePath(v.id)}/finalize`, { revision, artifacts: ids }));
     } catch (e) {
-      toast(`Could not accept: ${e.message}`);
+      const refused = e.status === 409 && ACCEPT_REFUSED[e.code];
+      if (refused) {
+        let reloaded = true;
+        try { await reloadDetail(v); } catch (_) { reloaded = false; }
+        if (wsView === v) scheduleWorkspace(v);
+        toast(`Not accepted: ${refused[0]}. ${reloaded ? refused[1] : 'Reload the page, then try again.'}`);
+      } else {
+        toast(`Could not accept: ${e.message}`);
+      }
     }
     v.busy = null;
     if (wsView !== v) return;
@@ -2515,95 +3638,218 @@
     drawWorkspace(v);
   }
 
+  // A source's or output's name: it opens that file in the preview.
+  function previewButton(v, item) {
+    return h('button', {
+      type: 'button', class: 'file-name', 'data-preview': item.key, 'aria-pressed': String(v.previewing === item.key),
+      title: `Preview ${item.name}`, text: item.name, onclick: () => openPreview(v, item),
+    });
+  }
+
   function drawSources(v) {
-    const sources = (v.workspace.sources || []).slice().sort((x, y) => x.created_at_ms - y.created_at_ms);
+    const sources = sourcesOf(v);
     $('sources-count').textContent = sources.length ? String(sources.length) : '';
     const signature = JSON.stringify(sources.map((src) => src.id));
     if (signature === v.drawn.sources) return;
     v.drawn.sources = signature;
-    fill($('sources'), sources.length ? sources.map((src) => h('li', { class: 'file-item', 'data-source': src.id },
-      h('div', { class: 'file-main' },
-        h('span', { class: 'file-title', text: src.title, title: src.title }),
-        h('span', { class: 'item-meta', title: src.media_type }, `${formatOf(src.media_type)} · ${size(src.size_bytes)} · `, ago(src.created_at_ms))),
-      h('button', {
-        type: 'button', class: 'ghost', text: 'Download', 'aria-label': `Download ${src.title}`,
-        onclick: () => download(`${workspacePath(v.id)}/sources/${enc(src.id)}/content`, src.title),
-      })))
+    fill($('sources'), sources.length ? sources.map((src) => {
+      const base = `${workspacePath(v.id)}/sources/${enc(src.id)}`;
+      return h('li', { class: 'file-item', 'data-source': src.id },
+        h('div', { class: 'file-main' },
+          previewButton(v, { key: `source:${src.id}`, name: src.title, mediaType: src.media_type, base }),
+          h('span', { class: 'item-meta', title: src.media_type }, `${formatOf(src.media_type, src.title)} · ${size(src.size_bytes)} · `, ago(src.created_at_ms))),
+        h('button', { type: 'button', class: 'ghost', text: 'Download', 'aria-label': `Download ${src.title}`, onclick: () => download(`${base}/content`, src.title) }));
+    })
       : h('li', { class: 'muted pad', text: 'No sources yet. Upload the documents this workspace\'s sessions should read; each new session gets the ones you tick.' }));
+  }
+
+  // Where an output stands toward acceptance. The server accepts an output
+  // only from its session's current turn, once that turn finished with its
+  // result and nothing more is queued for the session (`finalize` in
+  // console/sources.rs); `current` is exactly that.
+  function standing(a, s, accepted) {
+    if (accepted.has(a.id)) return 'accepted';
+    if (s && a.turn < s.turns) return 'earlier';
+    if (s && sessionActive(s)) return 'working';
+    const info = s && sessionStatus(s);
+    const finished = info && ['ready', 'no_changes', 'merged'].includes(info.status.state) && s.result_event != null && !s.result_error;
+    return finished ? 'current' : 'unsettled';
+  }
+
+  const STANDING = {
+    accepted: { pick: false, tag: 'Accepted', note: (a) => `turn ${a.turn}` },
+    current: { pick: true, tag: 'Current', note: (a) => `turn ${a.turn}` },
+    working: { pick: false, note: (a) => `turn ${a.turn} · a newer turn is running` },
+    earlier: { pick: false, note: (a) => `Earlier turn ${a.turn} — not the current result` },
+    unsettled: { pick: false, note: (a) => `turn ${a.turn} · this turn ended without its result` },
+  };
+
+  // Outputs under the session that made them, in session order; within a
+  // session, the newest turn first.
+  function outputGroups(v) {
+    const accepted = new Set((v.workspace.accepted_deliverables || []).map((d) => d.artifact_id));
+    const sessions = sessionsOf(v);
+    const byBranch = new Map(sessions.map((s) => [s.branch, s]));
+    const groups = new Map();
+    for (const a of v.artifacts || []) {
+      const s = byBranch.get(a.publisher_branch) || null;
+      if (!groups.has(a.publisher_branch)) groups.set(a.publisher_branch, { s, name: s ? s.name : a.publisher_branch, rows: [] });
+      groups.get(a.publisher_branch).rows.push({ a, standing: standing(a, s, accepted) });
+    }
+    const order = (g) => (g.s ? sessions.indexOf(g.s) : sessions.length);
+    return Array.from(groups.values()).sort((x, y) => order(x) - order(y))
+      .map((g) => ({ ...g, rows: g.rows.sort((x, y) => y.a.turn - x.a.turn) }));
+  }
+
+  // The outputs a reviewer can be given: each session's latest, named as
+  // listed, with its session and turn when two share a name.
+  function reviewable(v) {
+    const rows = outputGroups(v).flatMap((g) => g.rows.filter((r) => r.standing !== 'earlier').map((r) => ({ ...r.a, from: g.name })));
+    return rows.map((a) => ({ ...a, label: rows.filter((b) => b.name === a.name).length > 1 ? `${a.name} (${a.from}, turn ${a.turn})` : a.name }));
+  }
+
+  // Ticked outputs that can no longer be accepted are unticked.
+  function prune(v) {
+    if (!v.artifacts) return;
+    const pickable = new Set(outputGroups(v).flatMap((g) => g.rows).filter((r) => STANDING[r.standing].pick).map((r) => r.a.id));
+    for (const id of v.selected) if (!pickable.has(id)) v.selected.delete(id);
   }
 
   function drawOutputs(v) {
     const list = $('outputs-list');
     if (!list || wsView !== v) return;
-    const accepted = new Set((v.workspace.accepted_deliverables || []).map((a) => a.artifact_id));
     const all = v.artifacts || [];
+    const groups = outputGroups(v);
     $('outputs-count').textContent = all.length ? String(all.length) : '';
-    const signature = JSON.stringify([all.map((a) => a.id), Array.from(accepted), v.artifactsError, v.artifacts === null, workspaceCanRun(v)]);
+    const signature = JSON.stringify([groups.map((g) => [g.name, g.s && sessionText(g.s), g.rows.map((r) => [r.a.id, r.standing])]),
+      v.artifactsError, v.artifacts === null, workspaceCanRun(v)]);
     if (signature === v.drawn.outputs) return;
     v.drawn.outputs = signature;
-    const names = new Map((v.workspace.sessions || []).map((s) => [s.branch, s.name]));
-    const row = (a) => {
-      const done = accepted.has(a.id);
-      const box = h('input', { type: 'checkbox', 'aria-label': `Select ${a.name}`, checked: done || v.selected.has(a.id), disabled: done || !workspaceCanRun(v) });
+    const row = ({ a, standing: st }) => {
+      const meaning = STANDING[st];
+      const note = nextId('output-note');
+      const box = h('input', {
+        type: 'checkbox', 'aria-label': `Select ${a.name}`, 'aria-describedby': note,
+        checked: st === 'accepted' || v.selected.has(a.id), disabled: !meaning.pick || !workspaceCanRun(v),
+      });
       box.addEventListener('change', () => {
         if (box.checked) v.selected.add(a.id); else v.selected.delete(a.id);
         drawStrip(v);
+        drawGuide(v);
       });
-      return h('li', { class: done ? 'output-row accepted' : 'output-row', 'data-artifact': a.id },
+      return h('li', { class: 'output-row', 'data-artifact': a.id, 'data-standing': st },
         box,
         h('div', { class: 'file-main' },
-          h('button', { type: 'button', class: 'output-name', 'aria-pressed': String(v.previewing === a.id), title: `Preview ${a.name}`, text: a.name, onclick: () => openPreview(v, a) }),
-          h('span', { class: 'item-meta', title: a.media_type, text: `${formatOf(a.media_type)} · ${size(a.size)} · ${names.get(a.publisher_branch) || a.publisher_branch}, turn ${a.turn}` })),
-        done ? h('span', { class: 'tag tag-accepted' }, checkMark(false), 'Accepted') : null);
+          previewButton(v, { key: `output:${a.id}`, name: a.name, mediaType: a.media_type, base: `${workspacePath(v.id)}/artifacts/${enc(a.id)}` }),
+          h('span', { class: 'item-meta', id: note, title: a.media_type, text: `${formatOf(a.media_type, a.name)} · ${size(a.size)} · ${meaning.note(a)}` })),
+        meaning.tag ? h('span', { class: `tag tag-${st}` }, st === 'accepted' ? checkMark(false) : null, meaning.tag) : null);
+    };
+    const group = (g) => {
+      const heading = nextId('output-group');
+      return h('section', { class: 'output-group', 'aria-labelledby': heading },
+        h('h3', { id: heading }, g.s ? dot(sessionLane(g.s)) : null, h('span', { class: 'group-name', text: g.name }),
+          g.s ? h('span', { class: 'group-meta', text: cap(sessionText(g.s)) }) : null),
+        h('ul', { class: 'file-list', 'aria-labelledby': heading }, g.rows.map(row)));
     };
     fill(list,
       v.artifactsError ? h('p', { class: 'error pad', text: `Could not list outputs: ${v.artifactsError}` }) : null,
       v.artifacts === null ? h('p', { class: 'muted pad', text: 'Loading outputs…' })
         : !all.length ? h('p', { class: 'muted pad', text: `No outputs yet. A session started with Collect outputs publishes the files it lists in ${OUTPUT_MANIFEST} when its turn ends.` })
-          : h('ul', { class: 'files file-list', id: 'outputs', 'aria-label': 'Outputs' }, all.map(row)));
+          : groups.map(group));
   }
 
-  // Mount the preview component for one output. It asks the workspace's
-  // preview route; when this server answers 404 there, it has none, and
-  // the inspector says so in place of a preview.
-  function openPreview(v, a) {
+  // Mount the preview component for one source or output in the open
+  // panel. A table, a page, or why the server made neither is the
+  // component's to show; the original stays one click away.
+  function openPreview(v, item) {
     closePreview();
-    v.previewing = a.id;
-    for (const b of document.querySelectorAll('#outputs .output-name')) {
-      b.setAttribute('aria-pressed', String(b.closest('[data-artifact]').dataset.artifact === a.id));
-    }
-    const base = `${workspacePath(v.id)}/artifacts/${enc(a.id)}`;
+    v.previewing = item.key;
+    for (const b of document.querySelectorAll('#inspector button[data-preview]')) b.setAttribute('aria-pressed', String(b.dataset.preview === item.key));
+    const slot = $('preview');
+    $(`panel-${v.tab}`).append(slot);
     const host = h('div', { class: 'preview-host', id: 'preview-host' });
-    fill($('preview'),
+    const frameSlot = h('div', { class: 'frame-slot', id: 'frame-slot' });
+    // An HTML output can also be run: Open puts it in an iframe that has
+    // its own origin and no network (see openFrame).
+    const runnable = item.key.startsWith('output:') && /\.html?$/i.test(item.name);
+    fill(slot,
       h('div', { class: 'preview-head' },
-        h('h3', { id: 'preview-title', text: a.name, title: a.name }),
-        h('button', { type: 'button', text: 'Download original', onclick: () => download(`${base}/content`, a.name) })),
-      host);
-    const live = { handle: null };
-    livePreview = live;
-    live.handle = window.BranchyardArtifactPreview.mount(host, {
-      baseUrl: base,
-      displayName: a.name,
-      mediaType: a.media_type,
-      fetchAuthenticated: (path, init) => authFetch(path, init).then(async (response) => {
-        if (response.status === 404 && path.startsWith(`${base}/preview?`) && livePreview === live) {
-          let message = null;
-          try { message = (await response.clone().json()).error.message; } catch (_) { /* not the error envelope */ }
-          // The router's fallback answers an unknown route; a 404 from a
-          // preview route itself (an output gone) is the component's to show.
-          if (livePreview === live && message === 'no such route') previewMissing(host, message);
-        }
-        return response;
-      }),
-    });
+        h('h3', { id: 'preview-title', text: item.name, title: item.name }),
+        runnable ? h('button', { type: 'button', text: 'Open', 'aria-label': `Open ${item.name}`, onclick: (e) => openFrame(item, frameSlot, e.currentTarget) })
+          : h('a', { class: 'button', text: 'Open', href: `#/w/${enc(v.id)}/doc/${enc(item.key.startsWith('source:') ? item.key : item.key.slice(7))}` }),
+        h('button', { type: 'button', text: 'Download original', onclick: () => download(`${item.base}/content`, item.name) })),
+      host, frameSlot);
+    livePreview = window.BranchyardArtifactPreview.mount(host, { baseUrl: item.base, mediaType: item.mediaType, fetchAuthenticated: authFetch });
   }
 
-  function previewMissing(host, message) {
-    disposePreview();
-    fill(host, h('div', { class: 'preview-missing', role: 'status' },
-      h('p', { class: 'preview-missing-title', text: 'This server cannot preview workspace outputs yet.' }),
-      h('p', { text: 'Download the original to open it on this device.' }),
-      message ? h('p', { class: 'hint', text: `The server answered: ${message}.` }) : null));
+  // The viewer resolves its file from current workspace grants on every arrival;
+  // the hash identifies an artifact, never an arbitrary fetch URL.
+  async function renderDocument() {
+    const r = state.route;
+    const back = workspaceHref(r.workspace);
+    main(h('div', { class: 'document-viewer', id: 'document-viewer' },
+      h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+      h('p', { role: 'status', text: 'Opening the document…' })));
+    try {
+      const ws = await api('GET', workspacePath(r.workspace));
+      const sourceId = r.artifact.startsWith('source:') ? r.artifact.slice(7) : null;
+      const artifacts = sourceId ? [] : (await api('GET', `${workspacePath(r.workspace)}/artifacts`)).artifacts;
+      if (state.route !== r) return;
+      const item = sourceId ? (ws.sources || []).find((a) => a.id === sourceId) : artifacts.find((a) => a.id === r.artifact);
+      if (!item) throw new Error('This document is no longer available in the workspace.');
+      const name = sourceId ? item.title : item.name;
+      const base = `${workspacePath(r.workspace)}/${sourceId ? 'sources' : 'artifacts'}/${enc(item.id)}`;
+      const host = h('div', { id: 'document-preview', class: 'document-preview' });
+      const accepted = (ws.accepted_deliverables || []).some((a) => a.artifact_id === item.id);
+      const session = (ws.sessions || []).find((s) => s.branch === item.publisher_branch);
+      const accept = !sourceId && !accepted && workspaceCanRun({ workspace: ws }) ? h('button', {
+        type: 'button', id: 'document-accept', text: 'Accept', disabled: standing(item, session, new Set()) !== 'current',
+        onclick: async () => {
+          if (!(await confirmDialog('Accept output?', `${name} becomes an accepted deliverable of ${ws.title}.`, 'Accept'))) return;
+          if (state.route !== r) return;
+          accept.disabled = true;
+          try {
+            const latest = await api('GET', workspacePath(r.workspace));
+            await api('POST', `${workspacePath(r.workspace)}/finalize`, { revision: latest.revision, artifacts: [item.id] });
+            accept.textContent = 'Accepted';
+            toast(`Accepted ${name}.`);
+          } catch (e) { accept.disabled = false; toast(`Could not accept: ${e.message}`); }
+        },
+      }) : null;
+      main(h('section', { class: 'document-viewer', id: 'document-viewer', 'aria-label': 'Document viewer' },
+        h('header', { class: 'document-head' },
+          h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+          h('h1', { text: name, title: name }),
+          h('div', { class: 'row' },
+            h('button', { type: 'button', text: 'Download original', onclick: () => download(`${base}/content`, name) }), accept)), host));
+      livePreview = window.BranchyardArtifactPreview.mount(host, { baseUrl: base, mediaType: item.media_type, viewer: true, fetchAuthenticated: authFetch });
+    } catch (e) {
+      if (state.route !== r) return;
+      main(h('section', { class: 'document-viewer', id: 'document-viewer' },
+        h('a', { class: 'back', href: back, text: '‹ Back to workspace' }),
+        h('h1', { text: 'Document not available' }), h('p', { class: 'error', text: e.message })));
+    }
+  }
+
+  // Run an HTML output in a sandboxed iframe. The server mints a short-lived
+  // address for it (a frame cannot send the bearer token) and serves that
+  // path with a policy of its own; `sandbox="allow-scripts"` without
+  // `allow-same-origin` gives the page an opaque origin, so it reaches
+  // neither this page's storage nor its token.
+  async function openFrame(item, slot, button) {
+    if (slot.firstChild) { fill(slot); button.textContent = 'Open'; button.setAttribute('aria-label', `Open ${item.name}`); return; }
+    button.disabled = true;
+    try {
+      const { path } = await call(`${item.base}/frame`, { method: 'POST' });
+      const frame = h('iframe', { class: 'output-frame', title: `Running ${item.name}`, sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', src: path });
+      fill(slot, frame);
+      button.textContent = 'Close';
+      button.setAttribute('aria-label', `Close ${item.name}`);
+    } catch (e) {
+      toast(`Could not open ${item.name}: ${e.message}`);
+    } finally {
+      button.disabled = false;
+    }
   }
 
   function drawDetails(v) {
@@ -2635,95 +3881,293 @@
       : h('li', { class: 'muted', text: 'This server lists no members.' }));
   }
 
-  // The form for a new session, in the conversation pane until started or
-  // cancelled. A poll does not redraw it.
-  async function openSessionForm(v) {
+  // An environment's or a harness's readiness, one row each in words: the
+  // state, where it was measured, how long ago, the server's reason and
+  // what an operator can do. The dot only repeats the state.
+  function readinessList(rows, id, at) {
+    return h('ul', { class: 'readiness', id }, rows.map((r) => {
+      if (!r.state) {
+        return h('li', { class: 'readiness-row' }, h('span', { class: 'readiness-mark', 'aria-hidden': 'true' }),
+          h('span', {}, h('b', { text: `${r.name}: ` }), `${r.fact}.`));
+      }
+      const [word, lane] = READY[r.state] || READY.unknown;
+      return h('li', { class: 'readiness-row', 'data-state': r.state }, dot(lane), h('span', {},
+        h('b', { text: `${r.name}: ` }), `${word}, ${SCOPE[r.scope] || r.scope}`,
+        r.checkedMsAgo == null ? null : [', checked ', ago(at - r.checkedMsAgo)], '. ', r.reason,
+        r.action ? [' ', h('span', { class: 'readiness-action', text: `Operator: ${r.action}` })] : null));
+    }));
+  }
+
+  // The guided form for a new session, in the conversation pane until it
+  // starts or is cancelled. It is drawn from `v.draft`, which every control
+  // writes, so leaving it and coming back loses nothing. A poll redraws only
+  // the parts whose content changed and puts focus back where it was; the
+  // name and the prompt are never redrawn.
+  function openSessionForm(v) {
     const box = $('convo');
     if (!box || box.querySelector('#session-form')) return;
-    const ids = { name: nextId('session'), harness: nextId('harness'), access: nextId('access'), prompt: nextId('first'), model: nextId('model') };
-    const name = h('input', { id: ids.name, type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst' });
-    let harness = h('select', { id: ids.harness, disabled: true }, h('option', { value: '', text: 'Loading…' }));
-    const harnessSlot = h('div', {}, h('label', { class: 'block', for: ids.harness, text: 'Harness' }), harness);
-    const access = h('select', { id: ids.access },
-      h('option', { value: 'writer', text: 'Writer: works in its own copy' }),
-      h('option', { value: 'reviewer', text: 'Reviewer: reads outputs you choose' }));
-    if (!workspaceCanRun(v)) { access.value = 'reviewer'; access.disabled = true; }
-    const canStart = () => access.value === 'reviewer' ? workspaceCanComment(v) : workspaceCanRun(v);
-    const prompt = h('textarea', { id: ids.prompt, rows: '5', placeholder: 'What should this session do?' });
-    const model = h('input', { id: ids.model, type: 'text', autocomplete: 'off', placeholder: 'Harness default' });
-    const checkbox = (label, checked, value) => {
-      const input = h('input', { type: 'checkbox', checked, value });
-      return h('label', { class: 'toggle' }, input, h('span', { text: label }));
-    };
-    // The sources and outputs to choose from follow the workspace while the
-    // form is open, keeping what was ticked; a new source starts ticked.
-    const sourcesBox = h('fieldset', { class: 'choices' });
-    const outputsBox = h('fieldset', { class: 'choices', hidden: true });
-    const choices = (box, legend, items, ticked, empty) => {
-      const was = new Map(Array.from(box.querySelectorAll('input'), (i) => [i.value, i.checked]));
-      fill(box, h('legend', { text: legend }), items.length
-        ? items.map(([value, label]) => checkbox(label, was.has(value) ? was.get(value) : ticked, value))
-        : h('p', { class: 'hint', text: empty }));
-    };
-    let synced = null;
-    let start = null;
-    let submitting = false;
-    v.syncForm = () => {
-      if (start) start.disabled = submitting || v.workspace.state !== 'ready' || !canStart();
-      const sources = (v.workspace.sources || []).map((src) => [src.id, src.title]);
-      const outputs = (v.artifacts || []).map((a) => [a.id, a.name]);
-      const signature = JSON.stringify([sources, outputs]);
-      if (signature === synced) return;
-      synced = signature;
-      choices(sourcesBox, 'Sources to give it', sources, true, 'No sources yet: the Sources tab uploads them.');
-      choices(outputsBox, 'Outputs to review', outputs, false, 'No outputs yet: a reviewer needs at least one.');
-    };
-    v.syncForm();
-    const collect = checkbox(`Collect outputs (${OUTPUT_MANIFEST})`, v.workspace.result_mode !== 'code');
-    const allow = checkbox('Allow every tool', false);
-    const acknowledgement = checkbox('I accept tools without per-tool approval', false);
-    const error = h('p', { class: 'error', role: 'alert' });
-    const ready = v.workspace.state === 'ready';
-    start = h('button', { type: 'button', class: 'primary', text: 'Start session', disabled: !ready || !canStart() });
+    if (!v.draft) v.draft = freshDraft(v);
+    const choices = () => startChoices(v.environments, { run: workspaceCanRun(v), comment: workspaceCanComment(v) }, v.draft, reviewable(v));
+    const blocked = (c) => (notReady(v.workspace) ? { field: 'workspace', text: notReady(v.workspace) } : c.missing);
+    const heading = h('h2', { id: 'session-form-h', tabindex: '-1', text: 'New session' });
+    const sourcesSlot = h('div', { class: 'slot', id: 'sf-sources' });
+    const envSlot = h('div', { class: 'slot', id: 'sf-environments' });
+    const agentSlot = h('div', { class: 'slot', id: 'sf-agent' });
+    const collectSlot = h('div', { class: 'slot', id: 'sf-collect-slot' });
+    const advancedSlot = h('div', { class: 'slot', id: 'sf-advanced-slot' });
+    const advanced = h('details', { class: 'advanced', id: 'sf-advanced' }, h('summary', { id: 'sf-advanced-summary', text: 'Advanced' }), advancedSlot);
+    const name = h('input', { id: 'sf-name', type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst' });
+    name.value = v.draft.name;
+    name.addEventListener('input', () => { v.draft.name = name.value; syncForm(); });
+    const prompt = h('textarea', { id: 'sf-prompt', rows: '5', placeholder: 'What should this session do?', 'aria-describedby': 'sf-prompt-hint' });
+    prompt.value = v.draft.prompt;
+    prompt.addEventListener('input', () => { v.draft.prompt = prompt.value; syncForm(); });
+    const start = h('button', { type: 'button', class: 'primary', id: 'sf-start', text: 'Start session' });
+    const status = h('p', { class: 'form-status', id: 'sf-status', role: 'status' });
+    const error = h('p', { class: 'error form-error', id: 'sf-error', role: 'alert' });
     const cancel = h('button', {
-      type: 'button', text: 'Cancel',
-      onclick: () => { v.composing = false; v.drawn.convo = null; drawWorkspace(v); $('composer-text').focus(); },
+      type: 'button', id: 'sf-cancel', text: 'Cancel',
+      onclick: () => {
+        v.composing = false;
+        v.drawn.convo = null;
+        drawWorkspace(v);
+        const area = $('composer-text');
+        (area.disabled ? $('new-session') || $('workspace').querySelector('h1') : area).focus();
+      },
     });
-    access.addEventListener('change', () => {
-      outputsBox.hidden = access.value !== 'reviewer';
-      const reviewing = access.value === 'reviewer';
-      collect.hidden = reviewing;
-      for (const control of [allow, acknowledgement]) {
-        const input = control.querySelector('input');
-        input.disabled = reviewing;
-        if (reviewing) input.checked = false;
+    const toggle = (id, label, checked, change, describedby) => {
+      const input = h('input', { type: 'checkbox', id, checked, 'aria-describedby': describedby });
+      input.addEventListener('change', () => change(input.checked));
+      return h('label', { class: 'toggle', for: id }, input, h('span', { text: label }));
+    };
+    const field = (id, label, control) => [h('label', { class: 'block', for: id, text: label }), control];
+    const reasons = (id, lines) => (lines.length ? h('p', { class: 'hint reasons', id }, lines.map((text) => h('span', { text }))) : null);
+
+    const drawSources = () => {
+      const sources = sourcesOf(v);
+      return [
+        sources.length
+          ? h('div', { class: 'choices' }, sources.map((src) => toggle(`sf-source-${src.id}`, src.title, v.draft.sources.get(src.id) !== false,
+            (on) => { v.draft.sources.set(src.id, on); syncForm(); })))
+          : h('p', { class: 'hint', text: 'No sources yet. Upload the files it should read, such as a spreadsheet, a document or a CSV.' }),
+        workspaceCanRun(v) ? h('div', { class: 'row step-tools' },
+          h('button', { type: 'button', id: 'sf-upload', text: 'Upload files', onclick: () => $('source-file').click() })) : null,
+      ];
+    };
+
+    const environmentCard = (env, why, checked) => {
+      const id = `sf-env-${env.key}`;
+      const radio = h('input', {
+        type: 'radio', name: 'environment', id, value: env.key, checked, disabled: !!why,
+        'aria-describedby': `${id}-provider ${id}-about ${id}-ready`,
+      });
+      radio.addEventListener('change', () => { if (radio.checked) { v.draft.env = env.key; syncForm(); } });
+      const card = h('div', { class: 'env-card', 'data-environment': env.key },
+        radio,
+        h('div', { class: 'env-body' },
+          h('div', { class: 'env-head' }, h('label', { class: 'env-name', for: id, text: env.label }),
+            h('span', { class: 'tag', id: `${id}-provider`, text: PROVIDERS[env.provider] || env.provider })),
+          h('p', { class: 'env-about', id: `${id}-about` }, env.description, why ? h('span', { class: 'env-why', text: ` ${why}` }) : null),
+          readinessList(env.readiness, `${id}-ready`, v.environments.at)));
+      card.addEventListener('click', (ev) => { if (!radio.disabled && !ev.target.closest('label, input')) radio.click(); });
+      return card;
+    };
+    const drawEnvironments = (c) => {
+      const loaded = v.environments.state;
+      if (c.envs.length) return h('div', { class: 'env-list' }, c.envs.map(({ env, why }) => environmentCard(env, why, env === c.env)));
+      if (loaded === 'failed') {
+        return [h('p', { class: 'error', text: `The environments did not load: ${said(v.environments.error)}` }),
+          h('div', { class: 'row step-tools' }, h('button', { type: 'button', id: 'sf-retry', text: 'Retry', onclick: () => loadEnvironments(v) }))];
       }
-      v.syncForm();
-    });
+      return h('p', { class: 'hint', text: loaded === 'loading' ? 'Loading the environments this server offers…' : 'This server offers no environment for this workspace; an operator can add one.' });
+    };
+
+    const drawAgent = (c) => {
+      if (!c.env) {
+        return h('p', { class: 'hint', text: v.environments.state === 'ready' ? 'Choose where it runs; each environment offers its own harnesses.' : 'The harnesses follow once the environments load.' });
+      }
+      let harness;
+      const closed = c.harnesses.filter((x) => x.why);
+      if (c.typed) {
+        harness = h('input', { id: 'sf-harness', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'A harness this server runs', 'aria-describedby': 'sf-harness-why' });
+        harness.value = v.draft.harness || '';
+        harness.addEventListener('input', () => { v.draft.harness = harness.value; syncForm(); });
+      } else {
+        const describedby = [closed.length ? 'sf-harness-why' : null, c.harness ? 'sf-harness-ready' : null].filter(Boolean).join(' ');
+        harness = h('select', { id: 'sf-harness', 'aria-describedby': describedby || null },
+          c.harness ? null : h('option', { value: '', disabled: true, text: 'Choose a harness' }),
+          c.harnesses.map(({ harness: x, why }) => h('option', { value: x.id, disabled: !!why, text: why ? `${x.id} (not available: ${why})` : x.id })));
+        harness.value = c.harness ? c.harness.id : '';
+        harness.addEventListener('change', () => { v.draft.harness = harness.value; v.draft.ack = false; syncForm(); });
+      }
+      let model = null;
+      if (c.model.kind === 'select') {
+        const select = h('select', { id: 'sf-model' }, c.model.options.map((m) => h('option', { value: m, text: m === c.harness.defaultModel ? `${m} (default)` : m })));
+        select.value = c.model.value;
+        select.addEventListener('change', () => { v.draft.model = select.value; syncForm(); });
+        model = field('sf-model', 'Model', select);
+      } else if (c.model.kind === 'free') {
+        const input = h('input', { id: 'sf-model', type: 'text', autocomplete: 'off', placeholder: 'Harness default' });
+        input.value = v.draft.model;
+        input.addEventListener('input', () => { v.draft.model = input.value; syncForm(); });
+        model = field('sf-model', 'Model (optional)', input);
+      } else if (c.harness) {
+        model = [h('p', { class: 'field-title', text: 'Model' }), h('p', { class: 'hint', id: 'sf-model-none', text: 'This environment chooses the model.' })];
+      }
+      return [
+        h('div', { class: 'agent-grid' },
+          h('div', {}, field('sf-harness', 'Harness', harness),
+            c.typed ? reasons('sf-harness-why', ['This environment lists no harness; type one this server runs.'])
+              : reasons('sf-harness-why', closed.map(({ harness: x, why }) => `${x.id} is not available: ${why}.`))),
+          h('div', {}, model)),
+        c.harness && c.harness.readiness.length ? readinessList(c.harness.readiness, 'sf-harness-ready', v.environments.at) : null,
+        c.acknowledgement ? h('div', { class: 'ack' },
+          toggle('sf-ack', 'I accept tools without per-tool approval', v.draft.ack, (on) => { v.draft.ack = on; syncForm(); }, 'sf-ack-why'),
+          h('p', { class: 'hint', id: 'sf-ack-why', text: `${c.harness.id} cannot ask before each tool it uses, so as a writer it runs them without asking. Tick this only if you accept that.` })) : null,
+      ];
+    };
+
+    const drawCollect = (c) => (c.access.value !== 'writer' ? null : [
+      toggle('sf-collect', `Collect outputs (${OUTPUT_MANIFEST})`, v.draft.collect, (on) => { v.draft.collect = on; syncForm(); }, 'sf-collect-hint'),
+      h('p', { class: 'hint', id: 'sf-collect-hint', text: `Collect outputs asks the session to list its result files in ${OUTPUT_MANIFEST} and end with a JSON summary; the server publishes those files as outputs you can preview and accept.` }),
+    ]);
+
+    const drawAdvanced = (c) => {
+      const closed = [['writer', 'Writer'], ['reviewer', 'Reviewer']].filter(([k]) => c.access[k]).map(([k, label]) => `${label} is not available: ${c.access[k]}.`);
+      const access = h('select', { id: 'sf-access', disabled: c.access.fixed, 'aria-describedby': closed.length ? 'sf-access-why' : null },
+        h('option', { value: 'writer', disabled: !!c.access.writer && c.access.value !== 'writer', text: 'Writer: works in its own copy' }),
+        h('option', { value: 'reviewer', disabled: !!c.access.reviewer && c.access.value !== 'reviewer', text: 'Reviewer: reads outputs you choose' }));
+      access.value = c.access.value;
+      access.addEventListener('change', () => { v.draft.access = access.value; syncForm(); });
+      const outputs = reviewable(v);
+      const writer = c.access.value === 'writer';
+      let effort = null;
+      if (c.effort.offered) {
+        effort = h('select', { id: 'sf-effort' }, h('option', { value: '', text: 'Harness default' }), EFFORTS.map((e) => h('option', { value: e, text: e })));
+        effort.value = c.effort.value;
+        effort.addEventListener('change', () => { v.draft.effort = effort.value; syncForm(); });
+      }
+      return [
+        field('sf-access', 'Access', access),
+        reasons('sf-access-why', closed),
+        writer ? null : h('fieldset', { class: 'choices', id: 'sf-outputs' }, h('legend', { text: 'Outputs to review' }),
+          outputs.length ? outputs.map((a) => toggle(`sf-output-${a.id}`, a.label, v.draft.outputs.has(a.id), (on) => {
+            if (on) v.draft.outputs.add(a.id); else v.draft.outputs.delete(a.id);
+            syncForm();
+          })) : h('p', { class: 'hint', text: 'No outputs yet: a reviewer needs at least one.' })),
+        effort ? field('sf-effort', 'Effort', effort) : null,
+        writer ? h('div', { class: 'row choices-row' }, toggle('sf-allow', 'Allow every tool', v.draft.allowAll, (on) => { v.draft.allowAll = on; syncForm(); }, 'sf-tools-hint')) : null,
+        h('p', { class: 'hint', id: 'sf-tools-hint', text: 'A writer asks before each tool it uses unless you allow every tool (like --yes). A harness that cannot ask starts as a writer only with the acknowledgement under Agent, and only where this server permits it. Reviewers stay read-only.' }),
+      ];
+    };
+
+    const readyText = (c) => {
+      const reads = sourcesOf(v).filter((src) => v.draft.sources.get(src.id) !== false).length;
+      const reviews = reviewable(v).filter((a) => v.draft.outputs.has(a.id)).length;
+      return `Ready to start: ${[c.env.label, c.harness.id, `reads ${plural(reads, 'source')}`, c.access.value === 'reviewer' ? `reviews ${plural(reviews, 'output')}` : null].filter(Boolean).join(' · ')}`;
+    };
+    const FOCUS = {
+      workspace: () => $('strip').querySelector('details.menu > summary'),
+      environments: () => $('sf-retry'),
+      environment: () => envSlot.querySelector('input[type="radio"]:not(:disabled)'),
+      harness: () => $('sf-harness'),
+      ack: () => $('sf-ack'),
+      name: () => name,
+      prompt: () => prompt,
+      outputs: () => {
+        advanced.open = true;
+        return advancedSlot.querySelector('#sf-outputs input:not(:disabled)') || $('sf-access');
+      },
+    };
+    const focusField = (key) => {
+      const el = FOCUS[key] && FOCUS[key]();
+      if (el) el.focus();
+    };
+
+    // Each part keeps the signature it was drawn from; one that changed is
+    // drawn again and gets back the focus it held, by id.
+    const drawnParts = new Map();
+    const redraw = (slot, signature, draw) => {
+      if (drawnParts.get(slot) === signature) return;
+      drawnParts.set(slot, signature);
+      const focused = slot.contains(document.activeElement) ? document.activeElement.id : null;
+      fill(slot, draw());
+      if (!focused) return;
+      const back = $(focused) || slot.querySelector('input:not(:disabled), select:not(:disabled), button:not(:disabled)') || heading;
+      back.focus({ preventScroll: true });
+    };
+    let submitting = false;
+    let forcedShown = false;
+    let settling = true;
+    const syncForm = () => {
+      if (!heading.isConnected) return;
+      const c = choices();
+      const harnesses = c.harnesses.map(({ harness: x, why }) => [x.id, why]);
+      redraw(sourcesSlot, JSON.stringify([sourcesOf(v).map((src) => [src.id, src.title]), workspaceCanRun(v)]), drawSources);
+      redraw(envSlot, JSON.stringify([v.environments.state, v.environments.error, v.environments.at, c.envs.map(({ env, why }) => [env.key, why])]), () => drawEnvironments(c));
+      redraw(agentSlot, JSON.stringify([v.environments.at, c.env && c.env.key, c.typed, harnesses, c.typed || !c.harness ? null : c.harness.id,
+        c.model.kind, c.model.options, c.acknowledgement]), () => drawAgent(c));
+      redraw(collectSlot, c.access.value, () => drawCollect(c));
+      redraw(advancedSlot, JSON.stringify([c.access, reviewable(v).map((a) => [a.id, a.label]), c.effort.offered]), () => drawAdvanced(c));
+      if (c.access.forced && !forcedShown) {
+        advanced.open = true;
+        forcedShown = true;
+      }
+      const missing = blocked(c);
+      const text = missing ? missing.text : readyText(c);
+      if (status.textContent !== text) status.textContent = text;
+      start.disabled = submitting || v.environments.state !== 'ready';
+      const label = submitting ? 'Starting…' : 'Start session';
+      if (start.textContent !== label) start.textContent = label;
+      // Once the environments are in, focus left on the heading moves to
+      // what the start needs first.
+      if (settling && v.environments.state === 'ready') {
+        settling = false;
+        if (document.activeElement !== heading) return;
+        if (!missing) start.focus();
+        else if (missing.field !== 'workspace') focusField(missing.field);
+      }
+    };
+
+    const refuse = async (e) => {
+      const known = START_REFUSED[e.code];
+      if (known && known.reload === 'workspace') {
+        try { await reloadDetail(v); } catch (_) { /* the refusal is still said */ }
+        if (wsView === v) drawWorkspace(v);
+      }
+      if (known && known.reload === 'environments') await loadEnvironments(v);
+      if (wsView !== v) return;
+      error.textContent = known ? known.text(e, v) : `${said(e.message)} Your draft is kept.`;
+    };
     start.addEventListener('click', async () => {
-      const body = { name: name.value.trim(), prompt: prompt.value.trim(), harness: harness.value.trim(), access: access.value };
-      const missing = !body.name ? [name, 'Name the session.'] : !body.harness ? [harness, 'Choose a harness.'] : !body.prompt ? [prompt, 'Give it a first prompt.'] : null;
-      if (missing) { error.textContent = missing[1]; missing[0].focus(); return; }
-      const ticked = (box) => Array.from(box.querySelectorAll('input:checked'), (i) => i.value);
-      if (ticked(sourcesBox).length) body.sources = ticked(sourcesBox);
-      if (body.access === 'reviewer') {
-        body.artifacts = ticked(outputsBox);
-        if (!body.artifacts.length) { error.textContent = 'Choose at least one output to review.'; return; }
-      } else if (collect.querySelector('input').checked) body.result_contract = OUTPUT_CONTRACT;
-      if (allow.querySelector('input').checked) body.policy = { mode: 'allow' };
-      if (acknowledgement.querySelector('input').checked) body.unapproved_tools = true;
-      if (model.value.trim()) body.model = model.value.trim();
-      submitting = true;
-      v.syncForm();
+      if (submitting) return;
+      const c = choices();
+      const missing = blocked(c);
       error.textContent = '';
+      if (missing) {
+        status.textContent = missing.text;
+        focusField(missing.field);
+        return;
+      }
+      const body = startRequest(c, v.draft, sourcesOf(v), reviewable(v));
+      submitting = true;
+      syncForm();
       let op = null;
+      let refusal = null;
       try {
         op = await revised(v, 'Could not start the session', () => api('POST', `${workspacePath(v.id)}/sessions`, body));
       } catch (e) {
-        error.textContent = e.message;
+        refusal = e;
       }
+      submitting = false;
       if (wsView !== v) return;
-      if (!op) { submitting = false; v.syncForm(); return; }
+      if (refusal) await refuse(refusal);
+      if (!op) {
+        if (wsView === v && v.composing) syncForm();
+        return;
+      }
+      v.sent.set(op.session_id, body);
+      v.draft = freshDraft(v, { env: c.env.key, harness: c.harness.id, model: c.model.kind === 'none' ? v.draft.model : c.model.value });
       toast('Session started.');
       v.composing = false;
       v.drawn.convo = null;
@@ -2731,42 +4175,24 @@
       follow(v, op, 'Session');
       if (wsView === v) go(workspaceHref(v.id, op.session_id));
     });
+
     fill(box, h('section', { class: 'card form session-form', id: 'session-form', 'aria-labelledby': 'session-form-h' },
-      h('h2', { id: 'session-form-h', text: 'New session' }),
-      h('label', { class: 'block', for: ids.name, text: 'Session name' }), name,
-      h('div', { class: 'form-grid' }, harnessSlot,
-        h('div', {}, h('label', { class: 'block', for: ids.access, text: 'Access' }), access)),
-      h('label', { class: 'block', for: ids.model, text: 'Model (optional)' }), model,
-      h('label', { class: 'block', for: ids.prompt, text: 'First prompt' }), prompt,
-      sourcesBox,
-      outputsBox,
-      h('div', { class: 'row choices-row' }, collect, allow),
-      h('details', {}, h('summary', { text: 'Tool approval compatibility' }), acknowledgement,
-        h('p', { class: 'hint', text: 'AGY and some other harnesses cannot enforce per-tool approvals. Acknowledge this only when you accept that behavior. The server must also permit it; reviewers remain read-only.' })),
-      h('p', { class: 'hint', text: `Collect outputs asks the session to list its result files in ${OUTPUT_MANIFEST} and end with a JSON summary; the server publishes those files as outputs you can preview and accept.` }),
-      ready ? null : h('p', { class: 'hint', text: `The workspace is ${workspaceStateText(v.workspace)}; sessions start once it is ready.` }),
+      heading,
+      h('fieldset', { class: 'step' }, h('legend', { text: 'Sources it reads' }), sourcesSlot),
+      h('fieldset', { class: 'step' }, h('legend', { text: 'Where it runs' }), envSlot),
+      h('fieldset', { class: 'step' }, h('legend', { text: 'Agent' }), agentSlot),
+      h('fieldset', { class: 'step' }, h('legend', { text: 'Task' }),
+        field('sf-name', 'Session name', name),
+        field('sf-prompt', 'First prompt', prompt),
+        h('p', { class: 'hint', id: 'sf-prompt-hint', text: 'Say what it should do and which files it should produce, for example: Summarise the backlog by owner in an XLSX and a one-page DOCX.' }),
+        collectSlot),
+      advanced,
       h('div', { class: 'row form-actions' }, start, cancel),
+      status,
       error));
-    access.dispatchEvent(new Event('change'));
-    name.focus();
-    let listed = null;
-    let why = null;
-    try {
-      listed = (await api('GET', '/v1/harnesses')).harnesses;
-    } catch (e) {
-      why = e.message;
-    }
-    if (!harness.isConnected) return;
-    const usable = (listed || []).filter((x) => x.available);
-    if (usable.length) {
-      fill(harness, usable.map((x) => h('option', { value: x.default ? x.harness : x.profile, text: x.default ? x.harness : `${x.harness} (${x.profile})` })));
-      harness.disabled = false;
-    } else {
-      const typed = h('input', { id: ids.harness, type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'A harness this server runs' });
-      harness.replaceWith(typed);
-      harness = typed;
-      harnessSlot.append(h('p', { class: 'hint', text: why ? `The server lists no harnesses for this token (${why}); type one it runs.` : 'The server lists no available harness; type one it runs.' }));
-    }
+    v.syncForm = syncForm;
+    heading.focus({ preventScroll: true });
+    syncForm();
   }
 
   // ---------------------------------------------------------------
@@ -2835,33 +4261,45 @@
   // permission requests seen while this page was open, and the effect
   // ledger
 
-  let inboxTimer = null;
-  function refreshInbox() {
-    clearTimeout(inboxTimer);
-    inboxTimer = setTimeout(loadInbox, 300);
+  let decisionsTimer = null;
+  function refreshDecisions() {
+    clearTimeout(decisionsTimer);
+    decisionsTimer = setTimeout(loadDecisions, 300);
   }
 
-  async function loadInbox() {
-    const parents = Array.from(state.branches.values()).filter((b) => b.children && b.children.length);
-    const asked = [];
-    const answered = new Set();
-    await Promise.all(parents.map(async (p) => {
-      try {
-        const inbox = await api('GET', `${branchPath(p.name)}/inbox`);
-        for (const m of inbox.messages) {
-          if (m.kind === 'question' || m.kind === 'escalation') asked.push(m);
-        }
-      } catch (_) { /* skip that branch */ }
-    }));
-    const askers = new Set(asked.map((m) => m.from));
-    await Promise.all(Array.from(askers).map(async (name) => {
-      try {
-        const inbox = await api('GET', `${branchPath(name)}/inbox`);
-        for (const m of inbox.messages) if (m.in_reply_to != null) answered.add(m.in_reply_to);
-      } catch (_) { /* skip */ }
-    }));
-    state.inbox = asked.filter((m) => !answered.has(m.id)).sort((a, b) => b.at_ms - a.at_ms);
+  // What waits for a person, in the server's order: a branch parked on an
+  // approval or a question first, oldest wait first, then the ready
+  // branches, then the stopped and stalled ones. The questions among them
+  // are also the inbox the lanes read.
+  async function loadDecisions() {
+    let decisions;
+    if (!state.repo) return;
+    try { ({ decisions } = await api('GET', `${repoPath()}/decisions`)); } catch (_) { return; }
+    // The ground costs the server a diff per open branch: read it only for
+    // a page that shows it, a merge card or a branch.
+    if (decisions.some((d) => d.kind === 'merge') || state.route.name === 'branch') await loadGround();
+    state.decisions = decisions;
+    state.inbox = decisions.filter((d) => d.kind === 'question').map((d) => d.question);
     branchesChanged();
+  }
+
+  // Which files are in whose hands: every path an open branch changed,
+  // with the branches that changed it. A failed read keeps the last one.
+  async function loadGround() {
+    const repo = state.repo;
+    if (!repo) return;
+    let ground;
+    try { ground = await api('GET', `${repoPath()}/ground`); } catch (_) { return; }
+    if (repo === state.repo) state.ground = { repo, files: ground.files || [], skipped: ground.skipped || [] };
+  }
+
+  // `name`'s changed files with the other open branches holding each:
+  // [{ path, others }], or null before the ground is read.
+  function groundOf(name) {
+    const g = state.ground;
+    if (!g || g.repo !== state.repo) return null;
+    return g.files.filter((f) => f.branches.some((b) => b.name === name))
+      .map((f) => ({ path: f.path, others: f.branches.map((b) => b.name).filter((n) => n !== name) }));
   }
 
   let approvalsTimer = null;
@@ -2872,14 +4310,17 @@
 
   async function loadApprovals() {
     try {
+      // Every approval, so the deck can say what was answered today; the
+      // ones still open are what the lanes and the deck count.
       const [{ approvals }, { effects }] = await Promise.all([
-        api('GET', `${repoPath()}/approvals`),
+        api('GET', `${repoPath()}/approvals?all=true`),
         api('GET', `${repoPath()}/effects`),
       ]);
-      state.approvals = approvals;
+      state.approvals = approvals.filter((x) => !x.answer);
+      state.answered = approvals.filter((x) => x.answer).sort((x, y) => y.answer.at_ms - x.answer.at_ms).slice(0, 50);
       state.effects = effects.slice(-50).reverse();
     } catch (_) { return; }
-    branchesChanged();
+    await loadDecisions();
   }
 
   function aboutText(about) {
@@ -2893,7 +4334,7 @@
 
   function answerForm(m) {
     const id = nextId('answer');
-    const area = h('textarea', { id, rows: '2', 'data-draft': `answer:${m.id}`, placeholder: m.kind === 'escalation' ? 'Optional note' : 'Your answer' });
+    const area = h('textarea', { id, rows: '2', 'data-draft': `answer:${m.id}`, placeholder: m.kind === 'escalation' ? 'Optional note' : 'Your answer (Enter sends, Shift+Enter adds a line)' });
     const disabled = !can('run');
     const send = async (prefix) => {
       const note = area.value.trim();
@@ -2902,11 +4343,20 @@
       try {
         await api('POST', `${branchPath(m.to)}/answer`, { message_id: m.id, text });
         toast(`Answered ${m.from}.`);
-        loadInbox();
+        loadApprovals();
       } catch (e) {
         toast(`Could not answer: ${e.message}`);
       }
     };
+    // Enter sends a question's answer, as it does in a chat box; an
+    // escalation has two answers, so its Enter stays a new line.
+    if (m.kind !== 'escalation') {
+      area.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing || ev.metaKey || ev.ctrlKey || ev.altKey || disabled) return;
+        ev.preventDefault();
+        send(null);
+      });
+    }
     return h('div', { class: 'reply' },
       h('label', { class: 'block', for: id, text: `Answer as ${m.to}` }), area,
       h('div', { class: 'row' },
@@ -2948,8 +4398,451 @@
 
   function attentionSignature() {
     const needs = lanes(Array.from(state.branches.values()))[0].branches;
-    return JSON.stringify([state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
-      state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled])]);
+    const d = state.deck;
+    return JSON.stringify([state.decisions.map(decisionKey), d.later, d.front, d.holding.map((x) => x.key),
+      Array.from(d.evidence.entries()).map(([k, e]) => [k, e.loading, e.said && e.said.length, e.files && e.files.length]),
+      projectCards().map(decisionKey), state.workspaces.list.map((w) => w.title),
+      state.approvals.map((a) => a.id), state.inbox.map((m) => m.id), state.permissions,
+      state.effects.map((e) => [e.updated_ms, e.state]), needs.map((b) => [b.name, b.status, b.stalled]),
+      state.ground && state.ground.files, state.answered.map((a) => a.id),
+      Array.from(state.tracks.values()).map((t) => t.track && t.track.merged), Math.floor(Date.now() / 30000)]);
+  }
+
+  // How long an allow or a deny waits before it is sent, for a second
+  // thought. The agent stays parked meanwhile.
+  const UNDO_MS = 8000;
+  const HOLD_MS = 700;
+  const decisionKey = (d) => `${d.kind}:${d.branch}:${d.approval ? d.approval.id : d.question ? d.question.id : d.output ? d.output.id : ''}`;
+  const WAITS = { agent: 'an agent is parked until you answer', delivery: 'delivery waits on you', nobody: 'nothing waits on this' };
+  const KIND_LABEL = { approval: 'Approval', question: 'Question', merge: 'Ready to merge', stop: 'Stopped', stall: 'Silent', output: 'Delivered', session: 'Stopped' };
+  const KIND_VERB = { approval: 'allow or deny', question: 'answer', merge: 'merge', stop: 'resume', stall: 'look', output: 'accept', session: 'open' };
+  // Who a card is about: a branch, or a workspace's session.
+  const subjectOf = (d) => (d.session_name || d.branch);
+  // What the bay and the line under a card say of a decision.
+  function summaryOf(d) {
+    switch (d.kind) {
+      case 'approval': return `${d.branch} wants to ${aboutText(d.approval.about)}`;
+      case 'question': return `${d.branch} asks: ${d.question.text}`;
+      case 'merge': return `${d.branch} is ready to merge`;
+      case 'stall': return `${d.branch} is silent`;
+      case 'output': return `${d.session_name} delivered ${d.output.name}`;
+      case 'session': return `${d.session_name}: ${d.phase.toLowerCase()}`;
+      default: return `${d.branch} ${statusOf({ status: d.status }).text}`;
+    }
+  }
+
+  // The decisions in the server's order: a parked agent first, then what
+  // waits on delivery, then what nobody waits on; the repository's before
+  // the project's within each.
+  const WAIT_RANK = { agent: 0, delivery: 1, nobody: 2 };
+  function allDecisions() {
+    return state.decisions.concat(projectCards())
+      .map((d, i) => [d, i]).sort((x, y) => WAIT_RANK[x[0].waits] - WAIT_RANK[y[0].waits] || x[1] - y[1]).map(([d]) => d);
+  }
+
+  // The deck in the order to take it: the server's order, with the cards
+  // sent to the back at the back, the one brought forward in front, and
+  // the answers held for their undo window left out.
+  function deckOrder() {
+    const d = state.deck;
+    const held = new Set(d.holding.map((x) => x.key));
+    const cards = allDecisions().filter((x) => !held.has(decisionKey(x)));
+    const later = cards.filter((x) => d.later.includes(decisionKey(x))).sort((x, y) => d.later.indexOf(decisionKey(x)) - d.later.indexOf(decisionKey(y)));
+    const now = cards.filter((x) => !d.later.includes(decisionKey(x)));
+    const ordered = now.concat(later);
+    const front = ordered.findIndex((x) => decisionKey(x) === d.front);
+    if (front > 0) ordered.unshift(ordered.splice(front, 1)[0]);
+    return ordered;
+  }
+
+  // Send a card to the back of the deck.
+  function later(d) {
+    const key = decisionKey(d);
+    state.deck.later = state.deck.later.filter((k) => k !== key).concat(key);
+    if (state.deck.front === key) state.deck.front = null;
+    branchesChanged();
+    focusDeck();
+  }
+
+  function focusDeck() {
+    const card = document.querySelector('#main .deck-card');
+    if (card) card.focus({ preventScroll: true });
+  }
+
+  // Hold an answer for its undo window, then send it. Undo within the
+  // window and nothing was sent.
+  function holdAnswer(d, allow, reason) {
+    const entry = { key: decisionKey(d), decision: d, allow, reason, until: Date.now() + UNDO_MS, timer: null };
+    entry.timer = setTimeout(() => sendAnswer(entry), UNDO_MS);
+    state.deck.holding.push(entry);
+    branchesChanged();
+    focusDeck();
+  }
+
+  async function sendAnswer(entry) {
+    state.deck.holding = state.deck.holding.filter((x) => x !== entry);
+    const a = entry.decision.approval;
+    try {
+      await api('POST', `${repoPath()}/approvals/${enc(a.id)}/${entry.allow ? 'allow' : 'deny'}`,
+        { surface: 'companion', ...(entry.reason ? { reason: entry.reason } : {}) });
+      toast(`${entry.allow ? 'Allowed' : 'Denied'}: ${a.branch} may${entry.allow ? '' : ' not'} ${aboutText(a.about)}.`);
+    } catch (e) {
+      toast(`Could not answer the approval: ${e.message}`);
+    }
+    loadApprovals();
+  }
+
+  function undoAnswer(entry) {
+    clearTimeout(entry.timer);
+    state.deck.holding = state.deck.holding.filter((x) => x !== entry);
+    branchesChanged();
+    focusDeck();
+  }
+
+  // The evidence a merge or a stop card shows: the branch's last turn (what
+  // it said and did) and its changed files, fetched once per branch and
+  // kept until the branch's status changes.
+  function evidenceFor(d) {
+    const key = `${d.branch}@${JSON.stringify(d.status)}`;
+    const found = state.deck.evidence.get(key);
+    if (found) return found;
+    const entry = { loading: true, said: [], tools: [], files: [], error: null };
+    state.deck.evidence.set(key, entry);
+    (async () => {
+      try {
+        const page = await api('GET', `${branchPath(d.branch)}/event-page?limit=${EVENT_WINDOW}`);
+        const turns = conversation(page.events);
+        const lastTurn = turns[turns.length - 1];
+        if (lastTurn) { entry.said = lastTurn.said; entry.tools = lastTurn.tools; }
+        if (d.candidate) {
+          const diff = await api('GET', `${branchPath(d.branch)}/diff`);
+          entry.files = parseDiff(diff.diff || '');
+        }
+      } catch (e) { entry.error = e.message; }
+      entry.loading = false;
+      branchesChanged();
+    })();
+    return entry;
+  }
+
+  // The one preview a deck card mounts, kept across the redraws of the
+  // card (its table or page is not fetched again) and disposed when
+  // another card comes to the front or the page is left.
+  let deckPreview = null;
+  function closeDeckPreview() {
+    if (deckPreview) deckPreview.handle.dispose();
+    deckPreview = null;
+  }
+  function deckPreviewHost(d, base) {
+    const key = decisionKey(d);
+    if (!deckPreview || deckPreview.key !== key) {
+      closeDeckPreview();
+      const host = h('div', { class: 'preview-host', id: 'preview-host' });
+      deckPreview = { key, host, handle: window.BranchyardArtifactPreview.mount(host, { baseUrl: base, mediaType: d.output.media_type, fetchAuthenticated: authFetch }) };
+    }
+    return deckPreview.host;
+  }
+
+  // Accept an output where the workspace page does: the workspace's current
+  // revision with the output's id. A refusal says why and the cards reload.
+  async function acceptOutput(d) {
+    const name = d.output.name;
+    try {
+      const ws = await api('GET', workspacePath(d.workspace));
+      await api('POST', `${workspacePath(d.workspace)}/finalize`, { revision: ws.revision, artifacts: [d.output.id] });
+      toast(`Accepted ${name}.`);
+    } catch (e) {
+      toast(e.code === 'deliverable_not_current' ? `Not accepted: ${name} is no longer its session's current result.` : `Could not accept ${name}: ${e.message}`);
+    }
+    await loadProjectWork(state.projectDecisions.project, state.workspaces.list);
+    drawn = null;
+    branchesChanged();
+    focusDeck();
+  }
+
+  // Resume an interrupted session as the workspace page's message box does.
+  async function resumeSession(d) {
+    try {
+      await api('POST', `${workspacePath(d.workspace)}/sessions/${enc(d.session)}/messages`, { prompt: RESUME_PROMPT, action: 'resume' });
+      toast(`Resuming ${d.session_name}. A new turn is starting.`);
+    } catch (e) {
+      toast(`Could not resume ${d.session_name}: ${e.message}`);
+    }
+    await loadProjectWork(state.projectDecisions.project, state.workspaces.list);
+    drawn = null;
+    branchesChanged();
+  }
+
+  // What a stopped session last said, fetched once per state it stopped in.
+  function sessionEvidence(d) {
+    const key = `${d.session}@${d.phase}`;
+    const found = state.deck.evidence.get(key);
+    if (found) return found;
+    // A session that never started has no log to read.
+    const entry = { loading: !d.phase.startsWith('Did not start'), said: null, error: null };
+    state.deck.evidence.set(key, entry);
+    if (!entry.loading) return entry;
+    (async () => {
+      try {
+        // The log is read a page at a time from its cursor, as the
+        // workspace page reads it; the last line is on the last page.
+        const messages = [];
+        for (let cursor = '0'; ;) {
+          const page = await api('GET', `${workspacePath(d.workspace)}/sessions/${enc(d.session)}/messages?after=${enc(cursor)}`);
+          messages.push(...page.messages);
+          if (page.next_cursor === cursor) break;
+          cursor = page.next_cursor;
+        }
+        const turns = conversation(messages.map((m) => ({
+          activity: m.role === 'user' ? { prompt: m.text } : { harness: { type: 'message_delta', text: m.text } },
+        })));
+        const said = turns.length ? turns[turns.length - 1].said : [];
+        entry.said = said.length ? said[said.length - 1] : null;
+      } catch (e) { entry.error = e.message; }
+      entry.loading = false;
+      branchesChanged();
+    })();
+    return entry;
+  }
+
+  // Hold to act: the fill is the confirmation. Under reduced motion, two
+  // presses: the first arms, the second fires.
+  function lever(label, run) {
+    const button = h('button', { type: 'button', class: 'primary lever' }, h('span', { text: label }), h('kbd', { text: '↵' }));
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let timer = null;
+    let fired = false;
+    const fire = () => { fired = true; button.classList.remove('hold'); button.dataset.fired = ''; button.disabled = true; run(); };
+    const start = () => { if (fired || timer) return; button.classList.add('hold'); timer = setTimeout(() => { timer = null; fire(); }, HOLD_MS); };
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } if (!fired) button.classList.remove('hold'); };
+    if (reduced) {
+      button.addEventListener('click', () => {
+        if (fired) return;
+        if (button.dataset.armed) fire();
+        else { button.dataset.armed = '1'; button.firstChild.textContent = `${label} now`; setTimeout(() => { if (!fired) { delete button.dataset.armed; button.firstChild.textContent = label; } }, 4000); }
+      });
+    } else {
+      button.addEventListener('pointerdown', (ev) => { ev.preventDefault(); start(); });
+      for (const name of ['pointerup', 'pointerleave', 'pointercancel']) button.addEventListener(name, cancel);
+      button.addEventListener('keydown', (ev) => { if ((ev.key === 'Enter' || ev.key === ' ') && !ev.repeat) { ev.preventDefault(); start(); } });
+      button.addEventListener('keyup', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') cancel(); });
+      button.addEventListener('blur', cancel);
+    }
+    return button;
+  }
+
+  const layerText = (resolved) => (!resolved ? null : resolved.layer === 'admin' ? "the administrator's policy asks before this" : resolved.layer === 'person' ? 'your own policy asks before this' : `the ${resolved.layer} policy asks before this`);
+
+  // One decision as a card: the question at the top, the evidence in the
+  // middle, the answers at the bottom, where the eye ends. Keys answer.
+  function deckCard(d, position, total, rest) {
+    const b = state.branches.get(d.branch) || { name: d.branch, status: d.status, candidate: d.candidate };
+    const disabled = !can('run');
+    const draftKey = `deck:${decisionKey(d)}`;
+    let title;
+    let body = [];
+    let actions = [];
+    let primary = null;
+    const open = () => { location.hash = d.workspace ? workspaceHref(d.workspace, d.session) : branchHref(d.branch); };
+    const followUp = () => { location.hash = d.workspace ? workspaceHref(d.workspace, d.session) : branchHref(d.branch); setTimeout(() => { const area = $('composer-text'); if (area) area.focus(); }, 0); };
+    const since = d.since_ms ? h('span', { text: `parked on you for ${since_(d.since_ms)}` }) : null;
+    if (d.kind === 'approval') {
+      const a = d.approval;
+      const reason = h('textarea', { rows: '1', 'data-draft': draftKey, placeholder: 'A reason, if you want one' });
+      const evidence = evidenceFor(d);
+      title = [d.branch, ' wants to ', h('code', { text: aboutText(a.about) })];
+      const input = a.request && typeof a.request === 'object' && !Array.isArray(a.request) ? Object.entries(a.request).slice(0, 4) : [];
+      body = [
+        h('div', { class: 'deck-grid' },
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it was doing' }),
+            evidence.loading ? skeleton() : evidence.said.length ? h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1])) : h('p', { class: 'muted', text: 'It said nothing before it asked.' })),
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it asks' }),
+            h('dl', { class: 'deck-facts' },
+              h('dt', { text: a.about.kind === 'tool' ? 'Tool' : 'Call' }), h('dd', {}, h('code', { text: a.about.kind === 'tool' ? a.about.tool : aboutText(a.about) })),
+              input.map(([k, v]) => [h('dt', { text: k }), h('dd', {}, h('code', { text: (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 160) }))]),
+              h('dt', { text: 'Who asks' }), h('dd', { text: layerText(a.resolved) ? cap(layerText(a.resolved)) : 'The policy asks before this' }),
+              h('dt', { text: 'Parked' }), h('dd', { text: `${d.since_ms ? `at ${clock(d.since_ms).slice(0, 5)}` : 'now'} · turn ${a.turn}` })))),
+        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The whole call' }), h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
+        h('label', { class: 'block deck-reason' }, h('span', { class: 'visually-hidden', text: 'Reason' }), reason),
+      ];
+      primary = () => holdAnswer(d, true, reason.value.trim());
+      actions = [
+        h('button', { type: 'button', class: 'primary', disabled, text: 'Allow', onclick: primary }, h('kbd', { text: '↵' })),
+        h('button', { type: 'button', class: 'danger', disabled, text: 'Deny', onclick: () => holdAnswer(d, false, reason.value.trim()) }, h('kbd', { text: 'n' })),
+      ];
+    } else if (d.kind === 'question') {
+      const m = d.question;
+      title = [m.from, m.kind === 'escalation' ? ' escalates: ' : ' asks: ', m.text];
+      body = [h('p', { class: 'deck-line' }, since, h('span', { class: 'muted', text: ` · to ${m.to}` })), answerForm(m)];
+    } else if (d.kind === 'merge') {
+      const c = d.candidate;
+      const evidence = evidenceFor(d);
+      title = [d.branch, ' is ready to merge'];
+      const stats = [c ? h('span', { class: 'mono', text: c.commit.slice(0, 7) }) : null, c ? [`${plural(c.files_changed, 'file')} `, counts(c.insertions, c.deletions)] : null,
+        b.turns != null ? plural(b.turns, 'turn') : null, b.cost_usd != null ? money(b.cost_usd) : null, b.harness || null].filter(Boolean);
+      const did = evidence.tools.length ? toolCounts(evidence.tools) : null;
+      const shared = (groundOf(d.branch) || []).filter((f) => f.others.length);
+      body = [
+        h('p', { class: 'deck-line deck-stats' }, stats.map((x) => h('span', { class: 'stat-chip' }, x))),
+        shared.length ? h('p', { class: 'deck-line deck-ground' }, h('b', { text: 'In two hands: ' }),
+          shared.map((f, i) => [i ? '; ' : '', h('code', { text: f.path }), ` also in ${f.others.join(', ')}`])) : null,
+        b.prompt ? h('p', { class: 'deck-asked' }, h('span', { class: 'muted', text: 'Asked: ' }), b.prompt) : null,
+        h('div', { class: 'deck-grid' },
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it says' }),
+            evidence.loading ? skeleton() : evidence.said.length ? h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1])) : h('p', { class: 'muted', text: evidence.error || 'It said nothing in its last turn.' })),
+          h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'What it did' }),
+            evidence.loading ? skeleton() : did ? h('ul', { class: 'deck-did' },
+              did.run ? h('li', {}, icon('terminal', true), `ran ${plural(did.run, 'command')}`) : null,
+              did.edit ? h('li', {}, icon('pencil', true), `edited ${plural(did.edit, 'time')}`) : null,
+              did.read ? h('li', {}, icon('eye', true), `read ${plural(did.read, 'time')}`) : null,
+              did.other ? h('li', {}, icon('wrench', true), `${plural(did.other, 'other call')}`) : null,
+              h('li', { class: 'muted' }, icon('bolt', true), 'the harness reports what ran, not whether it passed'))
+              : h('p', { class: 'muted', text: 'No tool calls in its last turn.' }))),
+        evidence.files.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'Changes' }),
+          h('ul', { class: 'deck-files' }, evidence.files.map((f) => {
+            const at = f.path.lastIndexOf('/');
+            return h('li', {}, h('span', { class: 'path' }, h('span', { class: 'dir', text: f.path.slice(0, at + 1) }), h('b', { text: f.path.slice(at + 1) })),
+              h('span', { class: 'file-counts' }, counts(f.add, f.del)), fileBar(f.add, f.del));
+          })),
+          h('pre', { class: 'diff deck-diff', tabindex: '0', 'aria-label': `The first lines of ${evidence.files[0].path}` },
+            evidence.files[0].lines.slice(0, 14).map((l) => h('span', { class: l.kind }, l.text)),
+            h('span', { class: 'file', text: '  … the rest is in Work' }))) : null,
+      ];
+      actions = applies(ACTIONS.merge, b) ? [lever(`Merge ${c ? c.commit.slice(0, 7) : d.branch}`, () => { state.pending.set(d.branch, ACTIONS.merge.busy); act(ACTIONS.merge, d.branch).then((r) => { if (!r || !r.id) state.pending.delete(d.branch); }); })] : [];
+      actions.push(h('button', { type: 'button', text: 'Follow up', onclick: followUp }, h('kbd', { text: 'f' })));
+    } else if (d.kind === 'stop' || d.kind === 'stall') {
+      const evidence = evidenceFor(d);
+      title = d.kind === 'stall' ? [d.branch, ' has been silent for its stall window'] : [d.branch, ' ', statusOf(b).text];
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `last active ${ago(activeAt(b))}${b.turns != null ? ` · ${plural(b.turns, 'turn')}` : ''}${b.cost_usd != null ? ` · ${money(b.cost_usd)}` : ''}` })),
+        evidence.said.length ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'The last thing it said' }), h('div', { class: 'rich' }, rich(evidence.said[evidence.said.length - 1]))) : null,
+        evidence.tools.length ? h('p', { class: 'deck-line muted' }, 'Last calls: ', evidence.tools.slice(-3).map((name, i) => [i ? ', ' : '', h('code', { text: name })])) : null,
+      ];
+      if (applies(ACTIONS.resume, b)) { primary = () => runAction(ACTIONS.resume, d.branch); actions = [h('button', { type: 'button', class: 'primary', text: 'Resume', onclick: primary }, h('kbd', { text: '↵' }))]; }
+      else actions = [h('button', { type: 'button', class: 'primary', text: 'Follow up', onclick: followUp }, h('kbd', { text: 'f' }))];
+      if (d.kind === 'stall' && applies(ACTIONS.cancel, b)) actions.push(h('button', { type: 'button', class: 'danger', text: 'Cancel turn', onclick: () => runAction(ACTIONS.cancel, d.branch) }));
+    } else if (d.kind === 'output') {
+      const o = d.output;
+      const base = `${workspacePath(d.workspace)}/artifacts/${enc(o.id)}`;
+      title = `${d.session_name} delivered ${o.name}`;
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `${d.workspace_title} · ${formatOf(o.media_type, o.name)} · ${size(o.size)} · turn ${o.turn} · delivered ${since_(d.since_ms)} ago` })),
+        h('div', { class: 'deck-section' },
+          h('div', { class: 'preview-head' },
+            h('h3', { class: 'deck-file', title: o.name, text: o.name }),
+            h('button', { type: 'button', text: 'Download original', onclick: () => download(`${base}/content`, o.name) })),
+          deckPreviewHost(d, base)),
+      ];
+      if (can('run')) {
+        actions = [lever(`Accept ${o.name}`, () => acceptOutput(d))];
+      } else {
+        actions = [h('button', { type: 'button', class: 'primary', disabled: true, text: 'Accept' })];
+      }
+    } else if (d.kind === 'session') {
+      const evidence = sessionEvidence(d);
+      const interrupted = d.status.state === 'interrupted' && !!d.phase && d.phase === 'Interrupted';
+      title = d.status.state === 'awaiting_plan_approval' ? [d.session_name, `'s plan waits for your approval`] : [d.session_name, ` ${(d.phase.split(':')[0] || 'stopped').toLowerCase()}`];
+      body = [
+        h('p', { class: 'deck-line' }, h('span', { class: 'muted', text: `${d.workspace_title} · ${d.phase}` })),
+        evidence.said ? h('div', { class: 'deck-section' }, h('span', { class: 'deck-label', text: 'The last thing it said' }), h('div', { class: 'rich' }, rich(evidence.said))) : null,
+        evidence.loading ? skeleton() : null,
+        !evidence.loading && !evidence.said ? h('p', { class: 'muted', text: evidence.error || 'It has said nothing.' }) : null,
+      ];
+      if (interrupted && can('run')) {
+        primary = () => resumeSession(d);
+        actions = [h('button', { type: 'button', class: 'primary', text: 'Resume', onclick: primary }, h('kbd', { text: '↵' }))];
+      } else {
+        primary = open;
+        actions = [h('button', { type: 'button', class: 'primary', text: 'Open', onclick: open }, h('kbd', { text: '↵' }))];
+      }
+    }
+    const card = h('article', { class: `deck-card deck-${d.kind}`, tabindex: '0', 'aria-label': `${KIND_LABEL[d.kind]}: ${subjectOf(d)}` },
+      h('div', { class: 'deck-head' },
+        h('span', { class: 'deck-head-row' },
+          h('span', { class: `deck-kind deck-kind-${d.waits}` }, dot(d.waits === 'agent' ? 'needs' : d.kind === 'merge' || d.kind === 'output' ? 'ready' : 'done'),
+            h('span', {}, h('b', { text: KIND_LABEL[d.kind] }), ` · ${WAITS[d.waits]}`)),
+          d.since_ms ? h('span', { class: 'deck-clock', title: `since ${clock(d.since_ms)}` }, ago(d.since_ms, d.kind === 'output' ? ' ago' : ' waiting')) : null),
+        h('h2', {}, title)),
+      h('div', { class: 'deck-body' }, body),
+      h('div', { class: 'deck-actions' }, actions,
+        h('button', { type: 'button', class: 'ghost', text: 'Open', onclick: open }, h('kbd', { text: 'o' })),
+        h('span', { class: 'spacer' }),
+        h('button', { type: 'button', class: 'ghost', text: 'Later', onclick: () => later(d) }, h('kbd', { text: 's' }))));
+    card.addEventListener('keydown', (ev) => {
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.target.closest('input, textarea, select, button, a')) return;
+      const key = ev.key;
+      if (key === 'Enter' && primary && !ev.repeat) primary();
+      else if (key === 'n' && d.kind === 'approval' && !disabled) holdAnswer(d, false, '');
+      else if (key === 's') later(d);
+      else if (key === 'o') open();
+      else if (key === 'f') followUp();
+      else return;
+      ev.preventDefault();
+    });
+    return card;
+  }
+  const since_ = (ms) => since(ms).replace(/ ago$/, '');
+
+  // The bay beside the card: the answers held for undo, then what is next.
+  function deckBay(rest) {
+    const held = state.deck.holding.map((entry) => {
+      const a = entry.decision.approval;
+      const left = h('span', { class: 'undo-left', 'data-until': String(entry.until) });
+      return h('div', { class: `bay-item bay-held bay-${entry.allow ? 'allow' : 'deny'}` },
+        h('span', { class: 'bay-main' }, h('b', { text: `${a.branch}: ${entry.allow ? 'allowing' : 'denying'} ${aboutText(a.about)}` }),
+          h('span', { class: 'bay-meta', text: 'sent when the count ends; the agent stays parked meanwhile' })),
+        h('button', { type: 'button', class: 'small', onclick: () => undoAnswer(entry) }, 'Undo ', left));
+    });
+    const next = rest.map((d) => h('button', {
+      type: 'button', class: `bay-item bay-${d.kind}`, 'data-decision': decisionKey(d),
+      onclick: () => { state.deck.front = decisionKey(d); state.deck.later = state.deck.later.filter((k) => k !== decisionKey(d)); branchesChanged(); focusDeck(); },
+    }, h('span', { class: 'bay-main' },
+      h('b', { text: summaryOf(d) }),
+      h('span', { class: 'bay-meta', text: `${KIND_LABEL[d.kind].toLowerCase()} · ${d.since_ms ? (d.kind === 'output' ? `delivered ${since_(d.since_ms)} ago` : `parked ${since_(d.since_ms)}`) : WAITS[d.waits]}` })),
+    h('span', { class: 'bay-verb mono', text: KIND_VERB[d.kind] })));
+    return h('aside', { class: 'deck-bay', 'aria-label': 'Up next' },
+      held.length || next.length ? h('p', { class: 'deck-label bay-title' }, h('span', { text: 'Up next' }), next.length ? h('span', { class: 'lane-count', text: String(next.length) }) : null) : null,
+      held, next,
+      next.length ? h('p', { class: 'bay-why muted', text: 'Parked agents first, the longest wait first; then what delivery waits on; then the rest. Later sends a card to the back.' }) : null);
+  }
+
+  // What was decided today, newest first: approvals answered (here, in a
+  // terminal or by the API), branches merged and effects the ledger
+  // recorded. Each says when, and links to its branch.
+  function recentDecisions() {
+    const midnight = new Date().setHours(0, 0, 0, 0);
+    const items = [];
+    for (const a of state.answered) {
+      if (a.answer.at_ms < midnight) continue;
+      items.push({ at: a.answer.at_ms, kind: a.answer.allow ? 'allowed' : 'denied', branch: a.branch,
+        text: [h('a', { href: branchHref(a.branch), text: a.branch }), ` may${a.answer.allow ? '' : ' not'} ${aboutText(a.about)}`],
+        note: [`${a.answer.by} · ${a.answer.surface}`, a.answer.reason ? ` · “${a.answer.reason}”` : ''] });
+    }
+    for (const b of state.branches.values()) {
+      if (b.status.state !== 'merged') continue;
+      const t = trackFor(b);
+      const ms = (t && t.merged) || activeAt(b);
+      if (ms < midnight) continue;
+      items.push({ at: ms, kind: 'merged', branch: b.name,
+        text: [h('a', { href: branchHref(b.name), text: b.name }), ` merged into ${b.status.target}`],
+        note: [b.candidate ? [`${plural(b.candidate.files_changed, 'file')} `, counts(b.candidate.insertions, b.candidate.deletions)] : null, b.cost_usd != null ? ` · ${cents(b.cost_usd)}` : null] });
+    }
+    for (const e of state.effects) {
+      if (e.updated_ms < midnight) continue;
+      items.push({ at: e.updated_ms, kind: 'effect', branch: e.branch,
+        text: [h('a', { href: branchHref(e.branch), text: e.branch }), ` ${e.connector} ${e.operation}: ${e.state}`], note: e.class });
+    }
+    return items.sort((x, y) => y.at - x.at);
+  }
+  const RECENT_ICON = { allowed: 'check', denied: 'cross', merged: 'merge', effect: 'bolt' };
+
+  function recentList(items) {
+    return h('ol', { class: 'recent' }, items.slice(0, 8).map((x) => h('li', { class: `recent-${x.kind}` },
+      h('span', { class: 'recent-mark', 'aria-hidden': 'true' }, icon(RECENT_ICON[x.kind], true)),
+      h('span', { class: 'recent-text' }, h('span', { class: 'recent-what' }, h('b', { text: cap(x.kind) }), ' · ', x.text), h('span', { class: 'recent-note' }, x.note)),
+      h('time', { class: 'recent-at', datetime: new Date(x.at).toISOString(), title: new Date(x.at).toLocaleString(), text: clock(x.at).slice(0, 5) }))),
+    items.length > 8 ? h('li', { class: 'recent-more muted', text: `${items.length - 8} more earlier today` }) : null);
   }
 
   function renderAttention() {
@@ -2957,33 +4850,40 @@
     const drafts = new Map(Array.from(document.querySelectorAll('#main [data-draft]'), (el) => [el.dataset.draft, el.value]));
     const active = document.activeElement && document.activeElement.dataset ? document.activeElement : null;
     const focused = active && active.dataset.draft ? [active.dataset.draft, active.selectionStart, active.selectionEnd] : null;
-    const waiting = attention();
-    const stopped = lanes(Array.from(state.branches.values()))[0].branches.filter((b) => !waiting.has(b.name));
     const perms = state.permissions;
-    const total = state.approvals.length + state.inbox.length + stopped.length;
-    const section = (title, items) => h('section', { class: 'attention-group' }, h('h2', { text: title }), h('ul', { class: 'cards' }, items));
-    main(h('div', { class: 'page' },
+    const project = state.source.kind === 'project' ? projectOf(state.source.id) : null;
+    const scope = [state.repo, project && project.name].filter(Boolean).join(' and ');
+    const deck = deckOrder();
+    if (!deck.length || deck[0].kind !== 'output' || decisionKey(deck[0]) !== (deckPreview && deckPreview.key)) closeDeckPreview();
+    const held = state.deck.holding.length;
+    const count = deck.length;
+    const recent = state.source.kind === 'repo' || state.repo ? recentDecisions() : [];
+    const peeks = deck.slice(1, 3);
+    main(h('div', { class: 'page wide decide' },
       h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
       h('header', { class: 'page-head' }, h('div', {}, h('h1', { text: 'Needs you' }),
-        h('p', { class: 'lede', text: !state.repo ? 'This token reaches no repository. A workspace shows what it waits for in its own project.'
-          : total ? `${plural(total, 'thing')} ${total === 1 ? 'waits' : 'wait'} for you in ${state.repo}.` : `Nothing in ${state.repo} waits for you.` }))),
-      state.approvals.length ? section('Waiting for approval', state.approvals.map((a) => h('li', { class: 'card' },
-        h('div', { class: 'card-head' }, dot('needs'), h('a', { class: 'card-name', href: branchHref(a.branch), text: a.branch }),
-          h('span', { class: 'tag', text: a.resolved ? a.resolved.layer : 'ask' })),
-        h('p', { class: 'card-text', text: `May it ${aboutText(a.about)}?` }),
-        a.request ? h('details', { class: 'request' }, h('summary', { text: 'The call\'s arguments' }),
-          h('pre', { class: 'code', text: JSON.stringify(a.request, null, 2).slice(0, 2000) })) : null,
-        h('p', { class: 'item-meta' }, `turn ${a.turn} · `, ago(a.created_ms), a.deadline_ms ? ` · waits until ${clock(a.deadline_ms)}` : null),
-        approvalForm(a)))) : null,
-      state.inbox.length ? section('Questions and escalations', state.inbox.map((m) => h('li', { class: 'card' },
-        h('div', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: `${m.from} → ${m.to}` }), h('span', { class: 'tag', text: m.kind })),
-        h('p', { class: 'card-text prompt', text: m.text }),
-        h('p', { class: 'item-meta' }, ago(m.at_ms)),
-        answerForm(m)))) : null,
-      stopped.length ? section('Stopped branches', stopped.map((b) => h('li', {}, h('a', { class: 'card card-link', href: branchHref(b.name) },
-        h('span', { class: 'card-head' }, dot('needs'), h('span', { class: 'card-name', text: b.name }), ago(activeAt(b))),
-        h('span', { class: 'card-text', text: b.stalled ? 'Running, but stalled: no harness activity' : cap(statusOf(b).text) }))))) : null,
-      total ? null : h('p', { class: 'calm' }, checkMark(false), 'Approvals, questions and branches that stop for you appear here.'),
+        h('p', { class: 'lede', text: !scope ? 'This token reaches no repository and no project is listed. Choose one in the sidebar.'
+          : count ? `${plural(count, 'decision')} ${count === 1 ? 'waits' : 'wait'} for you in ${scope}. One at a time, the parked agent first.` : held ? 'Nothing more waits for you.' : `Nothing in ${scope} waits for you.` }))),
+      count || held ? h('div', { class: 'deck' },
+        count ? h('div', { class: 'deck-main' },
+          h('p', { class: 'deck-count muted' }, h('b', { text: `1 of ${count}` }), count > 1 ? ` · then ${subjectOf(deck[1])}` : ' · the last one'),
+          h('div', { class: `deck-pile deck-pile-${peeks.length}` },
+            deckCard(deck[0], 1, count, deck.slice(1)),
+            peeks.map((x, i) => h('div', { class: `deck-peek deck-peek-${i + 1} peek-${x.kind}`, 'aria-hidden': 'true' },
+              i === 0 ? [h('span', { class: 'peek-label', text: 'Next' }), h('span', { class: 'peek-text', text: summaryOf(x) })] : null))),
+          h('p', { class: 'deck-keys muted' }, h('kbd', { text: '↵' }), ' the first action (held, for a merge) · ', h('kbd', { text: 'n' }), ' deny · ', h('kbd', { text: 's' }), ' later · ', h('kbd', { text: 'o' }), ' open · ', h('kbd', { text: 'f' }), ' follow up · an allow or a deny waits ', String(UNDO_MS / 1000), ' s for an undo'))
+          : null,
+        deckBay(deck.slice(1))) : null,
+      count || held ? null : h('section', { class: 'empty' },
+        h('span', { class: 'empty-mark ok', 'aria-hidden': 'true' }, checkMark(false)),
+        h('h2', { text: 'Nothing to decide' }),
+        h('p', { text: 'An approval, a question, a branch ready to merge, one that stopped, an output to accept: each comes here as one card, the parked agent first. Agents keep working meanwhile.' }),
+        h('div', { class: 'row' }, h('a', { class: 'button', href: '#/', text: 'Watch the board' }))),
+      h('section', { class: 'recent-box', 'aria-labelledby': 'recent-h' },
+        h('h2', { id: 'recent-h' }, 'Decided today', recent.length ? h('span', { class: 'lane-count', text: String(recent.length) }) : null),
+        recent.length ? recentList(recent) : h('p', { class: 'muted recent-none', text: 'Nothing yet today. What you allow, deny or merge is listed here with the time.' })),
+      h('details', { class: 'more' },
+        h('summary', {}, 'More', h('span', { class: 'muted', text: ` · ${plural(perms.length, 'permission request')} seen, ${plural(state.effects.length, 'effect')} on the ledger` })),
       h('details', { class: 'attention-group ledger' },
         h('summary', {}, h('h2', { text: `Permission requests (${perms.length})` })),
         h('p', { class: 'hint', text: 'A server decides each tool request at once by the policy its task or send was given; there is nothing to approve afterwards. Send again with "Allow every tool" to let a branch use what was denied.' }),
@@ -2998,7 +4898,7 @@
           ? h('ul', { class: 'events' }, state.effects.map((e) => h('li', {}, h('time', { text: clock(e.updated_ms) }),
             h('a', { href: branchHref(e.branch), text: e.branch }),
             ` ${e.connector} ${e.operation}: ${e.state} (${e.class})${e.undo ? ` · undo ${e.undo.operation}` : (e.undo_unavailable ? ` · no undo: ${e.undo_unavailable}` : '')}`)))
-          : h('p', { class: 'muted', text: 'No effects recorded.' }))));
+          : h('p', { class: 'muted', text: 'No effects recorded.' })))));
     for (const el of document.querySelectorAll('#main [data-draft]')) {
       if (drafts.has(el.dataset.draft)) el.value = drafts.get(el.dataset.draft);
       if (focused && el.dataset.draft === focused[0]) { el.focus({ preventScroll: true }); el.setSelectionRange(focused[1], focused[2]); }
@@ -3196,10 +5096,12 @@
     });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
+      if (state.route.name === 'document' && !$('confirm').open) { ev.preventDefault(); go(workspaceHref(state.route.workspace)); }
       for (const menu of document.querySelectorAll('details.menu[open]')) { menu.open = false; menu.querySelector('summary').focus(); }
     });
     setInterval(() => {
       for (const t of document.querySelectorAll('time[data-at]')) t.textContent = since(Number(t.dataset.at)) + t.dataset.suffix;
+      for (const u of document.querySelectorAll('.undo-left[data-until]')) u.textContent = `${Math.max(0, Math.ceil((Number(u.dataset.until) - Date.now()) / 1000))} s`;
     }, 15000);
     window.addEventListener('hashchange', () => {
       const m = /^#pair=([0-9a-zA-Z]+)$/.exec(location.hash);

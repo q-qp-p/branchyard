@@ -5,13 +5,15 @@
 
 It builds nothing. BY is a built `by`, and FAKE_ACP_AGENT the fake agent from
 `cargo build -p branchyard-runtime --bin fake-acp-agent`. In a new temporary directory it makes
-a small Rust repository and a server configuration that runs Claude Code's ACP profile as the
-scripted agent (scripted_agent.py) in front of the fake agent. It starts `by serve --app
---knowledge`, plays story.py through the API (branches in every lane, a knowledge workspace with
-two sessions and the tables they publish), and has shoot.js sign a desktop and a phone browser in
-and take the screenshots. They replace the ones in DIR (default assets/screenshots) only once
-shoot.js has taken all of them. It calls no model. A failed run keeps its temporary directory,
-with the server's log, and prints where it is.
+a small Rust repository and a server configuration that runs the scripted agent (scripted_agent.py)
+as two harnesses: Claude Code's stream-json profile for the branches, which reports what each turn
+spends, and its ACP profile, in front of the fake agent, for the workspace's sessions. It starts
+`by serve --app --knowledge`, plays story.py through the API (branches in every lane, started a few
+seconds apart, one of them parked on an approval and one allowed and merged, and a knowledge
+workspace with two sessions and the tables they publish), and has
+shoot.js sign a desktop and a phone browser in and take the screenshots. They replace the ones in
+DIR (default assets/screenshots) only once shoot.js has taken all of them. It calls no model. A
+failed run keeps its temporary directory, with the server's log, and prints where it is.
 
 Playwright comes from PLAYWRIGHT (the module's directory) or `$(npm root -g)/playwright`, and
 PLAYWRIGHT_BROWSERS_PATH goes to it unchanged. The table preview needs the isolated converter,
@@ -47,9 +49,11 @@ import story
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-# A profile ID: the fake agent speaks ACP, and plain `claude-code` picks the stream-json profile.
-# Branches record and show the harness, `claude-code`.
+# Profile IDs: the workspace's sessions run the fake agent, which speaks ACP, as `claude-code-acp`;
+# the branches run the scripted agent's own stream-json player as `claude-code`, the profile that
+# reports cost. Each records and shows its harness by that name.
 HARNESS = "claude-code-acp"
+BRANCH_HARNESS = "claude-code"
 PREVIEW = ("BRANCHYARD_PREVIEW_BWRAP", "BRANCHYARD_PREVIEW_PYTHON")
 OUTPUT_CONTRACT = {
     "schema": {"type": "object", "required": ["summary"], "properties": {"summary": {"type": "string"}}},
@@ -153,6 +157,8 @@ def scene(turn: story.Turn, root: Path, number: int) -> dict[str, Any]:
         "tools": [{"kind": kind, "title": title} for kind, title in turn.tools],
         "files": files,
         "reply": str(reply) if reply else None,
+        "asks": turn.asks,
+        "cost": turn.cost,
     }
 
 
@@ -160,7 +166,7 @@ def write_script(root: Path) -> Path:
     turns = [b.turn for b in story.BRANCHES] + [t for s in story.SESSIONS for t in s.turns]
     script = root / "script.json"
     scenes = [scene(turn, root, i) for i, turn in enumerate(turns)]
-    script.write_text(json.dumps({"scenes": scenes}, indent=1), encoding="utf-8")
+    script.write_text(json.dumps({"scenes": scenes, "step": story.STEP}, indent=1), encoding="utf-8")
     return script
 
 
@@ -189,9 +195,21 @@ def serve(by: Path, agent: Path, root: Path, env: dict[str, str]) -> Iterator[Ap
                 "repos": {story.REPO: str(repo)},
                 "tokens": [{"name": "readme", "token": token}],
                 "app": {"push": False},
+                # The policy of the token's principal, `readme`, asks before Claude Code's Write.
+                # Only the branches whose turn has `asks` ask permission (the parked one and the
+                # one the demo allows); the scripted turns write their own files and never ask, so
+                # no other branch or session is affected.
+                "approvals": {"people": {"readme": {"rules": {"Write": "ask"}}}},
                 "shutdown_grace_seconds": 5,
                 "harness_commands": {
-                    HARNESS: [sys.executable, "-I", str(HERE / "scripted_agent.py"), str(script), "--", str(agent)]
+                    HARNESS: [sys.executable, "-I", str(HERE / "scripted_agent.py"), str(script), "--", str(agent)],
+                    BRANCH_HARNESS: [
+                        sys.executable,
+                        "-I",
+                        str(HERE / "scripted_agent.py"),
+                        str(script),
+                        "--stream-json",
+                    ],
                 },
             }
         ),
@@ -264,17 +282,41 @@ def ready(api: Api, b: story.Branch) -> None:
     until(f"{b.name} to be ready", state_is(api, b.name, "ready"))
 
 
+def park(api: Api, b: story.Branch) -> None:
+    """Wait until the branch's turn is parked on the approval it asked for."""
+    until(f"{b.name} to wait for an approval", lambda: (listed(api, b.name) or {}).get("awaiting"))
+
+
+def allow(api: Api, b: story.Branch) -> None:
+    """Allow what the branch's turn asked for once it parks, then merge the branch it finishes."""
+    awaiting = until(f"{b.name} to wait for an approval", lambda: (listed(api, b.name) or {}).get("awaiting"))
+    api.call(
+        "POST", f"/v1/repos/{story.REPO}/approvals/{awaiting['id']}/allow", {"reason": "the release script reads it"}
+    )
+    merge(api, b)
+
+
 FATES: dict[story.Fate, Callable[[Api, story.Branch], None]] = {
     "merged": merge,
     "interrupted": interrupt,
     "running": keep_running,
     "ready": ready,
+    "parked": park,
+    "allowed": allow,
 }
 
 
 def play_branches(api: Api) -> None:
-    for b in story.BRANCHES:
-        api.call("POST", f"/v1/repos/{story.REPO}/tasks", {"prompt": b.turn.prompt, "harness": HARNESS, "name": b.name})
+    for i, b in enumerate(story.BRANCHES):
+        if i:
+            # The demo's own pacing, not a wait on anything: branches start at different times.
+            time.sleep(story.STAGGER)
+        task: dict[str, Any] = {"prompt": b.turn.prompt, "harness": BRANCH_HARNESS, "name": b.name}
+        if b.turn.asks:
+            # The engine's own policy lets the write through ("Allow every tool"), and the person's
+            # approval policy, which only tightens it, asks.
+            task["policy"] = {"mode": "allow"}
+        api.call("POST", f"/v1/repos/{story.REPO}/tasks", task)
         until(f"{b.name} to start", partial(listed, api, b.name))
         FATES[b.fate](api, b)
 
@@ -356,13 +398,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         env = server_env(root)
         with serve(args.by.resolve(), args.agent.resolve(), root, env) as api:
+            # The workspace first, so the board is shot soon after the branches ran.
+            workspace = play_workspace(api)
             play_branches(api)
             branch = next(b for b in story.BRANCHES if b.name == story.OPEN_BRANCH)
             session = next(s for s in story.SESSIONS if s.name == story.OPEN_SESSION)
             plan = dict(
-                play_workspace(api),
+                workspace,
                 repo=story.REPO,
                 branch=story.OPEN_BRANCH,
+                parked=story.PARKED_BRANCH,
                 branchSays=first_line(branch.turn.reply),
                 sessionSays=first_line(session.turns[-1].reply),
             )

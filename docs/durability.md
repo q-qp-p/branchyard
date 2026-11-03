@@ -4,6 +4,8 @@ Branchyard's engine keeps its state in one durable store and runs every branch o
 
 > **Status.** Implemented in local mode and the server, and tested hermetically against a fake ACP agent: a real engine process killed with SIGKILL mid-turn and recovered, two yards on one repository, a superseded lease, replayed steps, cancellation through the SDK, `by`, HTTP and `by --remote`, steered input from another process, cursor reads, and the import of earlier state. The PostgreSQL store passes the same conformance suite as SQLite, and the engine and server tests that run on it, against PostgreSQL 16. Not yet run with a real harness, on macOS, across hosts, or under load.
 
+The rules this page implements, shared with other durable agent runtimes, are listed with their tests in the [durability contract](durability-contract.md).
+
 ## The model
 
 The approach follows Temporal and DBOS, with one deliberate difference.
@@ -71,6 +73,18 @@ A merge the caller repeats after it succeeded is still refused with `already_mer
 
 A lease cannot stop a process on another host that is still running but partitioned (design §11): fencing makes its writes to the store fail, and nothing more.
 
+## Liveness
+
+A branch's record says `running` from the moment a turn takes its lease until the turn concludes. When the engine stops, nothing changes in the record until recovery takes the lease over, so for up to the lease's 30 seconds `running` is a claim nothing backs. `BranchInfo::liveness` says which case a reader is in, read from the branch's lease whenever the record is listed or looked up (`Yard::branches`, `Yard::branch`), never stored, and `None` for a branch that is not running:
+
+| `state` | When | What happens next |
+|---|---|---|
+| `live` | the engine renewed the lease within the last two heartbeats (10 seconds) | nothing; the turn runs |
+| `unknown` | no renewal for longer than that, and the lease has not expired: the engine may be busy, stopped or gone | nothing acts on it until the lease expires |
+| `lost` | the lease no longer protects a live engine: it expired, or its engine's process is gone from this host (`reason` says which) | the next recovery ends the turn `interrupted` |
+
+It also carries `heard_ms`, when the engine last renewed (the lease's expiry less its 30 seconds), and `known_until_ms`, the expiry itself. `by ls` and `by watch` print a running branch that is not `live` as `running (no heartbeat for 14s)` or `running (engine lost: …)`; `--json` and the server's `BranchInfo` carry the object. This is the effect ledger's `unknown` applied to the engine itself: the record does not guess, it says what is known and until when.
+
 ## Cancellation and deadlines
 
 `Yard::cancel(branch)`, `Branch::cancel()`, `by cancel`, `POST /v1/repos/{repo}/branches/{branch}/cancel` and `by --remote … cancel` all record a cancel request for the branch's running turn and for every running turn delegated below it (the delegation subtree, as `cancel_tree` computes it). The request names who asked (`Yard::cancel_as`). The engine running the turn, in any process using the repository, reads it every 100 ms, interrupts the harness like a budget stop, and ends the branch `interrupted` with a `cancelled by …` warning. A request is bound to the turn it was asked of, so it never stops a later turn. It returns the branches that were running; a branch with no running turn is not an error.
@@ -99,7 +113,7 @@ A turn with `Budget::stall_after` marks itself stalled the same way `max_duratio
    - No `submit`: the branch ends `interrupted`: *… before the prompt was submitted* (or *before the harness was started*) *; the turn never ran.*
 3. **Record.** An `Activity::Recovered { reason, killed }` event, then the final record and status event and the lease release, in one transaction. The branch keeps the harness session it last reported, so `send` can continue it.
 4. **Lost work.** A delegated child whose submitted turn was lost, and whose recovery snapshot holds work it wrote in that turn, ends `ready` rather than `interrupted`, that work its candidate, with a warning that the turn was interrupted and the work may be incomplete: its parent decides, and what depends on it is judged again ([task graphs](graph.md#dependencies)). A branch you started keeps `interrupted`.
-5. **What the next turn is told.** A branch whose submitted turn was lost records why; its next turn's prompt (whoever sends it) starts with a `<branchyard-recovered>` block that says the engine stopped, that tool calls after that failed (Claude Code reports `Tool permission request failed: AbortError: Stream closed`), to check its worktree, and where its children are now. The block is cleared once a turn has submitted it.
+5. **What the next turn is told.** A branch whose submitted turn was lost records why; its next turn's prompt (whoever sends it) starts with a `<branchyard-recovered>` block that says the engine stopped, that tool calls after that failed (Claude Code reports `Tool permission request failed: AbortError: Stream closed`), to check its worktree, where its children are now, and every call the lost turn made through the connector gateway with what the [effect ledger](effects.md#the-ledger) knows of it: `happened` (confirmed), `may have happened: its answer was lost; do not call it again` (begun or unknown), `did not happen` (failed) or `is staged and has not happened`, each with its short id, so the next turn does not repeat a call that happened or may have. This is the treatise's rule that the key names the decision, not the call: a lost turn's model re-samples, and its new call would carry a new key the upstream cannot match, so the turn is told instead. The block is cleared once a turn has submitted it.
 
 Inside the harness, a `by` (or Python, or MCP) call made after its engine stopped cannot reach it: it fails with `the Branchyard engine running <branch>'s turn has stopped (nothing listens at <socket>) ...`, which says to end the turn, that the worktree is kept, and that `by send <branch>` continues the session once any `by` command outside the harness has recovered it.
 
@@ -230,6 +244,7 @@ As any other user, drop `runuser -u nobody --`. The CI job `postgres` in [`check
 | [`engine.rs`](../crates/branchyard/src/engine.rs), [`run.rs`](../crates/branchyard/src/run.rs), [`ops.rs`](../crates/branchyard/src/ops.rs) | Journaled steps of a turn, of branch creation, merge and removal |
 | [`recover.rs`](../crates/branchyard/src/recover.rs), [`proc.rs`](../crates/branchyard/src/proc.rs) | Recovery and process identity, the spawn marker |
 | [`lock.rs`](../crates/branchyard/src/lock.rs) | The data directory lock |
+| [`liveness.rs`](../crates/branchyard/src/liveness.rs) | Liveness from a lease row: renewed, silent and expired leases, a released one, an engine gone from this host; `tests/durable.rs` checks a held turn reads `live` from another yard and a dead engine's `lost` before recovery |
 | [`tests/durable.rs`](../crates/branchyard/tests/durable.rs) | A killed engine recovered (orphaned harness and its child killed, prompt received once, session continued), a crash before submit, a harness whose pid was never recorded found by its marker, stale reservations freed and live ones kept, a Microsandbox sandbox that this build cannot destroy reported, two yards, a superseded lease, a replayed snapshot, a merge cut short, cursors and waits, the import; input steered from this process into a turn a child process runs, delivered and recorded with its sender, an agent without the steering extension refusing it while the turn goes on, and a profile that cannot steer refused up front |
 | [`tests/substrate.rs`](../crates/branchyard/tests/substrate.rs) | A killed engine's work brought back from its actor and in the recovered candidate; not applied over a worktree changed since |
 | [`tests/graph.rs`](../crates/branchyard/tests/graph.rs) | A dependent started by the process that integrates its prerequisite; a prerequisite whose engine was killed (SIGKILL) blocking its dependent on recovery, or, when it had written its work, recovering `ready` with its dependent waiting and its next prompt saying what happened; `resume_graph` starting a dependent no engine started |

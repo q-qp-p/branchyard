@@ -203,14 +203,21 @@ pub(crate) struct Record {
     /// `crate::land`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landing: Option<crate::land::Landing>,
-    /// While a turn on the model gateway runs: what the branch had spent
-    /// before the turn. The record's `cost_usd` then also counts the
-    /// turn's metered calls as they happen, so a parent, an ancestor's cap
-    /// and `by show` see them; this is the figure the turn's cost is added
-    /// to when it ends, or when recovery ends it, so a call is never
-    /// counted twice. Cleared when the turn ends.
+    /// While a turn runs and its record's `cost_usd` also counts what the
+    /// turn has spent so far (its usage reports as they arrive, or on the
+    /// model gateway its metered calls as they happen, so a parent, an
+    /// ancestor's cap and `by show` see them): what the branch had spent
+    /// before the turn. A gateway turn's cost is added to it when the turn
+    /// ends, or when recovery ends it, so a call is never counted twice,
+    /// and the turn's own cost ([`crate::Activity::TurnCost`]) is counted
+    /// from it. Cleared when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metered_from: Option<f64>,
+    /// The repository skills it runs with, fixed when it was created and
+    /// inherited by its forks, reincarnations and children; `None` when
+    /// its base commit had none. See `crate::skills`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<crate::skills::BranchSkills>,
 }
 
 /// A delegated child that was removed, as its parent's record remembers it.

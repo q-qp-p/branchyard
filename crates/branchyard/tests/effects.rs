@@ -18,8 +18,8 @@ use branchyard::effects::{
     Approval, ApprovalPolicy, ApprovalSettings, AskAbout, EffectClass, EffectState, Layer, UndoKind,
 };
 use branchyard::{
-    Activity, BranchStatus, Budget, DecisionSource, Envelope, Error, Policy, Provisioning, Spawn,
-    TaskOptions,
+    Activity, AwaitingKind, BranchStatus, Budget, DecisionSource, Envelope, Error, ObligationKind,
+    Policy, Provisioning, Spawn, TaskOptions,
 };
 use branchyard_testkit::wait;
 use common::{fake_agent, text, Fixture};
@@ -412,11 +412,34 @@ fn a_tool_approval_asks_and_never_loosens_the_policy() {
                 tool: "write marker".into()
             }
         );
+        // While it waits, the branch itself says so: listed and looked up.
+        let parked = f
+            .yard
+            .branch("tool")
+            .unwrap()
+            .info()
+            .awaiting
+            .clone()
+            .unwrap();
+        assert_eq!(
+            (parked.kind, parked.id.as_str()),
+            (AwaitingKind::Approval, ask.id.as_str())
+        );
+        assert_eq!(
+            (parked.about.as_str(), parked.since_ms),
+            ("tool write marker", ask.created_ms)
+        );
+        let listed = f.yard.branches().unwrap();
+        assert_eq!(
+            listed.iter().find(|b| b.name == "tool").unwrap().awaiting,
+            Some(parked)
+        );
         f.yard
             .answer_approval(&ask.id, true, "ana", "cli", None)
             .unwrap();
         let branch = run.join().unwrap().unwrap();
         assert!(branch.info().worktree.join("p.txt").is_file());
+        assert!(f.yard.branch("tool").unwrap().info().awaiting.is_none());
         let source = branch
             .events()
             .unwrap()
@@ -627,6 +650,147 @@ fn a_lost_answer_is_unknown_until_the_lookup_settles_it() {
         "{settled:?}"
     );
     assert_eq!(mock.calls_to("flaky__charge").len(), 1);
+}
+
+#[test]
+fn the_turn_after_a_lost_one_is_told_which_calls_it_made() {
+    let f = Fixture::new();
+    let (_mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("lost")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("lost")).unwrap();
+    let states: Vec<_> = ledger.iter().map(|e| e.state).collect();
+    assert_eq!(states, [EffectState::Confirmed, EffectState::Unknown]);
+    // As recovery leaves a branch whose submitted turn its engine lost.
+    common::edit_record(&f.root, "lost", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+    });
+    let sent = branch.send("WHOAMI", granted(&f)).unwrap();
+    let prompt = sent
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(prompt.starts_with("<branchyard-recovered>"), "{prompt}");
+    let posted = format!("- slack: chat_post ({}): happened", short(&ledger[0].id));
+    let charged = format!(
+        "- flaky: charge ({}): may have happened: its answer was lost; do not call it again",
+        short(&ledger[1].id)
+    );
+    assert!(prompt.contains(&posted), "{prompt}");
+    assert!(prompt.contains(&charged), "{prompt}");
+    assert!(prompt.contains("`by effects reconcile`"), "{prompt}");
+    // Told once: the turn after does not repeat it.
+    let again = sent.send("WHOAMI", granted(&f)).unwrap();
+    let last = again
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert!(!last.contains("connector gateway"), "{last}");
+}
+
+#[test]
+fn obligations_list_what_a_branch_owes_until_its_source_settles() {
+    let f = Fixture::new();
+    let (mock, script) = setup(
+        &f,
+        person(&[("flaky:*", Approval::Allow), ("slack:*", Approval::Allow)]),
+    );
+    mock.set_deadline(4_102_444_800_000);
+    let branch = f
+        .task(&calls(
+            &script,
+            &[
+                ("slack__chat_post", r#"{"channel": "board", "text": "hi"}"#),
+                ("flaky__charge", r#"{"amount": 5}"#),
+            ],
+        ))
+        .options(granted(&f))
+        .name("owes")
+        .run()
+        .unwrap();
+    let ledger = f.yard.effects(Some("owes")).unwrap();
+    let kinds = |owed: &[branchyard::Obligation]| -> Vec<(ObligationKind, String)> {
+        owed.iter().map(|o| (o.kind, o.branch.clone())).collect()
+    };
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [
+            (ObligationKind::UnknownEffect, "owes".to_owned()),
+            (ObligationKind::UndoWindow, "owes".to_owned()),
+        ],
+        "{owed:?}"
+    );
+    assert_eq!(owed[0].id.as_deref(), Some(ledger[1].id.as_str()));
+    assert_eq!(owed[0].next[0], "by effects reconcile");
+    assert_eq!(owed[1].due_ms, Some(4_102_444_800_000));
+    // Past the deadline the window is no longer owed.
+    let later = f
+        .yard
+        .obligations_at(Some("owes"), 4_102_444_800_001)
+        .unwrap();
+    assert_eq!(
+        kinds(&later),
+        [(ObligationKind::UnknownEffect, "owes".to_owned())]
+    );
+
+    // A lost turn is owed a decision until another turn is sent.
+    common::edit_record(&f.root, "owes", |record| {
+        record["lost"] = serde_json::json!("the engine stopped");
+        record["info"]["status"] = serde_json::json!({"state": "interrupted"});
+    });
+    let owed = f.yard.obligations(None).unwrap();
+    assert!(
+        owed.iter()
+            .any(|o| o.kind == ObligationKind::LostTurn && o.next[1] == "by send owes --retry"),
+        "{owed:?}"
+    );
+    // Another branch's obligations are not this one's.
+    f.task("WHOAMI").name("clean").run().unwrap();
+    assert!(f.yard.obligations(Some("clean")).unwrap().is_empty());
+    assert!(matches!(
+        f.yard.obligations(Some("nope")),
+        Err(Error::UnknownBranch(name)) if name == "nope"
+    ));
+
+    // Reconciliation settles the unknown call: no longer owed.
+    f.yard.reconcile_effects().unwrap();
+    branch.send("WHOAMI", granted(&f)).unwrap();
+    let owed = f.yard.obligations(Some("owes")).unwrap();
+    assert_eq!(
+        kinds(&owed),
+        [(ObligationKind::UndoWindow, "owes".to_owned())],
+        "{owed:?}"
+    );
+}
+
+fn short(id: &str) -> &str {
+    branchyard::effects::short_id(id)
 }
 
 #[test]

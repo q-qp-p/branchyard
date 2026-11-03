@@ -25,10 +25,11 @@
 //! (Gemini CLI's `session/load` needs this where its `session/new` does not).
 //! Fork is rejected: `session/fork` is an unstable ACP method, and a driver
 //! that cannot fork must say so rather than start a fresh session.
-//! Cancellation is the `session/cancel` notification; per the protocol, the
-//! client also answers every outstanding permission request as cancelled. The
-//! turn's terminal state arrives as the prompt response's `cancelled` stop
-//! reason, not as an acknowledgment.
+//! Cancellation answers every outstanding permission request as cancelled,
+//! then sends the `session/cancel` notification, in that order (Antigravity
+//! CLI 1.4.12 never answers a prompt whose pending request is cancelled
+//! after the notification). The turn's terminal state arrives as the prompt
+//! response's `cancelled` stop reason, not as an acknowledgment.
 //!
 //! ACP v1 has no method for input into a running prompt; a second
 //! `session/prompt` is a new turn, which agents queue or refuse. Steering
@@ -44,6 +45,32 @@
 //! message, whose one response covers both; a `session/cancel` afterwards
 //! ends the prompt `cancelled` with no further model call. An agent that
 //! does not advertise the extension refuses steering with the reason.
+//!
+//! Two unstable ACP methods are used only for a profile that turns them on,
+//! each verified against its agent (Antigravity CLI 1.4.12's `agy acp`, on
+//! 1 November 2026). With [`Acp::with_models`], a model the task pins is
+//! checked against the `models.availableModels` the session answer lists
+//! and chosen with `session/set_model`; the session is ready once that is
+//! answered, and an agent that lists no models, does not offer the model, or
+//! refuses it fails the open with the models it does offer. With
+//! [`Acp::with_usage`], the prompt response's `usage` (the unstable
+//! end-of-turn token usage) is reported as the turn's own, not cumulative;
+//! its thought tokens are added to the output tokens, which is how Gemini
+//! bills them. Both stay off for every other profile, where a model is
+//! refused at open and usage is not reported. An agent that lists no
+//! models but carries a `model` config option in its session answer
+//! (DeepSeek Harness 0.2.1-rc.5) takes the pinned model through
+//! `session/set_config_option` instead, with [`Acp::with_config_model`].
+//!
+//! Approvals are partial on some agents: DeepSeek Harness asks only when a
+//! command leaves its own sandbox, Hermes only for the commands its
+//! dangerous-command list names, so a shell command that writes inside the
+//! workspace reaches Branchyard's policy as no request at all. A profile
+//! records that with [`Acp::with_approvals_caveat`]; the driver still
+//! answers every request it does get. A cancelled prompt that the agent
+//! answers with an error rather than `cancelled` (Hermes 0.19.0) ends the
+//! turn interrupted, with the error kept as a warning, since Branchyard
+//! ended it.
 
 use std::collections::HashMap;
 
@@ -78,6 +105,13 @@ enum Pending {
     Prompt(u64),
     /// A `_session/steering` request: the turn and the steer's number.
     Steer(u64, u64),
+    /// The `session/set_model` sent after the session answer, naming the
+    /// pinned model; the session is ready once it is answered.
+    SetModel(String),
+    /// The `session/set_config_option` sent after the session answer,
+    /// choosing the pinned model among the `model` option's values; the
+    /// session is ready once it is answered.
+    SetConfigOption(String),
 }
 
 /// The ACP extension request that injects input into a running prompt.
@@ -115,6 +149,78 @@ fn mcp_servers(servers: &[McpServer], remote: &[RemoteMcpServer]) -> Value {
         .collect()
 }
 
+/// The `model` config option of a session answer: its id, current value and
+/// the values it offers, each with its display name.
+struct ModelOption {
+    id: String,
+    current: String,
+    values: Vec<(String, String)>,
+}
+
+impl ModelOption {
+    /// The value `wanted` names: a value itself, a value's name, or
+    /// `provider/model` for a value that is the JSON pair
+    /// `["provider","model"]`.
+    fn value_for(&self, wanted: &str) -> Option<String> {
+        let pair = wanted
+            .split_once('/')
+            .map(|(provider, model)| json!([provider, model]));
+        self.values
+            .iter()
+            .find(|(value, name)| {
+                value == wanted
+                    || name == wanted
+                    || pair
+                        .as_ref()
+                        .and_then(|pair| {
+                            serde_json::from_str::<Value>(value)
+                                .ok()
+                                .map(|v| &v == pair)
+                        })
+                        .unwrap_or(false)
+            })
+            .map(|(value, _)| value.clone())
+    }
+
+    /// What the agent offers, for a refusal: each value with its name.
+    fn names(&self) -> Vec<String> {
+        self.values
+            .iter()
+            .map(|(value, name)| format!("{name} ({value})"))
+            .collect()
+    }
+}
+
+/// The session answer's config option of category `model` (or id `model`)
+/// with `select` values, which may sit in groups.
+fn model_option(result: &Value) -> Option<ModelOption> {
+    let option = result["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|o| o["category"].as_str() == Some("model") || o["id"].as_str() == Some("model"))?;
+    let mut values = Vec::new();
+    for entry in option["options"].as_array()? {
+        match entry["options"].as_array() {
+            Some(group) => values.extend(group.iter().filter_map(select_value)),
+            None => values.extend(select_value(entry)),
+        }
+    }
+    Some(ModelOption {
+        id: option["id"].as_str()?.to_owned(),
+        current: option["currentValue"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        values,
+    })
+}
+
+fn select_value(entry: &Value) -> Option<(String, String)> {
+    let value = entry["value"].as_str()?.to_owned();
+    let name = entry["name"].as_str().unwrap_or(&value).to_owned();
+    Some((value, name))
+}
+
 /// An ACP agent session.
 #[derive(Debug)]
 pub struct Acp {
@@ -148,6 +254,25 @@ pub struct Acp {
     /// The session request in flight, kept to send again after `authenticate`.
     session_request: Option<(String, Value)>,
     authenticated: bool,
+    /// The profile verified the agent lists models and takes
+    /// `session/set_model`.
+    models: bool,
+    /// The profile verified the agent's prompt response carries `usage`.
+    usage: bool,
+    /// The profile verified the agent's session answer carries a `model`
+    /// config option and takes `session/set_config_option`.
+    config_model: bool,
+    /// The session's model id: the one pinned and set, else the one the
+    /// session answer named current.
+    model: Option<String>,
+    /// Why the agent's approvals are partial: it asks its client about
+    /// some tools and runs others, so a policy cannot deny the latter.
+    approvals_caveat: Option<&'static str>,
+    /// A `session/cancel` was sent for the running turn and the prompt has
+    /// not been answered since: an error answer is then the turn ending
+    /// interrupted, not a failure (Hermes 0.19.0 answers a cancelled
+    /// prompt with an internal error).
+    cancelling: bool,
 }
 
 impl Acp {
@@ -172,7 +297,52 @@ impl Acp {
             auth_advertised: false,
             session_request: None,
             authenticated: false,
+            models: false,
+            usage: false,
+            config_model: false,
+            model: None,
+            approvals_caveat: None,
+            cancelling: false,
         }
+    }
+
+    /// Offer the `model` capability: the agent lists its models in its
+    /// session answer (`models.availableModels`) and takes one through the
+    /// unstable `session/set_model`. Only for a profile that verified both
+    /// against the agent.
+    pub fn with_models(mut self) -> Self {
+        self.models = true;
+        self
+    }
+
+    /// Offer the `usage` capability: the agent's prompt response carries
+    /// the unstable end-of-turn `usage`, reported as the turn's own tokens.
+    /// Only for a profile that verified it against the agent.
+    pub fn with_usage(mut self) -> Self {
+        self.usage = true;
+        self
+    }
+
+    /// Offer the `model` capability through session config options: the
+    /// agent's session answer carries a `configOptions` entry of category
+    /// `model` (DeepSeek Harness 0.2.1-rc.5 does, and lists no `models`),
+    /// and the pinned model is chosen among its values with
+    /// `session/set_config_option`. Only for a profile that verified it
+    /// against the agent.
+    pub fn with_config_model(mut self) -> Self {
+        self.config_model = true;
+        self
+    }
+
+    /// Record that the agent's tool approvals are partial: it asks its
+    /// client about some tools and runs others without asking, so a policy
+    /// cannot deny those. The driver still routes every request it gets;
+    /// `reason` is reported under `tool_approvals` in
+    /// [`Driver::capability_reasons`], so the matrix and the qualification
+    /// runner know a missing request is the harness's doing.
+    pub fn with_approvals_caveat(mut self, reason: &'static str) -> Self {
+        self.approvals_caveat = Some(reason);
+        self
     }
 
     /// Authenticate with the `authMethods` entry `id` when a resume is
@@ -319,6 +489,90 @@ impl Acp {
             },
         };
         self.session = Some(session.clone());
+        let option = self.config_model.then(|| model_option(result)).flatten();
+        let current = result["models"]["currentModelId"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| option.as_ref().map(|o| o.current.clone()));
+        let wanted = self
+            .open
+            .as_ref()
+            .and_then(|open| open.model.clone())
+            .filter(|_| self.chooses_model());
+        let Some(wanted) = wanted else {
+            self.model = current;
+            return self.opened();
+        };
+        if let Some(listed) = result["models"]["availableModels"].as_array() {
+            let offered: Vec<&str> = listed
+                .iter()
+                .filter_map(|m| m["modelId"].as_str())
+                .collect();
+            if !offered.contains(&wanted.as_str()) {
+                return Output::event(Event::OpenFailed {
+                    reason: format!(
+                        "the agent does not offer model {wanted}; it offers {}",
+                        offered.join(", ")
+                    ),
+                });
+            }
+            self.model = Some(wanted.clone());
+            if current.as_deref() == Some(wanted.as_str()) {
+                return self.opened();
+            }
+            return Output {
+                events: Vec::new(),
+                frames: vec![self.request(
+                    Pending::SetModel(wanted.clone()),
+                    "session/set_model",
+                    json!({"sessionId": session.as_str(), "modelId": wanted}),
+                )],
+            };
+        }
+        let Some(option) = option else {
+            return Output::event(Event::OpenFailed {
+                reason: format!("the agent lists no models, so {wanted} cannot be chosen"),
+            });
+        };
+        // The option's values are the agent's own ids (DeepSeek Harness's
+        // are JSON pairs, `["zai","glm-5.3"]`); a model is named by a
+        // value, by a value's display name, or as `provider/model` for a
+        // pair.
+        let Some(value) = option.value_for(&wanted) else {
+            return Output::event(Event::OpenFailed {
+                reason: format!(
+                    "the agent does not offer model {wanted}; it offers {}",
+                    option.names().join(", ")
+                ),
+            });
+        };
+        self.model = Some(wanted.clone());
+        if option.current == value {
+            return self.opened();
+        }
+        Output {
+            events: Vec::new(),
+            frames: vec![self.request(
+                Pending::SetConfigOption(wanted),
+                "session/set_config_option",
+                json!({"sessionId": session.as_str(), "configId": option.id, "value": value}),
+            )],
+        }
+    }
+
+    /// Whether a model may be pinned on this profile: through the models the
+    /// session answer lists, or through its `model` config option.
+    fn chooses_model(&self) -> bool {
+        self.models || self.config_model
+    }
+
+    /// The session is open: ready, under the id the agent gave it.
+    fn opened(&mut self) -> Output {
+        let Some(session) = self.session.clone() else {
+            return Output::event(Event::OpenFailed {
+                reason: "the session was answered without a usable sessionId".into(),
+            });
+        };
         self.ready = true;
         Output {
             events: vec![
@@ -330,6 +584,28 @@ impl Acp {
             ],
             frames: Vec::new(),
         }
+    }
+
+    /// The turn's token usage from its prompt response, when the profile
+    /// reports it: the turn's own, with thought tokens counted as output.
+    fn usage_of(&self, response: &PromptResponse, turn: u64) -> Option<Event> {
+        if !self.usage {
+            return None;
+        }
+        let usage = response.usage.as_ref()?;
+        Some(Event::UsageObserved {
+            turn: Some(turn),
+            usage: crate::Usage {
+                cumulative: false,
+                input_tokens: Some(usage.input_tokens),
+                output_tokens: Some(usage.output_tokens + usage.thought_tokens.unwrap_or(0)),
+                cached_input_tokens: usage.cached_read_tokens,
+                cache_write_tokens: usage.cached_write_tokens,
+                cost_usd: None,
+                cache_write_1h_tokens: None,
+                model: self.model.clone(),
+            },
+        })
     }
 
     fn response(&mut self, message: &Value) -> Output {
@@ -381,6 +657,12 @@ impl Acp {
                 self.loading = false;
                 Output::event(Event::OpenFailed { reason: error })
             }
+            (Pending::SetModel(_) | Pending::SetConfigOption(_), None) => self.opened(),
+            (Pending::SetModel(model) | Pending::SetConfigOption(model), Some(error)) => {
+                Output::event(Event::OpenFailed {
+                    reason: format!("the agent refused model {model}: {error}"),
+                })
+            }
             (Pending::Steer(turn, steer), Some(reason)) => Output::event(Event::SteerRejected {
                 turn,
                 steer,
@@ -403,18 +685,40 @@ impl Acp {
                 self.turns.end();
                 self.permissions.clear();
                 self.tool_calls.clear();
+                let cancelling = std::mem::take(&mut self.cancelling);
+                let mut events = Vec::new();
                 let outcome = match error {
+                    // The agent was asked to cancel and answered the prompt
+                    // with an error instead of `cancelled` (Hermes 0.19.0:
+                    // "Internal error", live 1 November 2026): the turn
+                    // is over because Branchyard ended it, so it is
+                    // interrupted, with the agent's words kept as a warning.
+                    Some(message) if cancelling => {
+                        events.push(Event::Warning {
+                            message: format!(
+                                "the agent answered the cancelled prompt with an error: {message}"
+                            ),
+                        });
+                        TurnOutcome::Interrupted
+                    }
                     Some(message) => TurnOutcome::Failed { message },
                     None => {
                         match serde_json::from_value::<PromptResponse>(message["result"].clone()) {
-                            Ok(response) => stop_outcome(response.stop_reason),
+                            Ok(response) => {
+                                events.extend(self.usage_of(&response, turn));
+                                stop_outcome(response.stop_reason)
+                            }
                             Err(error) => TurnOutcome::Failed {
                                 message: format!("unreadable prompt response: {error}"),
                             },
                         }
                     }
                 };
-                Output::event(Event::TurnEnded { turn, outcome })
+                events.push(Event::TurnEnded { turn, outcome });
+                Output {
+                    events,
+                    frames: Vec::new(),
+                }
             }
         }
     }
@@ -626,6 +930,25 @@ fn stop_outcome(reason: StopReason) -> TurnOutcome {
     }
 }
 
+const RESUME_REASON: crate::CapabilityReason = (
+    "resume",
+    "uses session/resume when the agent advertises it, else session/load; a session that cannot resume fails to open rather than starting fresh",
+);
+const FORK_REASON: crate::CapabilityReason = (
+    "fork",
+    "ACP session/fork is an unstable method; a driver that cannot fork must say so rather than start a fresh session",
+);
+const ACK_REASON: crate::CapabilityReason = ("turn_acknowledgment", "not verified");
+const MODEL_REASON: crate::CapabilityReason = (
+    "model",
+    "ACP v1 has no model parameter; selection belongs to the agent's own configuration",
+);
+const BUDGET_REASON: crate::CapabilityReason = (
+    "budget",
+    "ACP v1 has no spending limit; a prompt runs until the agent ends it",
+);
+const USAGE_REASON: crate::CapabilityReason = ("usage", "not verified");
+
 impl Driver for Acp {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
@@ -635,32 +958,28 @@ impl Driver for Acp {
             cancellation: true,
             tool_approvals: true,
             turn_acknowledgment: false,
-            usage: false,
+            usage: self.usage,
             // Enforced again against the agent's `_meta.steering`.
             steer: true,
-            model: false,
+            // Only where the profile verified the unstable methods.
+            model: self.chooses_model(),
             budget: false,
         }
     }
 
-    fn capability_reasons(&self) -> &'static [crate::CapabilityReason] {
-        &[
-            (
-                "resume",
-                "uses session/resume when the agent advertises it, else session/load; a session that cannot resume fails to open rather than starting fresh",
-            ),
-            (
-                "fork",
-                "ACP session/fork is an unstable method; a driver that cannot fork must say so rather than start a fresh session",
-            ),
-            ("turn_acknowledgment", "not verified"),
-            (
-                "model",
-                "ACP v1 has no model parameter; selection belongs to the agent's own configuration",
-            ),
-            ("budget", "ACP v1 has no spending limit; a prompt runs until the agent ends it"),
-            ("usage", "not verified"),
-        ]
+    fn capability_reasons(&self) -> Vec<crate::CapabilityReason> {
+        let mut reasons = vec![RESUME_REASON, FORK_REASON, ACK_REASON];
+        if let Some(caveat) = self.approvals_caveat {
+            reasons.push(("tool_approvals", caveat));
+        }
+        if !self.chooses_model() {
+            reasons.push(MODEL_REASON);
+        }
+        reasons.push(BUDGET_REASON);
+        if !self.usage {
+            reasons.push(USAGE_REASON);
+        }
+        reasons
     }
 
     fn open(&mut self, open: Open) -> Result<Opened, Rejected> {
@@ -675,8 +994,10 @@ impl Driver for Acp {
                 "ACP session/fork is an unstable method".into(),
             ));
         }
-        if open.model.is_some() {
-            // ACP v1 has no model parameter; selection belongs to the profile.
+        if open.model.is_some() && !self.chooses_model() {
+            // ACP v1 has no model parameter; a profile that verified the
+            // unstable session/set_model, or a model config option, against
+            // its agent takes one.
             return Err(Rejected::Unsupported("model selection over ACP".into()));
         }
         crate::refuse_budget(
@@ -754,18 +1075,29 @@ impl Driver for Acp {
     fn interrupt(&mut self) -> Result<Vec<Frame>, Rejected> {
         self.turns.active.ok_or(Rejected::NoTurn)?;
         let session = self.session.as_ref().ok_or(Rejected::NotReady)?.to_string();
-        let mut frames = vec![frame(&json!({
+        // Outstanding permission requests are answered `cancelled` before
+        // the cancel notification: Antigravity CLI 1.4.12 answered a prompt
+        // whose pending request was cancelled first `cancelled` within
+        // five seconds, and left the prompt unanswered for over a minute
+        // when the cancel came first (1 November 2026, live). The protocol
+        // asks for both and fixes no order.
+        let mut frames: Vec<Frame> = self
+            .permissions
+            .drain()
+            .map(|(_, (id, _))| {
+                frame(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"outcome": {"outcome": "cancelled"}},
+                }))
+            })
+            .collect();
+        frames.push(frame(&json!({
             "jsonrpc": "2.0",
             "method": "session/cancel",
             "params": {"sessionId": session},
-        }))];
-        for (_, (id, _)) in self.permissions.drain() {
-            frames.push(frame(&json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {"outcome": {"outcome": "cancelled"}},
-            })));
-        }
+        })));
+        self.cancelling = true;
         Ok(frames)
     }
 

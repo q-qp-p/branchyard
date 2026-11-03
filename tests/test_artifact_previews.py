@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -67,6 +68,20 @@ def _minimal_office_zip(fmt: str, extra_entries: dict[str, bytes] | None = None,
         for name, data in (extra_entries or {}).items():
             archive.writestr(name, data)
     return buffer.getvalue()
+
+
+def _set_first_sheet_dimension(path: Path, ref: str) -> None:
+    """Rewrite the first worksheet's `<dimension>` the way a careless writer leaves it."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(path) as source, zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            data = source.read(info.filename)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                start = data.index(b"<dimension ")
+                end = data.index(b"/>", start) + 2
+                data = data[:start] + b'<dimension ref="' + ref.encode() + b'"/>' + data[end:]
+            target.writestr(info, data)
+    path.write_bytes(buffer.getvalue())
 
 
 class PreviewTestCase(unittest.TestCase):
@@ -221,6 +236,21 @@ class CsvPreviewTests(PreviewTestCase):
         self.assertTrue(any("characters" in w for w in bounded["warnings"]))
         self.assertTrue(any("rows" in w for w in bounded["warnings"]))
 
+    def test_csv_column_warning_requires_a_value_beyond_the_column_limit(self) -> None:
+        padded = self.root / "padded.csv"
+        padded.write_text("a,b,c" + "," * 150 + "\n1,2,3" + "," * 150 + "\n", encoding="utf-8")
+        result = preview.preview(padded, self.root / "out")
+        self.assertEqual(result["columns"][:4], ["a", "b", "c", "column_4"])
+        self.assertEqual(len(result["columns"]), 100)
+        self.assertEqual(result["rows"], [["1", "2", "3", *([""] * 97)]])
+        self.assertEqual(result["warnings"], [])
+
+        wide = self.root / "wide.csv"
+        wide.write_text("a,b,c" + "," * 150 + "\n1,2,3" + "," * 97 + ",far\n", encoding="utf-8")
+        result = preview.preview(wide, self.root / "out")
+        self.assertEqual(len(result["columns"]), 100)
+        self.assertEqual(result["warnings"], ["Truncated columns to 100"])
+
     def test_csv_ragged_rows_and_invalid_arguments_are_handled(self) -> None:
         source = self.root / "ragged.csv"
         source.write_text(",b\n1\n1,2,3\n", encoding="utf-8")
@@ -254,6 +284,15 @@ class CsvPreviewTests(PreviewTestCase):
 
 @unittest.skipUnless(HAS_OPENPYXL, "openpyxl is required for real XLSX fixture tests")
 class XlsxPreviewTests(PreviewTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch(
+            "branchyard_artifacts.preview.recalculate_workbook",
+            side_effect=Unavailable("Hermetic fixture has no native calculation runtime"),
+        )
+        self.recalculate = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_workbook(self) -> Path:
         import openpyxl
 
@@ -278,7 +317,7 @@ class XlsxPreviewTests(PreviewTestCase):
         wb.save(path)
         return path
 
-    def test_xlsx_sheet_selection_formulas_as_literal_text_and_pagination(self) -> None:
+    def test_xlsx_sheet_selection_cached_formulas_and_pagination(self) -> None:
         source = self.make_workbook()
         before = source.read_bytes()
         out_dir = self.root / "out"
@@ -294,7 +333,7 @@ class XlsxPreviewTests(PreviewTestCase):
             default_res["rows"],
             [
                 ["Account", "00012", "<script>inert</script>"],
-                ["Total", "=SUM(Data!B2:B4)", "2026-10-29T00:00:00"],
+                ["Total", None, "2026-10-29T00:00:00"],
                 ["Active", True, 12.5],
             ],
         )
@@ -322,7 +361,7 @@ class XlsxPreviewTests(PreviewTestCase):
         self.assertEqual(page1["next_offset"], 2)
 
         page2 = preview.preview(source, out_dir, view="table", sheet="Data", offset=2, limit=2)
-        self.assertEqual(page2["rows"], [["Q3", 18], ["Total", "=SUM(B2:B4)"]])
+        self.assertEqual(page2["rows"], [["Q3", 18], ["Total", None]])
         self.assertIsNone(page2["next_offset"])
         self.assertTrue(any("formula" in w.lower() for w in page2["warnings"]))
 
@@ -347,11 +386,16 @@ class XlsxPreviewTests(PreviewTestCase):
         ):
             res = preview.preview(source, out_dir, sheet="Summary", offset=0, limit=2)
         self.assertEqual(res["columns"], ["Metric", "Value"])
-        self.assertEqual(res["rows"], [["Account", "00012"], ["Total", "=SUM(Dat"]])
+        self.assertEqual(res["rows"], [["Account", "00012"], ["Total", None]])
         self.assertIsNone(res["next_offset"])
         self.assertTrue(any("columns" in w for w in res["warnings"]))
         self.assertTrue(any("characters" in w for w in res["warnings"]))
         self.assertTrue(any("rows" in w for w in res["warnings"]))
+
+        with mock.patch.object(preview, "MAX_COLUMNS", 3):
+            exact = preview.preview(source, out_dir, sheet="Summary")
+        self.assertEqual(exact["columns"], ["Metric", "Value", "Notes"])
+        self.assertFalse(any("columns" in w for w in exact["warnings"]), exact["warnings"])
 
         class FakeArrayFormula:
             text = "=SUM(A1:A10)"
@@ -359,6 +403,297 @@ class XlsxPreviewTests(PreviewTestCase):
         warnings: list[str] = []
         self.assertEqual(preview._xlsx_cell(FakeArrayFormula(), warnings), "=SUM(A1:A10)")
         self.assertTrue(any("formula" in w.lower() for w in warnings))
+
+    def test_xlsx_grid_layout_formats_cached_values_and_row_windows(self) -> None:
+        import openpyxl
+
+        source = self.root / "grid.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = "Accounts"
+        sheet.append(["Account", "Amount", "Date", "Ratio", "Calculated"])
+        sheet.append(["Merged account", None, datetime.date(2026, 11, 1), 0.125, "=SUM(1,2)"])
+        sheet.merge_cells("A2:B2")
+        sheet.column_dimensions["A"].width = 24
+        sheet.column_dimensions["B"].width = 18
+        sheet.freeze_panes = "A2"
+        sheet["C2"].number_format = "m/d/yyyy"
+        sheet["D2"].number_format = "0.00%"
+        sheet["E2"].number_format = "$#,##0.00"
+        for index in range(201):
+            sheet.append([str(index), 1234.5])
+        sheet["B3"].number_format = "#,##0.00"
+        second = workbook.create_sheet("Other")
+        second.append(["Name", "Count"])
+        second.append(["Second sheet", 7])
+        workbook.save(source)
+        # openpyxl writes formulas but cannot calculate them; supply an explicit stored cache.
+        rewritten = io.BytesIO()
+        with zipfile.ZipFile(source) as archive, zipfile.ZipFile(rewritten, "w") as target:
+            for name in archive.namelist():
+                raw = archive.read(name)
+                if name == "xl/worksheets/sheet1.xml":
+                    raw = raw.replace(b"<f>SUM(1,2)</f><v></v>", b"<f>SUM(1,2)</f><v>3</v>")
+                target.writestr(name, raw)
+        source.write_bytes(rewritten.getvalue())
+        before = source.read_bytes()
+        result = preview.preview(source, self.root / "out", limit=200)
+        self.assertEqual(result["sheets"], ["Accounts", "Other"])
+        self.assertEqual(result["column_widths"][:2], [173, 131])
+        self.assertEqual(result["frozen_rows"], 1)
+        self.assertEqual(result["merges"], [{"min_row": 2, "max_row": 2, "min_col": 1, "max_col": 2}])
+        self.assertEqual(result["rows"][0][4], 3)
+        details = result["cell_details"][0]
+        self.assertEqual(details[2]["formatted"], "11/1/2026")
+        self.assertEqual(details[3]["formatted"], "12.50%")
+        self.assertEqual(details[4], {"formatted": "$3.00", "formula": "=SUM(1,2)", "number_format": "$#,##0.00"})
+        self.assertEqual(result["cell_details"][1][1]["formatted"], "1,234.50")
+        self.assertEqual(len(result["rows"]), 200)
+        self.assertEqual(result["next_offset"], 200)
+        following = preview.preview(source, self.root / "out", offset=200, limit=200)
+        self.assertEqual(len(following["rows"]), 2)
+        self.assertIsNone(following["next_offset"])
+        self.assertEqual(following["merges"], [])
+        other = preview.preview(source, self.root / "out", sheet="Other", limit=200)
+        self.assertEqual(other["rows"], [["Second sheet", 7]])
+        self.assertEqual(source.read_bytes(), before)
+
+    def test_xlsx_merged_empty_columns_keep_their_widths_and_metadata_is_bounded(self) -> None:
+        import openpyxl
+
+        source = self.root / "merged.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet["A1"] = "Heading"
+        sheet.merge_cells("A1:C1")
+        sheet.column_dimensions["C"].width = 30
+        workbook.save(source)
+        result = preview.preview(source, self.root / "out")
+        self.assertEqual(result["columns"], ["Heading", "B", "C"])
+        self.assertEqual(result["column_widths"][2], 215)
+        self.assertEqual(len(result["header_details"]), 3)
+        with (
+            mock.patch.object(preview, "MAX_LAYOUT_MERGES", 0),
+            self.assertRaisesRegex(ArtifactError, "merged-cell metadata exceeds preview bounds"),
+        ):
+            preview.preview(source, self.root / "out")
+
+    def test_xlsx_common_display_formats_and_missing_formula_cache(self) -> None:
+        cases = [
+            (1234.5, "#,##0.00", "1,234.50"),
+            (-12.5, "$0.00;($0.00)", "($12.50)"),
+            (42, "00000", "00042"),
+            (0.125, "0.0%", "12.5%"),
+            (True, "General", "TRUE"),
+            ("<img onerror=alert(1)>", "General", "<img onerror=alert(1)>"),
+            (datetime.datetime(2026, 11, 1, 15, 4, 5), "yyyy-mm-dd hh:mm:ss", "2026-11-01 15:04:05"),
+            (datetime.time(15, 4), "h:mm AM/PM", "3:04 PM"),
+            (datetime.date(2026, 11, 1), "mmm d, yyyy", "Nov 1, 2026"),
+            (datetime.date(2026, 11, 1), "MMM D, YYYY", "Nov 1, 2026"),
+            (datetime.date(2026, 11, 1), "General", "2026-11-01"),
+        ]
+        for value, number_format, expected in cases:
+            with self.subTest(value=value, number_format=number_format):
+                self.assertEqual(preview._xlsx_formatted(value, number_format), expected)
+        source = self.make_workbook()
+        result = preview.preview(source, self.root / "out")
+        self.assertIsNone(result["rows"][1][1])
+        self.assertEqual(result["cell_details"][1][1]["formatted"], "")
+        self.assertEqual(result["cell_details"][1][1]["formula"], "=SUM(Data!B2:B4)")
+        self.assertTrue(any("no cached value" in warning for warning in result["warnings"]))
+
+    def test_missing_formula_values_use_one_hardened_private_conversion_and_keep_existing_caches(self) -> None:
+        import openpyxl
+
+        source = self.root / "formulas.XLSX"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(["Input", "Cached", "Missing", "Also missing"])
+        sheet.append([2, "=1+1", "=SUM(A2,3)", "=SUM(A2,4)"])
+        sheet.append([3, "=1/0"])
+        sheet["C2"].number_format = "$0.00"
+        sheet.freeze_panes = "A2"
+        sheet.column_dimensions["C"].width = 24
+        workbook.save(source)
+        original = io.BytesIO()
+        calculated = io.BytesIO()
+        with (
+            zipfile.ZipFile(source) as archive,
+            zipfile.ZipFile(original, "w") as saved,
+            zipfile.ZipFile(calculated, "w") as native_values,
+        ):
+            for name in archive.namelist():
+                raw = archive.read(name)
+                updated = raw
+                if name == "xl/worksheets/sheet1.xml":
+                    raw = raw.replace(b"<f>1+1</f><v></v>", b"<f>1+1</f><v>999</v>")
+                    updated = updated.replace(b"<f>1+1</f><v></v>", b"<f>1+1</f><v>2</v>")
+                    updated = updated.replace(b"<f>SUM(A2,3)</f><v></v>", b"<f>SUM(A2,3)</f><v>5</v>")
+                    updated = updated.replace(b"<f>SUM(A2,4)</f><v></v>", b"<f>SUM(A2,4)</f><v>6</v>")
+                saved.writestr(name, raw)
+                native_values.writestr(name, updated)
+        source.write_bytes(original.getvalue())
+        before = source.read_bytes()
+
+        def fake_converter(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            self.assertEqual(args[0], "/fake/libreoffice")
+            self.assertIn("--headless", args)
+            self.assertIn("--norestore", args)
+            self.assertEqual(args[args.index("--convert-to") + 1], "xlsx:Calc MS Excel 2007 XML")
+            self.assertEqual(kwargs["timeout"], 20)
+            staged_input = Path(args[-1])
+            self.assertNotEqual(staged_input, source)
+            self.assertEqual(staged_input.read_bytes(), before)
+            profile = staged_input.parent.parent / "profile/user/registrymodifications.xcu"
+            policy = profile.read_text()
+            self.assertIn("MacroSecurityLevel", policy)
+            self.assertIn("<value>3</value>", policy)
+            self.assertIn("BlockUntrustedRefererLinks", policy)
+            self.assertIn("/org.openoffice.Office.Calc/Content/Update", policy)
+            out = Path(args[args.index("--outdir") + 1]) / (source.stem + ".xlsx")
+            out.write_bytes(calculated.getvalue())
+            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        with (
+            mock.patch("branchyard_artifacts.preview.recalculate_workbook", side_effect=native.recalculate_workbook),
+            mock.patch("branchyard_artifacts.native.shutil.which", return_value="/fake/libreoffice"),
+            mock.patch("branchyard_artifacts.native.subprocess.run", side_effect=fake_converter) as converter,
+        ):
+            result = preview.preview(source, self.root / "out", limit=1)
+        converter.assert_called_once()
+        self.assertEqual(result["rows"], [[2, 999, 5, 6]])
+        self.assertEqual(result["cell_details"][0][2]["formatted"], "$5.00")
+        self.assertEqual(result["cell_details"][0][2]["formula"], "=SUM(A2,3)")
+        self.assertEqual(result["column_widths"][2], 173)
+        self.assertEqual(result["frozen_rows"], 1)
+        self.assertEqual(result["warnings"], [])
+        self.assertEqual(source.read_bytes(), before)
+
+    def test_formula_calculation_only_runs_for_missing_requested_cells(self) -> None:
+        source = self.make_workbook()
+        preview.preview(source, self.root / "out", sheet="Data", limit=2)
+        self.recalculate.assert_not_called()
+        preview.preview(source, self.root / "out", sheet="Data", offset=2, limit=2)
+        self.recalculate.assert_called_once()
+        self.recalculate.reset_mock()
+        preview.preview(source, self.root / "out", sheet="Summary", limit=1)
+        self.recalculate.assert_not_called()
+
+    def test_invalid_calculated_archives_keep_grid_and_warn(self) -> None:
+        source = self.make_workbook()
+        original = source.read_bytes()
+
+        def invalid_calculation(path: Path, out: Path, **kwargs: Any) -> None:
+            self.assertEqual(path, source)
+            self.assertEqual(kwargs["max_output_bytes"], preview.MAX_INPUT_BYTES)
+            out.write_bytes(_minimal_office_zip("xlsx", content_type_extra="macroenabled"))
+
+        with mock.patch("branchyard_artifacts.preview.recalculate_workbook", side_effect=invalid_calculation):
+            result = preview.preview(source, self.root / "out")
+        self.assertIsNone(result["rows"][1][1])
+        self.assertEqual(result["cell_details"][1][1]["formula"], "=SUM(Data!B2:B4)")
+        self.assertTrue(any("Macro-enabled" in warning for warning in result["warnings"]))
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_native_calculation_errors_limits_and_diagnostics(self) -> None:
+        source = self.make_workbook()
+        out = self.root / "calculated.xlsx"
+        with (
+            mock.patch("branchyard_artifacts.native.shutil.which", return_value=None),
+            self.assertRaisesRegex(Unavailable, "saved caches or LibreOffice"),
+        ):
+            native.recalculate_workbook(source, out)
+        with (
+            mock.patch("branchyard_artifacts.native.shutil.which", return_value="/fake/libreoffice"),
+            mock.patch("branchyard_artifacts.native.subprocess.run", side_effect=subprocess.TimeoutExpired("fake", 1)),
+            self.assertRaisesRegex(ArtifactError, "recalculation timed out"),
+        ):
+            native.recalculate_workbook(source, out)
+        with (
+            mock.patch("branchyard_artifacts.native.shutil.which", return_value="/fake/libreoffice"),
+            mock.patch(
+                "branchyard_artifacts.native.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    [], 0, stdout=b"", stderr=b"Warning: ignored warning\nNo display available\n"
+                ),
+            ),
+            self.assertRaisesRegex(ArtifactError, "converter said: No display available"),
+        ):
+            native.recalculate_workbook(source, out)
+
+        def oversized_calculation(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            (Path(args[args.index("--outdir") + 1]) / source.name).write_bytes(b"oversized")
+            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
+
+        with (
+            mock.patch("branchyard_artifacts.native.shutil.which", return_value="/fake/libreoffice"),
+            mock.patch("branchyard_artifacts.native.subprocess.run", side_effect=oversized_calculation),
+            self.assertRaisesRegex(ArtifactError, "preview byte bounds"),
+        ):
+            native.recalculate_workbook(source, out, max_output_bytes=1)
+        self.assertFalse(out.exists())
+        with self.assertRaisesRegex(ArtifactError, "must not overwrite"):
+            native.recalculate_workbook(source, source)
+
+    def test_xlsx_column_warning_requires_a_value_beyond_the_column_limit(self) -> None:
+        import openpyxl
+        from openpyxl.styles import Font
+
+        def styled_empty_cell(sheet: Any) -> None:
+            sheet.cell(row=1, column=150).font = Font(bold=True)
+
+        def value_past_empty_column_101(sheet: Any) -> None:
+            sheet.cell(row=2, column=150, value="note")
+
+        cases: list[tuple[str, Any, list[str]]] = [
+            ("narrow", lambda sheet: None, []),
+            ("styled empty cell in column 150", styled_empty_cell, []),
+            ("value in column 150 only", value_past_empty_column_101, ["Truncated columns to 100"]),
+        ]
+        for label, extend, expected in cases:
+            with self.subTest(label):
+                path = self.root / "narrow.xlsx"
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.append(["Region", "Q1", "Q2"])
+                sheet.append(["North", 1, 2])
+                extend(sheet)
+                workbook.save(path)
+                result = preview.preview(path, self.root / "out")
+                self.assertEqual(result["columns"], ["Region", "Q1", "Q2"])
+                self.assertEqual(result["rows"], [["North", 1, 2]])
+                self.assertEqual(result["warnings"], expected)
+
+    def test_xlsx_value_in_column_101_warns_once_and_shows_100_columns(self) -> None:
+        import openpyxl
+
+        path = self.root / "wide.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append([f"c{index}" for index in range(1, 102)])
+        sheet.append(list(range(1, 102)))
+        sheet.append(list(range(1, 102)))
+        workbook.save(path)
+        result = preview.preview(path, self.root / "out")
+        self.assertEqual(result["columns"], [f"c{index}" for index in range(1, 101)])
+        self.assertEqual(result["rows"], [list(range(1, 101))] * 2)
+        self.assertEqual(result["warnings"], ["Truncated columns to 100"])
+
+    def test_xlsx_preview_reads_past_an_understated_dimension(self) -> None:
+        import openpyxl
+
+        path = self.root / "understated.xlsx"
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        for row in (["Region", "Q1", "Q2"], ["North", 1, 2], ["South", 3, 4], ["East", 5, 6]):
+            sheet.append(row)
+        sheet.cell(row=4, column=150, value="note")
+        workbook.save(path)
+        _set_first_sheet_dimension(path, "A1:C2")
+        result = preview.preview(path, self.root / "out")
+        self.assertEqual(result["columns"], ["Region", "Q1", "Q2"])
+        self.assertEqual(result["rows"], [["North", 1, 2], ["South", 3, 4], ["East", 5, 6]])
+        self.assertEqual(result["warnings"], ["Truncated columns to 100"])
 
 
 @unittest.skipUnless(HAS_PDF and HAS_PIL, "pypdf, reportlab and Pillow are required for page preview tests")
@@ -496,6 +831,122 @@ shutil.copyfile({str(template_png)!r}, prefix.parent / f"{{prefix.name}}-{{first
             self.assertEqual(call["first"], 2)
             self.assertEqual(call["last"], 2)
 
+    @unittest.skipUnless(HAS_DOCX and HAS_PPTX, "python-docx and python-pptx are required")
+    def test_generated_three_page_documents_fetch_every_page_on_demand(self) -> None:
+        from docx import Document
+        from pptx import Presentation
+
+        document = Document()
+        for number in range(1, 4):
+            if number > 1:
+                document.add_page_break()
+            document.add_paragraph(f"Document page {number}")
+        docx_path = self.root / "three-pages.docx"
+        document.save(str(docx_path))
+        presentation = Presentation()
+        for number in range(1, 4):
+            slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+            slide.shapes.add_textbox(0, 0, 1000000, 1000000).text = f"Slide {number}"
+        pptx_path = self.root / "three-slides.pptx"
+        presentation.save(str(pptx_path))
+        bin_dir, log_file = self.install_fake_converters(pdf_pages=3)
+        with mock.patch(
+            "shutil.which", side_effect=lambda name: str(bin_dir / name) if (bin_dir / name).is_file() else None
+        ):
+            for source in [docx_path, pptx_path]:
+                original = source.read_bytes()
+                for number in range(1, 4):
+                    out = self.root / (source.stem + str(number))
+                    result = preview.preview(source, out, view="pages", page=number)
+                    self.assertEqual(result["pages"], 3)
+                    self.assertEqual(result["page"], number)
+                    self.assertEqual([item.name for item in out.iterdir()], [f"page-{number}.png"])
+                self.assertEqual(source.read_bytes(), original)
+        calls = [json.loads(line) for line in log_file.read_text().splitlines()]
+        self.assertEqual([call["first"] for call in calls if call["tool"] == "pdftoppm"], [1, 2, 3, 1, 2, 3])
+
+    def test_document_page_cap_keeps_first_pages_and_explains_later_pages(self) -> None:
+        bin_dir, log_file = self.install_fake_converters(pdf_pages=65)
+        source = self.make_pdf("long.pdf", pages=65)
+        with mock.patch(
+            "shutil.which", side_effect=lambda name: str(bin_dir / name) if (bin_dir / name).is_file() else None
+        ):
+            result = preview.preview(source, self.root / "first", view="pages")
+            self.assertEqual(result["pages"], 64)
+            self.assertIn("first 64 pages of 65", result["warnings"][0])
+            final = preview.preview(source, self.root / "last", view="pages", page=64)
+            self.assertEqual(final["page"], 64)
+            with self.assertRaisesRegex(ArtifactError, "65 exceeds the 64-page limit"):
+                preview.preview(source, self.root / "over-cap", view="pages", page=65)
+        calls = [json.loads(line) for line in log_file.read_text().splitlines()]
+        self.assertEqual([call["first"] for call in calls if call["tool"] == "pdftoppm"], [1, 64])
+
+    @unittest.skipUnless(HAS_OPENPYXL, "openpyxl is required")
+    def test_xlsx_print_view_selects_only_requested_sheet_and_preserves_original(self) -> None:
+        import openpyxl
+
+        source = self.root / "print-sheets.xlsx"
+        workbook = openpyxl.Workbook()
+        workbook.active.title = "First"
+        workbook.active.append(["First sheet"])
+        workbook.create_sheet("Second").append(["Second sheet"])
+        workbook.save(source)
+        original = source.read_bytes()
+        bin_dir, _ = self.install_fake_converters(pdf_pages=1)
+        office = bin_dir / "libreoffice"
+        visible_record = self.root / "visible-sheets.json"
+        office.write_text(
+            office.read_text().replace(
+                "profile_arg = next",
+                "import openpyxl\n"
+                "workbook = openpyxl.load_workbook(source)\n"
+                f"pathlib.Path({str(visible_record)!r}).write_text(\n"
+                "    json.dumps([s.title for s in workbook if s.sheet_state == 'visible']))\n"
+                "workbook.close()\n"
+                "profile_arg = next",
+            )
+        )
+        with mock.patch(
+            "shutil.which", side_effect=lambda name: str(bin_dir / name) if (bin_dir / name).is_file() else None
+        ):
+            result = preview.preview(source, self.root / "print-second", view="pages", sheet="Second")
+            self.assertEqual(result["pages"], 1)
+            self.assertEqual(json.loads(visible_record.read_text()), ["Second"])
+            with self.assertRaisesRegex(ArtifactError, "Worksheet does not exist"):
+                preview.preview(source, self.root / "missing-sheet", view="pages", sheet="Missing")
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_converter_that_exits_zero_without_a_pdf_names_its_own_diagnostic(self) -> None:
+        bin_dir, _ = self.install_fake_converters(pdf_pages=1)
+        office = bin_dir / "libreoffice"
+        office.write_text(
+            f"""#!{sys.executable}
+import sys
+sys.stderr.write("Warning: failed to launch javaldx\\n")
+sys.stderr.write("soffice.bin X11 error: Can't open display: \\x07\\n")
+sys.stderr.write("   Set DISPLAY environment variable, use -display option\\n")
+""",
+            encoding="utf-8",
+        )
+        source = self.root / "report.docx"
+        source.write_bytes(_minimal_office_zip("docx"))
+
+        def fake_which(name: str) -> str | None:
+            candidate = bin_dir / name
+            return str(candidate) if candidate.is_file() else None
+
+        out_dir = self.root / "no-pdf-out"
+        with (
+            mock.patch("shutil.which", side_effect=fake_which),
+            self.assertRaisesRegex(
+                ArtifactError,
+                r"without producing the requested PDF "
+                r"\(converter said: soffice\.bin X11 error: Can't open display: \)$",
+            ),
+        ):
+            preview.preview(source, out_dir, page=1)
+        self.assertFalse(out_dir.exists())
+
     def test_huge_pdf_page_is_bounded_before_rasterization(self) -> None:
         from pypdf import PdfWriter
 
@@ -588,7 +1039,7 @@ shutil.copyfile({str(template_png)!r}, prefix.parent / f"{{prefix.name}}-{{first
 
         for name, content in [
             ("vector.svg", b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'),
-            ("page.html", b"<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"),
+            ("page.xhtml", b"<!DOCTYPE html><html><body><script>alert(1)</script></body></html>"),
             ("disguised.png", b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'),
             ("corrupt.png", b"not-a-valid-png-payload"),
         ]:
@@ -597,6 +1048,89 @@ shutil.copyfile({str(template_png)!r}, prefix.parent / f"{{prefix.name}}-{{first
             with self.subTest(name=name), self.assertRaises(ArtifactError):
                 preview.preview(bad_path, self.root / "rejected-out")
             self.assertFalse((self.root / "rejected-out").exists())
+
+
+class HtmlPreviewTests(PreviewTestCase):
+    """An HTML page previews as one page image from a headless Chromium, here a fake that records its arguments."""
+
+    def install_fake_chromium(self, *, write_shot: bool = True) -> tuple[Path, Path]:
+        from PIL import Image
+
+        template = self.root / "chromium-template.png"
+        Image.new("RGB", (1280, 1024), "white").save(template, format="PNG")
+        log_file = self.root / "chromium-calls.json"
+        script = self.root / "fake-chromium"
+        script.write_text(
+            f"""#!{sys.executable}
+import json, pathlib, shutil, sys
+args = sys.argv[1:]
+shot = next(a for a in args if a.startswith("--screenshot=")).split("=", 1)[1]
+page = pathlib.Path(args[-1].removeprefix("file://"))
+pathlib.Path({str(log_file)!r}).write_text(json.dumps({{"args": args, "html": page.read_text()}}))
+if {write_shot!r}:
+    shutil.copyfile({str(template)!r}, shot)
+""",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return script, log_file
+
+    def page(self, name: str = "counter.html") -> Path:
+        path = self.root / name
+        path.write_text(
+            "<!doctype html><style>b{color:red}</style><b id=c>0</b>"
+            '<button onclick="c.textContent=+c.textContent+1">+</button>',
+            encoding="utf-8",
+        )
+        return path
+
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
+    def test_html_previews_as_one_page_image_through_chromium(self) -> None:
+        chromium, log_file = self.install_fake_chromium()
+        source = self.page()
+        out_dir = self.root / "html-out"
+        with mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(chromium)}):
+            result = preview.preview(source, out_dir)
+        self.assertEqual(
+            {key: result[key] for key in ("status", "kind", "format", "page", "pages", "image", "width", "height")},
+            {
+                "status": "passed",
+                "kind": "pages",
+                "format": "html",
+                "page": 1,
+                "pages": 1,
+                "image": "page-1.png",
+                "width": 1280,
+                "height": 1024,
+            },
+        )
+        self.assertTrue((out_dir / "page-1.png").read_bytes().startswith(b"\x89PNG"))
+        call = json.loads(log_file.read_text())
+        self.assertIn("--no-sandbox", call["args"])
+        self.assertIn("--host-resolver-rules=MAP * ~NOTFOUND", call["args"])
+        self.assertIn("c.textContent", call["html"])
+        self.assertEqual(source.read_text(), call["html"])
+
+    def test_html_without_chromium_is_unavailable_and_second_page_is_refused(self) -> None:
+        source = self.page()
+        with (
+            mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(self.root / "missing")}),
+            self.assertRaisesRegex(Exception, "headless Chromium"),
+        ):
+            preview.preview(source, self.root / "none-out")
+        with self.assertRaisesRegex(ArtifactError, "1 page"):
+            preview.preview(source, self.root / "two-out", page=2)
+        with self.assertRaisesRegex(ArtifactError, "pages preview only"):
+            preview.preview(source, self.root / "table-out", view="table")
+
+    @unittest.skipUnless(HAS_PIL, "Pillow is required to make the fake Chromium's screenshot and read its size")
+    def test_chromium_that_writes_no_screenshot_is_a_named_failure(self) -> None:
+        chromium, _ = self.install_fake_chromium(write_shot=False)
+        with (
+            mock.patch.dict("os.environ", {"BRANCHYARD_CHROMIUM": str(chromium)}),
+            self.assertRaisesRegex(ArtifactError, "without producing a screenshot"),
+        ):
+            preview.preview(self.page(), self.root / "empty-out")
 
 
 class TextAndSecurityBoundaryTests(PreviewTestCase):
@@ -741,8 +1275,16 @@ class TextAndSecurityBoundaryTests(PreviewTestCase):
 
 
 @unittest.skipUnless(
-    HAS_DOCX and HAS_OPENPYXL and HAS_PPTX and HAS_PDF and HAS_PIL and HAS_FONTS and HAS_LIBREOFFICE and HAS_PDFTOPPM,
-    "real Office/PDF libraries, LibreOffice and Poppler are required for live native render fixture tests",
+    os.environ.get("BRANCHYARD_TEST_LIVE_PREVIEWS") == "1"
+    and HAS_DOCX
+    and HAS_OPENPYXL
+    and HAS_PPTX
+    and HAS_PDF
+    and HAS_PIL
+    and HAS_FONTS
+    and HAS_LIBREOFFICE
+    and HAS_PDFTOPPM,
+    "set BRANCHYARD_TEST_LIVE_PREVIEWS=1 with Office/PDF libraries, LibreOffice and Poppler for live fixtures",
 )
 class RealNativeRenderPreviewTests(PreviewTestCase):
     def test_real_libreoffice_and_poppler_render_single_page_previews_for_docx_xlsx_pptx_and_pdf(self) -> None:
@@ -782,6 +1324,44 @@ class RealNativeRenderPreviewTests(PreviewTestCase):
                     self.assertEqual(decoded.size, (result["width"], result["height"]))
                 self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before_digest)
                 self.assertIsNotNone(native)
+
+
+@unittest.skipUnless(HAS_OPENPYXL and sys.platform == "linux", "openpyxl and POSIX limits are required")
+class NativePreviewResponseBudgetTests(PreviewTestCase):
+    def test_spreadsheet_response_budget_keeps_cell_details_aligned_with_rows(self) -> None:
+        import openpyxl
+
+        source = self.root / "wide-formatted.xlsx"
+        workbook = openpyxl.Workbook()
+        worksheet = workbook.active
+        worksheet.append([f"Column {index}" for index in range(20)])
+        for _ in range(200):
+            worksheet.append(["x" * 1000] * 20)
+        workbook.save(source)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "crates/branchyard-server/src/preview/launcher.py"),
+                str(2 * 1024 * 1024),
+                "--file",
+                str(source),
+                "--out",
+                str(self.root / "out"),
+                "--limit",
+                "200",
+            ],
+            env={"PYTHONPATH": str(SDK)},
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode())
+        self.assertLess(len(completed.stdout), 2 * 1024 * 1024)
+        result = json.loads(completed.stdout)
+        self.assertGreater(len(result["rows"]), 0)
+        self.assertLess(len(result["rows"]), 200)
+        self.assertEqual(len(result["rows"]), len(result["cell_details"]))
+        self.assertEqual(result["next_offset"], len(result["rows"]))
+        self.assertEqual(result["cell_details"][-1][0]["formatted"], "x" * 1000)
 
 
 if __name__ == "__main__":
