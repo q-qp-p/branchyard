@@ -19,6 +19,7 @@ TOOL = REPO / "tools" / "readme_screenshots"
 FILTER = TOOL / "scripted_agent.py"
 sys.path.insert(0, str(TOOL))
 import generate  # noqa: E402
+import load  # noqa: E402
 import scripted_agent as agent  # noqa: E402
 import story  # noqa: E402
 
@@ -390,6 +391,28 @@ class Story(unittest.TestCase):
         name, number = story.OPEN_OUTPUT
         self.assertIn(name, session.turns[number - 1].outputs)
         self.assertTrue(session.collect, "only a session that collects outputs publishes them")
+
+
+class Load(unittest.TestCase):
+    def test_busy_branches_each_make_their_calls_and_are_started_only(self):
+        branches = load.busy_branches(2, 5)
+        self.assertEqual([b.name for b in branches], ["busy-0", "busy-1"])
+        self.assertEqual({b.fate for b in branches}, {load.BUSY_FATE})
+        self.assertEqual(len(branches[0].turn.tools), 5)
+        self.assertIsNone(branches[0].turn.reply, "a busy turn never finishes on its own")
+
+    def test_the_summary_gives_per_event_figures_and_names_rows_that_differ(self):
+        page = {
+            "requests": 10,
+            "bytes": 2000,
+            "perf": {"renders": 5, "longtasks": 0, "long_ms": 0},
+            "rows": [{"branch": "a", "same": True}, {"branch": "b", "same": False}],
+        }
+        result = load.summarize(page, 100)
+        self.assertEqual(result["per_event"], {"requests": 0.1, "bytes": 20.0, "renders": 0.05})
+        self.assertEqual(result["rows_differ"], ["b"])
+        self.assertEqual(result["events_recorded"], 100)
+        self.assertIsNone(load.summarize(page, 0)["per_event"]["requests"])
 
 
 if __name__ == "__main__":

@@ -268,6 +268,16 @@ const shots = process.env.BY_SCREENSHOTS;
   await receipts.filter({ hasText: '$0.50' }).waitFor({ timeout: 60000 });
   if (await receipts.filter({ hasText: '$0.75' }).count()) throw new Error('a receipt shows the session total, not its turn');
   await page.locator('.strip-meta', { hasText: '$0.75' }).waitFor();
+  // The board draws the same branch from its timeline, not its events: a
+  // bar per turn, each saying on hover what that turn cost. It changed no
+  // file, so its row is under the folded Done group: attached, not shown.
+  await go('#/');
+  const costlyRow = page.locator('#main .board-row[data-branch="costly"][data-track="loaded"]');
+  await costlyRow.waitFor({ state: 'attached', timeout: 60000 });
+  const turnTitles = await costlyRow.locator('.rail .seg').evaluateAll((bars) => bars.map((bar) => bar.title));
+  if (turnTitles.length !== 2 || !turnTitles[0].includes('$0.25') || !turnTitles[1].includes('$0.50')) {
+    throw new Error(`the board's bars say ${JSON.stringify(turnTitles)}`);
+  }
   say('COSTED');
 
   // A turn parked on an approval: the branch itself says so on the board
@@ -311,6 +321,32 @@ const shots = process.env.BY_SCREENSHOTS;
   await page.locator('#main .deck-card.deck-merge', { hasText: 'asker is ready to merge' }).waitFor({ timeout: 60000 });
   await page.locator('#main .deck-card .deck-files li', { hasText: 'd.txt' }).waitFor({ timeout: 60000 });
   await noOverflow('the deck');
+  // The board read asker's timeline once, while it was parked; everything
+  // since (the allow, its calls, the end of the turn) reached the board only
+  // through the event stream. Its bars must say what the server's timeline
+  // says now.
+  await go('#/');
+  const askerRow = page.locator('#main .board-row[data-branch="asker"][data-track="loaded"]');
+  await askerRow.waitFor({ timeout: 60000 });
+  // asker has settled, so its timeline no longer changes: read it once,
+  // then wait for the bars to say the same (a turn's calls, and whether it
+  // ended).
+  const settled = await page.evaluate(async () => {
+    const token = sessionStorage.getItem('branchyard.token');
+    const t = await fetch('/v1/repos/app/branches/asker/timeline', { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    return t.turns.map((x) => [(x.tools || []).length, x.ended_at_ms != null]);
+  });
+  if (!settled.length || !settled.every(([, ended]) => ended)) throw new Error(`asker's timeline is not settled: ${JSON.stringify(settled)}`);
+  const drawnBars = () => page.evaluate(() => Array.from(document.querySelectorAll('#main .board-row[data-branch="asker"] .rail .seg'))
+    .map((bar) => [Number((bar.title.match(/(\d+) calls?/) || [0, 0])[1]), !bar.title.includes('running')]));
+  const matched = await page.waitForFunction((want) => {
+    const bars = Array.from(document.querySelectorAll('#main .board-row[data-branch="asker"] .rail .seg'));
+    const drawn = bars.map((bar) => [Number((bar.title.match(/(\d+) calls?/) || [0, 0])[1]), !bar.title.includes('running')]);
+    return JSON.stringify(drawn) === JSON.stringify(want);
+  }, settled, { timeout: 30000 }).then(() => true, () => false);
+  if (!matched) throw new Error(`the board drew asker as ${JSON.stringify(await drawnBars())}, its timeline says ${JSON.stringify(settled)}`);
+  await go('#/attention');
+  await page.locator('#main .deck-card').first().waitFor({ timeout: 60000 });
   say('DECIDED');
 
   // A child asked the branch that delegated it which parser to use and

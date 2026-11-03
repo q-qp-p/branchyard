@@ -1249,7 +1249,14 @@ details.more details.ledger > summary { margin-top: 14px; }
 .rail .seg-ready, .rail .seg-done { background: var(--green-tint); border-color: var(--green-line); }
 .rail .seg-needs { background: var(--wash-2); border-color: var(--line-strong); }
 .rail .seg-live { border-right-style: dashed; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.rail .seg-failed { background: var(--red-tint); border-color: var(--red-line); }
 .rail .call { top: 21px; width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--ink-2); opacity: .7; }
+@media (prefers-reduced-motion: no-preference) { .rail .call { transition: opacity var(--t-fast), transform var(--t-fast) var(--ease-out); } }
+/* A tick is two pixels wide; its hover target is the bar's height and a few pixels either side, so its tool name can be read. */
+.rail .call::after { content: ""; position: absolute; inset: -6px -4px; }
+.rail .call:hover { opacity: 1; transform: scaleY(1.4); }
+/* Calls too close to tell apart share a tick, a little heavier. */
+.rail .call-many { width: 3px; margin-left: -1.5px; opacity: .9; }
 .rail .seg-running ~ .call { background: var(--blue-text); opacity: .9; }
 .rail .wait { top: 8px; height: 36px; background: var(--amber-fill); border-left: 2px solid var(--amber); border-radius: 0 3px 3px 0; }
 .rail .wait-past { opacity: .55; border-left-style: dashed; }

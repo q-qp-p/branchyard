@@ -2868,6 +2868,14 @@ class Repo:
         recent without one; `total` is how many the branch has."""
         return Record(self.client.get(self._branch(branch, "/event-page"), cursor=cursor, limit=limit))
 
+    def timeline(self, branch: str) -> Record:
+        """`Timeline`: the shape of `branch`'s work with none of its
+        content: each turn's `started_at_ms`, `ended_at_ms`, `outcome`,
+        `cost_usd` and `tools` (each `at_ms`, `name` and `call_id`), and
+        `merged_at_ms`, read from its whole log (`docs/server.md`,
+        "Reading a branch")."""
+        return Record(self.client.get(self._branch(branch, "/timeline")))
+
     def said(self, branch: str, cursor: int = 0) -> tuple[str, int]:
         """What the harness said on `branch` after event `cursor`: its
         message deltas joined, and the cursor after them."""

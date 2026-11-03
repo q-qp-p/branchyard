@@ -276,6 +276,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 | `POST /v1/repos/{repo}/branches/{b}/integrate` | Merge delegated child `b` into the branch that delegated it, as `by integrate b` | `202` operation |
 | `GET /v1/repos/{repo}/branches/{b}/inspection` | `b` as a delegating parent sees it, as `by inspect b --json` | `Inspection` |
 | `GET /v1/repos/{repo}/branches/{b}/event-page?cursor=N&limit=M` | Up to `M` (default 50, at most 200) events after the first `N`, or the most recent without a cursor, as `by events b --json` | `EventPage` |
+| `GET /v1/repos/{repo}/branches/{b}/timeline` | The shape of `b`'s work with none of its content: each turn's start, end, outcome and own cost, its tool calls by time and name, and when `b` merged, read from its whole event log ([reading a branch](#reading-a-branch)) | `Timeline` |
 | `GET /v1/repos/{repo}/branches/{b}/children` | Every branch `b` delegated to, directly or below, as `by children b --json` | `Children` |
 | `GET /v1/repos/{repo}/branches/{b}/graph` | `b`'s children, the dependencies among them and its graph revision, as `by graph show b --json` ([task graphs](graph.md)) | `Graph` |
 | `POST /v1/repos/{repo}/branches/{b}/graph` | Apply a graph proposal `{expected_revision, edits, policy?, unapproved_tools?}` to `b`'s children, as `by graph apply --parent b`; a proposal that spawns needs `--allow-delegation`; a stale revision is `409 stale_revision` with `{expected, actual}` in `detail` | `200` `GraphApplied` |
@@ -439,6 +440,19 @@ SELECT ... FROM claimed
 (abridged from `PG_CLAIM` in [`store.rs`](../crates/branchyard-server/src/store.rs); `weight_of` is an `unnest` of the configured weights). `$lanes` is the capacity the claim is for: a normal slot takes `normal` and `follow_up` rows, the follow-up slot only `follow_up` rows, and the control slot only `control` rows (a console cancel or steer). A row another worker locked is skipped, and one it claimed and committed meanwhile fails the lease condition when PostgreSQL rechecks it on the locked row's latest version, so two workers never claim one row. The usage is a snapshot: two workers claiming at the same moment may both favour the same tenant, which the next claims even out. SQLite computes each tenant's share in Rust inside the immediate transaction, orders by its rank, and updates the usage before committing.
 
 What it does not do: per-tenant ceilings are [quotas](#quotas) (`max_running` still bounds a tenant however low its usage), shares are per database rather than per worker, a running operation is never pre-empted (a follow-up that finds its slot taken and the normal slots full waits for one of them), and a merge, integration or check is ordinary work at priority 0. Ages are measured against the claiming worker's clock (the operation records when it was admitted), so servers' clocks should agree to well under `aging_seconds`; leases stay on the database's clock. Every claim updates its tenant's row in `by_tenant_usage` (`tenant_usage` on SQLite): one row per tenant, never more.
+
+### Reading a branch
+
+A client asks for as much of a branch as it is about to show, in four steps:
+
+1. **The list.** `GET …/branches` gives each branch's status, stage, counts and cost (`BranchInfo`). A sidebar or a count needs nothing more.
+2. **The shape.** `GET …/branches/{b}/timeline` gives each turn's span, outcome and cost, and each tool call's time and name (`Timeline`). It carries no prompt, message or tool input, and it covers every turn, however long the branch has run. The console's board draws every row from it.
+3. **The conversation.** `GET …/branches/{b}/event-page` gives the events themselves, a page at a time.
+4. **The detail.** `GET …/branches/{b}/diff` and `…/inspection` give the change and the branch as its parent sees it.
+
+Each step is a separate request, so a page that shows forty branches reads forty small timelines and no conversation.
+
+A client that also follows the [event stream](#event-stream) need not read a timeline twice. The console reads each branch's timeline once and then applies the streamed events to it, by the rules `Timeline::of` reads the log with: a prompt starts a turn, a `tool_started` adds a call, a `turn_cost` sets the open turn's cost, and a status other than running or waiting ends the turn. A call is named by its `call_id` and its `at_ms`, so an event the timeline already held (one that arrived while the timeline was read) changes nothing. A `rewound` or `recovered` event rewrites the turns, and the console reads the timeline again.
 
 ### Idempotency
 

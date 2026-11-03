@@ -58,8 +58,13 @@ async function openBranch(page) {
     let page = desktop.page;
     // Home is the board: the yard's numbers, then every open branch on one clock, its turns and
     // calls drawn where they happened, the parked branch's wait filled amber; the day's decisions
-    // and the spend under it. Each row's track is read from its events, so wait for all of them.
+    // and the spend under it. Each row's track is read from its timeline, so wait for all of them:
+    // a row says `data-track="loaded"` once it is drawn from it.
     await page.goto(`${app}#/`);
+    await page.waitForFunction(() => {
+      const rows = Array.from(document.querySelectorAll('#main .board-row[data-branch]'));
+      return rows.length > 0 && rows.every((row) => row.dataset.track === 'loaded');
+    }, null, TURN);
     await page.locator(`#main .board-row.board-parked[data-branch="${plan.parked}"] .rail .wait`).waitFor(TURN);
     await page.locator('#main .board-row.board-running .rail .call').first().waitFor(TURN);
     await page.locator('#main .board-row.board-ready .rail .rail-ready').first().waitFor(TURN);

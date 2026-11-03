@@ -1427,3 +1427,54 @@ fn the_event_page_carries_each_turns_own_cost() {
         ]
     );
 }
+
+/// The timeline is the branch's shape without its content: one entry per
+/// turn with its span, outcome and own cost, read from the whole log, so
+/// the console's board draws a branch without reading its conversation.
+#[test]
+fn the_timeline_gives_each_turns_span_outcome_and_cost() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    common::costly_harness(&mut config);
+    let server = Server::start(config);
+    let client = server.client();
+    let first = run(&client, &common::costly_task("SPEND=0.25", "costly"));
+    assert_eq!(first.state, OperationState::Succeeded, "{first:?}");
+    let repo = client.repo("app");
+    let sent = repo
+        .send(
+            "costly",
+            &SendRequest {
+                prompt: "SPEND=0.5".into(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let sent = await_operation(&client, &sent.id);
+    assert_eq!(sent.state, OperationState::Succeeded, "{sent:?}");
+
+    let timeline = repo.timeline("costly").unwrap();
+    let costs: Vec<_> = timeline.turns.iter().map(|t| t.cost_usd).collect();
+    assert_eq!(costs, [Some(0.25), Some(0.5)]);
+    for turn in &timeline.turns {
+        let ended = turn.ended_at_ms.expect("both turns ended");
+        assert!(turn.started_at_ms <= ended, "{turn:?}");
+        assert!(turn.outcome.is_some(), "{turn:?}");
+    }
+    assert!(timeline.turns[0].ended_at_ms <= Some(timeline.turns[1].started_at_ms));
+    assert_eq!(timeline.merged_at_ms, None);
+
+    // No prompt, message or tool input travels with it.
+    let (status, _, body) = raw(
+        server.addr,
+        &get("/v1/repos/app/branches/costly/timeline", Some(TOKEN)),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(!body.contains("SPEND="), "{body}");
+    let (status, _, _) = raw(
+        server.addr,
+        &get("/v1/repos/app/branches/nope/timeline", Some(TOKEN)),
+    );
+    assert_eq!(status, 404);
+}
