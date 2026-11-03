@@ -530,7 +530,8 @@ Code integration still uses `by check` and `by integrate`.
 ## Sharing results and asking your parent
 
 Every child, even one that cannot delegate further, can publish files and
-message you, and you can do the same with your own parent:
+message you, and you can do the same with your own parent (the person, if
+you have none):
 
 ```sh
 by artifact publish results.json --name results --media-type application/json
@@ -657,6 +658,8 @@ VM and its dedicated IAP TCP 22 firewall rule. `--internal-ip` also omits the
 external address. `--service-account EMAIL` attaches that account with the
 `cloud-platform` scope, so its IAM roles decide API access; `--scopes` narrows it.
 This command refuses harness sessions and `--remote`.
+`--gvisor` also installs the pinned gVisor Docker runtime. Container execution
+requires permission to use the worker's local Docker socket.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified
 forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
@@ -665,3 +668,18 @@ connection flags. See the Substrate setup documentation for image and pool prere
 For GKE, an operator can use `tools/substrate_gke.py --atenet-dataplane=agentgateway`
 with the required target options. This pins a compatible gateway before installation
 from a private source export; the default Envoy path is unchanged.
+
+## Native sandbox providers
+
+An operator starts a native allocation with `by run "TASK" --provider container
+--image IMAGE@sha256:DIGEST`, or uses `--provider agent-sandbox` with
+`--kube-context CONTEXT --kube-namespace NAMESPACE`. The image supplies the
+harness. Both accept `--cpus`, `--memory` in MiB and `--pass-env` variable names.
+`--sandbox-runtime gvisor` is the default; `--sandbox-runtime runc` applies only to
+Container and `--sandbox-runtime microvm` applies only to Agent Sandbox.
+`--sandbox-network deny` disables external networking;
+explicit `--sandbox-network unrestricted` permits ordinary networking. Container permits cloud
+metadata; Agent Sandbox retains its GKE metadata blocks.
+Native allocations are destroyed after each turn and refuse `--keep-sandbox`,
+snapshots, host mounts and required hostname allowlists. On a server, use its
+approved execution preset; a preset does not permit client provider overrides.

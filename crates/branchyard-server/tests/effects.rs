@@ -4,23 +4,29 @@
 //! as the caller, the ledger and an undo plan are read and an undo is
 //! performed through the API, and `/metrics` counts effects and waiting
 //! approvals. A shell script stands in for Anvil's packaging. The ground
-//! plan reads the open branches' diffs.
+//! plan reads the open branches' diffs, and the decisions follow each
+//! branch's stage, a root's question to the person among them.
 
 #![allow(clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
 #[path = "../../branchyard/tests/mock_gateway/mod.rs"]
 mod mock_gateway;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 use branchyard::connectors::GrantEntry;
 use branchyard::effects::{Approval, ApprovalPolicy, ApprovalSettings, EffectState, Layer};
-use branchyard::{BranchStatus, Provisioning};
-use branchyard_client::api::{MergeRequest, OperationState, TaskRequest};
+use branchyard::stage::Lane;
+use branchyard::{BranchStatus, Envelope, Provisioning};
+use branchyard_client::api::{
+    MergeRequest, OperationState, PolicySpec, ProblemKind, SendRequest, SpawnRequest, TaskRequest,
+};
 use branchyard_client::effects_api::{ApprovalAnswerRequest, DecisionKind, UndoRequest, Waits};
 use branchyard_client::new_key;
-use branchyard_server::config::{ConnectorsConfig, MetricsConfig};
+use branchyard_server::config::{ConnectorsConfig, MetricsConfig, Principal, Token};
 use branchyard_testkit::wait;
 use common::{await_operation, get, raw, run, task, Fixture, Server};
 use mock_gateway::MockGateway;
@@ -61,10 +67,9 @@ fn granted(f: &Fixture, prompt: &str, name: &str) -> TaskRequest {
     }
 }
 
-#[test]
-fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there() {
-    let f = Fixture::new();
-    let mock = MockGateway::start();
+/// Connectors through `mock`, with Slack and GitHub bundles packaged by
+/// the fake Anvil.
+fn connectors(f: &Fixture, mock: &MockGateway) -> ConnectorsConfig {
     let bundles = f.dir.join("bundles");
     for id in ["slack", "github"] {
         fs::create_dir_all(bundles.join(id)).unwrap();
@@ -77,8 +82,7 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
     let anvil = f.dir.join("fake-anvil");
     fs::write(&anvil, FAKE_ANVIL).unwrap();
     fs::set_permissions(&anvil, fs::Permissions::from_mode(0o755)).unwrap();
-    let mut config = f.config();
-    config.connectors = Some(ConnectorsConfig {
+    ConnectorsConfig {
         gateway: mock.url.clone(),
         sandbox_gateway: None,
         issuer: Some("https://by.example".into()),
@@ -92,7 +96,15 @@ fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there(
         effects_proxy: None,
         effects_listen: None,
         effects_sandbox_host: None,
-    });
+    }
+}
+
+#[test]
+fn a_locked_policy_holds_an_ask_is_answered_through_the_api_and_undo_runs_there() {
+    let f = Fixture::new();
+    let mock = MockGateway::start();
+    let mut config = f.config();
+    config.connectors = Some(connectors(&f, &mock));
     // The administrator asks before any GitHub call and blocks Slack
     // deletions; the principal would allow both.
     config.approvals = ApprovalSettings {
@@ -294,5 +306,268 @@ fn the_ground_names_every_open_branch_holding_a_file_and_drops_a_merged_one() {
             ("only.txt".to_owned(), vec!["lib".to_owned()]),
             ("shared.txt".to_owned(), vec!["app-2".to_owned()]),
         ]
+    );
+}
+
+/// The decisions are the branches whose stage puts them in Needs you or
+/// Ready, one each: a plan waiting for approval is one; a settled child
+/// whose parent runs again is not, nor is the question it sent after its
+/// turn ended.
+#[test]
+fn the_decisions_are_the_branches_that_need_you_or_are_ready_once_each() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.allow_delegation = true;
+    config.by_path = Some("/bin/true".into());
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+
+    let planned = run(
+        &client,
+        &TaskRequest {
+            plan: true,
+            ..task("Mark it PERMISSION WRITE marker.txt=x", "planned")
+        },
+    );
+    assert_eq!(planned.state, OperationState::Succeeded, "{planned:?}");
+    let done = run(&client, &task("WRITE done.txt=1", "done"));
+    assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
+    run(&client, &task("EXIT", "broken"));
+    let root = run(
+        &client,
+        &TaskRequest {
+            delegation: Some(Envelope::depth(2)),
+            ..task("WRITE root.txt=1", "root")
+        },
+    );
+    assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
+    let kid = repo
+        .spawn(
+            "root",
+            &SpawnRequest {
+                prompt: "WRITE kid.txt=k".into(),
+                name: Some("kid".into()),
+                policy: PolicySpec::allow_all(),
+                ..SpawnRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    let kid = await_operation(&client, &kid.id);
+    assert_eq!(kid.state, OperationState::Succeeded, "{kid:?}");
+    repo.ask("kid", "should I rename it?", None).unwrap();
+    let again = repo
+        .send(
+            "root",
+            &SendRequest {
+                prompt: "HANG".into(),
+                policy: PolicySpec::allow_all(),
+                ..SendRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    wait::until("root to run again", || {
+        repo.branch("root").unwrap().status == BranchStatus::Running
+    });
+
+    let branches = repo.branches().unwrap();
+    let wanted: BTreeSet<String> = branches
+        .iter()
+        .filter(|b| matches!(b.stage.map(|s| s.lane), Some(Lane::NeedsYou | Lane::Ready)))
+        .map(|b| b.name.clone())
+        .collect();
+    assert_eq!(
+        wanted,
+        ["broken", "done", "planned"].map(String::from).into(),
+        "{branches:#?}"
+    );
+    let decisions = repo.decisions().unwrap();
+    let listed: Vec<&str> = decisions.iter().map(|d| d.branch.as_str()).collect();
+    let once: BTreeSet<String> = listed.iter().map(|b| (*b).to_owned()).collect();
+    assert_eq!(
+        once.len(),
+        listed.len(),
+        "a branch decided twice: {listed:?}"
+    );
+    assert_eq!(once, wanted, "{decisions:#?}");
+    let kinds: Vec<(&str, DecisionKind, Waits)> = decisions
+        .iter()
+        .map(|d| (d.branch.as_str(), d.kind, d.waits))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("planned", DecisionKind::Plan, Waits::Agent),
+            ("done", DecisionKind::Merge, Waits::Delivery),
+            ("broken", DecisionKind::Stop, Waits::Nobody),
+        ]
+    );
+
+    repo.cancel("root").unwrap();
+    await_operation(&client, &again.id);
+}
+
+/// A root started with delegation asks the person through the server: the
+/// decisions list its question after its turn ended, a token with only the
+/// `read` scope sees it in the person's inbox but may not answer it, and an
+/// answer with the `run` scope reaches the root's inbox, for its next turn,
+/// and takes the question out of the decisions.
+#[test]
+fn the_person_answers_a_roots_question_through_the_server() {
+    const READER: &str = "reader-token-0123456789";
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.allow_delegation = true;
+    config.by_path = Some("/bin/true".into());
+    config.tokens.push(Token {
+        name: "reader".into(),
+        secret: READER.into(),
+    });
+    config.principals.insert(
+        "reader".into(),
+        Principal {
+            origin: Default::default(),
+            name: "reader".into(),
+            tenant: "default".into(),
+            scopes: ["read".to_owned()].into(),
+            repos: None,
+        },
+    );
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+    let root = run(
+        &client,
+        &TaskRequest {
+            delegation: Some(Envelope::depth(1)),
+            ..task("say hi", "root")
+        },
+    );
+    assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
+    let asked = repo.ask("root", "which database?", None).unwrap().message;
+    assert_eq!(
+        (asked.from.as_str(), asked.to.as_str()),
+        ("root", branchyard::PERSON)
+    );
+    let question = |repo: &branchyard_client::Repo| {
+        repo.decisions()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.branch == "root")
+            .map(|d| (d.kind, d.waits, d.question.map(|m| m.id)))
+    };
+    assert_eq!(
+        question(&repo),
+        Some((DecisionKind::Question, Waits::Nobody, Some(asked.id)))
+    );
+
+    let reader = branchyard_client::Client::new(&server.url(), READER)
+        .unwrap()
+        .repo("app");
+    let inbox = reader.person_inbox().unwrap();
+    let listed: Vec<u64> = inbox.messages.iter().map(|m| m.id).collect();
+    assert_eq!(
+        (inbox.branch.as_str(), listed),
+        (branchyard::PERSON, vec![asked.id])
+    );
+    let refused = reader.answer_message(asked.id, "postgres").unwrap_err();
+    assert_eq!(refused.code(), Some("scope_required"), "{refused}");
+    let blank = repo.answer_message(asked.id, " ").unwrap_err();
+    assert_eq!(blank.code(), Some("invalid_request"), "{blank}");
+
+    let answer = repo.answer_message(asked.id, "postgres").unwrap();
+    assert_eq!(
+        (answer.from.as_str(), answer.to.as_str(), answer.in_reply_to),
+        (branchyard::PERSON, "root", Some(asked.id))
+    );
+    assert_eq!(question(&repo), None);
+    let waiting = repo.inbox("root").unwrap();
+    assert!(
+        waiting
+            .messages
+            .iter()
+            .any(|m| m.id == answer.id && !m.delivered),
+        "{waiting:?}"
+    );
+    let again = repo.answer_message(asked.id, "mysql").unwrap_err();
+    assert_eq!(again.code(), Some("denied"), "{again}");
+}
+
+/// A call whose answer the gateway never sent is `unknown`; with no lookup
+/// to ask, the server's recovery pass leaves it so, and `GET /v1/problems`
+/// lists it with the pass's reason until a later pass finds it settled
+/// (here by the gateway's audit log).
+#[test]
+fn an_effect_a_recovery_pass_leaves_unknown_is_a_problem_until_it_settles() {
+    let f = Fixture::new();
+    let mock = MockGateway::start();
+    let mut config = f.config();
+    config.connectors = Some(connectors(&f, &mock));
+    config.approvals = ApprovalSettings {
+        admin: None,
+        person: None,
+        people: [("tester".to_owned(), policy(&[("slack:*", Approval::Allow)]))].into(),
+    };
+    config.recover_interval = Duration::from_millis(100);
+    let audit = config.data_dir.join("gateway/audit.jsonl");
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+
+    mock.hold("slack__chat_post");
+    let op = repo
+        .submit_task(
+            &granted(
+                &f,
+                "SH python3 call.py slack__chat_post '{\"text\": \"hi\"}'",
+                "poster",
+            ),
+            "k-poster",
+        )
+        .unwrap();
+    mock.wait_held();
+    mock.release();
+    await_operation(&client, &op.id);
+    let entry = repo.effects(Some("poster")).unwrap().remove(0);
+    assert_eq!(entry.state, EffectState::Unknown, "{entry:?}");
+    assert!(entry.lookup.is_none(), "{entry:?}");
+
+    let problem = wait::until("the unknown effect listed", || {
+        let listed = client.problems().unwrap().problems;
+        listed.into_iter().find(|p| p.kind == ProblemKind::Effect)
+    });
+    let short = &entry.id[entry.id.len() - 8..];
+    assert_eq!(problem.key, format!("app/{}", entry.id));
+    assert_eq!(
+        problem.what,
+        format!("effect {short} (slack: chat_post) of app/poster")
+    );
+    assert_eq!(
+        problem.error,
+        "its operation declares no lookup; check upstream and decide"
+    );
+    assert_eq!(
+        (problem.since_ms, problem.failures),
+        (entry.updated_ms, None)
+    );
+    assert!(
+        problem.next.contains(&format!("`by effects show {short}`")),
+        "{problem:?}"
+    );
+
+    let line = serde_json::json!({"time": branchyard_support::time::rfc3339(entry.created_ms + 1_000),
+        "by_branch": "app/poster", "by_turn": "1", "sub": "local:me", "connector": "slack",
+        "operation": "slack.chat.post", "decision": "allowed", "upstream_status": 200,
+        "error_code": null, "effect_class": "reversible", "ledger_id": entry.id,
+        "staged_for": null});
+    fs::write(&audit, format!("{line}\n")).unwrap();
+    wait::until("the settled effect no longer listed", || {
+        client.problems().unwrap().problems.is_empty()
+    });
+    assert_eq!(
+        repo.effect(&entry.id).unwrap().entry.state,
+        EffectState::Confirmed
     );
 }

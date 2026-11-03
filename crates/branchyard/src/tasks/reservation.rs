@@ -115,6 +115,7 @@ pub fn reserve_repository(prompt: &str, by: &str, policy: &str) -> Result<Task, 
         created_ms: branchyard_support::time::now_ms(),
         files: super::TaskFiles::Repository,
         origin: "task".into(),
+        trigger: None,
     })
 }
 

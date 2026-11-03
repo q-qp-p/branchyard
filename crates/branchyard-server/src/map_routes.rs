@@ -21,6 +21,7 @@ use branchyard_client::api::{MapList, MapRequest, MapResumeRequest, OperationKin
 use crate::api::{blocking, Caller, JsonBody, Shared};
 use crate::error::{self, ApiError};
 use crate::ops::NewOperation;
+use crate::store::Lane;
 use crate::work::Work;
 
 pub(crate) fn router() -> Router<Shared> {
@@ -107,6 +108,7 @@ async fn admit_map(
         requires: crate::api::required_labels(&request.task.require_labels)?,
         priority: crate::api::admitted_priority(&policy, request.task.priority, 0)?,
         trace: crate::api::incoming_trace(&headers),
+        lane: Lane::Normal,
     };
     crate::api::admit(&app, new, Work::Map { request }).await
 }

@@ -242,8 +242,24 @@ pub fn apply_task(config: &ProjectConfig, task: &mut TaskArgs, scope: Scope) -> 
     if d.isolated == Some(true) && !task.isolation_off {
         task.isolated = true;
     }
-    let chose_provider =
-        task.sandbox.is_some() || task.substrate.is_some() || task.recipe.is_some() || task.local;
+    let chose_provider = task.sandbox.is_some()
+        || task.container.is_some()
+        || task.agent_sandbox.is_some()
+        || task.substrate.is_some()
+        || task.recipe.is_some()
+        || task.local;
+    if !chose_provider && d.provider == Some(ProviderKind::Container) {
+        task.container = config
+            .container
+            .as_ref()
+            .map(branchyard::configure::container_options);
+    }
+    if !chose_provider && d.provider == Some(ProviderKind::AgentSandbox) {
+        task.agent_sandbox = config
+            .agent_sandbox
+            .as_ref()
+            .map(branchyard::configure::agent_sandbox_options);
+    }
     if let (false, Some(ProviderKind::Recipe), Some(name)) = (chose_provider, d.provider, &d.recipe)
     {
         task.recipe = Some(crate::args::RecipeArgs {
@@ -310,6 +326,8 @@ pub fn apply_task(config: &ProjectConfig, task: &mut TaskArgs, scope: Scope) -> 
     // branch.
     let private_home = task.isolated
         || task.sandbox.is_some()
+        || task.container.is_some()
+        || task.agent_sandbox.is_some()
         || task.substrate.is_some()
         || task.recipe.is_some();
     branchyard::configure::fill_provisioning(config, &mut task.provision, private_home)
@@ -422,6 +440,65 @@ mod tests {
 
     fn config(text: &str) -> ProjectConfig {
         branchyard_setup::config::parse(text).unwrap()
+    }
+
+    #[test]
+    fn saved_native_providers_fill_new_branches_and_provision_private_homes_only() {
+        let image = format!("example/worker@sha256:{}", "a".repeat(64));
+        for (kind, extra) in [
+            ("container", "runtime = 'runc'"),
+            (
+                "agent_sandbox",
+                "context = 'validation'\nnamespace = 'by-test'\nruntime = 'microvm'",
+            ),
+        ] {
+            let saved = config(&format!("[defaults]\nprovider = '{kind}'\n[secrets]\nTOKEN = 'MY_TOKEN'\n[{kind}]\nimage = '{image}'\ncpus = 2\nmemory = 128\npass_env = ['LANG']\nnetwork = 'unrestricted'\n{extra}\n"));
+            let mut task = TaskArgs::default();
+            apply_task(&saved, &mut task, Scope::NewBranch).unwrap();
+            assert_eq!(task.provision.as_ref().unwrap().secrets.len(), 1);
+            let provider = crate::commands::provider(&task).unwrap().unwrap();
+            let value = serde_json::to_value(provider).unwrap();
+            assert_eq!(value["kind"], kind);
+            assert_eq!(value["image"], image);
+            assert_eq!(value["cpus"], 2);
+            assert_eq!(value["memory_mib"], 128);
+            assert_eq!(value["network"], "unrestricted");
+            assert_eq!(value["pass_env"], serde_json::json!(["LANG"]));
+
+            let mut explicit = TaskArgs {
+                local: true,
+                ..Default::default()
+            };
+            apply_task(&saved, &mut explicit, Scope::NewBranch).unwrap();
+            assert!(explicit.container.is_none() && explicit.agent_sandbox.is_none());
+            assert!(explicit.provision.is_none());
+            let mut continuing = TaskArgs::default();
+            apply_task(&saved, &mut continuing, Scope::Continue).unwrap();
+            assert!(continuing.container.is_none() && continuing.agent_sandbox.is_none());
+        }
+    }
+
+    #[test]
+    fn explicit_native_choices_override_another_saved_provider() {
+        let image = format!("example/worker@sha256:{}", "a".repeat(64));
+        let saved = config(&format!(
+            "[defaults]\nprovider = 'container'\n[container]\nimage = '{image}'\n"
+        ));
+        let mut task = TaskArgs {
+            agent_sandbox: Some(branchyard::AgentSandboxOptions {
+                image,
+                context: "test".into(),
+                namespace: "test".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_task(&saved, &mut task, Scope::NewBranch).unwrap();
+        assert!(task.container.is_none());
+        assert_eq!(
+            crate::commands::provider(&task).unwrap().unwrap().name(),
+            "agent_sandbox"
+        );
     }
 
     #[test]

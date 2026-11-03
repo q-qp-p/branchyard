@@ -1033,5 +1033,9 @@ fn a_child_whose_engine_died_after_it_wrote_its_work_recovers_ready() {
         .unwrap();
     assert!(prompt.starts_with("<branchyard-recovered>"), "{prompt}");
     assert!(prompt.contains("AbortError: Stream closed"), "{prompt}");
+    assert!(
+        prompt.contains("outside your worktree before the engine stopped"),
+        "{prompt}"
+    );
     assert!(prompt.ends_with("say more"), "{prompt}");
 }

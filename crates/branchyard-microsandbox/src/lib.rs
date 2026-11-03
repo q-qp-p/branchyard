@@ -14,6 +14,10 @@
 //!   provides it: the guest sees only its image, the bound directories and
 //!   the variables an exec passes. Nothing from this process's environment
 //!   is forwarded.
+//! - Creation, execution and resume verify the SDK-selected runtime pair
+//!   before allocation or adoption. The source, patch and memory-layout pins
+//!   must match the reviewed runtime plan, and both installed payloads must
+//!   match their provenance hashes. A stock or unidentified runtime refuses.
 //! - Every exec is a session leader in the guest, so `Process::kill` (the
 //!   agent signals the process group) and `Process::teardown` (an in-guest
 //!   `sh` listing and killing the group) reach its descendants; `stop` and
@@ -25,13 +29,18 @@
 //!   ([`plan::capabilities_with`], `MicrosandboxProvider::with_live_branch`),
 //!   until the ignored KVM tests qualify them. In-place restore is never
 //!   declared.
+//! - Checkpoint references bind the actual runtime executable, firmware and
+//!   memory-layout identity. Capture requires `runtime-provenance.json` beside
+//!   the resolved runtime binary. Legacy or mismatched references refuse
+//!   branching and removal, leaving the saved artifact unchanged. Use its
+//!   original runtime to read or export it, or create a fresh checkpoint.
 //!
 //! What it does not guarantee:
 //!
-//! - Complete qualification. The dated live KVM run in
-//!   `docs/remote-validation-2026-10-28.md` exercises the pinned runtime,
-//!   including live branches, but the hard memory-ceiling assertion still
-//!   fails. The `#[ignore]` tests in `tests/microsandbox.rs` remain the M2
+//! - Qualification of every runtime build. The upstream 0.7.3 executable
+//!   exceeds the strict guest memory ceiling. The patched artifact and live
+//!   adapter results are in `docs/remote-validation-2026-11-02-gce.md`.
+//!   The `#[ignore]` tests in `tests/microsandbox.rs` remain the M2
 //!   gate. See `docs/providers.md` for setup and `docs/sandbox-snapshots.md`
 //!   for the engine's snapshot behavior.
 //! - That a checkpoint includes the workspace. Bound host directories are
@@ -52,6 +61,9 @@ pub mod plan;
 
 #[cfg(feature = "microsandbox")]
 mod provider;
+
+#[cfg(feature = "microsandbox")]
+mod checkpoint;
 
 #[cfg(feature = "microsandbox")]
 pub use provider::{error, event, failure_kind, state, MicrosandboxProvider};

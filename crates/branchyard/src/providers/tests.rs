@@ -9,7 +9,9 @@ use super::microsandbox::tests::Standin;
 use super::*;
 use crate::placement;
 use crate::state::{SandboxKind, SandboxRow};
-use crate::{RecipeOptions, SandboxOptions, SubstrateOptions};
+use crate::{
+    AgentSandboxOptions, ContainerOptions, RecipeOptions, SandboxOptions, SubstrateOptions,
+};
 
 /// The names of [`Provider`]'s variants, read from the enum's own source so
 /// no count has to be bumped by hand. A variant is a line indented one level
@@ -66,6 +68,8 @@ fn index(provider: &Provider) -> usize {
         Provider::Microsandbox(_) => 1,
         Provider::Substrate(_) => 2,
         Provider::Recipe(_) => 3,
+        Provider::Container(_) => 4,
+        Provider::AgentSandbox(_) => 5,
     }
 }
 
@@ -77,6 +81,7 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    native_binaries();
     let dir = tempfile::Builder::new()
         .prefix("by-providers-")
         .tempdir()
@@ -94,6 +99,22 @@ fn fixture() -> Fixture {
         yard,
         key,
     }
+}
+
+fn native_binaries() {
+    static BIN: std::sync::OnceLock<branchyard_testkit::Scratch> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let scratch = branchyard_testkit::Scratch::new("provider-binaries");
+        let source =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/native-docker");
+        std::os::unix::fs::symlink(source, scratch.join("docker")).unwrap();
+        let mut paths = vec![scratch.path().to_path_buf()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        scratch
+    });
 }
 
 /// One usable instance of each variant, and one its `check` refuses, in
@@ -135,6 +156,22 @@ fn samples(fixture: &Fixture) -> Vec<(Provider, Provider)> {
                 create: " ".into(),
                 ..recipe
             }),
+        ),
+        (
+            Provider::container(ContainerOptions {
+                image: format!("example.test/runtime@sha256:{}", "a".repeat(64)),
+                ..ContainerOptions::default()
+            }),
+            Provider::container(ContainerOptions::default()),
+        ),
+        (
+            Provider::agent_sandbox(AgentSandboxOptions {
+                context: "test-context".into(),
+                namespace: "branchyard-gvisor".into(),
+                image: format!("example.test/runtime@sha256:{}", "a".repeat(64)),
+                ..AgentSandboxOptions::default()
+            }),
+            Provider::agent_sandbox(AgentSandboxOptions::default()),
         ),
     ]
 }
@@ -195,7 +232,7 @@ fn each_variant_serializes_under_its_own_name() {
     let fixture = fixture();
     for (good, _) in samples(&fixture) {
         let value = serde_json::to_value(&good).unwrap();
-        assert_eq!(value["kind"], good.kind().name(), "{good:?}");
+        assert_eq!(value["kind"], good.name(), "{good:?}");
         let back: Provider = serde_json::from_value(value).unwrap();
         assert_eq!(back, good);
     }
@@ -203,6 +240,69 @@ fn each_variant_serializes_under_its_own_name() {
     assert_eq!(of(None).name(), "local");
     assert!(!of(None).sandboxed());
     assert!(!of(None).copies_worktree());
+}
+
+#[test]
+fn public_harness_locations_cover_the_inventory_and_borrow_the_selected_target() {
+    let fixture = fixture();
+    for (provider, _) in samples(&fixture) {
+        match (&provider, provider.harness_location()) {
+            (Provider::Local, HarnessLocation::Local)
+            | (Provider::Microsandbox(_), HarnessLocation::Microsandbox)
+            | (Provider::Container(_) | Provider::AgentSandbox(_), HarnessLocation::Image) => {}
+            (Provider::Substrate(expected), HarnessLocation::Substrate(actual)) => {
+                assert!(std::ptr::eq(expected, actual));
+            }
+            (Provider::Recipe(expected), HarnessLocation::Recipe(actual)) => {
+                assert!(std::ptr::eq(expected, actual));
+            }
+            (_, location) => panic!(
+                "{} has the wrong harness location: {location:?}",
+                provider.name()
+            ),
+        }
+        assert_eq!(
+            provider.is_native_image(),
+            matches!(provider.harness_location(), HarnessLocation::Image),
+            "{}",
+            provider.name()
+        );
+    }
+}
+
+#[test]
+fn public_option_validation_checks_native_specs_without_opening_a_runtime() {
+    let fixture = fixture();
+    for (good, bad) in samples(&fixture) {
+        assert!(good.validate_options().is_ok(), "{}", good.name());
+        let native = matches!(&good, Provider::Container(_) | Provider::AgentSandbox(_));
+        assert_eq!(good.is_native_image(), native, "{}", good.name());
+        if native {
+            assert!(matches!(bad.validate_options(), Err(Error::Unsupported(_))));
+            for (field, value) in [
+                ("image", json!("example.test/runtime:unpinned")),
+                ("cpus", json!(0)),
+                ("memory_mib", json!(0)),
+                ("pass_env", json!(["KUBECONFIG"])),
+            ] {
+                let mut invalid = serde_json::to_value(&good).unwrap();
+                invalid[field] = value;
+                let invalid: Provider = serde_json::from_value(invalid).unwrap();
+                assert!(
+                    matches!(invalid.validate_options(), Err(Error::Unsupported(_))),
+                    "{} must reject invalid {field}",
+                    good.name()
+                );
+            }
+        } else {
+            // Legacy providers defer runtime-dependent checks to preparation.
+            assert!(bad.validate_options().is_ok(), "{}", bad.name());
+        }
+    }
+    assert!(
+        !fixture.yard.root().join(".branchyard/native").exists(),
+        "pure option validation created native state"
+    );
 }
 
 #[test]
@@ -219,12 +319,18 @@ fn names_keys_and_kinds() {
             "sandbox",
         ),
         ("recipe", "recipe:lab", true, true, "recipe_machine"),
+        ("container", "container:", true, true, "sandbox"),
+        ("agent_sandbox", "agent_sandbox:", true, true, "sandbox"),
     ];
     for (good, _) in samples(&fixture) {
         let (name, key, sandboxed, copied, service) = expected[index(&good)];
         let kind = good.kind();
         assert_eq!(kind.name(), name);
-        assert_eq!(kind.key(), key);
+        if index(&good) >= 4 {
+            assert!(kind.key().starts_with(key));
+        } else {
+            assert_eq!(kind.key(), key);
+        }
         assert_eq!(kind.sandboxed(), sandboxed);
         assert_eq!(kind.copies_worktree(), copied);
         assert_eq!(kind.service_kind(), service);
@@ -233,6 +339,47 @@ fn names_keys_and_kinds() {
         // Only a Microsandbox guest is served the delegation tools from
         // this host; a local harness runs them itself.
         assert_eq!(kind.reaches_host(), name == "microsandbox", "{name}");
+    }
+}
+
+#[test]
+fn native_keys_bind_every_allocation_and_target_option() {
+    let fixture = fixture();
+    for (good, _) in samples(&fixture)
+        .into_iter()
+        .filter(|(good, _)| index(good) >= 4)
+    {
+        let original = good.kind().key();
+        let mut changes = vec![
+            (
+                "image",
+                json!(format!("example.test/other@sha256:{}", "b".repeat(64))),
+            ),
+            ("cpus", json!(2)),
+            ("memory_mib", json!(2048)),
+            ("network", json!("unrestricted")),
+            ("pass_env", json!(["OPENAI_API_KEY"])),
+        ];
+        if index(&good) == 4 {
+            changes.push(("runtime", json!("runc")));
+        } else {
+            changes.extend([
+                ("runtime", json!("microvm")),
+                ("context", json!("other-context")),
+                ("namespace", json!("other-namespace")),
+            ]);
+        }
+        for (field, value) in changes {
+            let mut changed = serde_json::to_value(&good).unwrap();
+            changed[field] = value;
+            let changed: Provider = serde_json::from_value(changed).unwrap();
+            assert_ne!(
+                changed.kind().key(),
+                original,
+                "{} {field}",
+                good.kind().name()
+            );
+        }
     }
 }
 
@@ -281,11 +428,18 @@ fn lifecycle_defaults_and_overrides() {
             _ => {
                 let lifecycle = lifecycle.expect("a sandbox has a lifecycle");
                 assert!(!lifecycle.keep, "{good:?}");
-                assert_eq!(lifecycle.max_paused, crate::snapshots::DEFAULT_MAX_PAUSED);
+                assert_eq!(
+                    lifecycle.max_paused,
+                    if index(&good) >= 4 {
+                        0
+                    } else {
+                        crate::snapshots::DEFAULT_MAX_PAUSED
+                    }
+                );
                 assert_eq!(lifecycle.max_kept_secs, None, "{good:?}");
                 // A recipe's machine has no checkpoints to keep.
                 let snapshots = match index(&good) {
-                    3 => 0,
+                    3..=5 => 0,
                     _ => crate::snapshots::DEFAULT_SNAPSHOTS,
                 };
                 assert_eq!(lifecycle.snapshots, snapshots, "{good:?}");
@@ -336,7 +490,7 @@ fn guest_paths_are_where_the_harness_will_see_them() {
         let (workdir, home) = placement::guest_paths(&record);
         match index(&good) {
             0 => assert_eq!(workdir, "/w"),
-            1 | 2 => {
+            1 | 2 | 4 | 5 => {
                 assert_eq!(workdir, placement::WORKSPACE);
                 assert_eq!(home, placement::HOME);
             }
@@ -377,11 +531,12 @@ fn recover_reports_every_outcome() {
                     "{said}"
                 );
             }
-            _ => assert_eq!(
+            3 => assert_eq!(
                 said.as_deref(),
                 Some("its machine by-b-1 was already gone"),
                 "no machine of that name was ever recorded"
             ),
+            _ => assert!(said.expect("native recovery").contains("destroyed its")),
         }
     }
     // A parked sandbox is left alone, whatever the provider.
@@ -452,9 +607,13 @@ fn open_and_destroy_through_the_trait() {
                 let why = destroyed.expect_err("nothing listens");
                 assert!(why.contains("by-b-1") || why.contains("Substrate"), "{why}");
             }
-            _ => {
+            3 => {
                 assert!(opened.is_ok());
                 assert_eq!(destroyed.as_deref(), Ok("machine by-b-1 was already gone"));
+            }
+            _ => {
+                assert!(opened.is_ok());
+                assert!(destroyed.unwrap().contains("sandbox by-b-1"));
             }
         }
     }

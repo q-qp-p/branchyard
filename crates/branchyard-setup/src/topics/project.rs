@@ -236,6 +236,12 @@ pub fn questions(facts: &Facts, answers: &Answers) -> Vec<Question> {
                 "remote actors from an existing cluster and bridge template",
             ),
         ];
+        if current.container.is_some() {
+            providers.push(Choice::new("container", "Container", "use the saved native container image and runtime; workload readiness is unverified"));
+        }
+        if current.agent_sandbox.is_some() {
+            providers.push(Choice::new("agent_sandbox", "Agent Sandbox", "use the saved Kubernetes target, image and runtime; workload readiness is unverified"));
+        }
         if (facts.platform.kvm && facts.build.microsandbox)
             || d.provider == Some(ProviderKind::Microsandbox)
             || text(answers, "remote").as_deref() == Some("server")
@@ -257,6 +263,8 @@ pub fn questions(facts: &Facts, answers: &Answers) -> Vec<Question> {
             .default(match d.provider {
                 Some(ProviderKind::Microsandbox) => "microsandbox",
                 Some(ProviderKind::Substrate) => "substrate",
+                Some(ProviderKind::Container) => "container",
+                Some(ProviderKind::AgentSandbox) => "agent_sandbox",
                 _ => "local",
             }).choices(providers));
         qs.push(
@@ -367,6 +375,8 @@ pub fn questions(facts: &Facts, answers: &Answers) -> Vec<Question> {
         Condition::truthy("isolated"),
         Condition::equals("provider", "microsandbox"),
         Condition::equals("provider", "substrate"),
+        Condition::equals("provider", "container"),
+        Condition::equals("provider", "agent_sandbox"),
     ]);
     let (choices, set) = secret_choices(facts, std::slice::from_ref(&harness));
     let existing_secrets: Vec<Value> = current
@@ -536,7 +546,7 @@ fn private_home(answers: &Answers) -> bool {
     flag(answers, "isolated")
         || matches!(
             text(answers, "provider").as_deref(),
-            Some("microsandbox" | "substrate")
+            Some("microsandbox" | "substrate" | "container" | "agent_sandbox")
         )
 }
 
@@ -1091,7 +1101,7 @@ pub fn plan(facts: &Facts, answers: &Answers, probe: &dyn Probe) -> Plan {
     }
     // Secrets apply only with a private home; without one, keep whatever
     // the file already had, since this interview did not ask.
-    if flag(answers, "isolated") || sandbox || substrate {
+    if private_home(answers) {
         flat.retain(|key, _| !key.starts_with("secrets."));
         for name in list(answers, "secrets") {
             let source =
@@ -1307,7 +1317,7 @@ pub fn plan(facts: &Facts, answers: &Answers, probe: &dyn Probe) -> Plan {
     let runs_here = text(answers, "remote").as_deref() != Some("server")
         && !matches!(
             text(answers, "provider").as_deref(),
-            Some("microsandbox" | "substrate")
+            Some("microsandbox" | "substrate" | "container" | "agent_sandbox")
         );
     if let Some(harness) = text(answers, "harness").filter(|_| runs_here) {
         if !facts.installed().any(|h| h.harness == harness) {
@@ -1400,6 +1410,11 @@ pub fn plan(facts: &Facts, answers: &Answers, probe: &dyn Probe) -> Plan {
     );
     if text(answers, "remote").as_deref() == Some("server") {
         plan.command("by ls", "Reach the server with the new [remote] settings.");
+    } else if matches!(
+        text(answers, "provider").as_deref(),
+        Some("container" | "agent_sandbox")
+    ) {
+        plan.command("by up", "Check the saved native provider configuration and client; workload runtime, network enforcement and harness readiness remain unverified.");
     } else if text(answers, "provider").as_deref() == Some("substrate") {
         plan.command("by up", "Check authenticated Control/template readiness and remote credential sources without creating an actor.");
     } else {
@@ -1414,6 +1429,41 @@ mod tests {
     use crate::interview::resolve;
     use crate::probe::FakeProbe;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn guided_setup_preserves_existing_native_choices_and_private_home_provisioning() {
+        let image = format!("example/worker@sha256:{}", "a".repeat(64));
+        for (kind, extra) in [
+            ("container", "runtime = 'runc'"),
+            (
+                "agent_sandbox",
+                "context = 'validation'\nnamespace = 'by-test'\nruntime = 'microvm'",
+            ),
+        ] {
+            let mut probe = FakeProbe::typical();
+            probe.files.insert(config::PROJECT_FILE.into(), format!("[defaults]\nprovider = '{kind}'\n[{kind}]\nimage = '{image}'\ncpus = 2\nmemory_mib = 128\nnetwork = 'unrestricted'\n{extra}\n"));
+            let facts = Facts::gather(&probe);
+            let state = resolve(
+                &|answers| questions(&facts, answers),
+                &BTreeMap::new(),
+                true,
+            );
+            assert!(state.done(), "{state:?}");
+            assert_eq!(state.answers["provider"], kind);
+            assert!(private_home(&state.answers));
+            assert!(state.answers.contains_key("secrets"));
+            let body = plan_body(&facts, &state.answers, &probe);
+            let configured = config::parse(&body).unwrap();
+            let flat = configured.flatten();
+            assert_eq!(flat[&format!("{kind}.image")], image);
+            assert_eq!(flat[&format!("{kind}.cpus")], 2);
+            assert_eq!(flat[&format!("{kind}.network")], "unrestricted");
+            assert_eq!(flat["defaults.provider"], kind);
+            let plan = plan(&facts, &state.answers, &probe);
+            assert!(format!("{plan:?}").contains("remain unverified"));
+            assert!(!plan.notes.iter().any(|note| note.contains("cannot start")));
+        }
+    }
 
     #[test]
     fn remote_microsandbox_does_not_require_a_local_kvm_build() {

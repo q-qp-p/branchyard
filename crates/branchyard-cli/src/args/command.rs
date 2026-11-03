@@ -756,7 +756,7 @@ pub enum Command {
         #[command(subcommand)]
         action: GraphAction,
     },
-    /// Ask this branch's parent a question
+    /// Ask this branch's parent (the person, if it has none) a question
     #[command(hide = true, display_order = 307)]
     Ask {
         /// Act as this branch (outside a harness; inside one, it is the harness's own)
@@ -793,7 +793,9 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Escalate to this branch's parent, or further up if its rig seat allows
+    /// Escalate to this branch's parent (the person, if it has none)
+    ///
+    /// If the branch's rig seat allows, the escalation goes further up.
     #[command(hide = true, display_order = 309)]
     Escalate {
         /// Act as this branch (outside a harness; inside one, it is the harness's own)
@@ -809,7 +811,7 @@ pub enum Command {
     ///
     /// A claim the harness makes about itself, shown in `by log`, `by watch`, `by show` and
     /// `by inspect`; it changes nothing about the branch. `blocked` and `failure` are also
-    /// escalated to the parent's inbox.
+    /// escalated, as by escalate does.
     #[command(hide = true, display_order = 312)]
     ReportStatus {
         /// Act as this branch (outside a harness; inside one, it is the harness's own)
@@ -831,10 +833,15 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Answer a message (usually a question) from a descendant
+    /// Answer a descendant's question or escalation, or one sent to you
+    ///
+    /// Outside a harness without --as, the answer is given as whoever the message was sent to: you,
+    /// for a branch nobody delegated, or the branch it went to. A branch whose turn has ended reads
+    /// the answer when its next turn starts; by send starts one.
     #[command(hide = true, display_order = 310)]
     Answer {
-        /// Act as this branch (outside a harness; inside one, it is the harness's own)
+        /// Act as this branch (outside a harness; without it, as the message's addressee; inside
+        /// one, it is the harness's own)
         #[arg(long = "as", value_name = "BRANCH")]
         as_branch: Option<String>,
         /// The message's number, as `by inbox` lists it
@@ -845,10 +852,13 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List messages addressed to this branch
+    /// List messages addressed to this branch, or to you
+    ///
+    /// Outside a harness without --as, it lists the messages sent to you.
     #[command(hide = true, display_order = 311)]
     Inbox {
-        /// Act as this branch (outside a harness; inside one, it is the harness's own)
+        /// Act as this branch (outside a harness; without it, list yours; inside one, it is the
+        /// harness's own)
         #[arg(long = "as", value_name = "BRANCH")]
         as_branch: Option<String>,
         /// Only messages not yet delivered to a turn
@@ -939,8 +949,8 @@ pub enum Command {
     },
     /// Run tasks on a schedule or from webhooks
     ///
-    /// Add, list, show, test, enable, disable and rm triggers, and see their runs (see
-    /// docs/triggers.md).
+    /// Add, list, show, test, enable, disable and rm triggers, let them fire or only observe,
+    /// and see their runs (see docs/triggers.md).
     #[command(
         display_order = 503,
         subcommand_required = true,

@@ -34,7 +34,7 @@ if [ "$apt" = yes ] && command -v apt-get >/dev/null 2>&1; then
     [ "$(id -u)" = 0 ] || sudo=sudo
     $sudo apt-get update -qq
     $sudo apt-get install -y -qq --no-install-recommends \
-        mold clang sccache bubblewrap poppler-utils openssh-client
+        mold clang sccache bubblewrap poppler-utils openssh-client pkg-config libcap-ng-dev
 fi
 
 python3 -m pip install -q --disable-pip-version-check ruff mypy

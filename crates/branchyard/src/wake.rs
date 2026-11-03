@@ -401,6 +401,8 @@ pub(crate) fn look(yard: &Yard, name: &str, given: Option<&TaskOptions>) -> Resu
         },
         (None, None) => return Ok(false),
     };
+    // Admission denial leaves the parked record intact for an approved caller.
+    yard.admit_provider(record.provider.as_ref(), &options)?;
     let prepared = match crate::run::prepare_wake(yard, name, &options) {
         Ok(Some(prepared)) => prepared,
         // Another engine woke it, or something else started a turn.
@@ -613,7 +615,9 @@ pub(crate) fn recovered_note(store: &Store, record: &Record, reason: &str) -> St
         "Your previous turn was cut off: the Branchyard engine running it stopped ({reason}). \
          Tool calls made after that failed; Claude Code reports them as `Tool permission request \
          failed: AbortError: Stream closed`. Your worktree keeps what was written; check it \
-         (`git status`, `git log`) before going on."
+         (`git status`, `git log`) before going on. Actions you took outside your worktree \
+         before the engine stopped (a push, a pull request, a comment, a message) may already \
+         have happened; check before you repeat one."
     ));
     text.push('\n');
     let children: Vec<String> = record
@@ -642,10 +646,10 @@ pub(crate) fn recovered_note(store: &Store, record: &Record, reason: &str) -> St
 ///
 /// The lost turn is the record's last counted one: recovery counts a turn
 /// whose prompt was submitted, and only such a turn is lost. Entries
-/// outlive their branch, so an earlier incarnation's (older than this
-/// record) are left out.
+/// outlive their branch, so calls predating this record's millisecond
+/// creation time are left out.
 fn lost_turn_effects(store: &Store, record: &Record) -> String {
-    let created_ms = record.info.created_at.saturating_mul(1000);
+    let created_ms = record.created_ms;
     let entries = match store.effects().effects(Some(&record.info.name)) {
         Ok(entries) => entries,
         Err(_) => return String::new(),
@@ -659,9 +663,14 @@ fn lost_turn_effects(store: &Store, record: &Record) -> String {
                 EffectState::Begun | EffectState::Unknown => {
                     "may have happened: its answer was lost; do not call it again"
                 }
-                EffectState::Failed => "did not happen",
+                EffectState::Failed => "reported failure; inspect upstream before retry",
                 EffectState::Staged => "is staged and has not happened",
-                other => other.as_str(),
+                EffectState::Undone => "happened and was undone",
+                EffectState::Compensated => "happened and was compensated",
+                EffectState::UndoFailed => {
+                    "happened; its undo failed or its answer was lost; inspect upstream"
+                }
+                EffectState::Expired => "happened; its undo window expired; do not call it again",
             };
             format!(
                 "- {} ({}): {what}",

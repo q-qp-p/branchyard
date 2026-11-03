@@ -4,7 +4,7 @@ use crate::api::{App, Caller, RepoState};
 use crate::console_store::{Collection, Mutation, Record};
 use crate::error::ApiError;
 use crate::ops::NewOperation;
-use crate::store::Idempotency;
+use crate::store::{Idempotency, Lane};
 use axum::http::{HeaderMap, StatusCode};
 use branchyard_client::api::{Operation, OperationKind, SendRequest, TaskRequest};
 use serde::{Deserialize, Serialize};
@@ -412,8 +412,12 @@ pub(super) fn admit(
             vec![session_id.clone()],
             super::quotas::session_admission(app, caller, &mut mutations)?,
         ),
-        ConsoleWork::Control { .. } => (Vec::new(), super::quotas::control_admission(&policy)),
         _ => (Vec::new(), app.admission_quota(caller, &policy)),
+    };
+    let lane = match &command {
+        ConsoleWork::Control { .. } => Lane::Control,
+        ConsoleWork::Send { .. } => Lane::FollowUp,
+        _ => Lane::Normal,
     };
     let requires = super::scheduling::requirements(app, caller, repo, &command)?;
     let new = NewOperation {
@@ -429,6 +433,7 @@ pub(super) fn admit(
         requires,
         priority: crate::api::admitted_priority(&policy, None, 0)?,
         trace: crate::api::incoming_trace(headers),
+        lane,
     };
     let value = crate::work::Work::Console {
         command,
@@ -605,7 +610,10 @@ fn start_once(
         result,
         ..Default::default()
     };
-    crate::work::task_options(app, &repo, &request)?;
+    match preset.as_ref() {
+        Some(preset) => crate::work::preset_task_options(app, &repo, &request, preset)?,
+        None => crate::work::task_options(app, &repo, &request)?,
+    };
     let selected = super::sources::selection(app, caller, wid, &body)?;
     if access == "reviewer"
         && candidate.is_none()
@@ -734,7 +742,16 @@ pub(super) fn continue_session(
         ..Default::default()
     };
     crate::work::send_options(app, &repo, &request)?;
-    crate::work::send_allowed(app, &branch, text(&row.body, "branch")?, &request)?;
+    match super::presets::stored(&row)? {
+        Some(preset) => crate::work::preset_send_allowed(
+            app,
+            &branch,
+            text(&row.body, "branch")?,
+            &request,
+            &preset,
+        )?,
+        None => crate::work::send_allowed(app, &branch, text(&row.body, "branch")?, &request)?,
+    }
     let idem = operation_idem(
         caller,
         headers,

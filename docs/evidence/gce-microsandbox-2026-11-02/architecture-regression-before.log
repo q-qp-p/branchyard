@@ -1,0 +1,57 @@
+   Compiling libc v0.2.172
+   Compiling proc-macro2 v1.0.95
+   Compiling unicode-ident v1.0.18
+   Compiling quote v1.0.40
+   Compiling syn v2.0.101
+   Compiling thiserror v2.0.18
+   Compiling bitflags v1.3.2
+   Compiling crossbeam-utils v0.8.21
+   Compiling cfg_aliases v0.2.1
+   Compiling nix v0.30.1
+   Compiling vmm-sys-util v0.14.0
+   Compiling bitflags v2.10.0
+   Compiling kvm-bindings v0.12.0
+   Compiling thiserror-impl v2.0.18
+   Compiling kvm-ioctls v0.22.0
+   Compiling cfg-if v1.0.0
+   Compiling crossbeam-channel v0.5.15
+   Compiling msb-vm-memory v0.18.0-msb.2
+   Compiling log v0.4.27
+   Compiling msb_krun_utils v0.1.39
+   Compiling msb_krun_smbios v0.1.39
+   Compiling msb_krun_arch_gen v0.1.39
+   Compiling msb_krun_arch v0.1.39 (/tmp/branchyard-msb-memory-patch/msb_krun_arch-0.1.39)
+warning: unnecessary parentheses around closure body
+  --> src/x86_64/interrupts.rs:98:48
+   |
+98 |         let after: Vec<u32> = v.iter().map(|x| ((*x & !0x700) | ((2) << 8))).collect();
+   |                                                ^                          ^
+   |
+   = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+   |
+98 -         let after: Vec<u32> = v.iter().map(|x| ((*x & !0x700) | ((2) << 8))).collect();
+98 +         let after: Vec<u32> = v.iter().map(|x| (*x & !0x700) | ((2) << 8)).collect();
+   |
+
+warning: `msb_krun_arch` (lib test) generated 1 warning (run `cargo fix --lib -p msb_krun_arch --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 7.65s
+     Running unittests src/lib.rs (/tmp/branchyard-msb-memory-target/debug/deps/msb_krun_arch-bb3995ba71bdf9fa)
+
+running 1 test
+
+thread 'x86_64::tests::kernel_mapping_stays_inside_the_requested_memory_budget' (433) panicked at src/x86_64/mod.rs:378:13:
+assertion `left == right` failed
+  left: 182452224
+ right: 134217728
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test x86_64::tests::kernel_mapping_stays_inside_the_requested_memory_budget ... FAILED
+
+failures:
+
+failures:
+    x86_64::tests::kernel_mapping_stays_inside_the_requested_memory_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

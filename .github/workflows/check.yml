@@ -261,6 +261,14 @@ jobs:
       FEATURES: branchyard/postgres,branchyard-server/postgres,branchyard-cli/postgres
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reclaim space for the PostgreSQL build
+        # Keep Docker's running service and Cargo/Rust/Python intact. Free the
+        # unused hosted-runner SDK payloads before unpacking the build cache.
+        run: |
+          df -h /
+          sudo rm -rf -- /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /usr/share/swift /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # The partitions build the same thing, so they share a key.

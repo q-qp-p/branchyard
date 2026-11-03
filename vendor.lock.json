@@ -2850,6 +2850,248 @@
       "license": "AGPL-3.0-only",
       "use": "reference-only",
       "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/Cargo.toml",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/Cargo.toml",
+      "git_blob": "5fb3460b994f2e5797ef8b8517e620ff36293363",
+      "sha256": "146e267ab1fe9f1c192551e4fc805fa69b0fbb51f45c0dc88e9d121950bbdead",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/LICENSE",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "LICENSE",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/THIRD-PARTY",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "THIRD-PARTY",
+      "git_blob": "fd7894e3b4681f3a503c9104c57f195ae95592d6",
+      "sha256": "27d2a3f846e1ca85546c85117757b8a2d3f951b28cc69554e2d5ae3d9a32635c",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/layout.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/layout.rs",
+      "git_blob": "635e9527a892dafa1edb50dca42c99482bf38334",
+      "sha256": "211fc1d0d48a0ec7c6f81dc8b3f288d3c3a63beb767af13a0287fcc7a8d670f4",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/linux/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/linux/mod.rs",
+      "git_blob": "0a86d1c06f6c5477a0e160238aac8ee234e0fd6b",
+      "sha256": "091779f669e39a512dbc3874096d9516382ad25666213d62b3285a0492b88101",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/linux/regs.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/linux/regs.rs",
+      "git_blob": "483825183974cb0cacec949e463ab847c87fca20",
+      "sha256": "b16d7e6e25559e15f851a5a23f6aef545dbe30395a46dfea0e011af527819d4d",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/macos/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/macos/mod.rs",
+      "git_blob": "66d1eb54e9cb9408d2ca01ae2aaf0140c1e70841",
+      "sha256": "6d15a9cc2adcee4bb39dc123525d34094bd2dd291983a1390a2009682675ba53",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/macos/regs.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/macos/regs.rs",
+      "git_blob": "aa3732e0d444ae2ab92a2831683a4b2dd3aa6071",
+      "sha256": "e530132c356077862c0261b763e6874045f844356f7f280b569708569249f0d7",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/macos/sysreg.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/macos/sysreg.rs",
+      "git_blob": "89653764aada41df74eee1cd970ff4a2ffdd1cfc",
+      "sha256": "bba79817cba2b4411b751601f318b3c73a4bce40839947b1dc28e5bcd8ba0bdd",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/aarch64/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/aarch64/mod.rs",
+      "git_blob": "0db2a05211ac849550b76e240497aaefbbb29d5a",
+      "sha256": "e18cda613cb4032088a79f85e7a46bb8b88ee4aac437f9de952ba9428f7d6d96",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/lib.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/lib.rs",
+      "git_blob": "ce5bb847919b594e2b159cb0bba8260d06dcd46c",
+      "sha256": "1afa94cad4c2893f43d93c703e10dace66ad1b1c01c1aa488f0b951eeca97c1a",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/riscv64/layout.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/riscv64/layout.rs",
+      "git_blob": "ef0009979c818c9b614f57f9a6d55d415261cf1a",
+      "sha256": "62c44dd1816445f74fc6601f04a3b31506b19ddaa98e385fde97d385b25dbefa",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/riscv64/linux/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/riscv64/linux/mod.rs",
+      "git_blob": "a41d787c1e5ece6089ec9dfe6e405133cc2e2ebc",
+      "sha256": "cce1021b92408c825c7bd54c906308cf5da508b4981d0b16d6391951ca3d82fc",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/riscv64/linux/regs.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/riscv64/linux/regs.rs",
+      "git_blob": "c99bad91e966aa58fd44356765df1c14bf1ff1eb",
+      "sha256": "46edda4be8c5e91de4566f48c72559483d81ba583333443ede611bc567352c55",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/riscv64/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/riscv64/mod.rs",
+      "git_blob": "7cc7901650b806ed450449c6c476912b1802f430",
+      "sha256": "5041bfc389a78a1f0a1791e04c296577855cc9b4b48ec1ab4f57d107f05050c5",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/gdt.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/gdt.rs",
+      "git_blob": "c7fcbf31bf02327dcbc22213ceee069f2b423761",
+      "sha256": "eede837af2827afc3c64bf16979511effa592db5d89559bb599fac9e4c4df37f",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/interrupts.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/interrupts.rs",
+      "git_blob": "1633215b78d254f1a60f626028baa45fb42c2991",
+      "sha256": "ac53c5be3fee31d976d786862d0471867be2271c7da0491285328009f0c84cf1",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/layout.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/layout.rs",
+      "git_blob": "1975e580b6d12f71b30a7b7e28cf2a87b078e898",
+      "sha256": "ebe26eb89c8c7f615f56d407c2bff644aaf32701a1cc6c4a00665186a5608af6",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/mod.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/mod.rs",
+      "git_blob": "7be62a5500edc39e48ae39b473747fecb0966a41",
+      "sha256": "450fe65fc57a27efeb15e5e3d94ca8a83ea8ee05f56ee7ea705f6dc0f9911344",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/mptable.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/mptable.rs",
+      "git_blob": "b3cc2559e139088070cbc1e7bb5f21df044d63f4",
+      "sha256": "d261a84e7b32a611ac6d67a3bbec7630d03b4144e5e93a91f9c111e1bdbf39f8",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/msr.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/msr.rs",
+      "git_blob": "597366286b42ed0acec323b51cb7e0a9cd8f3c29",
+      "sha256": "35db1f045aa54ced9c4dc4496eec2fbc11b303887dad32fe9b492bcd6be2dac8",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
+    },
+    {
+      "path": "vendor/msb-krun-arch/src/x86_64/regs.rs",
+      "upstream": "https://github.com/containers/libkrun",
+      "commit": "2bd0f84ad0956f3032e0490d3b8512b6851eca12",
+      "upstream_path": "src/arch/src/x86_64/regs.rs",
+      "git_blob": "7c224a0d321a8f9dbc126df36011683d8415911a",
+      "sha256": "302b665962fb5659ad31ffc2ead20126c21229255b6946652d9d9a8e60a12cf8",
+      "license": "Apache-2.0 AND BSD-3-Clause",
+      "use": "patched-runtime-build",
+      "modified": false
     }
   ]
 }

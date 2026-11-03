@@ -361,6 +361,8 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         ),
     };
     let result = (|| {
+        turn.yard
+            .admit_provider(record.provider.as_ref(), turn.options)?;
         recorder.record(Activity::Status(record.info.status.clone()))?;
         if let Some(note) = &turn.note {
             recorder.record(Activity::Warning(note.clone()))?;
@@ -1807,15 +1809,14 @@ fn run(
     for activity in placement.release(turn.yard, record, fence) {
         recorder.record(activity)?;
     }
-    if record
-        .result_contract
-        .as_ref()
-        .is_some_and(|contract| contract.capture.is_some())
-    {
+    if matches!(
+        driven.end,
+        End::Outcome {
+            outcome: TurnOutcome::Completed
+        }
+    ) {
         if let Some(reason) = placement.transfer_error() {
-            driven.end = End::failed(format!(
-                "artifact capture requires a successful worktree transfer: {reason}"
-            ));
+            driven.end = End::failed(format!("could not capture the sandbox worktree: {reason}"));
         }
     }
     // Calls still in flight are given a moment; what the turn's calls

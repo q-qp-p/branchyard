@@ -42,8 +42,14 @@ pub enum Work {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<crate::companion::Verified>,
     },
-    /// `POST /v1/repos/{repo}/tasks`.
-    Task { request: TaskRequest },
+    /// `POST /v1/repos/{repo}/tasks`, or a trigger's run, which `trigger`
+    /// names on the task it starts.
+    Task {
+        request: TaskRequest,
+        /// The trigger run that admitted it, recorded on the task it starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger: Option<branchyard::tasks::TaskTrigger>,
+    },
     /// `POST .../branches/{branch}/send`.
     Send {
         branch: String,
@@ -159,9 +165,10 @@ impl Work {
                 "console work must resolve its workspace before execution",
             )
             .body),
-            Work::Task { request } => {
+            Work::Task { request, trigger } => {
                 let options = TaskOptions {
                     actor: actor.clone(),
+                    trigger,
                     trace_parent: trace_parent.clone(),
                     ..task_options(app, repo, &request).map_err(api)?
                 };
@@ -190,6 +197,8 @@ impl Work {
                     .map_err(sdk)
             }
             Work::Fork { branch, request } => {
+                let source = yard.branch(&branch).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 let options = TaskOptions {
                     actor: actor.clone(),
                     trace_parent: trace_parent.clone(),
@@ -204,6 +213,8 @@ impl Work {
                     .map_err(sdk)
             }
             Work::Reincarnate { branch, request } => {
+                let source = yard.branch(&branch).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 let options = TaskOptions {
                     actor: actor.clone(),
                     trace_parent: trace_parent.clone(),
@@ -251,6 +262,8 @@ impl Work {
                 request,
             } => {
                 let (mut options, spawn) = spawn_parts(app, repo, &request, name).map_err(api)?;
+                let source = yard.branch(&parent).map_err(sdk)?;
+                app.provider(source.provider().map_err(sdk)?).map_err(api)?;
                 options.trace_parent = trace_parent.clone();
                 let run = || {
                     let source = yard.branch(&parent)?;
@@ -381,13 +394,61 @@ pub struct AppExecutor(pub Arc<App>);
 /// Who a turn stopped for a shutdown was cancelled by, in its log.
 pub const SHUTDOWN: &str = "the server's shutdown";
 
+impl AppExecutor {
+    fn shutdown_repo(
+        &self,
+        stored: &StoredOperation,
+        branch: &str,
+    ) -> Result<Option<RepoState>, ApiError> {
+        let app = &self.0;
+        let name = &stored.operation.repo;
+        if let Some(repo) = app.repos.get(name) {
+            return Ok(Some(repo.clone()));
+        }
+        if name != crate::console::MANAGED_REPO {
+            return Ok(None);
+        }
+        use crate::console_store::Collection;
+        let Some(binding) = app
+            .registry
+            .console_get(Collection::Bindings, &format!("{name}:{branch}"))?
+        else {
+            return Ok(None);
+        };
+        let workspace_id = binding.body["workspace_id"]
+            .as_str()
+            .ok_or_else(|| ApiError::internal("shutdown binding has no workspace"))?;
+        let Some(workspace) = app
+            .registry
+            .console_get(Collection::Workspaces, workspace_id)?
+        else {
+            return Ok(None);
+        };
+        if binding.tenant != stored.tenant()
+            || workspace.tenant != stored.tenant()
+            || binding.body["repo"] != name.as_str()
+            || binding.body["branch"] != branch
+            || workspace.body["repo"] != name.as_str()
+        {
+            return Err(ApiError::internal(
+                "shutdown workspace binding differs from its operation",
+            ));
+        }
+        crate::console::resolve_source(app, &workspace).map(Some)
+    }
+}
+
 impl Executor for AppExecutor {
     fn stop_for_shutdown(&self, stored: &StoredOperation) {
         let operation = &stored.operation;
-        let Some(repo) = self.0.repos.get(&operation.repo) else {
-            return;
-        };
         for branch in &operation.branches {
+            let Some(Some(repo)) = branchyard_support::best_effort(
+                "resolve a running operation's shutdown target",
+                self.shutdown_repo(stored, branch)
+                    .map_err(|error| error.body.message),
+            ) else {
+                continue;
+            };
             match repo.yard.cancel_as(branch, SHUTDOWN) {
                 // Not created yet, or already gone: nothing to stop.
                 Err(branchyard::Error::UnknownBranch(_)) => {}
@@ -762,14 +823,20 @@ fn admitted_principal_allowed(
 }
 
 /// The branches an operation ran, once every branch they delegated to on
-/// this server has finished, as `by run` waits for them.
+/// this server has finished, as `by run` waits for them. Each is read back
+/// as `GET …/branches/{b}` reads it, with its `awaiting` and `stage`, which
+/// a run's own handle does not carry.
 pub(crate) fn finished(branches: Vec<Branch>) -> Result<OperationResult, branchyard::Error> {
     let mut descendants = Vec::new();
     for branch in &branches {
         descendants.extend(branch.wait_subtree()?);
     }
+    let branches = branches
+        .iter()
+        .map(|b| Ok(b.yard().branch(&b.info().name)?.info().clone()))
+        .collect::<Result<Vec<_>, branchyard::Error>>()?;
     Ok(OperationResult {
-        branches: branches.iter().map(|b| b.info().clone()).collect(),
+        branches,
         descendants,
         ..OperationResult::default()
     })
@@ -827,6 +894,25 @@ pub(crate) fn task_options(
     repo: &RepoState,
     request: &TaskRequest,
 ) -> Result<TaskOptions, ApiError> {
+    task_options_from(app, repo, request, None)
+}
+
+/// Build a console turn using only a server-resolved execution preset.
+pub(crate) fn preset_task_options(
+    app: &App,
+    repo: &RepoState,
+    request: &TaskRequest,
+    preset: &crate::console::ResolvedPreset,
+) -> Result<TaskOptions, ApiError> {
+    task_options_from(app, repo, request, Some(preset))
+}
+
+fn task_options_from(
+    app: &App,
+    repo: &RepoState,
+    request: &TaskRequest,
+    preset: Option<&crate::console::ResolvedPreset>,
+) -> Result<TaskOptions, ApiError> {
     if request.prompt.trim().is_empty() {
         return Err(ApiError::bad_request("prompt is empty"));
     }
@@ -846,7 +932,10 @@ pub(crate) fn task_options(
             ));
         }
     }
-    let provider = app.provider(request.provider.clone())?;
+    let provider = match preset {
+        Some(preset) => preset.provider(app, request.provider.as_ref())?,
+        None => app.provider(request.provider.clone())?,
+    };
     app.opt_ins(
         request.delegation.is_some() || request.seats.is_some(),
         request.allow_delegation,
@@ -1031,6 +1120,36 @@ pub(crate) fn send_allowed(
     branch: &str,
     request: &SendRequest,
 ) -> Result<(), ApiError> {
+    send_allowed_from(app, target, branch, request, None)
+}
+
+/// Recheck the private preset and actual branch provider before continuation.
+pub(crate) fn preset_send_allowed(
+    app: &App,
+    target: &Branch,
+    branch: &str,
+    request: &SendRequest,
+    preset: &crate::console::ResolvedPreset,
+) -> Result<(), ApiError> {
+    send_allowed_from(app, target, branch, request, Some(preset))
+}
+
+fn send_allowed_from(
+    app: &App,
+    target: &Branch,
+    branch: &str,
+    request: &SendRequest,
+    preset: Option<&crate::console::ResolvedPreset>,
+) -> Result<(), ApiError> {
+    let provider = target.provider().map_err(|error| error::sdk(&error))?;
+    match preset {
+        Some(preset) => {
+            preset.provider(app, provider.as_ref())?;
+        }
+        None => {
+            app.provider(provider)?;
+        }
+    }
     if app.config.allow_delegation || request.delegation.is_some() {
         return Ok(());
     }
@@ -1317,6 +1436,23 @@ mod tests {
                     prompt: "p".into(),
                     ..TaskRequest::default()
                 },
+                trigger: None,
+            },
+            Work::Task {
+                request: TaskRequest {
+                    prompt: "p".into(),
+                    ..TaskRequest::default()
+                },
+                trigger: Some(branchyard::tasks::TaskTrigger {
+                    id: "trg_1".into(),
+                    name: "triage".into(),
+                    run: "run_1".into(),
+                    actor: Some(branchyard::tasks::TriggerActor {
+                        source: "github".into(),
+                        name: "alice".into(),
+                        bot: false,
+                    }),
+                }),
             },
             Work::Send {
                 branch: "b".into(),

@@ -22,7 +22,7 @@ OWNER_LABEL = "branchyard-deployment"
 RELEASE_VERSION = "0.4.0"
 IMAGE_REPOSITORY = "ghcr.io/vamsiramakrishnan/branchyard-agy"
 MSB_VERSION = "0.7.3"
-MSB_ARCHIVE_SHA256 = "2d5da7de187246c804dce2a1a23f06626b6f7cb892d9a0c7c5c620784ba412ea"
+MSB_RUNTIME_REVISION = "branchyard-memory1"
 IAP_SOURCE_RANGE = "35.235.240.0/20"
 DEFAULT_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 SCOPE_PATTERN = r"[a-z][a-z0-9-]*|https://www\.googleapis\.com/auth/[a-z0-9._-]+"
@@ -55,6 +55,7 @@ class Config:
     internal_ip: bool = False
     tunnel_through_iap: bool = False
     forward_secret: str | None = None
+    gvisor: bool = False
 
     @property
     def remote_path(self) -> str:
@@ -76,6 +77,8 @@ class Config:
         target = asdict(self)
         for key in ("state_dir", "repo", "forward_secret", "scopes"):
             target.pop(key)
+        if not self.gvisor:
+            target.pop("gvisor")
         if self.access_scopes:
             target["scopes"] = list(self.access_scopes)
         if self.tunnel_through_iap:
@@ -150,6 +153,8 @@ def plan(config: Config) -> dict[str, Any]:
             "Create a dedicated Ubuntu 24.04 VM; refuse foreign or differently configured machines",
             "Install the pinned released Branchyard binaries and extract agy from the published worker image",
             "For microsandbox: enable nested virtualization, install the pinned runtime and import the worker image",
+            "For --gvisor: install pinned runsc, reload Docker without changing its default, "
+            "and grant the SSH worker Docker group access",
             "Transfer only a clean committed HEAD, or initialize an empty remote repository",
             "Write an owned SSH Host entry and one Include line, preserving existing SSH configuration",
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
@@ -159,7 +164,16 @@ def plan(config: Config) -> dict[str, Any]:
         "network": network,
         "ssh_transport": "iap" if config.tunnel_through_iap else "internal" if config.internal_ip else "external",
         "iap_firewall": firewall_plan(config),
+        "gvisor": {"release": "release-20261026.0", "runtime": "runsc"} if config.gvisor else None,
         "qualification": {"model": "not_checked", "microsandbox_hard_memory_ceiling": "not_qualified"},
+        "microsandbox_runtime": {
+            "version": MSB_VERSION,
+            "revision": MSB_RUNTIME_REVISION,
+            "manifest": f"https://github.com/vamsiramakrishnan/branchyard/releases/download/v{config.version}/microsandbox-runtime.json",
+            "verification": "same-release SHA256SUMS, archive checksum and bound runtime provenance",
+        }
+        if config.backend == "microsandbox"
+        else None,
         "credential_delivery": {
             "source_variable": config.forward_secret,
             "destination": "native by keystore: GEMINI_API_KEY in an owned 0600 file",
@@ -418,6 +432,27 @@ def inspect_instance(config: Config, run: Runner) -> dict[str, Any] | None:
     return instance
 
 
+def installer_source(filename: str, variable: str) -> str:
+    """Use an explicitly embedded helper, or its source-checkout sibling."""
+    installer = os.environ.get(variable)
+    if installer is None:
+        location = globals().get("__file__")
+        if not location:
+            raise SetupError(f"the packaged CLI must embed {filename}")
+        try:
+            installer = Path(location).with_name(filename).read_text()
+        except OSError as error:
+            raise SetupError(f"{filename} is missing; use a complete checkout or packaged CLI") from error
+    if not installer.strip():
+        raise SetupError(f"the packaged {filename} installer is empty; reinstall this Branchyard release")
+    return installer
+
+
+def runtime_environment(config: Config) -> str:
+    """Source the deployment's exact runtime pair and artifact-specific home."""
+    return f'. "$HOME/.local/state/branchyard/gce/{config.name}/microsandbox.env"'
+
+
 def bootstrap(config: Config, head: str | None) -> str:
     """Build the secret-free remote install script from validated values."""
     image = shlex.quote(config.image)
@@ -464,24 +499,31 @@ if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
 fi
 """
     if config.backend == "microsandbox":
+        installer = installer_source("install_microsandbox_runtime.py", "BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER")
+        owner = '--uid "$(id -u)" --gid "$(id -g)"'
         script += f"""sudo usermod -aG kvm "$(id -un)"
-sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 /var/lib/by-msb
-msb_url=https://github.com/superradcompany/microsandbox/releases/download/v{MSB_VERSION}
-curl --proto '=https' --tlsv1.2 -fsSL "$msb_url/microsandbox-linux-x86_64.tar.gz" -o "$stage/msb.tar.gz"
-printf '%s  %s\\n' {MSB_ARCHIVE_SHA256} "$stage/msb.tar.gz" | sha256sum -c -
-tar -xzf "$stage/msb.tar.gz" -C "$stage"
-mkdir -p /var/lib/by-msb/bin /var/lib/by-msb/lib
-install -m 0755 "$stage/msb" /var/lib/by-msb/bin/msb
-install -m 0644 "$stage/libkrunfw.so.5.6.1" /var/lib/by-msb/lib/libkrunfw.so.5.6.1
-MSB_HOME=/var/lib/by-msb /var/lib/by-msb/bin/msb context --format json
-sudo docker save {image} | MSB_HOME=/var/lib/by-msb /var/lib/by-msb/bin/msb image load --tag {image}
+state="$HOME/.local/state/branchyard/gce/{config.name}"
+mkdir -p "$state"
+chmod 0700 "$state"
+sudo python3 - --apply --version {release} --env-file "$state/microsandbox.env" {owner} <<'BRANCHYARD_MSB_INSTALLER'
 """
+        script += installer + "\nBRANCHYARD_MSB_INSTALLER\n"
+        script += f"""{runtime_environment(config)}
+"$MSB_PATH" context --format json
+sudo docker save {image} | "$MSB_PATH" image load --tag {image}
+"""
+    if config.gvisor:
+        # Packaged `python -c` callers supply the same embedded helper; source/guided callers use its sibling.
+        installer = installer_source("install_container_runtime.py", "BRANCHYARD_CONTAINER_RUNTIME_INSTALLER")
+        script += "sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'\n"
+        script += installer + "\nBRANCHYARD_GVISOR_INSTALLER\n"
+        script += 'sudo usermod -aG docker "$(id -un)"\n'
     script += "/usr/local/bin/by --version\n/usr/local/bin/agy --version\n"
     return script
 
 
 def configure_worker(config: Config) -> str:
-    """Configure through a new SSH login after installation updates the user's KVM groups."""
+    """Configure through a new SSH login after installation updates runtime groups."""
     return (
         "set -eu\numask 077\nstage=$(mktemp -d)\ntrap 'rm -rf \"$stage\"' EXIT\n"
         f"cd {shlex.quote(config.remote_path)}\n" + worker_configuration(config)
@@ -548,7 +590,7 @@ BY_SERVER
         template.replace("@@NAME@@", config.name)
         .replace("@@BACKEND@@", config.backend)
         .replace("@@IMAGE@@", json.dumps(config.image))
-        .replace("@@RUNTIME_ENV@@", "export MSB_HOME=/var/lib/by-msb" if config.backend == "microsandbox" else "")
+        .replace("@@RUNTIME_ENV@@", runtime_environment(config) if config.backend == "microsandbox" else "")
     )
 
 
@@ -643,6 +685,7 @@ def apply(config: Config) -> dict[str, Any]:
         )
         if not account or account.get("email") != config.service_account:
             raise SetupError("could not verify the selected existing service account")
+    install_script = bootstrap(config, head)
     instance = inspect_instance(config, run)
     unscoped = unscoped_reuse(config, instance)
     firewall = inspect_iap_firewall(config, run)
@@ -716,7 +759,7 @@ def apply(config: Config) -> dict[str, Any]:
                 f"--zone={config.zone}",
             )
             run.run(args + transport(config))
-    run.run(ssh(config, "bash -se"), script=bootstrap(config, head))
+    run.run(ssh(config, "bash -se"), script=install_script)
     run.run(ssh(config, "bash -se"), script=configure_worker(config))
     if secret is not None:
         run.run(
@@ -725,7 +768,7 @@ def apply(config: Config) -> dict[str, Any]:
         )
     check = "/usr/local/bin/by --version && /usr/local/bin/agy --version"
     if config.backend == "microsandbox":
-        check += " && test -r /dev/kvm && test -w /dev/kvm"
+        check += f' && {runtime_environment(config)} && "$MSB_PATH" --version && test -r /dev/kvm && test -w /dev/kvm'
     run.run(ssh(config, check))
     args = gcloud(config, "compute", "ssh", config.name, f"--zone={config.zone}", "--dry-run")
     path = managed_ssh(config, run.run(args + transport(config)) or "", run)
@@ -736,6 +779,7 @@ def apply(config: Config) -> dict[str, Any]:
         "zone": config.zone,
         "name": config.name,
         "backend": config.backend,
+        "gvisor": {"release": "release-20261026.0", "runtime": "runsc"} if config.gvisor else None,
         "remote": f"ssh://{config.alias}{config.remote_path}",
         "remote_command": "/usr/local/bin/by",
         "ssh_config": str(path),
@@ -791,6 +835,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--image", help="defaults to the published worker image matching --version")
     parser.add_argument("--backend", choices=("local", "microsandbox"), default="local")
+    parser.add_argument(
+        "--gvisor", action="store_true", help="install pinned runsc prerequisites; leaves the task provider unchanged"
+    )
     parser.add_argument("--repo", type=Path, help="copy only this repository's clean committed HEAD")
     parser.add_argument("--network", default="default")
     parser.add_argument("--subnet", default="default")

@@ -45,6 +45,58 @@ It calls real harnesses, so it needs their CLIs installed and logged in. `Policy
 anything your user can; use a narrower `Policy` (or `Policy::deny_all()` and rules) where that is too much.
 `Yard::open_configured` reads `branchyard.toml` as `by` does, and `Yard::up` brings the configured backends up.
 
+## Native allocation
+
+Native provider options are typed and reject unknown fields. Validate them before creating a task; images must
+be pinned by SHA-256 digest and contain the selected harness. The worker authenticates its transport, while the
+workload receives only its private workspace, home and explicitly passed environment.
+
+```rust,no_run
+use branchyard::{AgentSandboxOptions, AgentSandboxRuntime, Provider, Yard};
+
+let options = AgentSandboxOptions {
+    context: "gke_project_zone_cluster".into(),
+    namespace: "branchyard-microvm".into(),
+    image: std::env::var("BRANCHYARD_RUNTIME_IMAGE")?,
+    runtime: AgentSandboxRuntime::Microvm,
+    ..AgentSandboxOptions::default()
+};
+options.validate()?;
+let branch = Yard::open(".")?
+    .task("Update the parser and run its checks")
+    .provider(Provider::agent_sandbox(options))
+    .run()?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Provider::container(ContainerOptions { image, ..ContainerOptions::default() })` uses the worker's local Docker
+daemon with gVisor by default. Both native paths copy workspace and private home in and back, allocate a fresh
+sandbox on every follow-up, and destroy the allocation after capture or cancellation. They offer no retained
+sandbox, pause, checkpoint, host mount, or required proxy-egress support. The image, security, runtime, resource
+and network contracts are described in [the container guide](../../docs/container-sandbox.md) and
+[the Agent Sandbox guide](../../docs/agent-sandbox.md).
+
+A failed workspace copy-back fails an otherwise completed turn, even when it has no artifact capture contract.
+The allocation is still destroyed, and its transfer warning is retained in the branch events.
+Cancellation keeps its interrupted outcome when that return transport also fails.
+The engine records native cleanup ownership before allocation. Failed deletion leaves that owned intent in the
+service registry for the existing reaper to retry, including failures during acquisition or the initial file push.
+Successful deletion deregisters it; failed cleanup never creates a retained or resumable sandbox.
+
+An embedding server can install `Yard::use_provider_admission` with a pure callback over the resolved provider
+and the caller's `TaskOptions`. The hook is shared by yard clones and checks inherited turns, waiting graph
+children and automatic wakes before they start. For example, requiring a native provider to equal
+`options.provider` lets the server admit its own resolved presets while refusing default recovery options.
+An approved graph proposal keeps its provider in the current process's cached options; a fresh process must
+supply approved options again. A denied recovery leaves waiting children unclaimed and parked turns parked.
+SDK and CLI callers have no additional restriction unless they install a hook.
+
+Hermetic evidence: `cargo test -p branchyard --test native --locked --offline` drives the real engine through
+fake Docker and kubectl commands, checking private-home/workspace copy-back, fresh follow-ups, cancellation,
+capture failure cleanup, admission on inherited turns and graph/wake recovery, and refusal before allocation.
+Not done: live runtime isolation qualification or a model
+run in these tests.
+
 ## Features
 
 | Feature | Adds | Needs |

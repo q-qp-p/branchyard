@@ -1,10 +1,12 @@
 [workspace]
 members = [
     "crates/branchyard",
+    "crates/branchyard-agent-sandbox",
     "crates/branchyard-bridge",
     "crates/branchyard-cli",
     "crates/branchyard-config",
     "crates/branchyard-client",
+    "crates/branchyard-container",
     "crates/branchyard-controls",
     "crates/branchyard-harness",
     "crates/branchyard-herdr",

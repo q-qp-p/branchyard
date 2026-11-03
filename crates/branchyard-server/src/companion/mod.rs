@@ -115,6 +115,8 @@ pub struct Companion {
     pub vapid: Option<push::Vapid>,
     /// The HTTP client pushes are sent with; `None` when push is off.
     pub client: Option<reqwest::Client>,
+    /// Each subscription's run of failed sends, for `GET /v1/problems`.
+    pub(crate) push_failures: push::Failures,
     attempts: Mutex<VecDeque<Instant>>,
     frames: Mutex<HashMap<String, FrameGrant>>,
 }
@@ -182,6 +184,7 @@ impl Companion {
             store,
             vapid,
             client,
+            push_failures: push::Failures::default(),
             attempts: Mutex::new(VecDeque::new()),
             frames: Mutex::new(HashMap::new()),
         })
@@ -740,6 +743,7 @@ mod tests {
             store: Arc::new(store::SqliteCompanion::memory()),
             vapid: None,
             client: None,
+            push_failures: push::Failures::default(),
             attempts: Mutex::new(VecDeque::new()),
             frames: Mutex::new(HashMap::new()),
         };

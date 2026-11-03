@@ -695,6 +695,9 @@ pub(crate) trait Backend: Send + Sync + fmt::Debug {
     /// The first message that answers the question `question_id`, if one
     /// has arrived.
     fn answer_to(&self, question_id: u64) -> Result<Option<Message>, Error>;
+    /// The newest [`crate::glance::QUESTIONS_MAX`] questions and
+    /// escalations that no message answers, oldest first.
+    fn unanswered(&self) -> Result<Vec<Message>, Error>;
     /// The steered input carrying message `id`, if one was queued for it
     /// (see [`Backend::request_steer`]) and has not been refused.
     fn message_steer(&self, id: u64) -> Result<Option<u64>, Error>;

@@ -1,0 +1,14 @@
+host 7.0.0-1011-gcp
+msb 0.7.3
+3.20: Pulling from library/alpine
+Digest: sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+Status: Image is up to date for alpine:3.20
+docker.io/library/alpine:3.20
+   ✓ Loaded       alpine:3.20
+   ✓ Loaded       branchyard-qual-alpine:20261102
+guest 6.12.109
+cpus 1
+MemTotal:         529224 kB
+roundtrip
+host-files-hidden
+   ✓ Removed      gce-qual-512

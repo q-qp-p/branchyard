@@ -1,0 +1,68 @@
+name: Build patched Microsandbox runtime
+on:
+  workflow_call:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install native runtime build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libcap-ng-dev
+      - name: Install the pinned runtime toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+        with:
+          workspaces: ". -> target/microsandbox-runtime"
+          shared-key: microsandbox-memory1
+          cache-on-failure: true
+      - name: Fetch pinned upstream sources and payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.7.3 https://github.com/superradcompany/microsandbox.git "$RUNNER_TEMP/msb-source"
+          curl --proto '=https' --tlsv1.2 --fail --location --output "$RUNNER_TEMP/msb-upstream.tar.gz" \
+            https://github.com/superradcompany/microsandbox/releases/download/v0.7.3/microsandbox-linux-x86_64.tar.gz
+          curl --proto '=https' --tlsv1.2 --fail --location --output "$RUNNER_TEMP/msb-agentd" \
+            https://github.com/superradcompany/microsandbox/releases/download/v0.7.3/agentd-x86_64
+      - name: Build the patched runner and immutable release manifest
+        shell: bash
+        run: |
+          python3 tools/build_microsandbox_runtime.py \
+            --source "$RUNNER_TEMP/msb-source" --upstream-archive "$RUNNER_TEMP/msb-upstream.tar.gz" \
+            --agentd "$RUNNER_TEMP/msb-agentd" --target-dir "$GITHUB_WORKSPACE/target/microsandbox-runtime" \
+            --output "$RUNNER_TEMP/msb-artifacts" --profile release --fetch
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: artifacts-microsandbox-runtime
+          path: ${{ runner.temp }}/msb-artifacts/*
+          if-no-files-found: error
+      - name: Attest runtime artifacts
+        id: attest
+        if: inputs.publish
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ runner.temp }}/msb-artifacts/*
+      - name: Retry runtime attestation
+        if: inputs.publish && steps.attest.outcome == 'failure'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: ${{ runner.temp }}/msb-artifacts/*

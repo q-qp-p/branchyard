@@ -1,0 +1,27 @@
+{
+  "mode": "plan",
+  "owner": "branchyard-container-runtime-v1",
+  "release": "release-20261026.0",
+  "archive_sha512": "26e4a327565f5da0f73261a6387e2c20f4695a232e330095a3111b70efd604fdf09d734e8cc8f714dbb5c5607ce8c87ea80b26df549d83a146f2efd5a1af448a",
+  "install_dir": "/opt/branchyard/gvisor/release-20261026.0/x86_64",
+  "daemon_config": "/etc/docker/daemon.json",
+  "archive_url": "https://storage.googleapis.com/gvisor/releases/release/20261026.0/x86_64/gvisor.tar.bz2",
+  "runtime": {
+    "runsc": {
+      "path": "/opt/branchyard/gvisor/release-20261026.0/x86_64/runsc"
+    }
+  },
+  "state_dir": "/var/lib/branchyard/container-runtime",
+  "actions": [
+    "Refuse foreign installation directories and conflicting runsc registrations",
+    "Verify the SHA-512 of the complete official runsc and sidecar archive before extraction",
+    "Atomically install an owned version directory; preserve existing system runsc binaries",
+    "Merge only runtimes.runsc into daemon.json, preserving unrelated keys and the default runtime",
+    "Validate Docker configuration; reload docker with systemctl reload, never restart",
+    "Verify the local Docker daemon reports the exact runsc path and unchanged default runtime"
+  ],
+  "qualification": {
+    "container_execution": "not_checked",
+    "model": "not_called"
+  }
+}

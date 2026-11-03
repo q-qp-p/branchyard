@@ -34,7 +34,7 @@ const CSV = 'ticket_backlog.csv';
 const XLSX = 'backlog_metrics.xlsx';
 const DOCX = 'backlog_report.docx';
 const PROMPT = `SH python3 ${process.env.BY_COLLECT}`;
-const PRESETS = ['local', 'substrate-closed', 'substrate-missing'];
+const PRESETS = ['local', 'substrate-closed', 'substrate-missing', 'gce-container', 'gce-microvm', 'gke-gvisor', 'gke-kata'];
 const ACK = 'I accept tools without per-tool approval';
 let browser = null;
 let shown = null;
@@ -184,6 +184,9 @@ const same = (got, want, what) => {
   await form.getByRole('button', { name: 'Start session', exact: true }).click();
   if (await page.evaluate(() => document.activeElement.name) !== 'environment') throw new Error('Start did not focus the environment to choose');
   const card = (key) => form.locator(`.env-card[data-environment="${key}"]`);
+  for (const [key, label] of [['gce-container', 'Container'], ['gce-microvm', 'Microsandbox'], ['gke-gvisor', 'Agent Sandbox'], ['gke-kata', 'Agent Sandbox']]) {
+    if (await card(key).locator('.tag').innerText() !== label) throw new Error(`${key} has the wrong provider label`);
+  }
   const row = (key, label) => card(key).locator('.readiness li', { hasText: `${label}:` });
   const rowSays = async (key, label, parts, state) => {
     const text = await row(key, label).innerText();

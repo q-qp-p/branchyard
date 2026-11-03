@@ -1835,6 +1835,95 @@ fn a_child_messages_its_parent_with_the_python_module_and_is_delivered_next_turn
     assert_eq!(messages[0]["delivered"], true, "{kid_inbox}");
 }
 
+/// A root started with delegation asks the person from its own turn; the
+/// person reads it with `by inbox` and answers it with `by answer ID`, with
+/// no `--as`, and since the root's turn has ended, is told how to start the
+/// next one, where the root reads the answer.
+#[test]
+fn a_root_asks_the_person_who_answers_without_as() {
+    let repo = Repo::new();
+    let out = repo.by_agent(&[
+        "run",
+        "SH by ask 'Which database?' --json",
+        "--name",
+        "root",
+        "--delegate",
+        "--yes",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let (code, asked) = sh_json(&reply(&repo, "root"), 0);
+    assert_eq!(code, 0, "{asked}");
+    assert_eq!(asked["message"]["to"], "@person", "{asked}");
+    let id = asked["message"]["id"].as_u64().unwrap();
+
+    let inbox = repo.json(&["inbox", "--json"]);
+    assert_eq!(inbox["branch"], "@person", "{inbox}");
+    assert_eq!(inbox["messages"][0]["id"], id, "{inbox}");
+    let listed = stdout(&repo.ok(&["inbox"]));
+    assert!(
+        listed.starts_with(&format!(
+            "#{id} question from root [unread]: Which database?"
+        )),
+        "{listed}"
+    );
+
+    let answered = repo.ok(&["answer", &id.to_string(), "Postgres"]);
+    let said = stdout(&answered);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 2, "{said}");
+    assert!(
+        lines[0].starts_with(&format!("answered #{id} as #")),
+        "{said}"
+    );
+    assert_eq!(
+        lines[1],
+        "root reads it when its next turn starts; to start one: by send root \"<prompt>\""
+    );
+    let root_inbox = repo.json(&["inbox", "--as", "root", "--json"]);
+    let answer = &root_inbox["messages"][0];
+    assert_eq!(
+        (
+            &answer["from"],
+            &answer["in_reply_to"],
+            &answer["delivered"]
+        ),
+        (
+            &Value::from("@person"),
+            &Value::from(id),
+            &Value::from(false)
+        ),
+        "{root_inbox}"
+    );
+    let again = repo.by(&["answer", &id.to_string(), "MySQL", "--json"]);
+    assert_eq!(again.status.code(), Some(4), "{}", stdout(&again));
+    let inbox = repo.json(&["inbox", "--json"]);
+    assert_eq!(inbox["answered"], serde_json::json!([id]), "{inbox}");
+    let listed = stdout(&repo.ok(&["inbox"]));
+    assert!(
+        listed.starts_with(&format!(
+            "#{id} question from root [answered]: Which database?"
+        )),
+        "{listed}"
+    );
+    assert!(!listed.contains("[unread]"), "{listed}");
+    assert_eq!(stdout(&repo.ok(&["inbox", "--unread"])), "empty\n");
+
+    let sent = repo.json(&["send", "root", "WHOAMI", "--wait", "--json"]);
+    assert_eq!(sent["status"]["state"], "no_changes", "{sent}");
+    let log = repo.json(&["log", "root", "--json"]);
+    let prompt = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|e| e["activity"] == "prompt")
+        .unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(prompt.contains("answer from @person: Postgres"), "{prompt}");
+}
+
 #[test]
 fn the_same_commands_act_with_your_authority_outside_a_harness() {
     let repo = Repo::new();
@@ -2057,6 +2146,14 @@ fn a_delegating_harness_gets_tools_and_skill_outside_its_worktree() {
             .as_str()
             .unwrap()
             .contains("was not given delegation"),
+        "{refused}"
+    );
+    assert_eq!(refused["error"]["kind"], "denied", "{refused}");
+    assert!(
+        refused["error"]["next"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("by run --delegate \"<prompt>\""),
         "{refused}"
     );
 }

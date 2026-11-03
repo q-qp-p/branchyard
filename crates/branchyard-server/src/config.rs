@@ -550,7 +550,9 @@ pub struct ExecutionPreset {
     #[serde(default)]
     pub description: String,
     /// The environment, in the form of a request's `provider`: `local`,
-    /// `substrate` or `microsandbox`. Its kind must be in `allow_providers`
+    /// `substrate`, `microsandbox`, `container` or `agent_sandbox`. Native
+    /// container and Agent Sandbox targets can be selected only through presets.
+    /// Its kind must be in `allow_providers`
     /// (`local` always is). Relative paths resolve against this file's
     /// directory.
     pub provider: branchyard::Provider,
@@ -599,18 +601,14 @@ impl PresetHarness {
     }
 }
 
-/// A Substrate provider's options. Read through the provider's JSON form:
-/// only `crates/branchyard/src/providers/` names a `Provider` variant
-/// (`crates/branchyard/tests/provider_seam.rs`).
+/// A Substrate provider's options, exposed by its harness placement.
 pub(crate) fn substrate_options(
     provider: &branchyard::Provider,
 ) -> Option<branchyard::SubstrateOptions> {
-    if provider.label() != "substrate" {
-        return None;
+    match provider.harness_location() {
+        branchyard::HarnessLocation::Substrate(options) => Some(options.clone()),
+        _ => None,
     }
-    serde_json::to_value(provider)
-        .and_then(serde_json::from_value)
-        .ok()
 }
 
 /// `preset` with its Substrate paths resolved by `resolve`, keeping the
@@ -691,7 +689,8 @@ pub struct Config {
     /// ones are refused with `413 body_too_large` before being written
     /// anywhere. See `docs/storage.md`.
     pub max_artifact_bytes: u64,
-    /// Operations running at once; more wait queued.
+    /// Operations running at once; more wait queued. A follow-up and a
+    /// console control each have one more slot of their own.
     pub max_running: usize,
     /// How long a worker's claim on a queued operation lasts without
     /// renewal. Another worker takes over a claim that expired.
@@ -1377,20 +1376,28 @@ impl Config {
             if preset.label.trim().is_empty() {
                 return fail("label is empty".into());
             }
-            let kind = preset.provider.label();
-            if kind.starts_with("recipe") {
+            let kind = preset.provider.name();
+            if kind == "recipe" {
                 return fail(
                     "a server never runs environment recipes (docs/recipes.md); use local, \
                      substrate or microsandbox"
                         .into(),
                 );
             }
-            if kind != "local" && !self.allow_providers.contains(&kind) {
+            if kind != "local" && !self.allow_providers.contains(kind) {
                 return fail(format!(
                     "its provider {kind} is not in allow_providers; allow it with \
                      --allow-provider {kind}"
                 ));
             }
+            preset.provider.validate_options().map_err(|_| {
+                let name = if kind == "agent_sandbox" {
+                    "Agent Sandbox"
+                } else {
+                    kind
+                };
+                format!("execution preset {id}: invalid {name} configuration")
+            })?;
             if let Some(options) = substrate_options(&preset.provider) {
                 let paths = [
                     Some(&options.key),
@@ -1495,7 +1502,13 @@ impl fmt::Debug for MetricsConfig {
 }
 
 /// The providers a server can allow requests to name.
-pub const PROVIDERS: &[&str] = &["local", "microsandbox", "substrate"];
+pub const PROVIDERS: &[&str] = &[
+    "local",
+    "microsandbox",
+    "substrate",
+    "container",
+    "agent_sandbox",
+];
 
 pub fn check_provider_name(name: &str) -> Result<(), String> {
     match PROVIDERS.contains(&name) {

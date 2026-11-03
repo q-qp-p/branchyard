@@ -8,15 +8,17 @@
 //! (`crate::work::Work`), not a closure, so any worker on the database can
 //! run it: this server's, another server's, or a `--worker` process.
 //!
-//! A dispatcher thread claims queued operations oldest first, up to
-//! `max_running` at once, each under a lease it renews and a fence that
-//! every later write names. A worker records an operation `running` before
-//! it runs it, and its outcome after, releasing the branch locks in the
-//! same transaction. A claim whose lease expired, or whose process is gone
-//! from this host, is claimed again by any worker: an operation still
-//! `queued` then runs, and one already `running` is recorded as
-//! `interrupted`, never run again, since its turn may have started; the
-//! engine recovers that turn's branch as it does any whose engine died.
+//! A dispatcher thread claims queued operations in scheduling order
+//! ([`Scheduling`]), up to `max_running` at once plus one follow-up and one
+//! control on slots of their own ([`Lane`]), each under a lease it renews
+//! and a fence that every later write names. A worker records an operation
+//! `running` before it runs it, and its outcome after, releasing the branch
+//! locks in the same transaction. A claim whose lease expired, or whose
+//! process is gone from this host, is claimed again by any worker: an
+//! operation still `queued` then runs, and one already `running` is
+//! recorded as `interrupted`, never run again, since its turn may have
+//! started; the engine recovers that turn's branch as it does any whose
+//! engine died.
 //!
 //! Each operation belongs to the tenant of the principal that admitted it,
 //! recorded with it: only that tenant sees it, admission counts the
@@ -36,7 +38,7 @@
 
 use branchyard_support::time::now_ms;
 use branchyard_support::{CondvarExt as _, LockExt as _};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -44,7 +46,7 @@ use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use branchyard_client::api::{
-    ErrorBody, Operation, OperationKind, OperationResult, OperationState,
+    ErrorBody, Operation, OperationKind, OperationResult, OperationState, Problem, ProblemKind,
 };
 use serde_json::Value;
 
@@ -52,9 +54,10 @@ use crate::config::Principal;
 use crate::error::ApiError;
 use crate::metrics;
 use crate::observe::Observability;
+use crate::problems::{Found, Scope};
 use crate::store::{
-    Admission, AdmissionQuota, Claim, Idempotency, OperationStore, Scheduling, StoredOperation,
-    Worker,
+    Admission, AdmissionQuota, Claim, Idempotency, Lane, OperationStore, Scheduling,
+    StoredOperation, Worker,
 };
 use crate::telemetry::SpanContext;
 
@@ -97,12 +100,16 @@ pub struct NewOperation {
     pub priority: i32,
     /// The request's `traceparent` header, which its trace continues.
     pub trace: Option<String>,
+    /// Which capacity a worker claims it from.
+    pub lane: Lane,
 }
 
 /// How a registry dispatches.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Operations this process runs at once; more wait queued.
+    /// Normal operations this process runs at once; more wait queued. One
+    /// follow-up and one control may run beyond it, each on a slot of its
+    /// own ([`Lane`]).
     pub max_running: usize,
     /// How long a claim lasts without renewal. Renewed every third of it.
     pub lease: Duration,
@@ -225,9 +232,9 @@ pub struct Registry {
 }
 
 struct State {
-    /// Operations this process runs, by ID, with their claim's fence.
-    running: HashMap<String, i64>,
-    running_controls: HashSet<String>,
+    /// Operations this process runs, by ID, with their claim's fence and
+    /// the capacity it was claimed from.
+    running: HashMap<String, (i64, Lane)>,
     /// Set by [`Registry::start`]; cleared at close.
     executor: Option<Arc<dyn Executor>>,
     accepting: bool,
@@ -284,7 +291,6 @@ impl Registry {
             },
             state: Mutex::new(State {
                 running: HashMap::new(),
-                running_controls: HashSet::new(),
                 executor: None,
                 accepting: true,
                 closed: false,
@@ -474,6 +480,55 @@ impl Registry {
         operation
     }
 
+    /// Every tenant's queued operations that [`Registry::describe`] says
+    /// wait for a worker: unclaimed, requiring labels no live worker
+    /// serving their repository carries, for at least
+    /// [`Options::unclaimable_after`] since admission. For
+    /// `GET /v1/problems`, each seen by its tenant on its repository.
+    pub(crate) fn problems(&self) -> io::Result<Vec<Found>> {
+        let now = now_ms();
+        let after = self.options.unclaimable_after.as_millis() as u64;
+        let admitted = |q: &crate::store::Queued| u64::try_from(q.enqueued_ms).unwrap_or(0);
+        let waiting: Vec<crate::store::Queued> = self
+            .store
+            .queue()?
+            .into_iter()
+            .filter(|q| {
+                !q.claimed && !q.requires.is_empty() && now.saturating_sub(admitted(q)) >= after
+            })
+            .collect();
+        if waiting.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workers = self.store.workers(BEAT * 3)?;
+        Ok(waiting
+            .into_iter()
+            .filter_map(|q| {
+                let error = crate::store::unclaimable(&q.requires, &q.repo, &workers)?;
+                let labels: Vec<String> = q.requires.iter().map(|l| format!("--label {l}")).collect();
+                Some(Found {
+                    problem: Problem {
+                        kind: ProblemKind::Operation,
+                        what: format!("operation {} on {}", q.id, q.repo),
+                        since_ms: admitted(&q),
+                        failures: None,
+                        error,
+                        next: format!(
+                            "start `by worker` or `by serve` for {} with `{}`; it claims the operation",
+                            q.repo,
+                            labels.join(" ")
+                        ),
+                        key: q.id,
+                    },
+                    scope: Scope::Tenant {
+                        tenant: q.tenant,
+                        repo: Some(q.repo),
+                    },
+                })
+            })
+            .collect())
+    }
+
     /// `id`'s operation, only when it belongs to `tenant`: an operation of
     /// another tenant reads as absent, exactly like an unknown ID, so a
     /// principal cannot distinguish another tenant's operation from one
@@ -643,6 +698,7 @@ impl Registry {
             principal: Some(new.principal),
             creates: new.creates,
             trace: span.as_ref().map(|s| s.context().traceparent()),
+            lane: new.lane,
         };
         let mut mutations = mutations.to_vec();
         if work.get("kind").and_then(Value::as_str) == Some("console") {
@@ -766,21 +822,30 @@ impl Registry {
                 beaten = Some(Instant::now());
                 advertised = detected;
             }
-            let (free, control_free, executor) = {
+            let (control_free, lane, executor) = {
                 let mut state = self.lock();
                 if state.closed || !state.accepting {
                     return;
                 }
                 state.admitted = false;
-                (
+                let free = |lane: Lane, slots: usize| {
                     state
                         .running
-                        .len()
-                        .saturating_sub(state.running_controls.len())
-                        < self.options.max_running,
-                    state.running_controls.is_empty(),
-                    state.executor.clone(),
-                )
+                        .values()
+                        .filter(|(_, held)| *held == lane)
+                        .count()
+                        < slots
+                };
+                // A normal claim takes follow-ups too, ahead of the rest, so
+                // the follow-up slot is only claimed from once normal is full.
+                let lane = if free(Lane::Normal, self.options.max_running) {
+                    Some(Lane::Normal)
+                } else if free(Lane::FollowUp, 1) {
+                    Some(Lane::FollowUp)
+                } else {
+                    None
+                };
+                (free(Lane::Control, 1), lane, state.executor.clone())
             };
             let Some(executor) = executor else { return };
             if renewed.elapsed() >= renew_every {
@@ -788,44 +853,41 @@ impl Registry {
                 renewed = Instant::now();
             }
             if control_free {
-                match self.store.claim_control(
-                    &self.worker,
-                    &self.options.repos,
-                    &self.labels(),
-                    self.options.lease,
-                    &self.options.scheduling,
-                ) {
-                    Ok(Some(claim)) => {
-                        self.claimed(&claim);
-                        self.run(claim, executor.clone());
-                    }
-                    Ok(None) => {}
-                    Err(e) => tracing::error!(error = %e, "could not claim a control operation"),
+                if let Some(claim) = self.claim_from(Lane::Control) {
+                    self.claimed(&claim);
+                    self.run(claim, Lane::Control, executor.clone());
                 }
             }
-            if free {
-                match self.store.claim_next(
-                    &self.worker,
-                    &self.options.repos,
-                    &self.labels(),
-                    self.options.lease,
-                    &self.options.scheduling,
-                ) {
-                    Ok(Some(claim)) => {
-                        self.claimed(&claim);
-                        self.run(claim, executor);
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(e) => tracing::error!(error = %e, "could not claim an operation"),
+            if let Some(lane) = lane {
+                if let Some(claim) = self.claim_from(lane) {
+                    self.claimed(&claim);
+                    self.run(claim, lane, executor);
+                    continue;
                 }
             }
             let wait = self.options.poll.min(renew_every);
             let state = self.lock();
-            if !state.admitted || !free {
+            if !state.admitted || (!control_free && lane.is_none()) {
                 drop(self.changed.wait_timeout_recovering(state, wait, "changed"));
             }
         }
+    }
+
+    /// Claim the next operation `lane`'s capacity takes, if any.
+    fn claim_from(&self, lane: Lane) -> Option<Claim> {
+        self.store
+            .claim_from(
+                &self.worker,
+                &self.options.repos,
+                &self.labels(),
+                self.options.lease,
+                &self.options.scheduling,
+                lane,
+            )
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, lane = lane.as_str(), "could not claim an operation");
+                None
+            })
     }
 
     /// Count a claim, and trace it as a child of its admission.
@@ -883,7 +945,7 @@ impl Registry {
             .lock()
             .running
             .iter()
-            .map(|(id, fence)| (id.clone(), *fence))
+            .map(|(id, (fence, _))| (id.clone(), *fence))
             .collect();
         for (id, fence) in running {
             let metrics = &self.options.observability.metrics;
@@ -904,8 +966,9 @@ impl Registry {
         }
     }
 
-    /// Run a claimed operation on a thread of its own.
-    fn run(self: &Arc<Self>, claim: Claim, executor: Arc<dyn Executor>) {
+    /// Run an operation claimed from `lane`'s capacity on a thread of its
+    /// own.
+    fn run(self: &Arc<Self>, claim: Claim, lane: Lane, executor: Arc<dyn Executor>) {
         let id = claim.operation.operation.id.clone();
         {
             let mut state = self.lock();
@@ -917,10 +980,7 @@ impl Registry {
                 );
                 return;
             }
-            state.running.insert(id.clone(), claim.fence);
-            if crate::store::control_work(&claim.work) {
-                state.running_controls.insert(id.clone());
-            }
+            state.running.insert(id.clone(), (claim.fence, lane));
         }
         let registry = self.clone();
         let fence = claim.fence;
@@ -1064,7 +1124,6 @@ impl Registry {
     fn done(&self, id: &str) {
         let mut state = self.lock();
         state.running.remove(id);
-        state.running_controls.remove(id);
         state.finished += 1;
         drop(state);
         self.changed.notify_all();
@@ -1192,8 +1251,11 @@ impl Registry {
             let mut state = self.lock();
             state.accepting = false;
             state.executor = None;
-            state.running_controls.clear();
-            state.running.drain().collect()
+            state
+                .running
+                .drain()
+                .map(|(id, (fence, _))| (id, fence))
+                .collect()
         };
         let mut count = 0;
         for (id, fence) in running {
@@ -1401,20 +1463,38 @@ mod tests {
     }
 
     /// Runs work `{"n": N}` by recording N; `{"wait": true}` blocks until
-    /// released.
+    /// released through `gate`, and `{"wait": "<key>"}` through
+    /// `gates[key]`.
     #[derive(Default)]
     struct Recorder {
         ran: Mutex<Vec<u64>>,
         gate: Mutex<Option<mpsc::Receiver<()>>>,
+        gates: Mutex<HashMap<String, mpsc::Receiver<()>>>,
+    }
+
+    impl Recorder {
+        /// Hold work `{"wait": key}` until the returned sender sends.
+        fn gate(&self, key: &str) -> mpsc::Sender<()> {
+            let (release, gate) = mpsc::channel();
+            self.gates.lock().unwrap().insert(key.into(), gate);
+            release
+        }
+
+        /// Whether work `{"wait": key}` has started.
+        fn holds(&self, key: &str) -> bool {
+            !self.gates.lock().unwrap().contains_key(key)
+        }
     }
 
     impl Executor for Recorder {
         fn execute(&self, _: &StoredOperation, work: &Value) -> Finished {
-            if work["wait"] == true {
-                let gate = self.gate.lock().unwrap().take();
-                if let Some(gate) = gate {
-                    gate.recv().unwrap();
-                }
+            let gate = match &work["wait"] {
+                Value::Bool(true) => self.gate.lock().unwrap().take(),
+                Value::String(key) => self.gates.lock().unwrap().remove(key),
+                _ => None,
+            };
+            if let Some(gate) = gate {
+                gate.recv().unwrap();
             }
             if let Some(n) = work["n"].as_u64() {
                 self.ran.lock().unwrap().push(n);
@@ -1444,6 +1524,7 @@ mod tests {
             requires: Vec::new(),
             priority: 0,
             trace: None,
+            lane: Lane::Normal,
         }
     }
 
@@ -1616,7 +1697,11 @@ mod tests {
         branchyard_testkit::wait::until("normal operation to fill the worker slot", || {
             recorder.gate.lock().unwrap().is_none()
         });
-        let (control,_) = registry.submit_console(new(Some("control"),&[]),serde_json::json!({"kind":"console","command":{"action":"control","control":"cancel","workspace_id":"w"},"n":2}),&[]).unwrap();
+        let control = NewOperation {
+            lane: Lane::Control,
+            ..new(Some("control"), &[])
+        };
+        let (control,_) = registry.submit_console(control,serde_json::json!({"kind":"console","command":{"action":"control","control":"cancel","workspace_id":"w"},"n":2}),&[]).unwrap();
         branchyard_testkit::wait::until("control to run despite saturated normal capacity", || {
             registry.get(&control.id).unwrap().unwrap().state == OperationState::Succeeded
         });
@@ -1624,6 +1709,112 @@ mod tests {
         release.send(()).unwrap();
         assert!(registry.wait_idle(Duration::from_secs(5)));
         registry.close();
+    }
+
+    fn follow_up() -> NewOperation {
+        NewOperation {
+            lane: Lane::FollowUp,
+            ..new(None, &[])
+        }
+    }
+
+    #[test]
+    fn a_follow_up_runs_on_the_reserved_slot_while_capacity_is_full() {
+        let (registry, recorder) = started(Box::new(MemoryStore::default()), 1);
+        let release = recorder.gate("held");
+        registry
+            .submit(new(None, &[]), serde_json::json!({ "wait": "held" }))
+            .unwrap();
+        branchyard_testkit::wait::until("a normal operation to fill the worker slot", || {
+            recorder.holds("held")
+        });
+        let (queued, _) = registry
+            .submit(new(None, &[]), serde_json::json!({ "n": 1 }))
+            .unwrap();
+        let (continued, _) = registry
+            .submit(follow_up(), serde_json::json!({ "n": 2 }))
+            .unwrap();
+        branchyard_testkit::wait::until("the follow-up to run on the reserved slot", || {
+            state(&registry, &continued.id) == OperationState::Succeeded
+        });
+        assert_eq!(state(&registry, &queued.id), OperationState::Queued);
+        assert_eq!(*recorder.ran.lock().unwrap(), [2]);
+        release.send(()).unwrap();
+        assert!(registry.wait_idle(Duration::from_secs(5)));
+        assert_eq!(state(&registry, &queued.id), OperationState::Succeeded);
+        assert_eq!(*recorder.ran.lock().unwrap(), [2, 1]);
+        registry.close();
+    }
+
+    #[test]
+    fn a_follow_up_is_claimed_before_older_launches() {
+        let (registry, recorder) = started(Box::new(MemoryStore::default()), 1);
+        let normal = recorder.gate("normal");
+        let reserved = recorder.gate("reserved");
+        registry
+            .submit(new(None, &[]), serde_json::json!({ "wait": "normal" }))
+            .unwrap();
+        branchyard_testkit::wait::until("a normal operation to fill the worker slot", || {
+            recorder.holds("normal")
+        });
+        registry
+            .submit(follow_up(), serde_json::json!({ "wait": "reserved" }))
+            .unwrap();
+        branchyard_testkit::wait::until("a follow-up to fill the reserved slot", || {
+            recorder.holds("reserved")
+        });
+        for n in 1..=2 {
+            registry
+                .submit(new(None, &[]), serde_json::json!({ "n": n }))
+                .unwrap();
+        }
+        registry
+            .submit(follow_up(), serde_json::json!({ "n": 3 }))
+            .unwrap();
+        normal.send(()).unwrap();
+        branchyard_testkit::wait::until("the queued operations to run", || {
+            recorder.ran.lock().unwrap().len() == 3
+        });
+        assert_eq!(*recorder.ran.lock().unwrap(), [3, 1, 2]);
+        reserved.send(()).unwrap();
+        assert!(registry.wait_idle(Duration::from_secs(5)));
+        registry.close();
+    }
+
+    #[test]
+    fn each_reserved_lane_admits_one_operation_at_the_tenant_ceiling() {
+        let registry = Registry::open(Box::new(SqliteStore::memory()), options(1)).unwrap();
+        let submit = |key: &str, lane: Lane| {
+            let mut op = NewOperation {
+                lane,
+                ..in_tenant(new(Some(key), &[]), "acme", Some(1))
+            };
+            op.quota.max_branches = Some(0);
+            registry.submit(op, Value::Null)
+        };
+        let refused = |key: &str, lane: Lane, reserved: usize| {
+            let error = submit(key, lane).unwrap_err();
+            assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS, "{key}");
+            assert_eq!(
+                error.body.detail,
+                Some(serde_json::json!({
+                    "tenant": "acme", "limit": "max_running", "max": 1, "reserved": reserved
+                })),
+                "{key}"
+            );
+            assert!(
+                registry.by_key("c", key, "acme").unwrap().is_none(),
+                "{key}"
+            );
+        };
+        assert!(submit("normal", Lane::Normal).is_ok());
+        refused("second-normal", Lane::Normal, 1);
+        assert!(submit("follow-up", Lane::FollowUp).is_ok());
+        refused("second-follow-up", Lane::FollowUp, 2);
+        assert!(submit("control", Lane::Control).is_ok());
+        refused("second-control", Lane::Control, 3);
+        refused("third-normal", Lane::Normal, 3);
+        assert_eq!(registry.store.queue().unwrap().len(), 3);
     }
 
     #[test]

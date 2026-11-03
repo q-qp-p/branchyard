@@ -1,0 +1,36 @@
+msb 0.7.3
+
+running 1 test
+test provider::tests::runtime_gate_isolated_case ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+stock-runtime-refused-before-allocation
+
+running 20 tests
+test a_disk_checkpoint_branches_into_a_new_sandbox ... ok
+test a_live_branch_child_keeps_the_sources_processes ... ok
+test a_live_branch_childs_writes_are_private_and_the_paused_source_stays_paused ... ok
+test a_live_branch_rejects_changed_open_files_and_still_creates_compatible_siblings ... ok
+test a_persisted_sandbox_is_resumed_by_another_provider ... ok
+test drop_tears_down ... ok
+test env_and_cwd ... ok
+test exit_status ... ok
+test incompatible_checkpoint_references_refuse_before_restore_or_removal ... ok
+test kill_reaches_descendants ... ok
+test lifecycle ... ok
+test limits_reach_the_guest ... ok
+test missing_program ... ok
+test read_only_mount ... ok
+test root_disk_writes_are_private_to_each_sandbox ... ok
+test stdio_round_trip ... ok
+test stop_ends_processes ... ok
+test teardown_names_survivors ... ok
+test workspace_mount ... ok
+test write_scope ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 238.78s
+
+[]
+[]
+runtime-gated-conformance-exit=0

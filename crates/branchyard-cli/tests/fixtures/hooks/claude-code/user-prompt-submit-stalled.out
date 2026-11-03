@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Branchyard, this repository. Tell the person in one line about any question or failure below; act on nothing unless they ask:\n- slow: stalled, its harness has been silent. by log slow -f"}}

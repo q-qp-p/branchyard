@@ -137,6 +137,8 @@ fn run_takes_every_task_option() {
             isolation_off: false,
             command: Some(vec!["/opt/codex/bin/codex".into(), "--flag".into()]),
             sandbox: None,
+            container: None,
+            agent_sandbox: None,
             substrate: None,
             recipe: None,
             local: false,
@@ -546,7 +548,7 @@ fn provider_flags_select_and_configure_a_sandbox() {
         .contains("--pass-env needs --provider microsandbox, substrate or recipe:NAME"));
     let docker = err("run go --provider docker");
     assert!(
-        docker.contains("[possible values: local, microsandbox, substrate, recipe:NAME]"),
+        docker.contains("[possible values: local, microsandbox, substrate, recipe:NAME, container, agent-sandbox]"),
         "{docker}"
     );
     assert!(err("run go --provider microsandbox --image a --cpus 0").contains("--cpus"));
@@ -556,6 +558,58 @@ fn provider_flags_select_and_configure_a_sandbox() {
         kind("send b go --provider local"),
         ErrorKind::UnknownArgument
     );
+}
+
+#[test]
+fn native_provider_flags_build_typed_options_for_run_and_fan() {
+    let image = format!("example/worker@sha256:{}", "a".repeat(64));
+    for command in ["run go", "fan go --harness codex,claude-code"] {
+        let defaults = task(&format!("{command} --provider container --image {image}"));
+        let options = defaults.container.unwrap();
+        assert_eq!(options.runtime, branchyard::ContainerRuntime::Gvisor);
+        assert_eq!(options.network, branchyard::ContainerNetwork::Deny);
+        let container = task(&format!("{command} --provider container --image {image} --cpus 2 --memory 128 --sandbox-runtime runc --sandbox-network unrestricted --pass-env LANG,TOKEN"));
+        let options = container.container.unwrap();
+        assert_eq!(options.cpus, Some(2));
+        assert_eq!(options.memory_mib, Some(128));
+        assert_eq!(options.runtime, branchyard::ContainerRuntime::Runc);
+        assert_eq!(options.network, branchyard::ContainerNetwork::Unrestricted);
+        assert_eq!(options.pass_env, ["LANG", "TOKEN"]);
+
+        let agent = task(&format!("{command} --provider agent-sandbox --image {image} --kube-context validation --kube-namespace by-test --sandbox-runtime microvm --sandbox-network unrestricted"));
+        let options = agent.agent_sandbox.unwrap();
+        assert_eq!(options.context, "validation");
+        assert_eq!(options.namespace, "by-test");
+        assert_eq!(options.runtime, branchyard::AgentSandboxRuntime::Microvm);
+        assert_eq!(
+            options.network,
+            branchyard::AgentSandboxNetwork::Unrestricted
+        );
+    }
+}
+
+#[test]
+fn native_providers_reject_unsupported_flags_before_allocation() {
+    let image = format!("example/worker@sha256:{}", "a".repeat(64));
+    for (command, reason) in [
+        ("run go --sandbox-runtime gvisor".to_owned(), "need --provider"),
+        ("run go --kube-context test".to_owned(), "need --provider agent-sandbox"),
+        (format!("run go --provider container --image {image} --kube-namespace test"), "need --provider agent-sandbox"),
+        (format!("run go --provider container --image {image} --sandbox-runtime microvm"), "needs --provider agent-sandbox"),
+        (format!("run go --provider agent-sandbox --image {image} --kube-context test --kube-namespace test --sandbox-runtime runc"), "needs --provider container"),
+        (format!("run go --provider agent-sandbox --image {image}"), "needs --kube-context"),
+        (format!("run go --provider agent-sandbox --image {image} --kube-context test"), "needs --kube-namespace"),
+        ("run go --provider container --image alpine:latest".to_owned(), "pinned"),
+        (format!("run go --provider container --image {image} --live-branch"), "needs --provider microsandbox"),
+        (format!("run go --provider container --image {image} --keep-sandbox destroy"), "unsupported"),
+        (format!("run go --provider agent-sandbox --image {image} --sandbox-snapshots 1"), "unsupported"),
+        (format!("run go --provider container --image {image} --recipe-home /home/test"), "needs --provider recipe:NAME"),
+        (format!("run go --provider container --image {image} --cpus 0"), "--cpus"),
+        (format!("run go --provider container --image {image} --pass-env KUBECONFIG"), "operator transport credentials"),
+        (format!("run go --provider agent-sandbox --image {image} --kube-context test --kube-namespace Bad_Name"), "namespace"),
+    ] {
+        assert!(err(&command).contains(reason), "{command}: {}", err(&command));
+    }
 }
 
 #[test]

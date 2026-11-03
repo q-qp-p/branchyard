@@ -45,6 +45,9 @@ pub struct Gce {
     /// Worker execution: local processes or Microsandbox KVM guests
     #[arg(long, value_parser = ["local", "microsandbox"], default_value = "local")]
     backend: String,
+    /// Install the pinned gVisor Docker runtime without changing the worker's default provider
+    #[arg(long)]
+    gvisor: bool,
     /// VM machine type; Microsandbox needs n2-standard or c3-standard
     #[arg(long, default_value = "n2-standard-4")]
     machine_type: String,
@@ -84,6 +87,14 @@ fn gce_command(args: &Gce) -> Command {
     let mut command = Command::new("python3");
     command
         .args(["-c", include_str!("../../../tools/compute_gce.py")])
+        .env(
+            "BRANCHYARD_CONTAINER_RUNTIME_INSTALLER",
+            include_str!("../../../tools/install_container_runtime.py"),
+        )
+        .env(
+            "BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER",
+            include_str!("../../../tools/install_microsandbox_runtime.py"),
+        )
         .args([
             "--project",
             &args.project,
@@ -125,6 +136,7 @@ fn gce_command(args: &Gce) -> Command {
     }
     for (flag, selected) in [
         ("--internal-ip", args.internal_ip),
+        ("--gvisor", args.gvisor),
         ("--tunnel-through-iap", args.tunnel_through_iap),
         ("--apply", args.apply),
     ] {
@@ -234,6 +246,18 @@ fn resources() -> Result<PathBuf, Failure> {
         (
             "compute_gce.py",
             include_str!("../../../tools/compute_gce.py"),
+        ),
+        (
+            "install_container_runtime.py",
+            include_str!("../../../tools/install_container_runtime.py"),
+        ),
+        (
+            "install_microsandbox_runtime.py",
+            include_str!("../../../tools/install_microsandbox_runtime.py"),
+        ),
+        (
+            "agent_sandbox_gke.py",
+            include_str!("../../../tools/agent_sandbox_gke.py"),
         ),
     ];
     for (name, contents) in resources {
@@ -722,6 +746,7 @@ mod tests {
             "--state-dir",
             "/private state",
             "--internal-ip",
+            "--gvisor",
             "--tunnel-through-iap",
             "--forward-secret",
             "GOOGLE_API_KEY",
@@ -761,9 +786,27 @@ mod tests {
         ] {
             assert!(argv.windows(2).any(|pair| pair == [flag, value]), "{flag}");
         }
-        for flag in ["--internal-ip", "--tunnel-through-iap", "--apply"] {
+        for flag in [
+            "--internal-ip",
+            "--gvisor",
+            "--tunnel-through-iap",
+            "--apply",
+        ] {
             assert!(argv.iter().any(|arg| arg == flag), "{flag}");
         }
+        let embedded = command.get_envs().collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            embedded[std::ffi::OsStr::new("BRANCHYARD_CONTAINER_RUNTIME_INSTALLER")],
+            Some(std::ffi::OsStr::new(include_str!(
+                "../../../tools/install_container_runtime.py"
+            )))
+        );
+        assert_eq!(
+            embedded[std::ffi::OsStr::new("BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER")],
+            Some(std::ffi::OsStr::new(include_str!(
+                "../../../tools/install_microsandbox_runtime.py"
+            )))
+        );
     }
 
     #[test]

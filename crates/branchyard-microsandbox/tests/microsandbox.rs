@@ -158,7 +158,6 @@ fn a_disk_checkpoint_branches_into_a_new_sandbox() {
     );
     let checkpoint = provider.checkpoint(source, &DISK_SNAPSHOT).unwrap();
     assert_eq!(checkpoint.guarantee, DISK_SNAPSHOT);
-    assert!(PathBuf::from(&checkpoint.reference).is_absolute());
     let branched = provider.branch(&checkpoint, &spec(&setup, child)).unwrap();
     assert_eq!(branched.state, SandboxState::Running);
     let (code, out) = run(&provider, child, "cat /root/marker");
@@ -172,6 +171,45 @@ fn a_disk_checkpoint_branches_into_a_new_sandbox() {
     }
     provider.release_checkpoint(&checkpoint).unwrap();
     provider.release_checkpoint(&checkpoint).unwrap();
+}
+
+#[test]
+#[ignore = "needs Linux with KVM and the patched runtime with provenance"]
+fn incompatible_checkpoint_references_refuse_before_restore_or_removal() {
+    let setup = setup("runtime-identity");
+    let provider = MicrosandboxProvider::new().unwrap();
+    let (source, child) = ("by-msb-identity-source", "by-msb-identity-child");
+    provider.ensure(&spec(&setup, source)).unwrap();
+    let saved = provider.checkpoint(source, &DISK_SNAPSHOT).unwrap();
+    let mut reference: serde_json::Value = serde_json::from_str(&saved.reference).unwrap();
+    let artifact = PathBuf::from(reference["artifact"].as_str().unwrap());
+    assert!(artifact.exists());
+    let legacy = branchyard_sandbox::Checkpoint {
+        reference: artifact.to_string_lossy().into(),
+        ..saved.clone()
+    };
+    reference["runtime"]["architecture_tree_sha256"] = "different memory map".into();
+    let incompatible = branchyard_sandbox::Checkpoint {
+        reference: serde_json::to_string(&reference).unwrap(),
+        ..saved.clone()
+    };
+    for checkpoint in [&legacy, &incompatible] {
+        let error = provider
+            .branch(checkpoint, &spec(&setup, child))
+            .unwrap_err();
+        assert!(error.to_string().contains("original runtime"), "{error}");
+        assert!(provider.release_checkpoint(checkpoint).is_err());
+        assert!(
+            artifact.exists(),
+            "a refused reference removed the saved artifact"
+        );
+        assert!(provider.inspect(child).unwrap().is_none());
+    }
+    provider.branch(&saved, &spec(&setup, child)).unwrap();
+    for name in [source, child] {
+        provider.destroy(name).unwrap();
+    }
+    provider.release_checkpoint(&saved).unwrap();
 }
 
 // Live branching, the pattern mario-never-dies probes: a paused source is

@@ -1,0 +1,37 @@
+   Compiling branchyard-microsandbox v0.4.0 (/home/user/branchyard/.branchyard/worktrees/cloud-gce/crates/branchyard-microsandbox)
+    Finished `test` profile [unoptimized] target(s) in 3.49s
+     Running unittests src/lib.rs (/tmp/branchyard-gce-native-api-target/debug/deps/branchyard_microsandbox-bdb590da882538c3)
+
+running 1 test
+test provider::tests::runtime_is_verified_before_allocation_or_adoption_without_touching_a_database ... FAILED
+
+failures:
+
+---- provider::tests::runtime_is_verified_before_allocation_or_adoption_without_touching_a_database stdout ----
+
+thread 'provider::tests::runtime_is_verified_before_allocation_or_adoption_without_touching_a_database' (53) panicked at crates/branchyard-microsandbox/src/provider.rs:765:13:
+missing:
+running 1 test
+test provider::tests::runtime_gate_isolated_case ... FAILED
+
+failures:
+
+failures:
+    provider::tests::runtime_gate_isolated_case
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+
+
+thread 'provider::tests::runtime_gate_isolated_case' (55) panicked at crates/branchyard-microsandbox/src/provider.rs:704:13:
+missing: invalid sandbox spec: zero CPUs or memory
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    provider::tests::runtime_is_verified_before_allocation_or_adoption_without_touching_a_database
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p branchyard-microsandbox --lib`

@@ -16,4 +16,4 @@ It prints nothing when nothing changed since the last time you ran it. Otherwise
 
 Tell the person each question or failure in one line, with the branch's name. Do not answer, merge, discard or cancel anything unless they ask you to. `by ls` lists every branch and `by show NAME` shows one.
 
-Questions from a branch's children sit in the parent's inbox. A line that says `(under PARENT)` names it: read it with `by inbox --as PARENT --unread`.
+Questions from a branch's children sit in the parent's inbox. A line that says `(under PARENT)` names it: read it with `by inbox --as PARENT --unread`. Questions sent to the person are in `by inbox --unread`.

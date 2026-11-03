@@ -176,7 +176,12 @@ STEPS = (
     ),
     Step("test_install_ci_tool", "fast", (PY, "tests/test_install_ci_tool.py")),
     Step("test_substrate_gke", "fast", (PY, "tests/test_substrate_gke.py")),
+    Step("test_agent_sandbox_gke", "fast", (PY, "tests/test_agent_sandbox_gke.py")),
     Step("test_compute_gce", "fast", (PY, "tests/test_compute_gce.py")),
+    Step("test_install_container_runtime", "fast", (PY, "tests/test_install_container_runtime.py")),
+    Step("test_build_microsandbox_runtime", "fast", (PY, "tests/test_build_microsandbox_runtime.py")),
+    Step("test_install_microsandbox_runtime", "fast", (PY, "tests/test_install_microsandbox_runtime.py")),
+    Step("test_microsandbox_delivery", "fast", (PY, "tests/test_microsandbox_delivery.py")),
     Step("test_cloud_setup", "fast", (PY, "tests/test_cloud_setup.py")),
     Step("test_fetch_agy", "fast", (PY, "tests/test_fetch_agy.py")),
     Step("test_substrate_image", "fast", (PY, "tests/test_substrate_image.py")),
@@ -208,6 +213,9 @@ STEPS = (
     # The CLI's failures are Reports with a kind and an exit status; the bare messages left only fall.
     Step("check_failure_messages", "fast", (PY, "tools/check_failure_messages.py")),
     Step("test_check_failure_messages", "fast", (PY, "tests/test_check_failure_messages.py")),
+    # What one agent is given stays under its cap, and the numbers it states are the code's.
+    Step("check_model_surface", "fast", (PY, "tools/check_model_surface.py")),
+    Step("test_check_model_surface", "fast", (PY, "tests/test_check_model_surface.py")),
     # The lint table's exceptions only fall, and every crate inherits the table.
     Step("check_lint_ratchet", "controls", (PY, "tools/check_lint_ratchet.py")),
     Step("test_check_lint_ratchet", "controls", (PY, "tests/test_check_lint_ratchet.py")),

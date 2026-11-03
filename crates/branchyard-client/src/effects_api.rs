@@ -119,7 +119,8 @@ pub struct Decision {
     /// For an `approval`: the ask, as `GET …/approvals` lists it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalAsk>,
-    /// For a `question`: the message, as the asker's parent's inbox holds it.
+    /// For a `question`: the message, as the inbox it was sent to holds it
+    /// (the asker's parent's, or the person's, `GET …/inbox`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<Message>,
     /// For an `output` or a `session` decision: the workspace's id.
@@ -170,11 +171,16 @@ pub struct DecisionOutput {
 pub enum DecisionKind {
     /// A running turn parked on an approval: allow or deny it.
     Approval,
-    /// A question or an escalation a branch sent and nobody answered.
+    /// A question or an escalation a running branch sent and nobody
+    /// answered.
     Question,
+    /// A branch whose plan waits for approval: approve, edit or reject it
+    /// (`by plan …`, `…/plan/approve`).
+    Plan,
     /// A ready branch: merge it, follow up, or discard it.
     Merge,
-    /// A failed, interrupted or over-budget branch: resume it or let it be.
+    /// A failed, interrupted, over-budget or blocked branch: resume it or
+    /// let it be.
     Stop,
     /// A running turn with no harness activity for its stall window.
     Stall,

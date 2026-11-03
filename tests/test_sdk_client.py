@@ -2165,6 +2165,29 @@ class Approvals(ServerCase):
         self.assertEqual(decisions[0].approval["id"], "ap1")
         self.assertEqual(decisions[1].candidate["commit"], "abc")
 
+    def test_the_person_reads_and_answers_their_own_inbox(self):
+        question = {"id": 7, "from": "root", "to": "@person", "kind": "question", "text": "which db?", "at_ms": 1}
+        answer = {"id": 8, "from": "@person", "to": "root", "kind": "answer", "text": "postgres", "in_reply_to": 7}
+        self.fake.answer("GET", f"{REPO}/inbox", (200, {"branch": "@person", "messages": [question]}))
+        self.fake.answer("POST", f"{REPO}/answer", (200, answer))
+        inbox = self.app.person_inbox()
+        self.assertEqual([(m.id, m["from"], m.text) for m in inbox], [(7, "root", "which db?")])
+        sent = self.app.answer_message(7, "postgres")
+        self.assertEqual((sent.id, sent.to, sent.in_reply_to), (8, "root", 7))
+        [(_, _, _, body)] = self.requests("POST", f"{REPO}/answer")
+        self.assertEqual(body, {"message_id": 7, "text": "postgres"})
+
+    def test_the_persons_unread_inbox_leaves_out_what_was_answered_or_delivered(self):
+        question = {"from": "root", "to": "@person", "kind": "question", "at_ms": 1}
+        messages = [
+            {**question, "id": 7, "text": "which db?"},
+            {**question, "id": 9, "text": "which port?"},
+            {**question, "id": 10, "text": "which host?", "delivered": True},
+        ]
+        self.fake.always("GET", f"{REPO}/inbox", 200, {"branch": "@person", "messages": messages, "answered": [7]})
+        self.assertEqual([m.id for m in self.app.person_inbox()], [7, 9, 10])
+        self.assertEqual([m.id for m in self.app.person_inbox(unread=True)], [9])
+
     def test_the_ground_names_the_branches_that_share_a_file(self):
         ready = {"state": "ready"}
         ground = {
@@ -2463,6 +2486,21 @@ class Fleet(ServerCase):
         self.assertTrue(worker.this)
         self.assertIsNone(worker.inventory)
 
+    def test_problems_are_listed_with_what_to_do(self):
+        problem = {
+            "kind": "trigger",
+            "key": "trg_1",
+            "what": "trigger nightly",
+            "since_ms": 5,
+            "failures": 3,
+            "error": "paused after 3 failed runs in a row",
+            "next": "by trigger enable nightly",
+        }
+        self.fake.answer("GET", "/v1/problems", (200, {"problems": [problem]}), (200, {"problems": []}))
+        (listed,) = self.client.problems()
+        self.assertEqual((listed.kind, listed.failures, listed.next), ("trigger", 3, "by trigger enable nightly"))
+        self.assertEqual(self.client.problems(), [])
+
     def test_admin_routes_without_the_scope_are_denied(self):
         self.fake.answer("POST", "/v1/services/gc", (403, _error("scope_required", "", {"scope": "admin"})))
         with self.assertRaises(bc.DeniedError) as denied:
@@ -2520,6 +2558,19 @@ class TriggerSecretsAndPush(ServerCase):
         given, generated = self.requests("POST", "/v1/triggers/hook/secret")
         self.assertEqual((given[3], generated[3]), ({"secret": "mine"}, {}))
         self.assertEqual(len(given[2]["idempotency-key"]), 32)
+
+    def test_a_trigger_observes_and_its_runs_are_read_by_state(self):
+        observing = {"id": "trg_1", "name": "hook", "mode": "observe", "enabled": True}
+        self.fake.answer("POST", "/v1/triggers/hook/mode", (200, observing))
+        self.fake.answer("GET", "/v1/triggers/hook/runs", (200, {"runs": [{"id": "run_1", "state": "observed"}]}))
+        self.assertEqual(self.client.set_trigger_mode("hook", "observe").mode, "observe")
+        (sent,) = self.requests("POST", "/v1/triggers/hook/mode")
+        self.assertEqual(sent[3], {"mode": "observe"})
+        runs = self.client.trigger_runs("hook", limit=5, state="observed")
+        self.assertEqual([r.state for r in runs], ["observed"])
+        (asked,) = self.requests("GET", "/v1/triggers/hook/runs")
+        self.assertIn("state=observed", asked[1])
+        self.assertIn("limit=5", asked[1])
 
     def test_web_push_is_described_subscribed_tested_and_unsubscribed(self):
         info = {"enabled": True, "public_key": "BPk", "services": ["push.example"], "subscriptions": [], "kinds": []}
@@ -2624,6 +2675,9 @@ class GrantsAndNames(unittest.TestCase):
         self.assertEqual(str(info.status), "budget_exceeded")
         self.assertTrue(info.settled)
         self.assertFalse(bc.BranchInfo({"status": {"state": "waiting_on_children"}}).settled)
+        self.assertIsNone(info.stage)
+        staged = bc.BranchInfo({"name": "kid", "stage": {"lane": "running", "reason": "parent"}})
+        self.assertEqual(staged.stage, bc.Stage(lane="running", reason="parent"))
         entry = bc.FeedEntry(_delta(1, "a", "t"))
         self.assertEqual(entry.text, "t")
         self.assertIsNone(entry.status)
@@ -3563,6 +3617,8 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/operations/{id}": [lambda c, _r: c.operation("op1")],
     "/v1/repos": [lambda c, _r: c.repos()],
     "/v1/repos/{repo}/decisions": [lambda _c, r: r.decisions()],
+    "/v1/repos/{repo}/inbox": [lambda _c, r: r.person_inbox()],
+    "/v1/repos/{repo}/answer": [lambda _c, r: r.answer_message(1, "yes")],
     "/v1/repos/{repo}/ground": [lambda _c, r: r.ground()],
     "/v1/repos/{repo}/approvals": [lambda _c, r: r.approvals()],
     "/v1/repos/{repo}/approvals/{id}/allow": [lambda _c, r: r.allow("ap1")],
@@ -3626,11 +3682,13 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/triggers/{t}": [lambda c, _r: c.trigger("t"), lambda c, _r: c.delete_trigger("t")],
     "/v1/triggers/{t}/disable": [lambda c, _r: c.enable_trigger("t", False)],
     "/v1/triggers/{t}/enable": [lambda c, _r: c.enable_trigger("t")],
+    "/v1/triggers/{t}/mode": [lambda c, _r: c.set_trigger_mode("t", "observe")],
     "/v1/triggers/{t}/runs": [lambda c, _r: c.trigger_runs("t")],
     "/v1/triggers/{t}/test": [lambda c, _r: c.test_trigger("t")],
     "/v1/triggers/{t}/secret": [lambda c, _r: c.set_trigger_secret("t")],
     "/.well-known/branchyard": [lambda c, _r: c.well_known()],
     "/v1/inventory": [lambda c, _r: c.inventory()],
+    "/v1/problems": [lambda c, _r: c.problems()],
     "/v1/services": [lambda c, _r: c.services(), lambda c, _r: c.register_service("model_gateway")],
     "/v1/services/gc": [lambda c, _r: c.reclaim_services()],
     "/v1/services/{id}": [lambda c, _r: c.deregister_service("s1")],

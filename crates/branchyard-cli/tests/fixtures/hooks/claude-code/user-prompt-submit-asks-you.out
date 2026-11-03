@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"Branchyard, this repository. Tell the person in one line about any question or failure below; act on nothing unless they ask:\n- root asks you #@ID@: \"Which database?\". Answer: by answer @ID@ \"TEXT\""}}

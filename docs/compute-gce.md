@@ -104,6 +104,14 @@ package manager, then installs the exact released `by`, server and bridge into
 executable. This uses Docker for artifact delivery; a local-process task on the
 worker has the worker user's permissions and makes no container isolation claim.
 
+Add `--gvisor` to install the pinned complete runsc bundle and register it with
+Docker through a reload. It also adds the dedicated SSH worker to Docker's
+group; the following configuration step uses a fresh SSH login. The reviewed
+plan names this permission change. The flag is part of the deployment fingerprint and can
+coexist with `--backend=microsandbox`. It installs prerequisites and leaves task
+provider selection unchanged. See [the runtime installer](container-runtime.md)
+for the pin, ownership checks, image contract and hermetic evidence.
+
 `--directory` transfers a git bundle of committed `HEAD`; uncommitted and untracked
 files cause a refusal before VM creation. On retry, the remote `HEAD` must match
 the source. The helper never resets existing remote work to a newer source
@@ -175,16 +183,37 @@ completes. Workstation OAuth files are not transferred.
 Add `--backend=microsandbox`. This requires an `n2-standard` or `c3-standard`
 machine with nested virtualization. The helper enables nested virtualization,
 installs the release's Linux runtime build with `--runtime`, adds the SSH user
-to `kvm`, and installs Microsandbox 0.7.3 and its matching firmware. The runtime
-archive has a pinned SHA-256. A short, private `/var/lib/by-msb` avoids Unix
-socket limits under long OS Login home paths. A wrapper preserves that setting
-for the remote `by` server; the worker image is imported into the local VM cache.
+to `kvm`, and installs Branchyard's patched Microsandbox 0.7.3 runtime and its
+matching firmware. It verifies the selected Branchyard release's `SHA256SUMS`,
+`microsandbox-runtime.json`, archive and provenance before installation. It
+never installs the upstream runtime archive with the reproduced RAM failure.
+
+The root-owned runtime lives in an immutable directory under
+`/opt/branchyard/microsandbox/` named by its revision and complete archive digest.
+Provenance stays beside the canonical executable. A short, private
+`/var/lib/bm-<digest-prefix>` avoids Unix socket limits under long OS Login home
+paths. A full-digest ownership marker refuses a conflicting home. A new artifact
+gets a separate home; old runtimes, kept guests and checkpoints are retained.
+The owner-only deployment file `microsandbox.env` records the exact runtime,
+firmware and home. The server wrapper and fresh-login checks source that file.
+The worker image is imported into that home. See
+[runtime delivery](microsandbox-runtime.md) for build and installation details.
 
 The installed CLI is probed and a fresh SSH session checks read/write KVM access.
 The exact Microsandbox 0.7.3 CLI exposes `context`, `doctor` and `image load`;
 it has no `init` command. These probes call no model and do not qualify a VM
-lifecycle. The pinned runtime's hard total memory ceiling remains unqualified;
-see the [real-runtime results](remote-validation-2026-10-28.md).
+lifecycle. Setup does not measure a guest RAM limit or a host-process memory
+ceiling. The [older runtime results](remote-validation-2026-10-28.md) retain the
+upstream failure for comparison.
+
+The [2 November runtime qualification](remote-validation-2026-11-02-gce.md)
+reproduces the upstream guest RAM over-allocation and records a runtime-source
+fix with strict RAM, CPU, execution and cleanup checks on GCE. Its pinned build
+driver emits a separate patched runtime archive with checksums and provenance.
+Those results apply to that patched archive. Checkpoint references bind the
+actual runtime, firmware and layout; legacy or mismatched references refuse
+before restore or removal and explain how to recover without changing the saved
+artifact. Use a fresh runtime home when changing artifacts.
 
 ## Remove a temporary worker
 

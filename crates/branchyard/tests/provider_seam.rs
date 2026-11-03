@@ -2,9 +2,8 @@
 //! `ProviderKind` in `crates/branchyard/src/providers/`, never by a match
 //! on the enum somewhere else.
 //!
-//! This reads every crate's `src/` and counts the places the four variants
-//! are named (`Provider::Local`, `::Microsandbox`, `::Substrate`,
-//! `::Recipe`) outside `crates/branchyard/src/providers/`. In the engine
+//! This reads every crate's `src/` and counts the places provider variants
+//! are named outside `crates/branchyard/src/providers/`. In the engine
 //! crate the allowed count is zero. A few surfaces still match on the enum
 //! to announce or admit a provider; they are a ratchet: each file's count
 //! is listed below and may only fall. Adding a variant's name anywhere not
@@ -18,11 +17,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The variants, as the enum spells them.
-const VARIANTS: [&str; 4] = [
+const VARIANTS: [&str; 6] = [
     "Provider::Local",
     "Provider::Microsandbox",
     "Provider::Substrate",
     "Provider::Recipe",
+    "Provider::Container",
+    "Provider::AgentSandbox",
 ];
 
 /// The one directory where a variant may be named freely.
@@ -34,14 +35,13 @@ const SEAM: &str = "crates/branchyard/src/providers/";
 /// - `branchyard-cli`: announcing the chosen provider (`commands/mod.rs`,
 ///   `remote.rs`), building it from flags (`commands/mod.rs`), and a local-only
 ///   check (`harness_cmd.rs`).
-/// - `branchyard-server`: admitting a requested provider against
-///   `allow_providers` (`api.rs`). These crates cannot reach the
-///   crate-private trait; they need a public accessor first.
+///
+/// These remaining CLI sites use the closed enum directly; callers can
+/// use the public constructors and semantic accessors to lower this list.
 const RATCHET: &[(&str, usize)] = &[
     ("crates/branchyard-cli/src/commands/mod.rs", 4),
     ("crates/branchyard-cli/src/harness_cmd.rs", 1),
     ("crates/branchyard-cli/src/remote.rs", 1),
-    ("crates/branchyard-server/src/api.rs", 6),
 ];
 
 fn workspace() -> PathBuf {
@@ -117,7 +117,7 @@ fn only_the_providers_directory_names_the_variants() {
         if found > limit {
             problems.push(format!(
                 "{rel}: names a Provider variant {found} time(s), {limit} allowed. Add the \
-                 behaviour to `ProviderKind` and its four implementations in {SEAM} and call \
+                 behaviour to `ProviderKind` and its implementations in {SEAM} and call \
                  `provider.kind().method()` instead of matching (docs/providers.md, \
                  \"Adding a provider\")"
             ));

@@ -1046,16 +1046,14 @@ fn tone_style(tone: Tone) -> Style {
 /// yellow so it cannot be missed: an interrupted branch holds work nobody
 /// is finishing.
 pub fn status_look(info: &BranchInfo) -> (&'static str, String, Style) {
-    let (text, _) = render::status_text(&info.status);
+    let (text, tone) = render::branch_status_text(info);
     let (glyph, style) = status_style(&info.status);
-    let silent = info
-        .liveness
-        .as_ref()
-        .and_then(|l| l.describe(branchyard_support::time::now_ms()));
-    let text = match (&info.status, silent, info.stalled) {
-        (BranchStatus::Interrupted, _, _) => "INTERRUPTED".to_owned(),
-        (_, Some(silent), _) => format!("{text} ({silent})"),
-        (_, None, true) => format!("{text} (stalled)"),
+    let style = match tone {
+        render::Tone::Yellow if info.status == BranchStatus::Running => style.fg(Color::Yellow),
+        _ => style,
+    };
+    let text = match info.status {
+        BranchStatus::Interrupted => "INTERRUPTED".to_owned(),
         _ => text,
     };
     (glyph, text, style)
@@ -2163,6 +2161,7 @@ mod tests {
             created_at: 1_000,
             stalled: false,
             awaiting: None,
+            stage: None,
             liveness: None,
             superseded_by: None,
             model: None,
@@ -2170,6 +2169,24 @@ mod tests {
             isolated: false,
             guard: None,
         }
+    }
+
+    #[test]
+    fn lost_running_engines_are_warned_without_relabelling_settled_work() {
+        let mut branch = info("b", None, BranchStatus::Running);
+        branch.liveness = Some(branchyard::Liveness {
+            state: branchyard::LivenessState::Lost,
+            heard_ms: 0,
+            known_until_ms: 0,
+            reason: Some("lease expired".into()),
+        });
+        let (_, text, style) = status_look(&branch);
+        assert_eq!(text, "running (engine lost: lease expired)");
+        assert_eq!(style.fg, Some(Color::Yellow));
+        branch.status = BranchStatus::Ready;
+        let (_, text, style) = status_look(&branch);
+        assert_eq!(text, "ready");
+        assert_eq!(style.fg, Some(Color::Green));
     }
 
     fn yard() -> Vec<BranchInfo> {

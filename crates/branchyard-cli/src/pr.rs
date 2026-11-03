@@ -2119,6 +2119,7 @@ mod tests {
             created_at: 0,
             stalled: false,
             awaiting: None,
+            stage: None,
             liveness: None,
             superseded_by: None,
             model: None,

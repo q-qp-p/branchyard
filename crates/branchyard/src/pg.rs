@@ -2312,6 +2312,12 @@ impl Backend for Postgres {
         row.map(|r| message_row(&r)).transpose()
     }
 
+    fn unanswered(&self) -> Result<Vec<Message>, Error> {
+        let limit = i64::from(crate::glance::QUESTIONS_MAX);
+        let rows = self.query(|c| c.query(UNANSWERED, &[&self.repo, &limit]))?;
+        rows.iter().rev().map(message_row).collect()
+    }
+
     fn message_steer(&self, id: u64) -> Result<Option<u64>, Error> {
         let id_db = to_db("id", id)?;
         let row = self.query(|c| {
@@ -2357,12 +2363,21 @@ impl Backend for Postgres {
     }
 }
 
+/// [`Backend::unanswered`]'s query, also read by [`Glanced`]: `$1` is the
+/// repository, `$2` the limit, newest first.
+const UNANSWERED: &str = "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
+     delivered_ms, handoff, next_turn FROM by_messages q \
+     WHERE q.repo = $1 AND q.kind IN ('question', 'escalation') \
+     AND NOT EXISTS (SELECT 1 FROM by_messages a WHERE a.repo = $1 AND a.in_reply_to = q.id) \
+     ORDER BY id DESC LIMIT $2";
+
 /// What [`crate::glance::read_postgres`] reads: a repository's branches,
-/// its unanswered questions and escalations (the newest
-/// [`crate::glance::QUESTIONS_MAX`], oldest first), and one branch's
-/// undelivered messages.
+/// its pending approval asks, its unanswered questions and escalations
+/// (the newest [`crate::glance::QUESTIONS_MAX`], oldest first), and one
+/// branch's undelivered messages.
 pub(crate) struct Glanced {
     pub branches: Vec<crate::BranchInfo>,
+    pub asks: Vec<crate::effects::ApprovalAsk>,
     pub questions: Vec<Message>,
     pub unread: Vec<Message>,
 }
@@ -2422,23 +2437,20 @@ impl Glanced {
                 .map(|record| record.info)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        let limit = i64::from(crate::glance::QUESTIONS_MAX);
-        let rows = tx
-            .query(
-                "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM by_messages q \
-                 WHERE q.repo = $1 AND q.kind IN ('question', 'escalation') \
-                 AND NOT EXISTS (SELECT 1 FROM by_messages a \
-                 WHERE a.repo = $1 AND a.in_reply_to = q.id) \
-                 ORDER BY id DESC LIMIT $2",
-                &[&repo, &limit],
-            )
-            .map_err(e("questions"))?;
-        let mut questions = rows
+        let asks = tx
+            .query(ASKS, &[&repo, &true])
+            .map_err(e("approvals"))?
             .iter()
+            .map(ask_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        let limit = i64::from(crate::glance::QUESTIONS_MAX);
+        let questions = tx
+            .query(UNANSWERED, &[&repo, &limit])
+            .map_err(e("questions"))?
+            .iter()
+            .rev()
             .map(message_row)
             .collect::<Result<Vec<_>, _>>()?;
-        questions.reverse();
         let unread = match inbox_of {
             Some(branch) => tx
                 .query(
@@ -2458,6 +2470,7 @@ impl Glanced {
         branchyard_support::best_effort("end the read", tx.rollback());
         Ok(Glanced {
             branches,
+            asks,
             questions,
             unread,
         })
@@ -3970,17 +3983,18 @@ impl crate::effects::EffectBackend for Postgres {
     }
 
     fn asks(&self, pending_only: bool) -> Result<Vec<crate::effects::ApprovalAsk>, Error> {
-        let rows = self.query(|client| {
-            client.query(
-                "SELECT ask FROM by_approval_asks WHERE repo = $1 AND (NOT $2 OR NOT answered) \
-                 ORDER BY created_ms, id",
-                &[&self.repo, &pending_only],
-            )
-        })?;
-        rows.iter()
-            .map(|r| decode("approval", &r.get::<_, String>(0)))
-            .collect()
+        let rows = self.query(|client| client.query(ASKS, &[&self.repo, &pending_only]))?;
+        rows.iter().map(ask_row).collect()
     }
+}
+
+/// [`crate::effects::EffectBackend::asks`]' query, also read by
+/// [`Glanced`]: `$1` is the repository, `$2` whether only pending ones.
+const ASKS: &str = "SELECT ask FROM by_approval_asks WHERE repo = $1 \
+     AND (NOT $2 OR NOT answered) ORDER BY created_ms, id";
+
+fn ask_row(r: &Row) -> Result<crate::effects::ApprovalAsk, Error> {
+    decode("approval", &r.get::<_, String>(0))
 }
 
 const KNOWLEDGE_COLUMNS: &str = "id, scope_path, scope_kind, text, source, status, created_ms, \

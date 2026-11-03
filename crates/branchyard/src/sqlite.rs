@@ -2027,6 +2027,10 @@ impl Backend for Sqlite {
         })
     }
 
+    fn unanswered(&self) -> Result<Vec<Message>, Error> {
+        self.query(|conn| unanswered(conn).map_err(|e| db("questions", e)))
+    }
+
     fn message_steer(&self, id: u64) -> Result<Option<u64>, Error> {
         self.query(|conn| {
             conn.query_row(
@@ -2067,6 +2071,22 @@ impl Backend for Sqlite {
             .map_err(|e| db("message", e))
         })
     }
+}
+
+/// [`Backend::unanswered`] on `conn`; `crate::glance` reads it through a
+/// read-only connection.
+pub(crate) fn unanswered(conn: &Connection) -> rusqlite::Result<Vec<Message>> {
+    let mut statement = conn.prepare(
+        "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, \
+         handoff, next_turn FROM messages q WHERE kind IN ('question', 'escalation') \
+         AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.in_reply_to = q.id) \
+         ORDER BY id DESC LIMIT ?1",
+    )?;
+    let mut newest: Vec<Message> = statement
+        .query_map(params![crate::glance::QUESTIONS_MAX], message_from)?
+        .collect::<rusqlite::Result<_>>()?;
+    newest.reverse();
+    Ok(newest)
 }
 
 /// Reads one `messages` row.
@@ -3403,21 +3423,27 @@ impl crate::effects::EffectBackend for Sqlite {
     }
 
     fn asks(&self, pending_only: bool) -> Result<Vec<crate::effects::ApprovalAsk>, Error> {
-        self.query(|conn| {
-            let e = |error| db("approvals", error);
-            let mut statement = conn
-                .prepare(
-                    "SELECT ask FROM approval_asks WHERE ?1 = 0 OR answered = 0 \
-                     ORDER BY created_ms, id",
-                )
-                .map_err(e)?;
-            let rows = statement
-                .query_map(params![pending_only], |r| r.get::<_, String>(0))
-                .map_err(e)?;
-            let texts = rows.collect::<Result<Vec<_>, _>>().map_err(e)?;
-            texts.iter().map(|t| decode("approval", t)).collect()
-        })
+        self.query(|conn| asks(conn, pending_only))
     }
+}
+
+/// [`crate::effects::EffectBackend::asks`] on `conn`; `crate::glance` reads
+/// the pending ones through a read-only connection.
+pub(crate) fn asks(
+    conn: &Connection,
+    pending_only: bool,
+) -> Result<Vec<crate::effects::ApprovalAsk>, Error> {
+    let e = |error| db("approvals", error);
+    let mut statement = conn
+        .prepare(
+            "SELECT ask FROM approval_asks WHERE ?1 = 0 OR answered = 0 ORDER BY created_ms, id",
+        )
+        .map_err(e)?;
+    let rows = statement
+        .query_map(params![pending_only], |r| r.get::<_, String>(0))
+        .map_err(e)?;
+    let texts = rows.collect::<Result<Vec<_>, _>>().map_err(e)?;
+    texts.iter().map(|t| decode("approval", t)).collect()
 }
 
 /// A `timers` row as SQLite returns it, before conversion.

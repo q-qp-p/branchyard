@@ -15,6 +15,16 @@
 //! be a new event. It is kept as `delivery`, for looking a delivery up at
 //! its sender. A sender's own redelivery sends the same body, and is the
 //! same event.
+//!
+//! | Source | A bot's event, when |
+//! |---|---|
+//! | GitHub | The account it names (`comment.user` for a comment, else `sender`) has `type: "Bot"` or a login ending in `[bot]`; never a check suite, whose `sender` names no requester (GitHub says it may be the `ghost` user) |
+//! | Slack | The mention has a `bot_id`, or the subtype `bot_message` |
+//! | Linear | Its `actor.type` is given and is not `user` (an OAuth client, an integration) |
+//! | Generic | The body says `"bot": true` |
+//!
+//! Written from each source's documentation; no real delivery has been
+//! read.
 
 use branchyard_client::triggers::{EventSource, TriggerEvent};
 use hmac::{Hmac, KeyInit, Mac};
@@ -251,6 +261,16 @@ fn label_names(value: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
+/// Whether a GitHub account object is a bot's: `type: "Bot"` (an App's
+/// account), or a login ending in `[bot]`.
+fn github_bot(account: Option<&Value>) -> bool {
+    let Some(account) = account else {
+        return false;
+    };
+    text(account, &["type"]).is_some_and(|t| t.eq_ignore_ascii_case("bot"))
+        || text(account, &["login"]).is_some_and(|l| l.ends_with("[bot]"))
+}
+
 fn event(source: EventSource, kind: String, id: String, payload: &Value) -> TriggerEvent {
     TriggerEvent {
         source: source.as_str().into(),
@@ -285,6 +305,7 @@ fn github(kind: Option<&str>, id: String, p: &Value) -> Result<Delivery, String>
     let mut e = event(EventSource::Github, String::new(), id, p);
     e.repo = text(p, &["repository", "full_name"]);
     e.author = text(p, &["sender", "login"]);
+    e.bot = github_bot(p.get("sender"));
     match kind {
         "ping" => return Ok(Delivery::Ignored("a GitHub ping".into())),
         "issues" => {
@@ -308,6 +329,9 @@ fn github(kind: Option<&str>, id: String, p: &Value) -> Result<Delivery, String>
             e.number = text(p, &["issue", "number"]);
             e.labels = label_names(p.pointer("/issue/labels"));
             e.author = text(p, &["comment", "user", "login"]).or(e.author);
+            if let Some(user) = p.pointer("/comment/user") {
+                e.bot = github_bot(Some(user));
+            }
         }
         "pull_request" => {
             e.kind = format!("pull_request.{action}");
@@ -319,6 +343,9 @@ fn github(kind: Option<&str>, id: String, p: &Value) -> Result<Delivery, String>
             e.labels = label_names(p.pointer("/pull_request/labels"));
         }
         "check_suite" => {
+            // A CI result has no requester: its sender may be anyone, or
+            // GitHub's `ghost`, so it is never a bot's.
+            e.bot = false;
             let conclusion = text(p, &["check_suite", "conclusion"]);
             e.kind = match (action.as_str(), &conclusion) {
                 ("completed", Some(c)) => format!("check_suite.{c}"),
@@ -367,7 +394,10 @@ fn slack(p: &Value, id: String) -> Result<Delivery, String> {
             }
             let id = text(p, &["event_id"]).unwrap_or(id);
             let mut e = event(EventSource::Slack, kind, id, p);
-            e.author = text(p, &["event", "user"]);
+            let bot_id = text(p, &["event", "bot_id"]);
+            e.bot = bot_id.is_some()
+                || text(p, &["event", "subtype"]).as_deref() == Some("bot_message");
+            e.author = text(p, &["event", "user"]).or(bot_id);
             e.text = text(p, &["event", "text"]);
             e.channel = text(p, &["event", "channel"]);
             e.repo = text(p, &["team_id"]);
@@ -395,6 +425,7 @@ fn linear(p: &Value, id: String) -> Result<Delivery, String> {
     e.number = text(p, &["data", "identifier"]);
     e.repo = text(p, &["data", "team", "key"]);
     e.author = text(p, &["actor", "name"]).or_else(|| text(p, &["data", "creator", "name"]));
+    e.bot = text(p, &["actor", "type"]).is_some_and(|t| !t.eq_ignore_ascii_case("user"));
     e.labels = label_names(p.pointer("/data/labels"));
     Ok(Delivery::Event(Box::new(e)))
 }
@@ -409,6 +440,7 @@ fn generic(p: &Value, id: String) -> Delivery {
     );
     e.repo = text(p, &["repo"]);
     e.author = text(p, &["author"]);
+    e.bot = p.get("bot") == Some(&Value::Bool(true));
     e.title = text(p, &["title"]);
     e.text = text(p, &["text"]);
     e.url = text(p, &["url"]);
@@ -719,6 +751,144 @@ mod tests {
             b"{\"x\":1}",
         );
         assert_eq!(a, b);
+    }
+
+    fn read_event(source: EventSource, kind: Option<&str>, payload: Value) -> TriggerEvent {
+        let body = serde_json::to_vec(&payload).unwrap();
+        match read(source, kind, None, &payload, &body).unwrap() {
+            Delivery::Event(e) => *e,
+            other => panic!("not an event: {other:?}"),
+        }
+    }
+
+    /// GitHub: the account a comment names (else the sender) is a bot's
+    /// when its `type` is `Bot` or its login ends in `[bot]`; a check
+    /// suite's sender names no requester and is never one. Shapes from
+    /// GitHub's webhook payload documentation.
+    #[test]
+    fn github_tells_a_bot_by_its_account_type_or_login_and_never_for_a_check_suite() {
+        let comment = |user: Value, sender: Value| {
+            read_event(
+                EventSource::Github,
+                Some("issue_comment"),
+                serde_json::json!({
+                    "action": "created",
+                    "issue": {"number": 7, "title": "Flaky test", "labels": []},
+                    "comment": {"body": "@branchyard please look", "user": user,
+                                "html_url": "https://github.com/acme/app/issues/7#c1"},
+                    "repository": {"full_name": "acme/app"},
+                    "sender": sender
+                }),
+            )
+        };
+        let app = serde_json::json!({"login": "renovate[bot]", "id": 29139614, "type": "Bot"});
+        let alice = serde_json::json!({"login": "alice", "id": 1, "type": "User"});
+        let e = comment(app.clone(), app.clone());
+        assert_eq!((e.author.as_deref(), e.bot), (Some("renovate[bot]"), true));
+        let e = comment(alice.clone(), alice.clone());
+        assert_eq!((e.author.as_deref(), e.bot), (Some("alice"), false));
+        // The comment's author decides, as it decides `author`.
+        let e = comment(app.clone(), alice.clone());
+        assert_eq!((e.author.as_deref(), e.bot), (Some("renovate[bot]"), true));
+        let e = comment(serde_json::json!({"login": "acme-ci[bot]"}), alice.clone());
+        assert!(e.bot, "a [bot] login without a type");
+        let pr = read_event(
+            EventSource::Github,
+            Some("pull_request"),
+            serde_json::json!({
+                "action": "opened",
+                "pull_request": {"number": 12, "title": "Bump serde from 1.0.1 to 1.0.2",
+                                 "head": {"ref": "dependabot/cargo/serde-1.0.2"}, "labels": []},
+                "repository": {"full_name": "acme/app"},
+                "sender": {"login": "dependabot[bot]", "id": 49699333, "type": "Bot"}
+            }),
+        );
+        assert_eq!(
+            (pr.author.as_deref(), pr.bot),
+            (Some("dependabot[bot]"), true)
+        );
+        let mut issue = issue_labeled();
+        issue["sender"] = alice;
+        assert!(!read_event(EventSource::Github, Some("issues"), issue).bot);
+        let suite = read_event(
+            EventSource::Github,
+            Some("check_suite"),
+            serde_json::json!({
+                "action": "completed",
+                "check_suite": {"conclusion": "failure", "head_branch": "main", "head_sha": "abc",
+                                "pull_requests": []},
+                "repository": {"full_name": "acme/app", "html_url": "https://github.com/acme/app"},
+                "sender": {"login": "github-actions[bot]", "type": "Bot"}
+            }),
+        );
+        assert_eq!(suite.kind, "check_suite.failure");
+        assert!(!suite.bot, "a CI result has no requester");
+    }
+
+    /// Slack: a mention a bot posted has a `bot_id` (and often no `user`),
+    /// or the subtype `bot_message`; its author is then the bot's ID.
+    /// Shapes from Slack's Events API documentation.
+    #[test]
+    fn slack_tells_a_bot_by_its_bot_id_or_subtype() {
+        let mention = |event: Value| {
+            read_event(
+                EventSource::Slack,
+                None,
+                serde_json::json!({"type": "event_callback", "team_id": "T1", "event_id": "Ev9",
+                                   "event": event}),
+            )
+        };
+        let e = mention(serde_json::json!({"type": "app_mention", "bot_id": "B0123",
+            "bot_profile": {"name": "deploy-bot"}, "text": "<@U0BY> deployed", "channel": "C1"}));
+        assert_eq!((e.author.as_deref(), e.bot), (Some("B0123"), true));
+        let e = mention(
+            serde_json::json!({"type": "app_mention", "subtype": "bot_message",
+            "username": "ci", "text": "<@U0BY> red", "channel": "C1"}),
+        );
+        assert!(e.bot);
+        let e = mention(serde_json::json!({"type": "app_mention", "user": "U1",
+            "text": "<@U0BY> fix it", "channel": "C1"}));
+        assert_eq!((e.author.as_deref(), e.bot), (Some("U1"), false));
+    }
+
+    /// Linear: an actor whose `type` is given and is not `user` (an OAuth
+    /// client, an integration) is a bot. Linear's documentation shows only
+    /// `"user"`; any other value counts.
+    #[test]
+    fn linear_tells_a_bot_by_its_actor_type() {
+        let issue = |actor: Value| {
+            read_event(
+                EventSource::Linear,
+                None,
+                serde_json::json!({"type": "Issue", "action": "create", "actor": actor,
+                                   "data": {"title": "Error in checkout", "identifier": "ENG-9",
+                                            "team": {"key": "ENG"}, "labels": []},
+                                   "webhookTimestamp": NOW}),
+            )
+        };
+        let user = issue(serde_json::json!({"id": "u1", "type": "user", "name": "Dana"}));
+        assert_eq!((user.author.as_deref(), user.bot), (Some("Dana"), false));
+        for kind in ["OauthClient", "integration"] {
+            let e = issue(serde_json::json!({"id": "a1", "type": kind, "name": "Sentry"}));
+            assert_eq!(
+                (e.author.as_deref(), e.bot),
+                (Some("Sentry"), true),
+                "{kind}"
+            );
+        }
+        assert!(
+            !issue(serde_json::json!({"name": "Dana"})).bot,
+            "no type: not told"
+        );
+    }
+
+    /// Generic: the sender says `"bot": true`; nothing else counts.
+    #[test]
+    fn a_generic_body_says_it_is_a_bots() {
+        let e = |body: Value| read_event(EventSource::Generic, None, body);
+        assert!(e(serde_json::json!({"id": "g1", "author": "ci", "bot": true})).bot);
+        assert!(!e(serde_json::json!({"id": "g2", "author": "ci", "bot": "true"})).bot);
+        assert!(!e(serde_json::json!({"id": "g3", "author": "alice"})).bot);
     }
 
     #[test]

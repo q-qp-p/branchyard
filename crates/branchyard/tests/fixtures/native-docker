@@ -1,0 +1,37 @@
+#!/usr/bin/python3
+"""Replay the native Docker CLI protocol with guest paths in private test state."""
+
+from pathlib import Path
+import shutil
+import sqlite3
+import sys
+import json
+
+root = Path(__file__).parent
+operation = sys.argv[3:5]
+if (operation == ["container", "rm"] and (root / "fail-destroy").exists()) or (
+    operation == ["container", "start"] and (root / "fail-acquire").exists()
+):
+    sys.exit(1)
+if "--interactive" in sys.argv and (root / "fail-push").exists():
+    sys.exit(1)
+if "exec" in sys.argv and (root / "fail-exec").exists():
+    sys.exit(1)
+source = Path(__file__).resolve().parents[3] / "branchyard-container/src/fake_docker.py"
+if sys.argv[1:5] == ["--host", "unix:///var/run/docker.sock", "container", "create"]:
+    if (root / "require-registration").exists():
+        labels = dict(sys.argv[index + 1].split("=", 1) for index, arg in enumerate(sys.argv) if arg == "--label")
+        receipts = (root.parent / "repo/.branchyard/native").glob("*/*.json")
+        intent = next(value for path in receipts if (value := json.loads(path.read_text()))["owner"] == labels["io.branchyard.owner"])
+        name = intent["name"]
+        with sqlite3.connect(root.parent / "repo/.branchyard/registry.db") as registry:
+            rows = registry.execute("SELECT body FROM services WHERE kind='sandbox' AND state='live'")
+            assert any(json.loads(row[0])["reclaim"]["sandbox"] == name for row in rows)
+    for name in ("workspace", "home"):
+        shutil.rmtree(root / name, ignore_errors=True)
+(root / "workspace").mkdir(exist_ok=True)
+code = source.read_text().replace(
+    "os.execvp(command[0], command)",
+    "command = [arg.replace('/branchyard/home', str(home)).replace('/workspace', str(root / 'workspace')) for arg in command]\n    os.execvp(command[0], command)",
+)
+exec(compile(code, str(source), "exec"))

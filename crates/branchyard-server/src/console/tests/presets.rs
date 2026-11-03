@@ -29,6 +29,7 @@ impl Case {
             let repo = branchyard_testkit::Repo::init("unused-by");
             app.config.repos.push(("code".into(), repo.root.clone()));
             let yard = crate::serve::open_yard(&app.config, "code", &repo.root).unwrap();
+            crate::serve::configure_yard(&app.config, "code", &yard).unwrap();
             app.repos.insert(
                 "code".into(),
                 crate::api::RepoState {
@@ -233,6 +234,185 @@ async fn body_of(response: axum::response::Response) -> Vec<u8> {
 
 fn presets(value: Value) -> Vec<ExecutionPreset> {
     serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_targets_require_the_server_resolved_preset() {
+    let image = format!("private-registry/worker@sha256:{}", "a".repeat(64));
+    let targets = [
+        json!({"kind":"container","image":image}),
+        json!({"kind":"agent_sandbox","context":"private-context","namespace":"branchyard-gvisor","image":image}),
+        json!({"kind":"agent_sandbox","context":"private-context","namespace":"branchyard-microvm","runtime":"microvm","image":image}),
+    ];
+    let case = Case::new(|config| {
+        config
+            .allow_providers
+            .extend(["container".into(), "agent_sandbox".into()]);
+        config.execution_presets = targets
+            .iter()
+            .enumerate()
+            .map(|(index, provider)| {
+                serde_json::from_value(json!({
+                    "id":format!("native-{index}"),"label":format!("Native {index}"),
+                    "provider":provider,"harnesses":[{"harness":"gemini-cli"}]
+                }))
+                .unwrap()
+            })
+            .collect();
+    });
+    let wid = case.fixture.workspace().await;
+    let (status, offered) = case.presets(OWNER, Some(&wid)).await;
+    assert_eq!(status, StatusCode::OK, "{offered}");
+    let caller = Caller::new(Principal::default_for("owner"));
+    let workspace = super::super::get(&case.fixture.app, Collection::Workspaces, &wid).unwrap();
+    let repo = super::super::runtime::resolve(&case.fixture.app, &workspace).unwrap();
+    for (index, provider) in targets.iter().enumerate() {
+        let id = format!("native-{index}");
+        let shown = preset(&offered, &id);
+        assert_eq!(shown["environment"]["state"], "unknown", "{shown}");
+        let (status, refused) = case
+            .start(&wid, &format!("raw-{index}"), json!({"provider":provider}))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        assert_eq!(refused["error"]["code"], "preset_required");
+        let resolved = super::super::presets::resolve(
+            &case.fixture.app,
+            &caller,
+            &json!({
+            "name":"Native", "prompt":"test", "harness":"gemini-cli", "access":"writer", "preset":id
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let mut request = branchyard_client::api::TaskRequest {
+            prompt: "test".into(),
+            harness: Some("gemini-cli".into()),
+            provider: Some(resolved.provider.clone()),
+            ..Default::default()
+        };
+        let accepted =
+            crate::work::preset_task_options(&case.fixture.app, &repo, &request, &resolved)
+                .unwrap();
+        assert_eq!(accepted.provider, request.provider);
+        assert_eq!(
+            crate::work::task_options(&case.fixture.app, &repo, &request)
+                .err()
+                .unwrap()
+                .body
+                .code,
+            "preset_required"
+        );
+        request.provider = Some(serde_json::from_value(json!({"kind":"local"})).unwrap());
+        assert_eq!(
+            crate::work::preset_task_options(&case.fixture.app, &repo, &request, &resolved)
+                .err()
+                .unwrap()
+                .body
+                .code,
+            "preset_conflict"
+        );
+    }
+    assert!(case.sessions(&wid).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_graph_edits_cannot_advance_native_provider_work() {
+    let case = Case::build(
+        |config| {
+            config.allow_delegation = true;
+            config.by_path = Some("/bin/true".into());
+            config
+                .allow_providers
+                .extend(["container".into(), "agent_sandbox".into()]);
+        },
+        true,
+        &[],
+    );
+    let request = branchyard_client::api::TaskRequest {
+        prompt: "Hello".into(),
+        harness: Some("gemini-cli".into()),
+        name: Some("native-parent".into()),
+        delegation: Some(branchyard::Envelope::default()),
+        ..Default::default()
+    };
+    let (status, operation) = case
+        .fixture
+        .json(
+            Method::POST,
+            "/v1/repos/code/tasks",
+            OWNER,
+            Some("graph-parent"),
+            serde_json::to_value(request).unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{operation}");
+    let finished = case.fixture.finished(operation["id"].as_str().unwrap());
+    assert_eq!(finished.state, OperationState::Succeeded, "{finished:?}");
+    let yard = &case.fixture.app.repos["code"].yard;
+    let db = rusqlite::Connection::open(yard.root().join(".branchyard/state.db")).unwrap();
+    for provider in [
+        json!({"kind":"container","image":format!("operator/worker@sha256:{}", "a".repeat(64))}),
+        json!({"kind":"agent_sandbox","context":"private-context","namespace":"branchyard-gvisor","image":format!("operator/worker@sha256:{}", "a".repeat(64))}),
+    ] {
+        // Craft a recorded target without contacting a runtime. Raw API edits
+        // must reject it before graph admission, including non-spawn edits.
+        let baseline = serde_json::from_value::<branchyard::Provider>(provider.clone()).unwrap();
+        assert_eq!(db.execute("UPDATE branches SET record=json_set(record,'$.provider',json(?1)) WHERE name='native-parent'", [provider.to_string()]).unwrap(), 1);
+        assert_eq!(
+            yard.branch("native-parent").unwrap().provider().unwrap(),
+            Some(baseline.clone())
+        );
+        for edits in [
+            json!([{"kind":"spawn","prompt":"Hello","name":"must-not-start"}]),
+            json!([]),
+        ] {
+            let (status, refused) = case
+                .fixture
+                .json(
+                    Method::POST,
+                    "/v1/repos/code/branches/native-parent/graph",
+                    OWNER,
+                    None,
+                    json!({"expected_revision":0,"edits":edits}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+            assert_eq!(refused["error"]["code"], "preset_required");
+            assert!(yard.branch("must-not-start").is_err());
+            assert_eq!(yard.graph("native-parent").unwrap().revision, 0);
+            assert_eq!(
+                yard.branch("native-parent").unwrap().provider().unwrap(),
+                Some(baseline.clone())
+            );
+        }
+        for route in ["send", "fork", "reincarnate", "spawn"] {
+            let body = match route {
+                "send" => json!({"prompt":"Hello"}),
+                "reincarnate" => json!({"name":"must-not-start"}),
+                _ => json!({"prompt":"Hello","name":"must-not-start"}),
+            };
+            let (status, refused) = case
+                .fixture
+                .json(
+                    Method::POST,
+                    &format!("/v1/repos/code/branches/native-parent/{route}"),
+                    OWNER,
+                    Some(&format!("raw-{route}-{}", provider["kind"])),
+                    body,
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{route}: {refused}");
+            assert_eq!(
+                refused["error"]["code"], "preset_required",
+                "{route}: {refused}"
+            );
+            assert!(yard.branch("must-not-start").is_err());
+            assert_eq!(
+                yard.branch("native-parent").unwrap().provider().unwrap(),
+                Some(baseline.clone())
+            );
+        }
+    }
 }
 
 fn ids(list: &Value) -> Vec<&str> {

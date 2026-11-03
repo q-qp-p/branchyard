@@ -1122,25 +1122,29 @@ pub fn status_text(status: &BranchStatus) -> (String, Tone) {
 
 /// [`status_text`], with what a running turn is parked on when it waits
 /// for an approval (`waiting for approval: …`), or else a `stalled` marker
-/// while it has had no harness activity for its stall window. Before
-/// either, a running turn whose engine is no longer heard from says so
+/// while it has had no harness activity for its stall window. A running
+/// turn whose engine is no longer heard from also says so
 /// (`running (no heartbeat for 14s)`, `running (engine lost: …)`).
 pub fn branch_status_text(info: &BranchInfo) -> (String, Tone) {
     let (text, tone) = status_text(&info.status);
-    let silent = info
-        .liveness
-        .as_ref()
-        .and_then(|l| l.describe(branchyard_support::time::now_ms()));
-    if let Some(silent) = silent {
-        return (format!("{text} ({silent})"), Tone::Yellow);
-    }
-    match (&info.awaiting, info.stalled) {
-        (Some(awaiting), _) => (
-            format!("waiting for approval: {}", awaiting.about),
-            Tone::Yellow,
-        ),
-        (None, true) => (format!("{text} (stalled)"), Tone::Yellow),
-        (None, false) => (text, tone),
+    let silent = match info.status {
+        BranchStatus::Running => info
+            .liveness
+            .as_ref()
+            .and_then(|l| l.describe(branchyard_support::time::now_ms())),
+        _ => None,
+    };
+    match (&info.awaiting, silent, info.stalled) {
+        (Some(awaiting), silent, _) => {
+            let mut text = format!("waiting for approval: {}", awaiting.about);
+            if let Some(silent) = silent {
+                text.push_str(&format!(" ({silent})"));
+            }
+            (text, Tone::Yellow)
+        }
+        (None, Some(silent), _) => (format!("{text} ({silent})"), Tone::Yellow),
+        (None, None, true) => (format!("{text} (stalled)"), Tone::Yellow),
+        (None, None, false) => (text, tone),
     }
 }
 
@@ -1591,6 +1595,8 @@ pub fn runs_text(provider: &str, isolated: bool) -> String {
         ("local", true) => "local, isolated: private HOME, not a sandbox".into(),
         ("microsandbox", _) => "microsandbox: a microVM per turn".into(),
         ("substrate", _) => "substrate: an Agent Substrate actor per turn".into(),
+        ("container", _) => "container: an owned worker-local container per turn".into(),
+        ("agent_sandbox", _) => "agent_sandbox: an owned Kubernetes sandbox per turn".into(),
         (other, _) => match other.strip_prefix("recipe:") {
             Some(_) => format!("{other}: a machine its recipe makes"),
             None => other.to_owned(),
@@ -2183,6 +2189,36 @@ mod tests {
     }
 
     #[test]
+    fn engine_liveness_keeps_approval_attention_and_does_not_label_settled_work() {
+        let mut branch = info("b", None);
+        branch.status = BranchStatus::Running;
+        branch.stage = Some(branchyard::stage::Reason::Approval.into());
+        branch.awaiting = Some(branchyard::Awaiting {
+            kind: branchyard::AwaitingKind::Approval,
+            id: "ask-1".into(),
+            about: "publish the result".into(),
+            since_ms: 0,
+        });
+        branch.liveness = Some(branchyard::Liveness {
+            state: branchyard::LivenessState::Lost,
+            heard_ms: 0,
+            known_until_ms: 0,
+            reason: Some("lease expired".into()),
+        });
+        assert_eq!(
+            branch_status_text(&branch),
+            (
+                "waiting for approval: publish the result (engine lost: lease expired)".into(),
+                Tone::Yellow
+            )
+        );
+        branch.status = BranchStatus::Ready;
+        branch.awaiting = None;
+        branch.stage = Some(branchyard::stage::Reason::Ready.into());
+        assert_eq!(branch_status_text(&branch), ("ready".into(), Tone::Green));
+    }
+
+    #[test]
     fn blank_handoff_note_still_displays_frozen_evidence() {
         let mut message: branchyard::Message = serde_json::from_value(serde_json::json!({
             "id": 1, "from": "lead", "to": "writer", "kind": "answer",
@@ -2522,6 +2558,7 @@ mod tests {
             created_at: 10_000,
             stalled: false,
             awaiting: None,
+            stage: None,
             liveness: None,
             superseded_by: None,
             model: None,
@@ -3130,6 +3167,14 @@ mod tests {
         assert_eq!(
             runs_text("substrate", false),
             "substrate: an Agent Substrate actor per turn"
+        );
+        assert_eq!(
+            runs_text("container", false),
+            "container: an owned worker-local container per turn"
+        );
+        assert_eq!(
+            runs_text("agent_sandbox", false),
+            "agent_sandbox: an owned Kubernetes sandbox per turn"
         );
 
         let mut i: branchyard::Inspection = serde_json::from_value(serde_json::json!({

@@ -2,7 +2,7 @@
 // tests/companion_browser.rs, which runs the server and talks to this
 // script over stdin and stdout, a line at a time:
 //
-//   script: LOADED            the page paired and shows no branches
+//   script: LOADED            the page paired and shows no branches and no problems
 //   test:   (submits a task named "first" through the API)
 //   script: SEEN first        the branch appeared over the event stream
 //   script: FILTERED          a search is focused with selected text
@@ -18,6 +18,9 @@
 //   test:   (starts "rival", which writes first's a.txt too), then "ground"
 //   script: GROUND            first's Ground names rival, its merge card too
 //                             (and, merged, first's Ground holds nothing)
+//   test:   (queues work requiring a label no worker carries), then "problem <id>"
+//   script: PROBLEM           after a reload, home lists it above the tiles with its
+//                             error and what to do
 //   test:   (a parent runs a child that asks it a question and waits), then "question"
 //   script: ASKED             the tab title counts it live; after a reload the
 //                             deck's first card is the question, naming child and text
@@ -95,6 +98,7 @@ const shots = process.env.BY_SCREENSHOTS;
   let releaseList;
   const heldList = new Promise((resolve) => { releaseList = resolve; });
   await page.route('**/v1/repos/app/branches', async (route) => { await heldList; await route.continue(); });
+  const problemsRead = page.waitForResponse((r) => r.url().endsWith('/v1/problems'));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.getByRole('heading', { name: 'Loading branches…' }).waitFor();
   if (shots) await page.screenshot({ path: `${shots}/loading-desktop.png` });
@@ -103,6 +107,8 @@ const shots = process.env.BY_SCREENSHOTS;
   await page.unroute('**/v1/repos/app/branches');
   if (shots) await page.screenshot({ path: `${shots}/empty-desktop.png` });
   await page.locator('#live[data-state="live"]').waitFor({ timeout: 30000 });
+  if ((await (await problemsRead).json()).problems.length) throw new Error('the fixture server starts with problems');
+  if (await page.locator('[aria-label="Problems"]').count()) throw new Error('a healthy server shows a problems strip');
   say('LOADED');
 
   await nextLine();
@@ -315,17 +321,22 @@ const shots = process.env.BY_SCREENSHOTS;
   // sentence, not a held allow); nothing is left to undo.
   await nextLine();
   await page.waitForFunction(() => document.title === '(1) Branchyard', null, { timeout: 60000 });
+  await page.waitForFunction(() => {
+    const first = document.querySelector('#main .bay-item');
+    return first && first.dataset.decision.startsWith('question:kid:');
+  }, null, { timeout: 60000 });
   const bayFirst = page.locator('#main .bay-item').first();
   await bayFirst.waitFor({ timeout: 60000 });
   if (!(await bayFirst.getAttribute('data-decision') || '').startsWith('question:kid:')) throw new Error(`the bay does not list the question first: ${await bayFirst.innerText()}`);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  const question = page.locator('#main .deck-card');
+  const question = page.locator('#main .deck-card.deck-question');
   await question.waitFor({ timeout: 60000 });
   if (!(await question.evaluate((el) => el.classList.contains('deck-question')))) throw new Error(`the first card is not the question: ${await question.innerText()}`);
   if (await page.locator('#main .deck-card').count() !== 1) throw new Error('the deck shows more than one card');
   await question.locator('h2', { hasText: 'kid asks: Which parser?' }).waitFor();
   await question.locator('.deck-kind', { hasText: 'an agent is parked until you answer' }).waitFor();
   await question.locator('.deck-line', { hasText: 'to boss' }).waitFor();
+  await page.locator('#lane-needs a', { hasText: 'kid' }).filter({ hasText: 'question' }).waitFor();
   if (!(await page.locator('#main .deck-count', { hasText: /^1 of \d+/ }).count())) throw new Error(`the deck is not counted from the question: ${await page.locator('#main .deck-count').innerText()}`);
   if (await page.title() !== '(1) Branchyard') throw new Error(`the title counts ${await page.title()}, not (1)`);
   await noOverflow('the question card');
@@ -407,6 +418,26 @@ const shots = process.env.BY_SCREENSHOTS;
   if (await page.locator('#main .deck-card .deck-ground').count()) throw new Error('a card whose files nobody else holds names some');
   await noOverflow('the deck with the ground line');
   say('GROUND');
+
+  // Queued work that no worker can claim is a problem. Nothing on the
+  // stream announces it, so the page reads it when it loads: home lists it
+  // above the tiles, with how long it has stood, its error and what to do.
+  const stuck = (await nextLine()).split(' ')[1];
+  await go('#/');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  const strip = page.locator('#main section[aria-label="Problems"]');
+  const problem = strip.locator('li.problem', { hasText: `operation ${stuck} on app` });
+  await problem.waitFor({ timeout: 60000 });
+  if (await strip.locator('li.problem').count() !== 1) throw new Error(`the strip lists ${await strip.locator('li.problem').count()} problems, not 1`);
+  await problem.locator('.problem-error', { hasText: 'gpu' }).waitFor();
+  await problem.locator('.problem-next', { hasText: 'it claims the operation' }).waitFor();
+  await problem.locator('.problem-next code', { hasText: '--label gpu' }).waitFor();
+  await problem.locator('.problem-meta time[data-at]').waitFor();
+  await page.locator('#main .tiles').waitFor();
+  const [stripBox, tilesBox] = await Promise.all([strip.boundingBox(), page.locator('#main .tiles').boundingBox()]);
+  if (stripBox.y + stripBox.height > tilesBox.y) throw new Error(`the problems strip is not above the tiles: ${JSON.stringify([stripBox, tilesBox])}`);
+  await noOverflow('the problems strip');
+  say('PROBLEM');
 
   await go('#/b/app/first');
   await page.locator('#strip').getByRole('button', { name: 'Merge', exact: true }).click();

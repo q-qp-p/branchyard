@@ -547,7 +547,8 @@ fn verdict(yard: &Yard, record: &Record) -> Result<Verdict, Error> {
 }
 
 /// The options a dependent's turn runs with: those the proposal was
-/// applied with in this process, else `given`'s policy, observer and tools.
+/// applied with in this process, else `given`'s policy, observer, tools and
+/// provider admission context. Its actual provider stays in its own record.
 /// Its limits and denials come from its own record.
 fn options_for(yard: &Yard, record: &Record, given: Option<&TaskOptions>) -> Option<TaskOptions> {
     let parent = record.info.parent.as_deref()?;
@@ -557,7 +558,8 @@ fn options_for(yard: &Yard, record: &Record, given: Option<&TaskOptions>) -> Opt
     given.map(child_options)
 }
 
-/// A child's turn options from its parent's or a sibling's.
+/// A child's turn options from its parent's or a sibling's. The provider
+/// is admission evidence; it does not replace the child's stored provider.
 pub(crate) fn child_options(options: &TaskOptions) -> TaskOptions {
     TaskOptions {
         policy: options.policy.clone(),
@@ -565,6 +567,7 @@ pub(crate) fn child_options(options: &TaskOptions) -> TaskOptions {
         delegation_cli: options.delegation_cli.clone(),
         delegation_server: options.delegation_server.clone(),
         fleet: options.fleet.clone(),
+        provider: options.provider.clone(),
         ..TaskOptions::default()
     }
 }
@@ -731,6 +734,7 @@ pub(crate) fn settled(yard: &Yard, name: &str, options: Option<&TaskOptions>) {
 /// its explicit base or its parent's git branch as it is now. `None` if
 /// another engine claimed it first.
 fn start(yard: &Yard, mut record: Record, options: &TaskOptions) -> Result<Option<Record>, Error> {
+    yard.admit_provider(record.provider.as_ref(), options)?;
     let store = yard.store();
     let profile = profiles::by_id(&record.info.profile)
         .ok_or_else(|| Error::UnknownHarness(record.info.profile.clone()))?;

@@ -57,10 +57,12 @@ pub struct Reconciled {
 /// gone has no turn running; a store that cannot be read is an error, not
 /// "not running": that would move the effects of a turn still in flight to
 /// `unknown`.
-fn turn_running(yard: &Yard, entry: &EffectEntry) -> Result<bool, Error> {
-    let store = yard.store();
-    // Leases are judged on the store's clock, whatever time the caller
-    // reconciles as of.
+pub(crate) fn turn_running(
+    store: &crate::state::Store,
+    entry: &EffectEntry,
+) -> Result<bool, Error> {
+    // Lease validity follows the authoritative store clock, even when an
+    // obligation or reconciliation is evaluated at an explicit time.
     let now = store.backend().clock_ms()?;
     let record = match store.read(&entry.branch) {
         Ok(record) => record,
@@ -74,8 +76,16 @@ fn turn_running(yard: &Yard, entry: &EffectEntry) -> Result<bool, Error> {
         .leases()
         .map_err(|e| e.could_not("read the branch leases"))?
         .into_iter()
-        .any(|l| l.branch == entry.branch && l.owner.is_some() && l.stale(now).is_none());
-    Ok(held && record.info.turns + 1 == entry.turn)
+        .any(|l| {
+            l.branch == entry.branch
+                && l.turn == u64::from(entry.turn)
+                && l.owner.is_some()
+                && l.stale(now).is_none()
+        });
+    Ok(record.info.status == crate::BranchStatus::Running
+        && held
+        && record.info.turns + 1 == entry.turn
+        && entry.created_ms >= record.created_ms)
 }
 
 /// Move `begun` entries whose turn is not running to `unknown`. No network.
@@ -83,7 +93,7 @@ pub(crate) fn orphans(yard: &Yard, now: u64) -> Result<Vec<String>, Error> {
     let ledger = yard.store();
     let mut moved = Vec::new();
     for entry in ledger.effects().effects(None)? {
-        if entry.state != EffectState::Begun || turn_running(yard, &entry)? {
+        if entry.state != EffectState::Begun || turn_running(&ledger, &entry)? {
             continue;
         }
         let change = EffectMove::to(EffectState::Unknown).detail(

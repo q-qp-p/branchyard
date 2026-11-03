@@ -1,0 +1,315 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "annotations": {
+      "agents.x-k8s.io/propagated-annotations": "branchyard.io/spec",
+      "agents.x-k8s.io/propagated-labels": "branchyard.io/owner",
+      "branchyard.io/spec": "98ce44d5dd724d03f387d77e8c16aefb34e92df1cf9e3158b18198cef7713c13"
+    },
+    "creationTimestamp": "2026-11-02T22:07:24Z",
+    "generation": 1,
+    "labels": {
+      "agents.x-k8s.io/sandbox-name-hash": "575a1beb",
+      "branchyard.io/owner": "2c0e5116e356c548ad53eb892d48ab83",
+      "topology.kubernetes.io/region": "us-central1",
+      "topology.kubernetes.io/zone": "us-central1-a"
+    },
+    "name": "by-bab3a41e62c6f76c2b855f3ccfddd1431f40a218",
+    "namespace": "branchyard-microvm",
+    "ownerReferences": [
+      {
+        "apiVersion": "agents.x-k8s.io/v1beta1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Sandbox",
+        "name": "by-bab3a41e62c6f76c2b855f3ccfddd1431f40a218",
+        "uid": "4154b314-e1d1-4459-9888-c4cb786dcb6e"
+      }
+    ],
+    "resourceVersion": "1793657255049119011",
+    "uid": "d08155ad-ae2e-42d9-afc0-2db0d0228792"
+  },
+  "spec": {
+    "automountServiceAccountToken": false,
+    "containers": [
+      {
+        "command": [
+          "sh",
+          "-c",
+          "exec tail -f /dev/null"
+        ],
+        "env": [
+          {
+            "name": "HOME",
+            "value": "/branchyard/home"
+          },
+          {
+            "name": "PATH",
+            "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          }
+        ],
+        "image": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+        "imagePullPolicy": "IfNotPresent",
+        "name": "runtime",
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "512Mi"
+          }
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "readOnlyRootFilesystem": true
+        },
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "volumeMounts": [
+          {
+            "mountPath": "/workspace",
+            "name": "workspace"
+          },
+          {
+            "mountPath": "/branchyard/home",
+            "name": "home"
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/branchyard-identity",
+            "name": "identity",
+            "readOnly": true
+          }
+        ],
+        "workingDir": "/workspace"
+      }
+    ],
+    "dnsPolicy": "ClusterFirst",
+    "enableServiceLinks": false,
+    "nodeName": "gke-by-v040-qual-202-branchyard-micro-308c2780-1053",
+    "nodeSelector": {
+      "sandbox.gke.io/runtime": "microvm"
+    },
+    "overhead": {
+      "cpu": "250m",
+      "memory": "130Mi"
+    },
+    "preemptionPolicy": "PreemptLowerPriority",
+    "priority": 0,
+    "restartPolicy": "Never",
+    "runtimeClassName": "microvm",
+    "schedulerName": "default-scheduler",
+    "securityContext": {
+      "fsGroup": 1000,
+      "runAsGroup": 1000,
+      "runAsNonRoot": true,
+      "runAsUser": 1000,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "serviceAccount": "default",
+    "serviceAccountName": "default",
+    "terminationGracePeriodSeconds": 10,
+    "tolerations": [
+      {
+        "effect": "NoSchedule",
+        "key": "sandbox.gke.io/runtime",
+        "operator": "Equal",
+        "value": "microvm"
+      },
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      },
+      {
+        "effect": "NoExecute",
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "tolerationSeconds": 300
+      }
+    ],
+    "volumes": [
+      {
+        "emptyDir": {},
+        "name": "workspace"
+      },
+      {
+        "emptyDir": {},
+        "name": "home"
+      },
+      {
+        "emptyDir": {
+          "sizeLimit": "256Mi"
+        },
+        "name": "tmp"
+      },
+      {
+        "downwardAPI": {
+          "defaultMode": 292,
+          "items": [
+            {
+              "fieldRef": {
+                "apiVersion": "v1",
+                "fieldPath": "metadata.uid"
+              },
+              "path": "pod-uid"
+            }
+          ]
+        },
+        "name": "identity"
+      }
+    ]
+  },
+  "status": {
+    "allocatedResources": {
+      "cpu": "1250m",
+      "memory": "642Mi"
+    },
+    "conditions": [
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:07:28Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodReadyToStartContainers"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:07:25Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Initialized"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:07:35Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "Ready"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:07:35Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "ContainersReady"
+      },
+      {
+        "lastProbeTime": null,
+        "lastTransitionTime": "2026-11-02T22:07:25Z",
+        "observedGeneration": 1,
+        "status": "True",
+        "type": "PodScheduled"
+      }
+    ],
+    "containerStatuses": [
+      {
+        "allocatedResources": {
+          "cpu": "1",
+          "memory": "512Mi"
+        },
+        "containerID": "containerd://6de3d0a6c2f6db18620b0e19ddb2855f299b00771d8d5a134e89dd81c6dd909e",
+        "image": "sha256:0bfebfe89ed85eb8466f3048cc3dd1b2f3de12b1bc398ab00c68166ccdbb472c",
+        "imageID": "ghcr.io/vamsiramakrishnan/branchyard-agy@sha256:46e177cc5e874614a04cbe2b06b6df374ab50296557f27ef77246f609dbc158d",
+        "lastState": {},
+        "name": "runtime",
+        "ready": true,
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "512Mi"
+          }
+        },
+        "restartCount": 0,
+        "started": true,
+        "state": {
+          "running": {
+            "startedAt": "2026-11-02T22:07:35Z"
+          }
+        },
+        "user": {
+          "linux": {
+            "gid": 1000,
+            "supplementalGroups": [
+              4,
+              20,
+              24,
+              25,
+              27,
+              29,
+              30,
+              44,
+              46,
+              1000
+            ],
+            "uid": 1000
+          }
+        },
+        "volumeMounts": [
+          {
+            "mountPath": "/workspace",
+            "name": "workspace"
+          },
+          {
+            "mountPath": "/branchyard/home",
+            "name": "home"
+          },
+          {
+            "mountPath": "/tmp",
+            "name": "tmp"
+          },
+          {
+            "mountPath": "/var/run/branchyard-identity",
+            "name": "identity",
+            "readOnly": true,
+            "recursiveReadOnly": "Disabled"
+          }
+        ]
+      }
+    ],
+    "hostIP": "10.128.0.88",
+    "hostIPs": [
+      {
+        "ip": "10.128.0.88"
+      }
+    ],
+    "observedGeneration": 1,
+    "phase": "Running",
+    "podIP": "10.112.2.5",
+    "podIPs": [
+      {
+        "ip": "10.112.2.5"
+      }
+    ],
+    "qosClass": "Guaranteed",
+    "resources": {
+      "limits": {
+        "cpu": "1250m",
+        "memory": "642Mi"
+      },
+      "requests": {
+        "cpu": "1250m",
+        "memory": "642Mi"
+      }
+    },
+    "startTime": "2026-11-02T22:07:25Z"
+  }
+}

@@ -178,6 +178,35 @@ def exit_table(exits):
     return "\n\n" + "\n".join(rows) + "\n\n"
 
 
+def snake_case(name):
+    """CamelCase to snake_case, as serde's `rename_all = "snake_case"` does."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def stage_facts():
+    """What a branch needs from a person, row by row in precedence order, from the engine's own
+    table (crates/branchyard/src/stage.rs: `STAGES`)."""
+    text = (ROOT / "crates/branchyard/src/stage.rs").read_text()
+    table = re.search(r"pub const STAGES: \[\(Reason, Lane, &str\); (\d+)\] = \[(.*?)\n\];", text, re.S)
+    if not table:
+        raise SystemExit("docs_facts: STAGES not found in crates/branchyard/src/stage.rs")
+    rows = re.findall(r'\(\s*Reason::(\w+),\s*Lane::(\w+),\s*"((?:[^"\\]|\\.)*)"', table.group(2), re.S)
+    if len(rows) != int(table.group(1)):
+        raise SystemExit("docs_facts: a row of STAGES in crates/branchyard/src/stage.rs did not parse")
+    return [
+        {"reason": snake_case(reason), "lane": snake_case(lane), "condition": rust_string(body)}
+        for reason, lane, body in rows
+    ]
+
+
+def stage_table(stages):
+    """docs/concepts.md's table of what a branch needs from you."""
+    rows = ["| Reason | Lane | Condition |", "|---|---|---|"]
+    for stage in stages:
+        rows.append(f"| `{stage['reason']}` | `{stage['lane']}` | {stage['condition']} |")
+    return "\n\n" + "\n".join(rows) + "\n\n"
+
+
 def runtime_facts():
     text = (ROOT / "crates/branchyard-runtime/src/lib.rs").read_text()
     match = re.search(r"const DEFAULT_STRIP: \[&str; \d+\] = \[(.*?)\];", text, re.S)
@@ -264,6 +293,7 @@ def compute():
         "runtime": runtime_facts(),
         "profiles": profile_facts(),
         "cli": {"exit_codes": exit_facts()},
+        "stages": stage_facts(),
         "document_skills": json.loads((ROOT / "plugins/branchyard/capabilities.json").read_text())["skills"],
     }
 
@@ -336,6 +366,7 @@ def regions(facts):
         "profiles.summary": profile_summary(facts["profiles"]),
         "profiles.table": profile_table(facts["profiles"]),
         "cli.exit_codes": exit_table(facts["cli"]["exit_codes"]),
+        "stage.table": stage_table(facts["stages"]),
     }
 
 

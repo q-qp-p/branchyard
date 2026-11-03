@@ -2,10 +2,12 @@
   "tolerance": 1.0,
   "crates": {
     "branchyard": 90.7,
+    "branchyard-agent-sandbox": 91.6,
     "branchyard-bridge": 90.3,
     "branchyard-cli": 83.8,
     "branchyard-client": 92.5,
     "branchyard-config": 83.0,
+    "branchyard-container": 96.0,
     "branchyard-controls": 93.1,
     "branchyard-harness": 92.2,
     "branchyard-herdr": 53.4,

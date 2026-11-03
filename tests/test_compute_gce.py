@@ -216,7 +216,7 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_iap_plan_is_offline_and_direct_fingerprints_remain_compatible(self):
         legacy = asdict(self.config)
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor"):
             legacy.pop(key)
         self.assertEqual(
             self.config.fingerprint, hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
@@ -541,6 +541,8 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_microsandbox_uses_nested_virtualization_and_pinned_runtime(self):
         config = replace(self.config, backend="microsandbox", internal_ip=True)
+        self.assertEqual(gce.plan(config)["microsandbox_runtime"]["revision"], gce.MSB_RUNTIME_REVISION)
+        self.assertIn(f"/v{config.version}/", gce.plan(config)["microsandbox_runtime"]["manifest"])
         self.state["desired"] = self.instance(config)
         self.save()
         report = self.apply(config)
@@ -551,19 +553,50 @@ class ComputeGceTests(unittest.TestCase):
         self.assertEqual(len(scripts), 2)
         for required in (
             "--runtime",
-            gce.MSB_ARCHIVE_SHA256,
-            "msb context --format json",
-            "msb image load",
-            "MSB_HOME=/var/lib/by-msb",
+            "SHA256SUMS",
+            "microsandbox-runtime.json",
+            gce.MSB_RUNTIME_REVISION,
+            '"$MSB_PATH" context --format json',
+            '"$MSB_PATH" image load',
+            "microsandbox.env",
+            "bin/runtime-provenance.json",
         ):
             self.assertIn(required, scripts[0])
+        self.assertNotIn("superradcompany/microsandbox/releases/download", scripts[0])
+        self.assertNotIn("/var/lib/by-msb", scripts[0])
         self.assertIn('usermod -aG kvm "$(id -un)"', scripts[0])
         self.assertNotIn("by init project", scripts[0])
         self.assertIn("by init project", scripts[1])
         self.assertIn("by init server", scripts[1])
         self.assertIn("stage=$(mktemp -d)", scripts[1])
         self.assertIn(f"cd {config.remote_path}", scripts[1])
+        self.assertIn(gce.runtime_environment(config), scripts[1])
         self.assertEqual(report["qualification"]["microsandbox_hard_memory_ceiling"], "not_qualified")
+
+    def test_packaged_microsandbox_installer_is_required_before_cloud_mutation(self):
+        config = replace(self.config, backend="microsandbox")
+        self.state["desired"] = self.instance(config)
+        self.save()
+        with (
+            patch.dict(os.environ, {"BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER": "print('embedded-msb')"}),
+            patch.object(gce, "__file__", None),
+        ):
+            self.assertIn("print('embedded-msb')", gce.bootstrap(config, None))
+        with (
+            patch.dict(self.env, {"BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER": ""}),
+            self.assertRaisesRegex(gce.SetupError, "installer is empty"),
+        ):
+            self.apply(config)
+        self.assertFalse(any("create" in call["args"] for call in self.calls()))
+        environment = {
+            key: value for key, value in os.environ.items() if key != "BRANCHYARD_MICROSANDBOX_RUNTIME_INSTALLER"
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", None),
+            self.assertRaisesRegex(gce.SetupError, "must embed install_microsandbox_runtime.py"),
+        ):
+            gce.bootstrap(config, None)
 
     def test_generated_bootstrap_is_valid_bash_for_both_backends_and_repository_modes(self):
         for backend in ("local", "microsandbox"):
@@ -578,6 +611,72 @@ class ComputeGceTests(unittest.TestCase):
             self.assertEqual(syntax.returncode, 0, syntax.stderr)
             self.assertIn("umask 077", configured)
             self.assertNotIn(self.env["GEMINI_API_KEY"], configured)
+
+    def test_gvisor_is_explicit_pinned_prerequisites_for_either_backend(self):
+        import install_container_runtime as runtime
+
+        for backend in ("local", "microsandbox"):
+            with self.subTest(backend=backend):
+                config = replace(self.config, backend=backend, gvisor=True)
+                self.assertNotEqual(config.fingerprint, replace(config, gvisor=False).fingerprint)
+                report = gce.plan(config)
+                self.assertEqual(report["gvisor"], {"release": runtime.RELEASE, "runtime": "runsc"})
+                self.state["instance"] = None
+                self.state["desired"] = self.instance(config)
+                self.save()
+                applied = self.apply(config)
+                self.assertEqual(applied["gvisor"], report["gvisor"])
+                script = next(
+                    call["script"]
+                    for call in reversed(self.calls())
+                    if call["script"] and "sudo apt-get" in call["script"]
+                )
+                self.assertIn(runtime.ARCHIVE_SHA512[:80], script)
+                self.assertIn("sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'", script)
+                self.assertIn('sudo usermod -aG docker "$(id -un)"', script)
+                syntax = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True, check=False)
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
+                self.assertNotIn("restart docker", script)
+        with patch.dict(os.environ, BRANCHYARD_CONTAINER_RUNTIME_INSTALLER="print('packaged-runtime-helper')"):
+            self.assertIn("print('packaged-runtime-helper')", gce.bootstrap(replace(self.config, gvisor=True), None))
+        self.assertNotIn("BRANCHYARD_GVISOR_INSTALLER", gce.bootstrap(self.config, None))
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools/compute_gce.py"),
+                "--project=test-project",
+                "--zone=us-central1-a",
+                "--name=branchyard-test",
+                "--gvisor",
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["gvisor"]["release"], runtime.RELEASE)
+
+    def test_missing_packaged_gvisor_helper_stops_before_cloud_mutation(self):
+        environment = {key: value for key, value in self.env.items() if key != "BRANCHYARD_CONTAINER_RUNTIME_INSTALLER"}
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", None),
+            self.assertRaisesRegex(gce.SetupError, "must embed"),
+        ):
+            gce.apply(replace(self.config, gvisor=True))
+        self.assertFalse(any("create" in call["args"] for call in self.calls()))
+        with (
+            patch.dict(os.environ, BRANCHYARD_CONTAINER_RUNTIME_INSTALLER=""),
+            self.assertRaisesRegex(gce.SetupError, "empty"),
+        ):
+            gce.bootstrap(replace(self.config, gvisor=True), None)
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(gce, "__file__", str(self.root / "missing/compute_gce.py")),
+            self.assertRaisesRegex(gce.SetupError, "missing"),
+        ):
+            gce.bootstrap(replace(self.config, gvisor=True), None)
 
     def test_existing_selected_service_account_is_verified_without_iam_mutations(self):
         config = replace(self.config, service_account="worker@test-project.iam.gserviceaccount.com")
@@ -608,7 +707,7 @@ class ComputeGceTests(unittest.TestCase):
         self.assertEqual(gce.plan(account)["access_scopes"], [gce.DEFAULT_SCOPE])
         self.assertEqual(gce.plan(self.config)["access_scopes"], [])
         legacy = asdict(replace(account, scopes="none"))
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor"):
             legacy.pop(key)
         self.assertEqual(
             replace(account, scopes="none").fingerprint,

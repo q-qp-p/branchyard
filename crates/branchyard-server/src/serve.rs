@@ -6,10 +6,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use branchyard_support::LockExt as _;
 use std::time::Duration;
 
 use branchyard::Yard;
+use branchyard_client::api::{Problem, ProblemKind};
+use branchyard_support::time::now_ms;
+use branchyard_support::LockExt as _;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 use hyper_util::service::TowerToHyperService;
@@ -421,23 +423,26 @@ pub async fn start(config: Config) -> Result<Running, String> {
         ),
         None => None,
     };
-    let mut pollers: Vec<tokio::task::JoinHandle<()>> = repos
-        .values()
-        .map(|repo| {
-            tokio::spawn(poll(
-                repo.clone(),
-                config.poll_interval,
-                config.recover_interval,
-                shutdown_rx.clone(),
-            ))
-        })
-        .collect();
+    let mut seen = crate::problems::Seen::default();
+    let mut pollers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    for repo in repos.values() {
+        let unknown = Arc::default();
+        seen.effects.insert(repo.name.clone(), Arc::clone(&unknown));
+        pollers.push(tokio::spawn(poll(
+            repo.clone(),
+            config.poll_interval,
+            config.recover_interval,
+            unknown,
+            shutdown_rx.clone(),
+        )));
+    }
     let webhooks = match worker {
         true => Vec::new(),
         false => start_webhooks(
             &config,
             &repos,
             registry.observability(),
+            &mut seen.webhooks,
             shutdown_rx.clone(),
         )?,
     };
@@ -502,6 +507,7 @@ pub async fn start(config: Config) -> Result<Running, String> {
         shutdown: shutdown_rx.clone(),
         storage_idem: crate::storage_routes::StorageIdem::default(),
         triggers: hub,
+        seen,
         runtime: Default::default(),
         pull_requests: Default::default(),
     });
@@ -729,11 +735,15 @@ fn worker_or_not(config: &Config) -> bool {
 }
 
 /// One delivery task per (repository, configured webhook), sharing a store
-/// for their durable cursors and an HTTP client.
+/// for their durable cursors and an HTTP client. Each task's [`Watch`]
+/// goes into `watches`, keyed `<repo>:<webhook id>`.
+///
+/// [`Watch`]: webhook::Watch
 fn start_webhooks(
     config: &Config,
     repos: &BTreeMap<String, RepoState>,
     observability: &crate::observe::Observability,
+    watches: &mut BTreeMap<String, webhook::Watch>,
     shutdown: watch::Receiver<bool>,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     if config.webhooks.is_empty() {
@@ -753,14 +763,17 @@ fn start_webhooks(
                 cursor = %place,
                 "notifying webhook of repo activity"
             );
-            tasks.push(webhook::spawn_observed(
+            let watch = webhook::Watch::new(&repo.name, webhook);
+            tasks.push(webhook::spawn(
                 repo.clone(),
                 webhook.clone(),
                 store.clone(),
                 client.clone(),
                 observability.clone(),
+                watch.streak(),
                 shutdown.clone(),
             ));
+            watches.insert(format!("{}:{}", repo.name, webhook.id), watch);
         }
     }
     Ok(tasks)
@@ -824,6 +837,28 @@ fn open_state(config: &Config) -> Result<Opened, String> {
 
 /// Apply operator policy identically to registered and managed task yards.
 pub(crate) fn configure_yard(config: &Config, name: &str, yard: &Yard) -> Result<(), String> {
+    let allowed = config.allow_providers.clone();
+    yard.use_provider_admission(Arc::new(move |actual, options| {
+        let Some(provider) = actual else { return Ok(()); };
+        match provider.harness_location() {
+            branchyard::HarnessLocation::Local => Ok(()),
+            branchyard::HarnessLocation::Image => {
+                if options.provider.as_ref() == Some(provider) && allowed.contains(provider.name()) {
+                    Ok(())
+                } else {
+                    Err(branchyard::Error::Denied("native execution requires the exact operator-resolved preset on this worker".into()))
+                }
+            }
+            branchyard::HarnessLocation::Microsandbox | branchyard::HarnessLocation::Substrate(_) => {
+                if allowed.contains(provider.name()) {
+                    Ok(())
+                } else {
+                    Err(branchyard::Error::Denied("this worker does not allow the branch's provider".into()))
+                }
+            }
+            branchyard::HarnessLocation::Recipe(_) => Err(branchyard::Error::Denied("a server never runs environment recipes".into())),
+        }
+    }));
     // Only an operator's configuration lets a repository's scripts run;
     // see docs/workspace.md.
     if !config.allow_workspace_scripts.allows(name) {
@@ -900,12 +935,15 @@ pub const RECOVER_EVERY: Duration = Duration::from_secs(30);
 
 /// Publish a repository's feed head when the engine reports activity, and
 /// otherwise every `interval`, which picks up other processes' activity.
-/// Every `recover_every`, recover branches whose engine stopped and start
-/// waiting dependents whose prerequisites settled.
+/// Every `recover_every`, recover branches whose engine stopped, start
+/// waiting dependents whose prerequisites settled, and reconcile the
+/// effect ledger, putting an `effect` problem per entry it left unknown
+/// in `unknown`.
 async fn poll(
     repo: RepoState,
     interval: Duration,
     recover_every: Duration,
+    unknown: Arc<std::sync::Mutex<Vec<Problem>>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut recovered = tokio::time::Instant::now();
@@ -920,7 +958,7 @@ async fn poll(
             recovered = tokio::time::Instant::now();
         }
         let (feed, yard) = (repo.feed.clone(), repo.yard.clone());
-        let wake = repo.wake.clone();
+        let (wake, name, unknown) = (repo.wake.clone(), repo.name.clone(), unknown.clone());
         let polled = tokio::task::spawn_blocking(move || {
             let recovered = match recover {
                 true => yard.recover().map(|r| r.len()),
@@ -952,12 +990,17 @@ async fn poll(
             // gateway on the recovery interval (docs/effects.md).
             if recover {
                 match yard.reconcile_effects() {
-                    Ok(report) if !report.settled.is_empty() => tracing::info!(
-                        settled = report.settled.len(),
-                        still_unknown = report.unknown.len(),
-                        "reconciled the effect ledger"
-                    ),
-                    Ok(_) => {}
+                    Ok(report) => {
+                        if !report.settled.is_empty() {
+                            tracing::info!(
+                                settled = report.settled.len(),
+                                still_unknown = report.unknown.len(),
+                                "reconciled the effect ledger"
+                            );
+                        }
+                        let problems = unknown_effects(&name, &yard, &report.unknown);
+                        *unknown.lock_recovering("unknown effects") = problems;
+                    }
                     Err(e) => tracing::warn!(error = %e, "reconciling the effect ledger"),
                 }
             }
@@ -985,6 +1028,43 @@ async fn poll(
             return;
         }
     }
+}
+
+/// An `effect` problem for each entry of `repo` a reconcile pass left
+/// unknown, with the reason it gave. `since_ms` is the entry's last
+/// change, when it became unknown; an entry the ledger no longer reads is
+/// named by its ID, as of now.
+fn unknown_effects(repo: &str, yard: &Yard, unknown: &[(String, String)]) -> Vec<Problem> {
+    unknown
+        .iter()
+        .map(|(id, why)| {
+            let short = branchyard::effects::short_id(id);
+            let (what, since_ms) = match yard.effect(id) {
+                Ok(entry) => (
+                    format!(
+                        "effect {short} ({}) of {repo}/{}",
+                        entry.title(),
+                        entry.branch
+                    ),
+                    entry.updated_ms,
+                ),
+                Err(_) => (format!("effect {short} of {repo}"), now_ms()),
+            };
+            Problem {
+                kind: ProblemKind::Effect,
+                key: format!("{repo}/{id}"),
+                what,
+                since_ms,
+                failures: None,
+                error: why.clone(),
+                next: format!(
+                    "check upstream whether it happened (`by effects show {short}` names the \
+                     call); nothing calls it again, and a later pass settles it when its lookup \
+                     or the gateway's audit log answers"
+                ),
+            }
+        })
+        .collect()
 }
 
 /// What the server accepts connections on.

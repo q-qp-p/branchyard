@@ -400,11 +400,16 @@ pub(crate) fn harness_delegate(json: bool) -> Result<Option<Delegate>, Failure> 
         };
     }
     if set(ENV_BRANCH) {
-        let error = branchyard::Error::Denied(format!(
-            "{ENV_BRANCH} is set but {ENV_TOKEN} is not: this harness was not given \
-             delegation, and by will not act with your authority inside it"
-        ));
-        return fail(json, &error).map(|()| None);
+        let report = Report::new(
+            "denied",
+            format!(
+                "{ENV_BRANCH} is set but {ENV_TOKEN} is not: this harness was not given \
+                 delegation, and by will not act with your authority inside it"
+            ),
+        )
+        .next("start a branch that can use by with delegation: by run --delegate \"<prompt>\"")
+        .next("for a trigger, give its request delegation");
+        return emit_report(json, report).map(|()| None);
     }
     Ok(None)
 }
@@ -602,6 +607,12 @@ pub(crate) fn provision(task: &TaskArgs) -> Result<Option<branchyard::Provisioni
 /// The provider the flags name, if any. `--provider recipe:NAME` resolves
 /// the recipe here and is refused unless it may run.
 pub(crate) fn provider(task: &TaskArgs) -> Result<Option<Provider>, Failure> {
+    if let Some(container) = &task.container {
+        return Ok(Some(Provider::container(container.clone())));
+    }
+    if let Some(agent_sandbox) = &task.agent_sandbox {
+        return Ok(Some(Provider::agent_sandbox(agent_sandbox.clone())));
+    }
     if let Some(recipe) = &task.recipe {
         return crate::recipe_cmd::provider(recipe).map(|o| Some(Provider::Recipe(o)));
     }

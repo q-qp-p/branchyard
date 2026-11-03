@@ -141,6 +141,18 @@ class DocsFacts(Tree):
         self.assertEqual(self.facts("--write").returncode, 0)
         self.assertIn("`GEMINI*`", (self.root / "docs" / "provisioning.md").read_text())
 
+    def test_a_changed_stage_row_reaches_the_concepts_page(self):
+        stage = "crates/branchyard/src/stage.rs"
+        self.edit(stage, '"Its turn failed."', '"Its turn failed for good."')
+        self.assertNotEqual(self.facts("--check").returncode, 0)
+        self.assertEqual(self.facts("--write").returncode, 0)
+        concepts = (self.root / "docs" / "concepts.md").read_text()
+        self.assertIn("| `failed` | `needs_you` | Its turn failed for good. |", concepts)
+        self.edit(stage, '"Its turn failed for good."', "FAILED")
+        done = self.facts("--check")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("a row of STAGES", done.stderr)
+
     def test_derivative_counts_come_from_the_manifests(self):
         ports = json.loads((self.root / "patches" / "ports.json").read_text())
         validation = (self.root / "docs" / "validation.md").read_text()

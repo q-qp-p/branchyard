@@ -14,6 +14,8 @@
 //! | [`Provider::Microsandbox`] | `microsandbox.rs` |
 //! | [`Provider::Substrate`] | `substrate.rs` |
 //! | [`Provider::Recipe`] | `recipe.rs` |
+//! | [`Provider::Container`] | `container.rs` |
+//! | [`Provider::AgentSandbox`] | `agent_sandbox.rs` |
 //!
 //! [`Provider::kind`] is the only place a variant is mapped to its
 //! implementation. Nothing else in the crate matches on [`Provider`]: call
@@ -32,20 +34,49 @@ use branchyard_sandbox::SandboxProvider;
 use crate::placement::{Placement, Planned, SandboxPlan};
 use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
-use crate::{Error, Provider, Yard};
+use crate::{Error, Provider, RecipeOptions, SubstrateOptions, Yard};
 
+mod agent_sandbox;
+mod container;
 pub(crate) mod local;
 pub(crate) mod microsandbox;
+mod native;
 pub(crate) mod recipe;
 pub(crate) mod substrate;
+
+/// Where a provider expects its harness executable, for readiness checks.
+///
+/// This is a declaration of location, not evidence that the harness or
+/// runtime is available. Borrowed options identify the exact target without
+/// opening its transport or reading credentials.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HarnessLocation<'a> {
+    /// The harness executable is on the worker host.
+    Local,
+    /// The harness executable is in a Microsandbox image.
+    Microsandbox,
+    /// The harness executable is in the selected Substrate actor template.
+    Substrate(&'a SubstrateOptions),
+    /// The harness executable is reached through this environment recipe.
+    Recipe(&'a RecipeOptions),
+    /// The harness executable is in a native per-turn allocation's image.
+    Image,
+}
 
 /// What the engine asks of a kind of provider. One implementation per
 /// [`Provider`] variant, on that variant's options (or, for a variant
 /// without any, on a unit type).
 pub(crate) trait ProviderKind {
-    /// `local`, `microsandbox`, `substrate` or `recipe`: the variant's
-    /// serialized `kind`, as recorded in events and sandbox rows.
+    /// The variant's serialized `kind`, as recorded in events and sandbox rows.
     fn name(&self) -> &'static str;
+
+    /// Where readiness checks look for the harness executable.
+    fn harness_location(&self) -> HarnessLocation<'_>;
+
+    /// Pure option validation, where supported. Other checks belong to `check`.
+    fn validate_options(&self) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// How the provider is named to a person and recorded on a branch
     /// (`BranchInfo::provider`): the name, with a recipe's own. Defaults to
@@ -158,12 +189,38 @@ impl Provider {
             Provider::Microsandbox(options) => options,
             Provider::Substrate(options) => options,
             Provider::Recipe(options) => options,
+            Provider::Container(options) => options,
+            Provider::AgentSandbox(options) => options,
         }
     }
 
+    /// The stable serialized provider kind, without a target or recipe name.
+    pub fn name(&self) -> &'static str {
+        self.kind().name()
+    }
+
+    /// Whether this provider uses a native owned allocation's runtime image.
+    /// This does not establish runtime readiness or isolation qualification.
+    pub fn is_native_image(&self) -> bool {
+        matches!(self.harness_location(), HarnessLocation::Image)
+    }
+
+    /// Validate options that support pure validation, without creating state,
+    /// opening a transport or reading credentials. Native image providers
+    /// validate their image, target, resources and environment names here;
+    /// other providers defer their checks to task preparation.
+    pub fn validate_options(&self) -> Result<(), Error> {
+        self.kind().validate_options()
+    }
+
+    /// Where readiness checks should look for this provider's harness.
+    /// Borrowed target options remain tied to this provider.
+    pub fn harness_location(&self) -> HarnessLocation<'_> {
+        self.kind().harness_location()
+    }
+
     /// How this provider is named in a branch's record and to a person:
-    /// `local`, `microsandbox`, `substrate` or `recipe:NAME`; the same
-    /// spelling `--provider` takes.
+    /// its stable kind, with the recipe's name when one is selected.
     pub fn label(&self) -> String {
         self.kind().label()
     }
@@ -196,6 +253,16 @@ impl Provider {
     /// Construction stays with the provider implementations, as for Microsandbox.
     pub fn substrate(options: crate::SubstrateOptions) -> Provider {
         Provider::Substrate(options)
+    }
+
+    /// An owned per-turn container using the operator's configured worker.
+    pub fn container(options: crate::ContainerOptions) -> Provider {
+        Provider::Container(options)
+    }
+
+    /// An owned per-turn Kubernetes SIGs Agent Sandbox on managed GKE.
+    pub fn agent_sandbox(options: crate::AgentSandboxOptions) -> Provider {
+        Provider::AgentSandbox(options)
     }
 }
 

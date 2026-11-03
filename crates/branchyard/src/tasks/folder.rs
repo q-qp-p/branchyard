@@ -429,6 +429,7 @@ pub(super) fn initialize(reservation: &super::TaskReservation) -> Result<(Task, 
         created_ms: reservation.created_ms,
         files,
         origin: "task".into(),
+        trigger: None,
     };
     super::save(&work, &task)?;
     Ok((task, yard))

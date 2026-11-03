@@ -86,7 +86,7 @@ shows. You act only as your own branch and only \
 on your descendants. A branch that may not delegate (its envelope's max_depth is 0) still has \
 inspect, check, the artifact and scratch tools, and ask, report, escalate, report_status and inbox; the other tools \
 refuse it. inspect with no branch shows your remaining budget, and in a rig your seat and the seats you \
-may spawn. You can also message: ask your parent a question (optionally waiting for its \
+may spawn. You can also message: ask your parent (the person, if you have none) a question (optionally waiting for its \
 answer), report to it (with a result, a JSON value, when your parent gave you a result_contract in inspect: it is checked against the contract's schema, and it is what your parent reads back), escalate to it or, if your rig seat allows, further up; answer a \
 descendant's message; state your own status in a line with report_status (working, idle, blocked, complete or failure; blocked and failure also reach your parent's inbox), which is a claim shown beside the status Branchyard derives, not a message; and read your own inbox. To read a child's answer as JSON, give spawn a result contract ({schema, required}): the child reports a result matching it, and you read it as the result of inspect or of each settled child in wait. Each harness keeps its native planning, subagents and internal task graph; Branchyard depth limits count Branchyard branches only. For native final JSON without requiring the reporting tool, use a result contract with purpose: deliverable and required: true; a valid current-turn answer can complete without a Git diff. For file outputs add capture: {manifest: \"outputs/artifacts.json\"} to a required deliverable contract. Write the declared manifest after checking files; collection publishes producer-owned artifacts after transfer and before acceptance. Missing files or invalid hashes fail the deliverable. Document skills are available through the task capabilities index. The skills your branch runs with, built-in and the repository's .agents/skills when a person trusted them or a server's operator allows them, are fixed when the branch is created and inherited by its children; by skills ls in your shell shows them, staged or withheld and why. Trusting a repository's skills (by skills trust) is a person's decision, made outside any branch. A rig seat can fix owned paths and a result contract: children may narrow ownership and may not replace the contract. Use handoff to freeze a settled descendant result and selected artifact IDs for another descendant; it waits for that recipient's next turn without steering or starting one. An external lead can use operator CLI/SDK calls without adopting or replacing its native session. A child spawned with plan: true writes a plan read-only and escalates it to you: approve_plan runs it (as proposed or edited), reject_plan ends it or, with replan, has it plan again. When a descendant's tool or connector call needs approval, the ask is escalated to you: answer_approval allows or denies it. Substrate setup is an operator action outside a harness: \
 by substrate setup prepares the saved template; by substrate check --smoke verifies bridge execution \
@@ -99,6 +99,7 @@ An operator can use by compute gce --project PROJECT --zone ZONE --name NAME --t
 to review an offline JSON plan; --apply provisions the VM and its dedicated IAP TCP 22 firewall rule. \
 Add --internal-ip to omit an external address. --service-account EMAIL attaches that account with the cloud-platform scope, \
 so its IAM roles decide API access; --scopes narrows it. This operator command refuses harness sessions and --remote. \
+Add --gvisor to install the pinned gVisor Docker runtime; Container execution needs permission to use the worker's local Docker socket. \
 For GKE, an operator can select tools/substrate_gke.py --atenet-dataplane=agentgateway with the target options; it pins a compatible gateway in a private source export before installation. \
 An external operator can run by mcp manager --url URL --token-file FILE, with optional --ca-file FILE, to manage authorized code and knowledge workspaces. \
 For a repository-free console, an operator runs by serve --app --knowledge; this keeps configured storage and quotas and does not expand your grant. \
@@ -106,6 +107,10 @@ BRANCHYARD_MANAGER_TOKEN is reserved for that operator and is never forwarded to
 Manager tool outputs have a bounded JSON budget, with explicit errors for oversized responses; use focused previews or compute for large documents. \
 The operator manager's start_session accepts explicit unapproved_tools acknowledgment for profiles without routed approvals, still subject to server permission. \
 It also takes preset, an operator execution preset ID that a server can require; the preset then supplies the provider and bounds the harness and model. \
+An operator can select --provider container or --provider agent-sandbox with a digest-pinned --image, --cpus, --memory and --pass-env. \
+Local by obligations [BRANCH] --json lists durable work owed; it refuses --remote. \
+Agent Sandbox also needs --kube-context and --kube-namespace. --sandbox-runtime defaults to gvisor; runc applies only to Container and microvm applies only to Agent Sandbox. \
+--sandbox-network defaults to deny; unrestricted permits ordinary networking. Container permits cloud metadata; Agent Sandbox retains its GKE metadata blocks. Native providers destroy allocations after each turn and refuse retention, snapshots and required hostname allowlists. \
 Its workspace_action requires revision from inspect_workspace. On revision_conflict inspect again before explicitly proposing a new action; never automatically refresh and resubmit. \
 That separate manager uses an HTTP principal; it is not added to this branch-scoped delegation server.";
 
@@ -645,10 +650,10 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "ask",
-            "Ask your parent a question. Without wait_seconds, returns once it is sent. With \
-             it, blocks for up to that long for an answer (in_reply_to your question); a wait \
-             that passes with no answer yet is not an error, answer is just absent: read your \
-             inbox, or ask again.",
+            "Ask your parent (the person, if you have none) a question. Without wait_seconds, \
+             returns once it is sent. With it, blocks for up to that long for an answer \
+             (in_reply_to your question); a wait that passes with no answer yet is not an \
+             error, answer is just absent: read your inbox, or ask again.",
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -679,8 +684,8 @@ pub fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "escalate",
-            "Escalate to your parent, or, if your rig seat's escalates_to allows it, an \
-             ancestor further up.",
+            "Escalate to your parent (the person, if you have none), or, if your rig seat's \
+             escalates_to allows it, an ancestor further up.",
             schema(json!({
                 "type": "object",
                 "properties": {"text": {"type": "string"}},
@@ -1022,6 +1027,10 @@ mod tests {
             "{ask}"
         );
         assert!(!ask.contains("ask inbox"), "{ask}");
+        // A branch nobody delegated asks and escalates to the person.
+        for said in [ask.as_str(), &description("escalate"), INSTRUCTIONS] {
+            assert!(said.contains("(the person, if you have none)"), "{said}");
+        }
         let integrate = description("propose_integration");
         assert!(
             integrate.starts_with("Integrate (merge now): merge a finished descendant's"),

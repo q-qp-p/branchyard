@@ -636,8 +636,10 @@ version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "branchyard-agent-sandbox",
  "branchyard-bridge",
  "branchyard-config",
+ "branchyard-container",
  "branchyard-controls",
  "branchyard-harness",
  "branchyard-microsandbox",
@@ -672,6 +674,20 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "branchyard-agent-sandbox"
+version = "0.4.0"
+dependencies = [
+ "blake3",
+ "branchyard-sandbox",
+ "branchyard-support",
+ "branchyard-testkit",
+ "hex",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -771,6 +787,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "branchyard-container"
+version = "0.4.0"
+dependencies = [
+ "blake3",
+ "branchyard-sandbox",
+ "branchyard-support",
+ "branchyard-testkit",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "branchyard-controls"
 version = "0.4.0"
 dependencies = [
@@ -829,7 +858,11 @@ dependencies = [
  "branchyard-sandbox",
  "branchyard-support",
  "branchyard-testkit",
+ "hex",
  "microsandbox",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
 ]
@@ -895,6 +928,8 @@ name = "branchyard-sandbox"
 version = "0.4.0"
 dependencies = [
  "branchyard-support",
+ "branchyard-testkit",
+ "shlex",
 ]
 
 [[package]]

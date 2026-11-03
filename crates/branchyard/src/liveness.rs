@@ -53,10 +53,11 @@ pub struct Liveness {
     /// What is known.
     pub state: LivenessState,
     /// When the engine last renewed the lease, milliseconds since the Unix
-    /// epoch.
+    /// epoch. Zero when a running record has no held lease, so this is unknown.
     pub heard_ms: u64,
     /// Until when the lease protects the turn without another renewal,
     /// milliseconds since the Unix epoch: past it, the turn is `lost`.
+    /// Zero when no held lease was found.
     pub known_until_ms: u64,
     /// Why the turn is `lost`, when it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,6 +65,16 @@ pub struct Liveness {
 }
 
 impl Liveness {
+    /// A running record with no held lease has no engine protecting its turn.
+    pub(crate) fn unowned() -> Liveness {
+        Liveness {
+            state: LivenessState::Lost,
+            heard_ms: 0,
+            known_until_ms: 0,
+            reason: Some("its running turn has no held lease".into()),
+        }
+    }
+
     /// The liveness `lease` gives at `now_ms`, or `None` for a released
     /// lease, which backs no turn.
     pub(crate) fn of(lease: &LeaseRow, now_ms: u64) -> Option<Liveness> {

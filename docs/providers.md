@@ -1,6 +1,6 @@
 # Sandbox providers
 
-A provider is where a harness process runs. Branchyard talks to every provider through one vendor-independent contract, `SandboxProvider` in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Three providers implement it: the **local provider**, which is today's local mode behind the contract; the **Microsandbox provider**, which runs each turn's harness in a microVM; and the **Agent Substrate provider**, which runs it in a Kubernetes-hosted actor reached through a router. None is qualified against the M2 runtime gates in the [implementation plan](implementation-plan.md) yet.
+A provider is where a harness process runs. Branchyard talks to every provider through the `SandboxProvider` contract in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Native [containers](container-sandbox.md) and [GKE Agent Sandbox](agent-sandbox.md) use copied files and owned allocations. Their setup, console presets and qualification boundaries are described in [cloud execution](cloud-execution.md). Live runtime evidence is separate from a provider's declared capabilities.
 
 ## The contract
 
@@ -187,23 +187,20 @@ It does not mount: a spec with a mount, an image or limits is refused, because t
 
 ## Adding a provider
 
-A branch stores a [`Provider`](../crates/branchyard/src/lib.rs): the closed, serialized enum `local`, `microsandbox`, `substrate` or `recipe`. What each variant means to the engine (its name and key, its sandbox lifecycle, whether its options can run, where the harness sees the worktree and `HOME`, how a stopped engine's sandbox is recovered and a reaped one destroyed, how its sandbox provider is opened, whether it can confine egress, whether its sandbox can reach the engine's host, and the line `by` prints before a run) is one crate-private trait, `ProviderKind` in [`providers/mod.rs`](../crates/branchyard/src/providers/mod.rs), implemented once per variant:
-
-| Variant | File |
-|---|---|
-| `Provider::Local` | [`providers/local.rs`](../crates/branchyard/src/providers/local.rs) |
-| `Provider::Microsandbox` | [`providers/microsandbox.rs`](../crates/branchyard/src/providers/microsandbox.rs) |
-| `Provider::Substrate` | [`providers/substrate.rs`](../crates/branchyard/src/providers/substrate.rs) |
-| `Provider::Recipe` | [`providers/recipe.rs`](../crates/branchyard/src/providers/recipe.rs) |
+A branch stores a [`Provider`](../crates/branchyard/src/lib.rs), a closed, serialized enum. What each variant means to the engine (its name and key, its sandbox lifecycle, whether its options can run, where the harness sees the worktree and `HOME`, how a stopped engine's sandbox is recovered and a reaped one destroyed, how its sandbox provider is opened, whether it can confine egress, whether its sandbox can reach the engine's host, and the line `by` prints before a run) is one crate-private trait, `ProviderKind`. The implementation inventory is in [`providers/mod.rs`](../crates/branchyard/src/providers/mod.rs).
 
 The engine never matches on the enum. Placement, snapshots, egress and the reaper call `provider.kind().method()`, or `providers::of(provider)` for a branch's optional provider (`None` is local); `Provider::kind` is the one place a variant is mapped to its implementation. A new provider is therefore one new file implementing `ProviderKind`, plus the enum variant that carries its options and its arm in `Provider::kind`. The trait's required methods are what a provider must answer; the compiler lists any it has not.
 
+Public callers use `Provider::name()` for the stable wire kind and `label()` for its display name, which may include a recipe's name. `is_native_image()` identifies the providers that use an owned runtime image. `validate_options()` performs their pure image, target, resource and environment-name checks without reading credentials, opening a transport or creating state; other providers keep their existing preparation checks. A successful validation does not establish runtime readiness or isolation qualification.
+
+`Provider::harness_location()` returns the public borrowed `HarnessLocation` classification for readiness checks. It keeps recipe and Substrate target options borrowed from the selected provider, so callers can inspect the exact target without cloning it or matching the serialized provider enum. Every provider implementation must declare its harness location; native image providers also supply their pure validation and image capability through the same trait.
+
 The enum's serde shape is unchanged by the trait, so the wire format and `schema/` follow the enum alone. A new variant changes them; regenerate the schemas as [CONTRIBUTING](../CONTRIBUTING.md#adding-a-provider) says.
 
-Two tests keep it this way:
+Verification keeps it this way:
 
-- `providers::tests` in `crates/branchyard/src/providers/tests.rs` is a table over every variant that exercises `check`, `recover`, `lifecycle`, `key`, `guest_paths`, `open` and `destroy` through the trait, including each error path. Its exhaustive `index` match fails to compile for a new variant, and the table fails until the variant has a sample (it counts the variants in the enum's own source and in `Provider::kind`, so there is no count to bump).
-- `crates/branchyard/tests/provider_seam.rs` fails when any crate's `src/` names a variant outside `providers/`. The engine crate's count is zero. The CLI and the server still match on the enum to announce and admit a provider; their counts are a ratchet in that file that can only fall (they need a public accessor before they can move).
+- `providers::tests` in `crates/branchyard/src/providers/tests.rs` is a table over every variant that exercises the public name, harness location, borrowed target identity, native image classification and pure validation, alongside the trait's placement and lifecycle operations and their error paths. Its exhaustive `index` match fails to compile for a new variant, and the table fails until the variant has a sample (it counts the variants in the enum's own source and in `Provider::kind`, so there is no count to bump).
+- `crates/branchyard/tests/provider_seam.rs` rejects a new variant reference outside `providers/`. Any remaining legacy sites have counts in that file that can only fall as callers migrate to the public accessors.
 
 ## Provisioning a harness's home
 

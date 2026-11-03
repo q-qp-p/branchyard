@@ -1,0 +1,36 @@
+#!/usr/bin/python3
+"""Replay the native Kubernetes CLI protocol in private test directories."""
+
+import json
+from pathlib import Path
+import shutil
+import sys
+
+root = Path(__file__).parent
+if "delete" in sys.argv and (root / "fail-destroy").exists():
+    sys.exit(1)
+source = Path(__file__).resolve().parents[3] / "branchyard-agent-sandbox/tests/fake_kubectl.py"
+if "exec" in sys.argv and (root / "fail-exec").exists():
+    sys.exit(1)
+state = root / "state.json"
+if not state.exists():
+    state.write_text(json.dumps({"objects": {}, "runtime": "gvisor", "counter": 0,
+        "extra_policies": [], "namespace_uid": "namespace-uid"}))
+for name in ("workspace", "home"):
+    (root / name).mkdir(exist_ok=True)
+code = source.read_text().replace(
+    "Path(__file__).resolve().parent", f"Path({str(source.parent)!r})"
+).replace(
+    'receipts = list(root.glob("*-receipts/*.json")) + list(root.glob("receipts/*.json"))',
+    'receipts = list((root.parent / "repo/.branchyard/native").glob("*/*.json"))',
+).replace(
+    'if operation == "create":',
+    'if operation == "create":\n    if body["kind"] == "Sandbox":\n        for directory in ("workspace", "home"):\n            shutil.rmtree(root / directory)\n            (root / directory).mkdir()',
+)
+execute = "result = subprocess.run(command, check=False)"
+assert execute in code, "the shared fake kubectl execution hook changed"
+code = code.replace(
+    execute,
+    "command = [arg.replace('/branchyard/home', str(root / 'home')).replace('/workspace', str(root / 'workspace')) for arg in command]\n    " + execute,
+)
+exec(compile(code, str(source), "exec"))

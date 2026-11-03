@@ -400,7 +400,8 @@ fn a_paired_event_stream_ends_when_its_token_is_revoked() {
 type Delivery = (String, String, Vec<u8>);
 
 /// A push service on 127.0.0.1 that records each delivery and answers 201,
-/// or 410 for an endpoint ending in `/gone`.
+/// 410 for an endpoint ending in `/gone`, or 500 for one ending in
+/// `/broken`.
 struct MockPush {
     addr: SocketAddr,
     received: Arc<Mutex<Vec<Delivery>>>,
@@ -435,16 +436,15 @@ impl MockPush {
                     let mut body = vec![0u8; length];
                     reader.read_exact(&mut body).unwrap();
                     let path = head.split_whitespace().nth(1).unwrap_or("").to_owned();
-                    let gone = path.ends_with("/gone");
-                    log.lock().unwrap().push((path, head, body));
-                    let answer = match gone {
-                        true => {
-                            "HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        }
-                        false => {
-                            "HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                        }
+                    let status = match path.rsplit('/').next() {
+                        Some("gone") => "410 Gone",
+                        Some("broken") => "500 Internal Server Error",
+                        _ => "201 Created",
                     };
+                    log.lock().unwrap().push((path, head, body));
+                    let answer = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
                     reader.get_mut().write_all(answer.as_bytes()).unwrap();
                 });
             }
@@ -654,6 +654,102 @@ fn a_subscription_follows_its_tokens_reach() {
         .unwrap();
     assert!(companion.subscriptions().unwrap().is_empty());
     assert_eq!(raw(server.addr, &request_test(&token)).0, 401);
+}
+
+/// A subscription whose push service fails three sends in a row is a
+/// problem its owner's tenant sees, named by the paired device and keyed
+/// without its endpoint, which is a capability and appears nowhere in the
+/// list. Removing the subscription clears it.
+#[test]
+fn a_subscription_failing_three_sends_in_a_row_is_a_problem_for_its_tenant() {
+    let mock = MockPush::start();
+    let f = Fixture::new();
+    let mut config = app_config(&f);
+    config.app.push_services = vec!["127.0.0.1".into()];
+    let appb = f.extra_repo("appb");
+    common::two_tenants(&mut config, appb, None);
+    common::one_admin(&mut config);
+    let server = Server::start(config.clone());
+    let companion = store::open(&config).unwrap();
+    let phone = link::LinkRequest {
+        name: Some("phone".into()),
+        tenant: "acme".into(),
+        scopes: vec!["read".into()],
+        repos: None,
+        ttl: None,
+        code_ttl: None,
+        public_url: None,
+        qr: false,
+    };
+    let (_, code) = link::create(
+        &config,
+        companion.as_ref(),
+        &phone,
+        branchyard_support::time::now_ms(),
+    )
+    .unwrap();
+    let token = json(&redeem(&server, &code).2)["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (_, public, auth) = browser_keys();
+    let endpoint = format!("http://{}/push/broken", mock.addr);
+    assert_eq!(subscribe(&server, &token, &endpoint, &public, &auth).0, 200);
+    let problems = |token: &str| {
+        let (status, _, body) = raw(server.addr, &get("/v1/problems", Some(token)));
+        assert_eq!(status, 200, "{body}");
+        assert!(!body.contains(&endpoint), "the endpoint in {body}");
+        assert!(!body.contains("/push/broken"), "the endpoint in {body}");
+        json(&body)["problems"].as_array().unwrap().clone()
+    };
+
+    for sent in 1..=3 {
+        let (status, _, body) = raw(server.addr, &request_test(&token));
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(json(&body)["delivered"], 0, "{body}");
+        assert_eq!(mock.count(), sent);
+        let listed = problems(common::ACME_TOKEN);
+        assert_eq!(listed.len(), usize::from(sent == 3), "{listed:?}");
+    }
+    let listed = problems(common::ACME_TOKEN);
+    let problem = &listed[0];
+    assert_eq!(problem["kind"], "push");
+    assert_eq!(
+        problem["what"],
+        "push notifications to Test browser (phone)"
+    );
+    assert_eq!(problem["failures"], 3);
+    assert_eq!(
+        problem["error"],
+        "the push service answered 500 Internal Server Error"
+    );
+    assert_eq!(problem["key"].as_str().unwrap().len(), 12, "{problem}");
+    assert!(
+        problem["next"].as_str().unwrap().contains("subscription"),
+        "{problem}"
+    );
+    assert_eq!(
+        problems(common::GLOBEX_TOKEN),
+        Vec::<Value>::new(),
+        "another tenant's"
+    );
+    assert_eq!(
+        problems(common::GLOBEX_ADMIN_TOKEN),
+        Vec::<Value>::new(),
+        "admin does not cross tenants"
+    );
+
+    let (status, _, body) = raw(
+        server.addr,
+        &request(
+            "DELETE",
+            "/v1/app/push/subscriptions",
+            Some(&token),
+            &serde_json::json!({ "endpoint": endpoint }).to_string(),
+        ),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(problems(common::ACME_TOKEN), Vec::<Value>::new());
 }
 
 #[test]

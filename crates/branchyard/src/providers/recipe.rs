@@ -10,13 +10,17 @@ use branchyard_recipe::{Recipe, RecipeProvider};
 use branchyard_sandbox::{SandboxProvider, SandboxSpec};
 use branchyard_substrate::transfer;
 
-use super::ProviderKind;
+use super::{HarnessLocation, ProviderKind};
 use crate::placement::{pull_staged, said_back, staging, Placement, SandboxPlan};
 use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
 use crate::{Error, RecipeOptions, Yard};
 
 impl ProviderKind for RecipeOptions {
+    fn harness_location(&self) -> HarnessLocation<'_> {
+        HarnessLocation::Recipe(self)
+    }
+
     fn banner(&self, _isolated: bool, server: bool) -> (&'static str, String) {
         let what = match server {
             false => format!(

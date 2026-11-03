@@ -18,7 +18,9 @@
 //!    admitting, before recording) is the same operation; a trigger that
 //!    delivers to a branch instead continues that branch (a send under
 //!    the same key), creating it from the task when it is missing, and
-//!    while it runs a turn does what its `busy` policy says;
+//!    while it runs a turn does what its `busy` policy says; a trigger
+//!    that observes stops before admitting and records the run as
+//!    `observed`, with the task it would have started;
 //! 4. settles fired runs whose task ended ([`Engine::settle`]), counting a
 //!    failure toward pausing the trigger.
 
@@ -28,7 +30,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 
 use branchyard_client::api::{Operation, OperationState, TaskRequest};
-use branchyard_client::triggers::{Busy, RunOutcome, RunState, TriggerRun};
+use branchyard_client::triggers::{Busy, RunOutcome, RunState, TriggerMode, TriggerRun};
 
 use sha2::Digest;
 
@@ -86,21 +88,22 @@ pub trait Sink: Send + Sync {
     /// The repositories this process serves: (name, root).
     fn repos(&self) -> Vec<(String, PathBuf)>;
     /// Admit `request` as `trigger`'s principal, with the idempotency key
-    /// `key` scoped to the trigger; the operation, or why not.
+    /// `run.key` scoped to the trigger, the task recording the run; the
+    /// operation, or why not.
     fn admit(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
     ) -> Result<Admitted, Refusal>;
     /// Deliver `request` to the branch its `name` names, as `trigger`'s
-    /// principal with the idempotency key `key`: admit the task when the
-    /// branch is missing, else a send of its prompt, or while the branch
-    /// runs a turn what `busy` says.
+    /// principal with the idempotency key `run.key`: admit the task when
+    /// the branch is missing, else a send of its prompt, or while the
+    /// branch runs a turn what `busy` says.
     fn deliver(
         &self,
         trigger: &StoredTrigger,
-        key: &str,
+        run: &TriggerRun,
         request: TaskRequest,
         busy: Busy,
     ) -> Result<Delivered, Refusal>;
@@ -171,6 +174,7 @@ fn new_run(trigger: &str, key: String, state: RunState, at_ms: u64) -> TriggerRu
         event: None,
         reason: None,
         precheck: None,
+        task: None,
         operation: None,
         branches: Vec::new(),
         outcome: None,
@@ -438,11 +442,19 @@ impl Engine {
                 }
             }
         }
+        // An observer records what it would have started, and starts
+        // nothing: no task, no send, no look at the branch.
+        if trigger.spec.mode == TriggerMode::Observe {
+            run.state = RunState::Observed;
+            run.reason = None;
+            run.task = Some(request);
+            return;
+        }
         let admitted = match &trigger.spec.deliver {
-            None => self.sink.admit(trigger, &run.key, request),
+            None => self.sink.admit(trigger, run, request),
             Some(deliver) => {
                 let branch = request.name.clone().unwrap_or_default();
-                match self.sink.deliver(trigger, &run.key, request, deliver.busy) {
+                match self.sink.deliver(trigger, run, request, deliver.busy) {
                     Ok(Delivered::Admitted(admitted)) => Ok(admitted),
                     // Settled as it fires: nothing is left to wait for.
                     Ok(Delivered::Steered) => {
@@ -703,9 +715,10 @@ mod tests {
         fn admit(
             &self,
             t: &StoredTrigger,
-            key: &str,
+            run: &TriggerRun,
             request: TaskRequest,
         ) -> Result<Admitted, Refusal> {
+            let key = &run.key;
             if let Some(why) = self.refuse.lock().unwrap().clone() {
                 return Err(match why.strip_prefix("later: ") {
                     Some(why) => Refusal::Later(why.to_owned()),
@@ -727,7 +740,7 @@ mod tests {
         fn deliver(
             &self,
             t: &StoredTrigger,
-            key: &str,
+            run: &TriggerRun,
             request: TaskRequest,
             busy: Busy,
         ) -> Result<Delivered, Refusal> {
@@ -738,7 +751,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push((branch, "created".into()));
-                return self.admit(t, key, request).map(Delivered::Admitted);
+                return self.admit(t, run, request).map(Delivered::Admitted);
             }
             let running = self.running.lock().unwrap().contains(&branch);
             let what = match (running, busy) {
@@ -759,7 +772,7 @@ mod tests {
                 (false, _) => "sent",
             };
             self.delivered.lock().unwrap().push((branch, what.into()));
-            self.admit(t, key, request).map(Delivered::Admitted)
+            self.admit(t, run, request).map(Delivered::Admitted)
         }
         fn operation(&self, id: &str) -> Option<Operation> {
             self.ops.lock().unwrap().get(id).cloned()
@@ -879,7 +892,7 @@ mod tests {
         clock.store(11 * MINUTE, Ordering::SeqCst);
         let total: usize = engines.iter().map(|e| e.tick().unwrap().fired.len()).sum();
         assert_eq!(total, 1);
-        let runs = store.runs(&t.id, 10).unwrap();
+        let runs = store.runs(&t.id, None, 10).unwrap();
         let keys: Vec<&str> = runs.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -898,6 +911,48 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(task.name.as_deref(), Some("nightly-19700101-0010"));
+    }
+
+    /// An observer stops before admitting: no task, no send, the rendered
+    /// task on the run, and nothing counted toward pausing. A run it
+    /// cannot render still fails, and counts.
+    #[test]
+    fn an_observer_records_its_task_and_admits_nothing() {
+        let clock = Arc::new(AtomicU64::new(MINUTE));
+        let (engines, sink, store) = engines(1, &clock);
+        let mut t = conformance::trigger("default", "chat", false);
+        t.spec.mode = TriggerMode::Observe;
+        t.spec.task.prompt = "{{event.author}}: {{event.text}}".into();
+        t.spec.deliver = Some(Deliver {
+            branch: "slack-assistant".into(),
+            busy: Busy::Queue,
+            lifecycle: None,
+        });
+        assert!(store.create(&t).unwrap());
+        event_run(&t, &store, 1, "alice");
+        let fired = engines[0].tick().unwrap().fired;
+        assert_eq!(fired.len(), 1);
+        let run = &fired[0];
+        assert_eq!(run.state, RunState::Observed, "{run:?}");
+        let task = run.task.as_ref().unwrap();
+        assert_eq!(task.prompt, "alice: message 1");
+        assert_eq!(task.name.as_deref(), Some("slack-assistant"));
+        assert!(run.operation.is_none() && run.branches.is_empty());
+        assert!(sink.admitted.lock().unwrap().is_empty());
+        assert!(sink.delivered.lock().unwrap().is_empty());
+        let got = store.get(&t.id).unwrap().unwrap();
+        assert_eq!((got.enabled, got.failures), (true, 0));
+        // A branch name that renders to nothing fails, observing or not.
+        let mut broken = store.get(&t.id).unwrap().unwrap();
+        broken.spec.deliver.as_mut().unwrap().branch = "{{event.channel}}".into();
+        assert!(store.remove(&t.id).unwrap());
+        assert!(store.create(&broken).unwrap());
+        let mut bare = new_run(&t.id, "event:d-2".into(), RunState::Pending, MINUTE);
+        bare.event = Some(TriggerEvent::default());
+        store.record(&bare).unwrap();
+        let fired = engines[0].tick().unwrap().fired;
+        assert_eq!(fired[0].state, RunState::Failed, "{fired:?}");
+        assert_eq!(store.get(&t.id).unwrap().unwrap().failures, 1);
     }
 
     /// The run's prompt is an event of one `author`, its key the event's.
@@ -1001,7 +1056,7 @@ mod tests {
                     assert_eq!(run.state, RunState::Pending);
                     assert!(run.reason.as_deref().unwrap().contains("waits for it"));
                     assert!(sink.admitted.lock().unwrap().is_empty());
-                    let stored = store.runs(&t.id, 10).unwrap();
+                    let stored = store.runs(&t.id, None, 10).unwrap();
                     assert_eq!(stored[0].reason, run.reason, "{stored:?}");
                     sink.running.lock().unwrap().clear();
                     clock.store(10 * MINUTE + DEFER_MS + 1_000, Ordering::SeqCst);
@@ -1176,7 +1231,7 @@ mod tests {
         );
         assert!(!sink.standings.lock().unwrap().contains_key("assistant"));
         // The trigger notes it: a run of its own state, naming the branch.
-        let runs = store.runs(&t.id, 20).unwrap();
+        let runs = store.runs(&t.id, None, 20).unwrap();
         let noted = runs
             .iter()
             .find(|r| r.state == RunState::Lifecycle)
@@ -1298,7 +1353,7 @@ mod tests {
         let tick = engines[0].tick().unwrap();
         assert_eq!(tick.fired.len(), 1);
         assert_eq!(tick.fired[0].scheduled_ms, Some(10 * 60 * MINUTE));
-        let runs = store.runs(&t.id, 10).unwrap();
+        let runs = store.runs(&t.id, None, 10).unwrap();
         let missed = runs.iter().find(|r| r.state == RunState::Missed).unwrap();
         assert_eq!(missed.missed, Some(8));
         assert_eq!(missed.scheduled_ms, Some(60 * MINUTE));
@@ -1330,7 +1385,7 @@ mod tests {
         assert_eq!(fired, expected);
         let missed_of = |id: &str| {
             store
-                .runs(id, 10)
+                .runs(id, None, 10)
                 .unwrap()
                 .into_iter()
                 .filter(|r| r.state == RunState::Missed)
@@ -1381,7 +1436,7 @@ mod tests {
         assert_eq!(claimed.len(), 1);
         let trigger = store.get(&t.id).unwrap().unwrap();
         let task = Engine::render(&trigger, &claimed[0].0).unwrap();
-        sink.admit(&trigger, &claimed[0].0.key, task).unwrap();
+        sink.admit(&trigger, &claimed[0].0, task).unwrap();
         // Another dispatcher sees nothing until the claim expires...
         assert!(engines[1].tick().unwrap().fired.is_empty());
         clock.store(10 * MINUTE + RUN_LEASE_MS + 1, Ordering::SeqCst);

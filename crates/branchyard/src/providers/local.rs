@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use branchyard_sandbox::SandboxProvider;
 
-use super::ProviderKind;
+use super::{HarnessLocation, ProviderKind};
 use crate::placement::{Placement, SandboxPlan};
 use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
@@ -18,6 +18,10 @@ pub(crate) struct Local;
 pub(crate) static LOCAL: Local = Local;
 
 impl ProviderKind for Local {
+    fn harness_location(&self) -> HarnessLocation<'_> {
+        HarnessLocation::Local
+    }
+
     fn banner(&self, isolated: bool, server: bool) -> (&'static str, String) {
         let (who, whose) = match server {
             false => ("your user", "your"),

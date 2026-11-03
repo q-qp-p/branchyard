@@ -1,0 +1,19 @@
+{
+  "mode": "applied",
+  "owner": "branchyard-container-runtime-v1",
+  "release": "release-20261026.0",
+  "archive_sha512": "26e4a327565f5da0f73261a6387e2c20f4695a232e330095a3111b70efd604fdf09d734e8cc8f714dbb5c5607ce8c87ea80b26df549d83a146f2efd5a1af448a",
+  "install_dir": "/opt/branchyard/gvisor/release-20261026.0/x86_64",
+  "daemon_config": "/etc/docker/daemon.json",
+  "runtime": {
+    "runsc": {
+      "path": "/opt/branchyard/gvisor/release-20261026.0/x86_64/runsc"
+    }
+  },
+  "default_runtime": "runc",
+  "version": "runsc version release-20261026.0\nspec: 1.2.1",
+  "qualification": {
+    "container_execution": "not_checked",
+    "model": "not_called"
+  }
+}

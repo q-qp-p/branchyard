@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use branchyard_sandbox::{Mount, Resources, SandboxProvider, SandboxSpec};
 
-use super::ProviderKind;
+use super::{HarnessLocation, ProviderKind};
 use crate::placement::{
     sandbox_env, sandbox_name, Placement, Planned, SandboxPlan, HOME, SCRATCH_MOUNT_BASE, WORKSPACE,
 };
@@ -17,6 +17,10 @@ use crate::state::{Fence, Record};
 use crate::{git, Error, SandboxOptions, Yard};
 
 impl ProviderKind for SandboxOptions {
+    fn harness_location(&self) -> HarnessLocation<'_> {
+        HarnessLocation::Microsandbox
+    }
+
     fn banner(&self, _isolated: bool, server: bool) -> (&'static str, String) {
         let what = match server {
             false => format!(

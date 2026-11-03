@@ -9,7 +9,9 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::unwrap_in_result)] // tests: a panic is the failure report
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Child, Output, Stdio};
+
+use branchyard_testkit::wait;
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks")
@@ -82,6 +84,127 @@ fn each_harness_hears_in_its_own_shape_once() {
             assert_eq!(stdout(&out), expected, "{id} statusline");
         }
     }
+}
+
+/// `by run PROMPT --name NAME --yes` with the fake agent, left running.
+fn spawn_run(repo: &branchyard_testkit::Repo, prompt: &str, name: &str, extra: &[&str]) -> Child {
+    repo.command(env!("CARGO_BIN_EXE_by"))
+        .args([
+            "run",
+            prompt,
+            "--name",
+            name,
+            "--yes",
+            "--harness",
+            "gemini-cli",
+        ])
+        .args([
+            "--command",
+            &branchyard_testkit::fake_agent!().display().to_string(),
+        ])
+        .args(extra)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// A turn parked on an approval is named with its ask on a session's first
+/// call (`<event>-approval.out`, the ask's id as `@ID@`) and counted as
+/// asking.
+#[test]
+fn a_turn_parked_on_an_approval_is_named_with_its_ask() {
+    let repo = branchyard_testkit::repo!();
+    std::fs::write(
+        repo.root.join("branchyard.toml"),
+        "[approvals]\nrules = { \"write *\" = \"ask\" }\n",
+    )
+    .unwrap();
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-q", "-m", "ask before writes"]);
+    let parked = spawn_run(&repo, "PERMISSION WRITE p.txt=1", "parked", &[]);
+    let id = wait::until("an ask", || {
+        let asks = repo.json(&["approvals", "--json"]);
+        asks[0]["id"].as_str().map(str::to_owned)
+    });
+    let dir = fixtures().join("claude-code");
+    let input = payload(&repo, &dir.join("user-prompt-submit-approval.json"));
+    let expected = std::fs::read_to_string(dir.join("user-prompt-submit-approval.out"))
+        .unwrap()
+        .replace("@ID@", &id);
+    let args = ["hook", "--harness", "claude-code", "user-prompt-submit"];
+    assert_eq!(stdout(&run(&repo, &args, &input)), expected);
+    let line = serde_json::json!({"workspace": {"current_dir": repo.root}}).to_string();
+    assert_eq!(
+        stdout(&run(&repo, &["statusline"], &line)),
+        "by: 1 asking\n"
+    );
+    repo.ok(&["approvals", "deny", &id]);
+    let out = parked.wait_with_output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+/// A root started with `--delegate` that asked the person from its own
+/// turn is put to you on a session's first call (`<event>-asks-you.out`,
+/// the message's id as `@ID@`), whatever its turn's state, and counted as
+/// asking until you answer it with `by answer ID` and no `--as`.
+#[test]
+fn a_roots_question_to_you_is_put_to_you_until_you_answer_it() {
+    let repo = branchyard_testkit::repo!();
+    let out = repo.by_agent(&[
+        "run",
+        "SH by ask 'Which database?'",
+        "--name",
+        "root",
+        "--delegate",
+        "--yes",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let inbox = repo.json(&["inbox", "--json"]);
+    let id = inbox["messages"][0]["id"].to_string();
+    let dir = fixtures().join("claude-code");
+    let input = payload(&repo, &dir.join("user-prompt-submit-asks-you.json"));
+    let expected = std::fs::read_to_string(dir.join("user-prompt-submit-asks-you.out"))
+        .unwrap()
+        .replace("@ID@", &id);
+    let args = ["hook", "--harness", "claude-code", "user-prompt-submit"];
+    assert_eq!(stdout(&run(&repo, &args, &input)), expected);
+    let line = serde_json::json!({"workspace": {"current_dir": repo.root}}).to_string();
+    assert_eq!(
+        stdout(&run(&repo, &["statusline"], &line)),
+        "by: 1 asking\n"
+    );
+    repo.ok(&["answer", &id, "Postgres"]);
+    assert_eq!(stdout(&run(&repo, &["statusline"], &line)), "by: idle\n");
+}
+
+/// A running branch whose harness goes silent past its stall window is
+/// named once it changes (`<event>-stalled.out`), after a first call that
+/// told the session of the ready branch.
+#[test]
+fn a_stalled_turn_is_named_once_it_stalls() {
+    let repo = yard_with_a_ready_branch();
+    let dir = fixtures().join("claude-code");
+    let input = payload(&repo, &dir.join("user-prompt-submit-stalled.json"));
+    let args = ["hook", "--harness", "claude-code", "user-prompt-submit"];
+    let told = std::fs::read_to_string(dir.join("user-prompt-submit.out")).unwrap();
+    assert_eq!(stdout(&run(&repo, &args, &input)), told);
+    let slow = spawn_run(&repo, "HANG", "slow", &["--stall-after", "200ms"]);
+    wait::until("slow to stall", || {
+        let shown = repo.by(&["show", "slow", "--json"]);
+        serde_json::from_slice::<serde_json::Value>(&shown.stdout)
+            .is_ok_and(|info| info["stalled"] == true)
+    });
+    let expected = std::fs::read_to_string(dir.join("user-prompt-submit-stalled.out")).unwrap();
+    assert_eq!(stdout(&run(&repo, &args, &input)), expected);
+    let line = serde_json::json!({"workspace": {"current_dir": repo.root}}).to_string();
+    assert_eq!(
+        stdout(&run(&repo, &["statusline"], &line)),
+        "by: 1 stalled · 1 ready\n"
+    );
+    repo.ok(&["cancel", "slow"]);
+    slow.wait_with_output().unwrap();
 }
 
 #[test]

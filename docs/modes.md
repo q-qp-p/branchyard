@@ -1,31 +1,34 @@
 # Where harnesses run and where state lives
 
-Branchyard has five places to stand, from least to most protected. Each one adds a guarantee and costs something. Take the lowest rung that gives you what you need, and confirm you are on it with the one command in the last column.
+Branchyard supports five execution and storage tiers, ordered below from simplest to most isolated. Choose the lowest tier that meets your requirements, and use the command in the last column to verify your setup.
 
-Two questions are answered together here, because they are asked together: *where does the harness process run* (and what can it reach), and *where do the branches' records live* (and who can reach them). The first rises through the rungs; the second changes at the last two.
+Every deployment answers two separate questions:
 
-| Rung | You want | Set (flag, then `branchyard.toml`) | Guaranteed, and not | Costs and needs | Confirm with |
+1. **Where does the harness process run** (and what files, environment variables, and networks can it access)?
+2. **Where are branch records stored** (and who can reach them)?
+
+The first three tiers configure how the harness process runs. The last two configure how branch state is stored and shared, and can be combined with any of the first three tiers (for example, a PostgreSQL-backed server can run harnesses locally, with `--isolated`, or inside a sandbox).
+
+| Tier | When to use it | Configuration (CLI flag / `branchyard.toml`) | What it guarantees (and what it does not) | Requirements | How to verify |
 |---|---|---|---|---|---|
-| [**Local**](#local) | to try Branchyard; nothing in the way | nothing. `--provider local` / `[defaults] provider = "local"` says it | Each harness in its own worktree and process group; under `--permissions read-only` or `edit-worktree` on Linux, its writes held to the preset's scope ([file guard](#the-file-guard)). *Not* a sandbox: it runs as you, in your `HOME`, with your login, and can read what you can | none | `by doctor`: `provider.default` is `local (the default)`, `host.landlock` names the guard's ABI; the run prints `by: local mode`, and `by: guard: landlock (PRESET)` when guarded |
-| [**Isolated**](#isolated) | the harness kept out of your login and dotfiles | `--isolated` / `[defaults] isolated = true`; `--isolated=false` turns it off for one run | A private `HOME` at `.branchyard/homes/BRANCH`, and no `ANTHROPIC*`, `CLAUDE*`, `OPENAI*`, `CODEX*` or `BRANCHYARD_*` variables but Claude Code's Vertex AI selectors. *Not* a sandbox: still your user, your files, your network, your other variables | none; the harness is then not logged in, so give it a secret ([provisioning](provisioning.md)) | the run prints `by: isolated mode`; its `provider` line in `by show BRANCH` says `local, isolated: private HOME, not a sandbox`; `by config show` says where `isolated` came from |
-| [**Sandbox provider**](#sandbox) | the harness out of your filesystem and process space | `--provider microsandbox --image REF` / `[defaults] provider = "microsandbox"` and `[microsandbox] image = "REF"`; `--provider recipe:NAME` / `provider = "recipe"` and `recipe = "NAME"`; `--provider substrate` and its `--substrate-*` flags (no file form) | A microVM, a recipe's machine or an actor per turn, with only the worktree and the variables you pass. All three are **unqualified**: tested against fakes, never on a real runtime in this repository's tests | Microsandbox: KVM, a build with `--features microsandbox` (no released binary has it), Rust 1.94, `libcap-ng`, the `msb` runtime. Recipe: your scripts and an `ssh` target. Substrate: a cluster | `by doctor`: `provider.default` and `host.kvm`; `by up --plan`: the `provider` step; `by recipe check NAME` |
-| [**Shared server**](#server) | branches that outlive your terminal, or a machine other than yours | on the host: `by serve`, with `[serve] config = "FILE"` in `branchyard.toml` for its file. On the client: `--remote URL --token-file FILE` (`--repo`, `--ca-file`) / `[remote] url`, `token_file`, `ca_file`, `repo` | One store (SQLite) for branches and operations; tokens with scopes and tenants; work survives your disconnecting. *Not* isolation: the server runs harnesses as its own user, and a token with `run` can make them do anything that user can | a host you are willing to hand over; TLS off loopback; the sandbox rungs above, if you want them on the server (`--allow-provider`) | `by doctor`: `server.reachable` (client side), `serve.config` and `serve.database` (the file `[serve] config` names); `by serve --check` |
-| [**PostgreSQL**](#postgres) | several servers and `by worker` processes sharing one queue | `by serve --database postgres://USER@HOST/NAME` / `"database"` in the server's file | The same operations run once, on whichever worker claims them, across restarts. Nothing about where harnesses run changes | a database; a build with `--features postgres` (the released binaries have it; `cargo install` from the README does not) | `by doctor`: `serve.database` (names the store, does not connect); `by serve --check` refuses what the build cannot open |
+| [**Local**](#local) | Trying Branchyard locally with minimal setup | Default (`--provider local` / `[defaults] provider = "local"`) | Each harness runs in its own Git worktree and process group. On Linux, `--permissions read-only` or `edit-worktree` restricts filesystem writes to the preset's scope ([file guard](#the-file-guard)). *Not* a full sandbox: the harness runs as your user, in your `HOME`, with your credentials, and can read any file you can read. | None | `by doctor` shows `provider.default` as `local (the default)` and `host.landlock` with the kernel ABI; runs print `by: local mode` (and `by: guard: landlock (PRESET)` when guarded) |
+| [**Isolated**](#isolated) | Keeping the harness out of your personal dotfiles and default logins | `--isolated` / `[defaults] isolated = true` (`--isolated=false` overrides per run) | Gives the branch a private `HOME` at `.branchyard/homes/BRANCH` and strips `ANTHROPIC*`, `CLAUDE*`, `OPENAI*`, `CODEX*`, and `BRANCHYARD_*` environment variables, except Claude Code's Vertex AI selectors. *Not* a sandbox: still runs as your user with access to your filesystem, network, and other environment variables. | You must pass credentials explicitly ([provisioning](provisioning.md)) since your personal `HOME` is hidden | Runs print `by: isolated mode`; `by show BRANCH` shows `local, isolated: private HOME, not a sandbox`; `by config show` shows where `isolated` was set |
+| [**Sandbox provider**](#sandbox) | Isolating the harness from your host filesystem and process space | `--provider microsandbox --image REF` / `[defaults] provider = "microsandbox"` + `[microsandbox] image = "REF"`; `--provider recipe:NAME` / `provider = "recipe"` + `recipe = "NAME"`; `--provider substrate` + `--substrate-*` flags | Runs each turn inside a microVM, custom recipe host, or remote actor with only the worktree and explicitly passed variables. Qualification is recorded per runtime; see [cloud execution](cloud-execution.md) and its dated evidence. | Microsandbox: KVM, source build with `--features microsandbox`, Rust 1.94, `libcap-ng`, `msb` runtime. Recipe: custom scripts and SSH target. Substrate: a Substrate cluster | `by doctor` (`provider.default` and `host.kvm`), `by up --plan` (`provider` step), or `by recipe check NAME` |
+| [**Shared server**](#server) | Running branches that outlive your terminal session or run on a dedicated host | Host: `by serve` (with `[serve] config = "FILE"` in `branchyard.toml`). Client: `--remote URL --token-file FILE` (`--repo`, `--ca-file`) / `[remote] url`, `token_file`, `ca_file`, `repo` | Central SQLite state store for branches and operations, scoped multi-tenant tokens, and background execution that survives client disconnects. *Not* process isolation by itself: local-provider branches still run as the server's OS user. | A server host, TLS when listening off loopback, and `--allow-provider` if using sandboxes | `by doctor` (`server.reachable` and `server.problems` on the client; `serve.config` and `serve.database` on the host) and `by serve --check` |
+| [**PostgreSQL**](#postgres) | Running multiple servers and `by worker` processes against a shared queue | `by serve --database postgres://USER@HOST/NAME` / `"database"` in the server config file | Queued operations are claimed and executed once across multiple workers and server restarts. Does not change how harness processes are isolated. | A PostgreSQL database and a binary built with `--features postgres` (included in prebuilt release binaries) | `by doctor` (`serve.database`) and `by serve --check` |
 
-The first three rows are about the harness. The last two are about the store and the people reaching it, and they combine with any harness row: a PostgreSQL server can run its harnesses locally, isolated or in a sandbox.
-
-On the first two rows, `--permissions read-only` and `edit-worktree` add a [file guard](#the-file-guard) below the harness on Linux: the operating system holds it to the preset's write scope, whether or not the harness asks Branchyard before it writes.
+For both the **Local** and **Isolated** tiers on Linux, passing `--permissions read-only` or `--permissions edit-worktree` enables the OS-level [file guard](#the-file-guard), which restricts filesystem writes even if the harness does not ask Branchyard before writing.
 
 ## Which build reaches which rung
 
-This is the part that surprises people. Which rungs you can reach depends on the binary you have.
+Available tiers depend on which Cargo features were compiled into your `by` binary:
 
-| You have | Local | Isolated | Recipe, Substrate | Microsandbox | Server, SQLite | PostgreSQL |
+| Binary source | Local | Isolated | Recipe, Substrate | Microsandbox | Server, SQLite | PostgreSQL |
 |---|---|---|---|---|---|---|
-| a release archive or `install.sh` (`by` and `branchyard-server`) | yes | yes | yes | **no** | yes | yes |
-| the README's `cargo install --locked --path crates/branchyard-cli` | yes | yes | yes | **no** | yes | **no** |
+| Prebuilt release archive or `install.sh` (`by` and `branchyard-server`) | yes | yes | yes | **no** | yes | yes |
+| Default source build (`cargo install --locked --path crates/branchyard-cli`) | yes | yes | yes | **no** | yes | **no** |
 
-A rung a build cannot reach is refused with the command that fixes it, and nothing is created. These are the commands, from a checkout of this repository:
+If you request a feature that was not compiled into your binary, `by` refuses before creating any resources and prints the exact rebuild command. From a checkout of this repository, you can enable optional features as follows:
 
 ```sh
 cargo install --locked --path crates/branchyard-cli --features postgres       # PostgreSQL stores
@@ -34,9 +37,9 @@ cargo install --locked --path crates/branchyard-cli --features microsandbox,post
 cargo install --locked --path crates/branchyard-server --features postgres    # only the branchyard-server binary
 ```
 
-`by init` knows what its own build can do. On a build without the SDK it does not offer Microsandbox, and says in its plan what to run if the host has KVM; on a build without PostgreSQL, `by init server` labels PostgreSQL "needs a build with --features postgres". It reads the build as two setup facts, `build.microsandbox` and `build.postgres` ([setup](setup.md)).
+`by init` inspects the running binary's compiled features (`build.microsandbox` and `build.postgres`; see [setup](setup.md)). On a build without Microsandbox support, it omits Microsandbox from interactive choices and notes the rebuild command if KVM is available. On a build without PostgreSQL support, `by init server` marks PostgreSQL as requiring `--features postgres`.
 
-Running a microVM also needs the `msb` runtime at the SDK's exact version and `/dev/kvm` open to you; [sandbox providers](providers.md#microsandbox-provider) has the steps. A machine without KVM can build the feature and run its unit tests, but not a microVM.
+Running a Microsandbox microVM also requires the `msb` runtime at the matching SDK version and read/write access to `/dev/kvm` (see [sandbox providers](providers.md#microsandbox-provider)). A machine without KVM can compile the feature and run unit tests, but cannot boot a microVM.
 
 ## Local
 
@@ -44,13 +47,13 @@ Running a microVM also needs the `msb` runtime at the SDK's exact version and `/
 by run "Fix the flaky parser test" --check "cargo test"
 ```
 
-Local mode runs the engine in your process and each harness as a child of it, in its own git worktree under `.branchyard/` and its own process group. Branches are recorded in `.branchyard/state.db`.
+Local mode runs the engine in your CLI process and spawns each harness as a child process in its own Git worktree under `.branchyard/` and its own process group. Branch metadata is stored in `.branchyard/state.db`.
 
-**Guaranteed:** one worktree and one process group per branch, so a branch's files and processes are its own, and `by cancel` reaches the group. The environment loses the variables that mark the Claude Code session that started `by`, so a harness never runs as that session.
+**Guaranteed:** Each branch gets an isolated worktree and process group so its working tree and child processes stay separate and `by cancel` can terminate the entire process group cleanly. Environment variables that mark the calling Claude Code session are stripped so child harnesses do not think they are nested inside that session.
 
-**Not guaranteed:** anything beyond your operating-system user. The harness has your `HOME`, your login, your other variables, your filesystem and your network. A `--yes` run lets it use all of that without asking. Under `--permissions read-only` or `edit-worktree` on Linux the [file guard](#the-file-guard) limits where it can write; your `HOME` stays in its scope, so when your `HOME` holds the repository only an `--isolated` run is guarded.
+**Not guaranteed:** Any OS-level isolation beyond your user account. The harness inherits your `HOME`, logins, other environment variables, filesystem access, and network access. Passing `--yes` allows the harness to use all of those without prompting. On Linux, `--permissions read-only` or `edit-worktree` enables the [file guard](#the-file-guard) to restrict where the process can write, provided your repository is not inside a writable `HOME` (use `--isolated` so the branch gets a separate `HOME`).
 
-Before it starts, `by` says so, the first time in a repository: `by: local mode: harnesses run as your user, in your own HOME; no sandbox` (the marker is `.branchyard/local-mode-noted`, written once a harness the note was printed for has started, so a command that fails before that, such as a run on a base that does not exist, does not spend it). The other modes are said on every run.
+The first time you run a local branch in a repository, `by` prints a one-time notice (`by: local mode: harnesses run as your user, in your own HOME; no sandbox`) and records `.branchyard/local-mode-noted` once the harness starts. All other modes print their mode line on every run.
 
 ## Isolated
 
@@ -58,65 +61,67 @@ Before it starts, `by` says so, the first time in a repository: `by: local mode:
 by run "Fix the flaky parser test" --isolated --secret ANTHROPIC_API_KEY
 ```
 
-or, for every run in the repository:
+To enable isolated mode by default for every run in the repository, set it in `branchyard.toml`:
 
 ```toml
 [defaults]
 isolated = true
 ```
 
-`--isolated=false` turns it off for one run when the file turns it on. `--isolated=yes|no|true|false|on|off|1|0` are the accepted values; bare `--isolated` means yes.
+You can override the config file for a single run with `--isolated=false` (accepted boolean values are `yes|no|true|false|on|off|1|0`, and bare `--isolated` means `true`).
 
-**Guaranteed:** the harness's `HOME` is `.branchyard/homes/BRANCH`, a directory only that branch (and its forks) uses, so it sees none of your dotfiles or logins. Variables whose names start with `ANTHROPIC`, `CLAUDE`, `OPENAI`, `CODEX` or `BRANCHYARD_` are removed, except Claude Code's Vertex AI selectors (`CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`), which hold no credential, like the `GOOGLE_*` variables that choose Vertex AI for Gemini CLI and OpenCode ([Google Cloud](setup.md#google-cloud)). Secrets you give it (`--secret`, `[secrets]`) are written 0600 into that home and nowhere else.
+**Guaranteed:** The harness runs with `HOME` set to `.branchyard/homes/BRANCH`, a directory used only by that branch (and its forks), keeping it out of your personal dotfiles and cached logins. Environment variables starting with `ANTHROPIC`, `CLAUDE`, `OPENAI`, `CODEX`, or `BRANCHYARD_` are stripped, except the credential-free Vertex AI selectors `CLAUDE_CODE_USE_VERTEX` and `ANTHROPIC_VERTEX_PROJECT_ID`. They select Vertex AI like the `GOOGLE_*` settings used by Gemini CLI and OpenCode ([Google Cloud](setup.md#google-cloud)). Any secrets you provision via `--secret` or `[secrets]` are written with `0600` permissions inside that private home directory and nowhere else.
 
-**Not guaranteed:** that is all it does. It is a private `HOME`, not a sandbox. The harness runs as your user: it can read your repository's parent directories, your SSH keys if it knows the path, anything on the network, and every variable that is not on that list (`GEMINI_API_KEY`, `GITHUB_TOKEN`, `AWS_*`). The harness is usually not logged in, because its login lived in the home it no longer has; `by harnesses login ID` and `[secrets]` are how it gets one.
+**Not guaranteed:** Isolated mode provides a private `HOME` and scrubbed environment, not a full OS sandbox. The harness still runs as your OS user, so it can read parent directories, access the network, and read environment variables outside the stripped prefixes (such as `GEMINI_API_KEY`, `GITHUB_TOKEN`, or `AWS_*`). Because your personal `HOME` is hidden, the harness will not see your normal interactive login unless you provision credentials via `by harnesses login ID` or `[secrets]`.
 
-Before it starts, `by` says: `by: isolated mode: harnesses run as your user with a private HOME under .branchyard/homes/; not a sandbox, so they can still read your files and reach the network`. Afterwards the record keeps it: `by show BRANCH` has `provider  local, isolated: private HOME, not a sandbox`, and `by ls --json`, `by show --json` and `by inspect --json` carry `"provider": "local"` and `"isolated": true`, with the turn's [`guard`](#the-file-guard) beside them.
+Before starting, `by` prints `by: isolated mode: harnesses run as your user with a private HOME under .branchyard/homes/; not a sandbox, so they can still read your files and reach the network`. The branch record stores this mode as well: `by show BRANCH` prints `provider  local, isolated: private HOME, not a sandbox`, and `--json` output includes `"provider": "local"` and `"isolated": true` alongside the turn's [`guard`](#the-file-guard) object.
 
 ## The file guard
 
-A permission preset decides the tool calls a harness asks Branchyard about. Several harnesses run a write without asking: Pi, Antigravity, DeepSeek Harness, Hermes and OpenCode on its defaults never route a shell write to Branchyard, so for them `read-only` and `edit-worktree` used to decide nothing about files. On Linux with Landlock, Branchyard now also starts a local harness under a Landlock ruleset with the preset's write scope. The harness, and every process it starts, can then write only there, whatever tool it uses:
+Permission presets control which tool requests Branchyard approves when a harness asks. However, several harnesses (including Pi, Antigravity, DeepSeek Harness, Hermes, and OpenCode in its default configuration) execute file writes or shell commands without routing a permission request through Branchyard first.
 
-| Preset | The harness can write in | Not |
+To enforce write scopes at the OS level, Branchyard on Linux uses Landlock to restrict local harness processes whenever a turn runs under `--permissions read-only` or `--permissions edit-worktree`. The harness and every child process it spawns can only write to the paths allowed by the preset, regardless of which tool it invokes:
+
+| Preset | Allowed write paths | Blocked write paths |
 |---|---|---|
-| `edit-worktree` | its worktree; its git directory and the repository's `.git/objects`, `.git/refs` and `.git/logs`, so a commit it makes lands; its `HOME`; its temporary directory (`.branchyard/tmp/BRANCH`, its `TMPDIR`); `/dev`; the [scratch areas](storage.md) it may reach | the rest of the repository (the main checkout, other branches' worktrees, `.branchyard/`), anything else on the machine |
-| `read-only` | its `HOME`, its temporary directory, `/dev` | its worktree, the git directory (a read-only turn makes no commit), anything else |
-| `full`, `--yes`, `--ask`, explicit rules | anywhere your user can: no guard | |
+| `edit-worktree` | The branch worktree; the branch Git directory plus `.git/objects`, `.git/refs`, and `.git/logs` (so commits succeed); the branch's `HOME`; its temporary directory (`.branchyard/tmp/BRANCH`, set as `TMPDIR`); `/dev`; and configured [scratch areas](storage.md) | The rest of the repository (main checkout, other branches' worktrees, `.branchyard/`) and the rest of the filesystem |
+| `read-only` | The branch's `HOME`, its temporary directory, and `/dev` | The branch worktree, the Git directory (no commits can be created), and the rest of the filesystem |
+| `full`, `--yes`, `--ask`, or custom rules | Anywhere your OS user can write (no Landlock guard) | — |
 
-`HOME` is the branch's private home with `--isolated`, and **your own `HOME` otherwise**: without `--isolated` a guarded harness can still write your dotfiles. Landlock lets a harness write everything beneath a path it may write, and nothing carves a path back out, so when your own `HOME` holds the repository (`/home/you/project`, the usual place) no guard that keeps `HOME` writable can keep the harness out of the repository. Such a run is **not guarded**: `by` says so before it starts, and the branch records why:
+Note that `HOME` in the table above is `.branchyard/homes/BRANCH` when `--isolated` is enabled, and **your personal `HOME` directory otherwise**. Because Landlock grants write access recursively under every allowed path and cannot carve out subdirectories, if your repository lives inside your personal `HOME` (for example, `/home/you/project`) and you run without `--isolated`, allowing writes to `HOME` would also allow writes to the repository. In that situation, the run is **not guarded**, and `by` prints a warning before starting and records the reason on the branch:
 
 ```text
 by: note: no file guard for this run: your HOME (/home/you) holds this repository, and a guard that lets the harness write in HOME would let it write the repository too; --isolated gives it a private HOME the guard can hold; --permissions edit-worktree decides only the tool calls the harness asks Branchyard about
 ```
 
-Pass `--isolated` to be guarded there: the private home, under `.branchyard/homes/`, holds nothing but itself. A planning turn (`--plan`) runs under `read-only`, and so under its guard. A delegated child gets its own guard, in its own worktree, from the policy it runs under.
+Pass `--isolated` so the branch uses a private `HOME` under `.branchyard/homes/` and Landlock can protect the repository checkout. Planning turns (`--plan`) automatically run under `read-only` and its Landlock guard, and delegated child branches receive their own guard scoped to their own worktree.
 
-What a refused write looks like: the operating system answers `EACCES` (`Permission denied`), and the harness reports it as any failed write. Pi 1.4.0 on 27 October 2026: `EACCES: permission denied, open '…/.branchyard/worktrees/outside.txt'`.
+When a guarded process attempts an out-of-scope write, the kernel returns `EACCES` (`Permission denied`), which the harness sees as a normal filesystem error (for example, Pi 1.4.0 on 27 October 2026 reported `EACCES: permission denied, open '…/.branchyard/worktrees/outside.txt'`).
 
-**Said and recorded.** Before a local run under one of the two presets, `by` prints one line, every run:
+**Reported and recorded.** Before starting a guarded local turn, `by` prints the active Landlock scope:
 
 ```text
 by: guard: landlock (edit-worktree): the harness can write only in its worktree, its git directory, your own HOME, its temporary directory and /dev
 ```
 
-The branch records what its last turn got: `by show` and `by inspect` have a `guard` line under `provider` (`landlock (edit-worktree, ABI 7): writes only in …`, or `none: <why>`), and `by ls --json`, `by show --json` and `by inspect --json` a `guard` field next to `provider` and `isolated`: `{"kind": "landlock", "preset": "edit-worktree", "abi": 7, "writable": [...]}`, `{"kind": "none", "reason": "..."}`, or `null` before a turn has started a harness. `by doctor`'s `host.landlock` row names the ABI, or why there is none.
+The branch record stores the guard status of its latest turn: `by show` and `by inspect` include a `guard` line under `provider` (`landlock (edit-worktree, ABI 7): writes only in …` or `none: <why>`), and `--json` outputs include `"guard": {"kind": "landlock", "preset": "edit-worktree", "abi": 7, "writable": [...]}` or `{"kind": "none", "reason": "..."}`. `by doctor` reports the host's Landlock ABI under `host.landlock`.
 
-**Where it cannot be held.** On a kernel without Landlock (before Linux 5.13, built without it, or with it left out of the `lsm=` boot parameter), on macOS, or with `BRANCHYARD_GUARD=off` in `by`'s environment, the turn runs unguarded, and `by` says so in one note:
+**When Landlock is unavailable.** On Linux kernels without Landlock enabled (prior to Linux 5.13 or missing from the `lsm=` boot parameter), on macOS, or when `BRANCHYARD_GUARD=off` is set in the environment, the turn runs without the OS guard and prints a notice:
 
 ```text
 by: note: no file guard on this host (BRANCHYARD_GUARD=off turns it off): --permissions read-only decides only the tool calls the harness asks Branchyard about
 ```
 
-and the record says `guard: none: this host cannot hold it: …`. A sandbox provider's harness records `none: the harness runs in a sandbox (…), which is its boundary`; Microsandbox, Substrate and a recipe's machine refuse an exec that asks for a write scope rather than run it unguarded (`ExecSpec::writable`).
+The branch record then stores `guard: none: this host cannot hold it: …`. For sandbox providers, the branch records `none: the harness runs in a sandbox (…), which is its boundary`; Microsandbox, Substrate, and recipe providers reject an `ExecSpec::writable` request rather than silently ignoring it.
 
-**What it does not stop.**
+**What the file guard does not restrict:**
 
-- Reads. A guarded harness reads everything your user can: your SSH keys, other branches' worktrees, the repository.
-- The network. That is the [egress policy](egress.md)'s, and confined only when one is set.
-- Any one command. Inside its scope the harness writes what it likes; the guard is a scope, not a per-command decision. A command a preset denies still runs in a harness that does not ask.
-- Writes in your own `HOME` in local mode (use `--isolated`), and git refs: with `.git/refs` in scope, a harness that runs git under `edit-worktree` can move another branch's ref, not only its own.
-- A process the harness hands work to that is already running outside it: a daemon, a language server started earlier, a container engine.
-- It does not leave room for a sandbox of the harness's own that makes a user namespace or mounts (bubblewrap, `unshare`): under the guard, writing `/proc/self/uid_map` is refused, and Landlock refuses `mount` to a restricted process (`unshare -rm mount -t tmpfs …` failed both ways on 27 October 2026). Such a sandbox fails rather than runs.
+- **Reads:** A guarded process can still read any file your OS user can read, including `~/.ssh`, other worktrees, and the main checkout.
+- **Network access:** Network restrictions are controlled separately by the [egress policy](egress.md).
+- **Per-command filtering:** Within its writable paths, the harness can modify any file. A shell command that a preset would deny if asked can still execute in a harness that does not ask for approval first.
+- **Dotfiles and Git refs in non-isolated `edit-worktree` mode:** Without `--isolated`, your personal `HOME` remains writable. Also, because `.git/refs` is writable under `edit-worktree` so the harness can commit, a harness running raw `git` commands could update refs belonging to other branches.
+- **External daemons:** Processes already running outside the branch's process tree (such as a background language server or Docker daemon) are not inside the Landlock ruleset.
+- **Nested user-namespace sandboxes:** Because Landlock requires `PR_SET_NO_NEW_PRIVS`, blocks writes to `/proc/self/uid_map`, and forbids `mount(2)` inside restricted processes, inner sandboxes that rely on user namespaces and mounts (such as `bubblewrap` or `unshare -rm`) will fail inside a guarded turn.
 
 **How it is built.** [`crates/branchyard-runtime/src/landlock.rs`](../crates/branchyard-runtime/src/landlock.rs): the ruleset is built before the fork (each allowed path opened `O_PATH` and added beneath with every write-side right the kernel's ABI knows: writing, truncating, removing, making files, directories, links, sockets, FIFOs and devices, and `REFER` for renames between directories); between `fork` and `exec` the child sets `PR_SET_NO_NEW_PRIVS` and calls `landlock_restrict_self`, after the network namespace's own setup when egress is confined. Reads, execution, `ioctl` and the network are not handled. Support is probed once per process by restricting `/bin/sh` and seeing a write to `/dev/null` refused. `PR_SET_NO_NEW_PRIVS`, which Landlock needs, also means a set-user-ID program (`sudo`) runs without its privileges inside a guarded harness. The engine derives the scope from the turn's preset in [`crates/branchyard/src/guard.rs`](../crates/branchyard/src/guard.rs).
 
@@ -191,7 +196,7 @@ by: cannot reach http://127.0.0.1:8421: Connection refused (os error 111)
   next: start a server with `by serve` on that host, or fix the URL, token or CA file ([remote] url, token_file, ca_file)
 ```
 
-`by doctor` asks a configured server once (`server.reachable`), and reads the file `[serve] config` names without starting anything: `serve.config` is `by serve --check` on it, and `serve.database` says which store it names.
+`by doctor` asks a configured server once (`server.reachable`) and, when it answers, for its problems once (`server.problems`), and reads the file `[serve] config` names without starting anything: `serve.config` is `by serve --check` on it, and `serve.database` says which store it names.
 
 ## Postgres
 

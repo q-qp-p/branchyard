@@ -245,7 +245,7 @@ pub fn rows(
                 0 => info.name.clone(),
                 _ => format!("{}└ {}", "  ".repeat(depth - 1), info.name),
             };
-            let (status, tone) = render::status_text(&info.status);
+            let (status, tone) = render::branch_status_text(info);
             let activity = doing
                 .get(&info.name)
                 .map(|d| d.summary(now_s.saturating_mul(1000)))
@@ -1118,6 +1118,7 @@ mod tests {
             created_at: 1_000,
             stalled: false,
             awaiting: None,
+            stage: None,
             liveness: None,
             superseded_by: None,
             model: None,
@@ -1125,6 +1126,19 @@ mod tests {
             isolated: false,
             guard: None,
         }
+    }
+
+    #[test]
+    fn plain_watch_rows_show_when_a_running_engine_is_lost() {
+        let mut branch = info("b", None, BranchStatus::Running);
+        branch.liveness = Some(branchyard::Liveness {
+            state: branchyard::LivenessState::Lost,
+            heard_ms: 0,
+            known_until_ms: 0,
+            reason: Some("lease expired".into()),
+        });
+        let rendered = rows(&[branch], &HashMap::new(), 1, 200, Style::PLAIN).join("\n");
+        assert!(rendered.contains("running (engine lost"), "{rendered}");
     }
 
     fn at(at_ms: u64, activity: Activity) -> RecordedEvent {

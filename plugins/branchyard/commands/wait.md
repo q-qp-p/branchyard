@@ -17,7 +17,7 @@ for "$ARGUMENTS".
 3. For each settled branch, summarise its state, its result or last
    message, files changed and cost. Then say what needs the user: failures
    with their reason, unanswered questions (`by inbox --as <parent>
-   --unread`), and branches ready to integrate (`by merge <branch>`, or
-   `by integrate` on a branch).
+   --unread`, and `by inbox --unread` for the user's), and branches ready
+   to integrate (`by merge <branch>`, or `by integrate` on a branch).
 
 Do not merge, integrate, discard or send anything unless the user asks.

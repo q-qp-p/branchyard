@@ -103,6 +103,16 @@ impl Transport {
     }
 }
 
+impl branchyard_sandbox::exec::ExecTransport for Transport {
+    fn command(&self, script: &str, args: &[&str]) -> Command {
+        self.command(script, args)
+    }
+
+    fn describe(&self) -> String {
+        self.describe()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

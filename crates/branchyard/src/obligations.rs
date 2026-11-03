@@ -134,14 +134,11 @@ pub(crate) fn list(
             });
         }
     }
-    let running: BTreeSet<&str> = records
-        .iter()
-        .filter(|r| r.info.status == BranchStatus::Running)
-        .map(|r| r.info.name.as_str())
-        .collect();
     for entry in store.effects().effects(None)? {
         if within(&entry.branch) {
-            owed.extend(of_effect(&entry, &running, now_ms));
+            let running = entry.state == EffectState::Begun
+                && crate::effects::reconcile::turn_running(store, &entry)?;
+            owed.extend(of_effect(&entry, running, now_ms));
         }
     }
     for record in &records {
@@ -175,10 +172,9 @@ fn subtree(records: &[Record], name: &str) -> Result<BTreeSet<String>, Error> {
     Ok(seen)
 }
 
-/// What an effect entry owes, if anything. A `begun` entry of a branch
-/// still running is a call in flight, not an obligation; once its turn
-/// ended it is as unknown as reconciliation will record it.
-fn of_effect(entry: &EffectEntry, running: &BTreeSet<&str>, now_ms: u64) -> Option<Obligation> {
+/// What an effect entry owes, if anything. Only a `begun` entry belonging
+/// to a live, held turn is in flight rather than an obligation.
+fn of_effect(entry: &EffectEntry, running: bool, now_ms: u64) -> Option<Obligation> {
     let id = short_id(&entry.id).to_owned();
     let (kind, about, due_ms, next) = match entry.state {
         EffectState::Unknown => (
@@ -190,7 +186,7 @@ fn of_effect(entry: &EffectEntry, running: &BTreeSet<&str>, now_ms: u64) -> Opti
                 format!("by effects show {id}"),
             ],
         ),
-        EffectState::Begun if !running.contains(entry.branch.as_str()) => (
+        EffectState::Begun if !running => (
             ObligationKind::UnknownEffect,
             format!(
                 "{} may have happened: its turn ended before its answer",
@@ -251,7 +247,8 @@ fn of_record(record: &Record, records: &[Record], alive: Option<&Liveness>) -> V
     let mut owed = Vec::new();
     match &record.info.status {
         BranchStatus::Running => {
-            if let Some(liveness) = alive.filter(|l| l.state == LivenessState::Lost) {
+            let liveness = alive.cloned().unwrap_or_else(Liveness::unowned);
+            if liveness.state == LivenessState::Lost {
                 let mut lost = owe(
                     ObligationKind::LostEngine,
                     format!(
@@ -260,7 +257,7 @@ fn of_record(record: &Record, records: &[Record], alive: Option<&Liveness>) -> V
                     ),
                     vec![format!("by inspect {name}")],
                 );
-                lost.since_ms = Some(liveness.heard_ms);
+                lost.since_ms = (liveness.heard_ms != 0).then_some(liveness.heard_ms);
                 owed.push(lost);
             }
         }
@@ -342,10 +339,10 @@ mod tests {
 
     #[test]
     fn an_effect_owes_what_its_state_leaves_open() {
-        let none = BTreeSet::new();
+        let none = false;
         let unknown = of_effect(
             &entry(EffectState::Unknown, EffectClass::Irreversible),
-            &none,
+            none,
             10,
         )
         .unwrap();
@@ -354,18 +351,18 @@ mod tests {
         assert_eq!(unknown.next[1], "by effects show ABCDEFGH");
         assert_eq!(unknown.since_ms, Some(5));
 
-        // In flight while its branch runs; owed once its turn ended.
+        // In flight only while its own turn has a live held lease.
         let begun = entry(EffectState::Begun, EffectClass::Irreversible);
-        let running = BTreeSet::from(["b"]);
-        assert_eq!(of_effect(&begun, &running, 10), None);
+        let running = true;
+        assert_eq!(of_effect(&begun, running, 10), None);
         assert_eq!(
-            of_effect(&begun, &none, 10).unwrap().kind,
+            of_effect(&begun, none, 10).unwrap().kind,
             ObligationKind::UnknownEffect
         );
 
         let staged = of_effect(
             &entry(EffectState::Staged, EffectClass::Irreversible),
-            &none,
+            none,
             10,
         )
         .unwrap();
@@ -378,7 +375,7 @@ mod tests {
             EffectState::Expired,
         ] {
             assert_eq!(
-                of_effect(&entry(settled, EffectClass::Reversible), &none, 10),
+                of_effect(&entry(settled, EffectClass::Reversible), none, 10),
                 None
             );
         }
@@ -445,6 +442,10 @@ mod tests {
             reason: None,
         };
         assert!(kinds(&d, &all, Some(&live)).is_empty());
+        let orphaned = of_record(&d, &all, None);
+        assert_eq!(orphaned[0].kind, ObligationKind::LostEngine);
+        assert_eq!(orphaned[0].since_ms, None);
+        assert!(orphaned[0].about.contains("no held lease"));
         let lost = Liveness {
             state: LivenessState::Lost,
             reason: Some("its engine's lease expired 3s ago".into()),
@@ -483,9 +484,9 @@ mod tests {
 
     #[test]
     fn an_undo_window_is_owed_until_its_deadline_and_only_with_one() {
-        let none = BTreeSet::new();
+        let none = false;
         let mut confirmed = entry(EffectState::Confirmed, EffectClass::Reversible);
-        assert_eq!(of_effect(&confirmed, &none, 10), None, "no undo");
+        assert_eq!(of_effect(&confirmed, none, 10), None, "no undo");
         confirmed.undo = Some(Undo {
             kind: UndoKind::Inverse,
             operation: "slack.chat.delete".into(),
@@ -493,10 +494,10 @@ mod tests {
             arguments: serde_json::json!({}),
             deadline_ms: Some(100),
         });
-        let window = of_effect(&confirmed, &none, 10).unwrap();
+        let window = of_effect(&confirmed, none, 10).unwrap();
         assert_eq!(window.kind, ObligationKind::UndoWindow);
         assert_eq!(window.due_ms, Some(100));
         assert_eq!(window.next, ["by undo b --plan"]);
-        assert_eq!(of_effect(&confirmed, &none, 101), None, "it closed");
+        assert_eq!(of_effect(&confirmed, none, 101), None, "it closed");
     }
 }

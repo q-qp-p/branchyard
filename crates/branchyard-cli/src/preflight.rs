@@ -108,6 +108,8 @@ fn skipped(task: &TaskArgs) -> bool {
         || task.command.is_some()
         || crate::fleet_cmd::is_routed(task)
         || task.sandbox.is_some()
+        || task.container.is_some()
+        || task.agent_sandbox.is_some()
         || task.substrate.is_some()
         || task.recipe.is_some()
         || crate::workspace_cmd::in_harness().is_some()
@@ -284,6 +286,24 @@ fn not_installed(env: &Env, found: &Inventory, id: &str, by_default: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_images_supply_the_harness_without_host_inventory_or_login_checks() {
+        for mut task in [
+            TaskArgs {
+                container: Some(Default::default()),
+                ..Default::default()
+            },
+            TaskArgs {
+                agent_sandbox: Some(Default::default()),
+                ..Default::default()
+            },
+        ] {
+            assert!(skipped(&task));
+            task.auto = true;
+            assert!(crate::fleet_cmd::with_inventory_default(&mut task).is_err());
+        }
+    }
 
     fn names(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| (*s).to_owned()).collect()

@@ -1,44 +1,44 @@
 # Doctor
 
-`by doctor` answers one question: is this machine, and this repository, ready to use Branchyard? It runs a fixed list of checks and prints one row for each: a status (`ok`, `todo`, `warn` or `fail`), what it found in one line, and, for every row that is not `ok`, what to do in one line. A line above the table, `Mode:`, says how this repository runs (below). It reads; it repairs nothing, and it prints no secret.
+`by doctor` checks whether your machine and repository are ready to run Branchyard. It runs a standard suite of checks and prints a table with one row per check: a status (`ok`, `todo`, `warn`, or `fail`), a one-line summary of what it found, and a one-line remediation step for any row that is not `ok`. Above the table, a `Mode:` line shows how the repository is configured to run. `by doctor` is strictly read-only: it modifies nothing and never prints secrets.
 
 ```sh
-by doctor                    # the mode, a table, then what to do about each row that is not ok
-by doctor --json             # the same as JSON, for a script or a CI step
-by doctor --path ~/src/app   # check that repository instead of the one around here
-by doctor --refresh          # ask the harnesses again instead of reading the cached inventory
+by doctor                    # show the mode, check table, and next steps
+by doctor --json             # output JSON for scripts or CI
+by doctor --path ~/src/app   # check a specific repository path
+by doctor --refresh          # re-probe harnesses instead of using the 1-minute cache
 ```
 
-The checks reuse what `by` already knows rather than looking again: the loaders `by config validate` runs, the trust decision `by workspace trust` records, the inventory `by harnesses` shows (kept a minute; `--refresh` detects again), the engine's own provider check, the service registry `by services` lists, and the client `--remote` uses. When a row says something is wrong, a command that depends on it would say the same.
+`by doctor` uses the same underlying checks as the rest of the CLI: the configuration loaders from `by config validate`, the trust state from `by workspace trust`, the harness inventory from `by harnesses` (cached for a minute unless you pass `--refresh`), the engine's sandbox provider check, the service registry from `by services`, and the remote client used by `--remote`. If a row reports a problem, any command that depends on that component will fail for the same reason.
 
-`by up` ([up](up.md)) is the command that acts: it installs the harnesses the configuration names where your user file allows, starts the connector gateway, and lists what only you can do. Run `by doctor` to see where you stand and `by up` to get there.
+While `by doctor` only inspects your setup, `by up` ([up](up.md)) takes action: it installs configured harnesses (when allowed by your user configuration), starts the connector gateway, and lists any remaining manual steps. Run `by doctor` to inspect your environment, and run `by up` to bring it ready.
 
-When Substrate is the provider, or a server is configured (`--remote`, `BRANCHYARD_REMOTE` or `[remote] url`), the report adds the seven [readiness checks](up.md#readiness-checks) under the table, and `readiness` in the JSON. They read the same answers as the rows: the one Substrate Control call behind `provider.default`, the one request behind `server.reachable`. For a server, doctor reads only the repository list, so the installed, capacity and login checks are `unknown` with `by setup --up` (which reads the server's worker inventory) as the next step. Doctor never lists workers or starts an actor: `by up --plan --smoke` and `by substrate check --smoke` do.
+When Substrate is configured as the provider or a remote server is set (`--remote`, `BRANCHYARD_REMOTE`, or `[remote] url`), `by doctor` appends the seven [readiness checks](up.md#readiness-checks) below the main table (and under `readiness` in `--json` output). Those readiness rows reuse the same network responses as `provider.default` and `server.reachable`. Against a remote server, `by doctor` queries the repository list and problem list, so worker-specific checks (installed harnesses, capacity, and logins) are reported as `unknown` with `by setup --up` recommended as the next step. `by doctor` never queries worker inventories or starts test actors; use `by up --plan --smoke` or `by substrate check --smoke` for an active smoke test.
 
 ## Statuses and exit codes
 
 | Status | Means |
 |---|---|
-| `ok` | Nothing to do. Also what a check says when the thing it checks is not configured (`server.reachable: not configured`). |
-| `todo` | A step you have not taken yet, with nothing wrong: Branchyard has not been set up in this repository (`by setup`), or a harness is installed and not logged in yet. Where everyone starts, so it is not a warning. |
-| `warn` | Worth looking at, or a check that could not run. Nothing that stops a command working. |
-| `fail` | A command that needs this would fail. |
+| `ok` | Ready to use, or the feature being checked is not configured (for example, `server.reachable: not configured`). |
+| `todo` | An expected setup step has not been run yet (for example, `by setup` has not been run in this repository, or an installed harness is not logged in). Nothing is broken. |
+| `warn` | Worth reviewing, or a check could not run because an earlier check failed. Does not block basic commands. |
+| `fail` | A required component is misconfigured or unreachable; commands that depend on it will fail. |
 
-`todo` is a status of its own and not a `warn` with a gentler word: a script that treats `warn` as something to read can leave `todo` alone, and `status` in the JSON is `todo` for a report whose worst row is one. The order is `ok`, `todo`, `warn`, `fail`; the report's status is the worst row.
+`todo` is distinct from `warn` so that scripts and CI jobs watching for warnings do not flag a brand-new checkout. Severity increases in the order `ok`, `todo`, `warn`, `fail`, and the overall report `status` in `--json` matches the most severe row.
 
-A check that cannot run because another failed is a `warn` whose detail begins `not checked:` and whose fix names the check to fix first (`fix repository.git first`). It is never an `ok`: the report does not claim what it did not look at. The text output leaves these rows out of its *To do* list, since the failed row above them says what to do.
+If a check cannot run because a prerequisite check failed, it is marked `warn` with a detail line starting with `not checked:` and a fix pointing to the prerequisite (such as `fix repository.git first`). It is never marked `ok`. In text output, those skipped checks are omitted from the *To do* summary at the bottom so you only see the root cause to fix first.
 
 | Exit | When |
 |---|---|
-| 0 | No row failed: the report is `ok`, `todo` or `warn`. A fresh repository exits 0. |
+| 0 | No row failed (the overall status is `ok`, `todo`, or `warn`). A fresh repository exits 0. |
 | 1 | At least one row failed. |
-| 2 | A usage error, as for every `by` command (`by doctor --nonsense`). |
+| 2 | Command-line usage error (for example, `by doctor --nonsense`). |
 
-There is no separate status for "doctor itself could not run". A problem with finding something out is a row (`repository.git` fails when `--path` is not a directory), and the rest of the report still prints. The report is on standard output.
+Even if the target path is not a Git repository (`repository.git` fails), `by doctor` still prints the full report to standard output and exits with code `1`.
 
 ## The mode
 
-The line above the table says how this repository runs, from the same effective configuration the checks read (the user file, `branchyard.toml`, the `BRANCHYARD_*` variables and `--remote`):
+The header line above the table summarizes how the repository is configured to run based on your merged configuration (user config, `branchyard.toml`, `BRANCHYARD_*` environment variables, and `--remote`):
 
 ```
 Mode: local, no isolation · SQLite (.branchyard/state.db) · no server
@@ -82,6 +82,7 @@ Rows come in this order, and their names are stable: a script may match on them.
 | `host.loopback` | A listener can be opened on `127.0.0.1`, which the egress proxy and the gateways use | it cannot | |
 | `host.kvm` | Read-write access to `/dev/kvm`, which `--provider microsandbox` needs | Linux without it | |
 | `server.reachable` | A server named by `--remote`, `BRANCHYARD_REMOTE` or `[remote] url` answers `GET /v1/repos` with the token in the token file, and serves the `repo` named, if one is | | no token file, an unreadable token or CA file, no answer within 5 seconds, a refusal, or the repository named is not served |
+| `server.problems` | With a server `server.reachable` asks: what it lists at `GET /v1/problems` ([problems](server.md#problems)), the things its background work could not do that a person can act on, asked once with a five-second deadline after `GET /v1/repos` succeeded. `ok`: `no problems`. No row without a server or with an `ssh://` remote | it lists any: the count and the oldest entry's `what` and `error` (`1 problem: trigger nightly-triage: paused after 3 failed runs in a row`), with that entry's `next` as the fix; a server older than the route answers `404`, and the fix is to upgrade it; no answer or an error from the route; `not checked` when `server.reachable` got no answer it accepted, so one outage is one failure | |
 | `serve.config` | With `[serve] config`: the server file it names (relative to the repository) validates, as `by serve --check` reads it. No row without `[serve]` | it validates with warnings (a TLS file that does not exist yet, plain HTTP beyond loopback, a provider this build cannot run) | the file does not load or validate, or names a `database` on a build without the `postgres` feature |
 | `serve.database` | With `[serve] config`: which store the file names, SQLite in its data directory or PostgreSQL (host and database, never the user or password), and whether this build can open it. A name, not a connection | the file does not load, so the store cannot be named | PostgreSQL on a build without the `postgres` feature: `by serve` would refuse to start |
 | `models.keys` | With `[models]`: each backend's key, as the gateway reads it (an entry of `[secrets]`, else a variable of that name), is set, by name | a backend that needs a key names none, or `[models]` names no backend | a key variable that is unset, or a key file that is missing |
@@ -190,7 +191,7 @@ and exits 0.
 
 ## What it reads, writes and costs
 
-- **Offline, except what you configured.** The network use is one `GET /v1/repos` to a server you configured, with a five-second deadline however the network behaves, and, with Substrate as the provider, one authenticated `GetActorTemplate` to its Control endpoint, bounded at 30 seconds. An `ssh://` remote is not contacted (it starts its own server; `by remote ssh status` shows it).
+- **Offline, except what you configured.** The network use is one `GET /v1/repos` to a server you configured and, when that succeeds, one `GET /v1/problems`, each with a five-second deadline however the network behaves, and, with Substrate as the provider, one authenticated `GetActorTemplate` to its Control endpoint, bounded at 30 seconds. An `ssh://` remote is not contacted (it starts its own server; `by remote ssh status` shows it).
 - **Quick.** Harness detection comes from the cache `by harnesses` keeps beside the user configuration, so a run takes well under a second once it is warm; the first run, or one after the cache expires, asks every installed harness for its version at once (ten seconds at most each, as `by harnesses` does: nine real CLIs took 4.4 seconds cold). `by harnesses --refresh` refreshes the cache.
 - **Changes nothing you keep.** It creates no `.branchyard/` and writes no exclude entry in a repository that has none, opens a `.branchyard/` that exists as every command does, and does not open one whose schema is older (opening would upgrade it) or newer. It runs no `[workspace]` script and no recipe. It opens a listener on loopback and starts one confined `/bin/sh -c 'exit 0'` for the namespace probe, both gone before it prints.
 - **No secret.** Credentials and keys are reported by variable or file name. The server's token is sent to the server and printed nowhere.
@@ -201,7 +202,7 @@ and exits 0.
 |---|---|
 | `--json` | Print the JSON above instead of the table. |
 | `--path PATH` | Check the repository at or around `PATH` instead of the one around the current directory. The configuration files are looked for from `PATH` too. It is `--path` and not `--repo` because `--repo NAME` is the global option that names a repository on a server (`BRANCHYARD_REPO`). |
-| `--remote`, `--token-file`, `--ca-file`, `--repo` | The global options, as for any command; here they say which server `server.reachable` asks. `by doctor` always looks at this machine and repository, with or without `--remote`; the server is one row. `[remote]` in the configuration fills what they leave unset. |
+| `--remote`, `--token-file`, `--ca-file`, `--repo` | The global options, as for any command; here they say which server `server.reachable` and `server.problems` ask. `by doctor` always looks at this machine and repository, with or without `--remote`; the server is one row. `[remote]` in the configuration fills what they leave unset. |
 
 ## What it does not do
 
@@ -211,7 +212,7 @@ and exits 0.
 - The `Mode:` line is read from configuration. It connects to no database and no server, so `PostgreSQL` there means a server file names one, not that it answers.
 - Not done: the harness rows were checked against fake harnesses and the nine real CLIs on this machine (no model call); no Claude Code that is really logged out was available, so the `loggedIn: false` case in the unit tests is written from the shape of the logged-in output, not recorded.
 - `serve.config` and `serve.database` read the server file `[serve] config` names. They never start the server, open its stores or connect to its database: a wrong host, user or password shows when `by serve` starts.
-- Nothing is checked on a server beyond `GET /v1/repos`; `by --remote URL harnesses` and `by --remote URL services` show more.
+- Nothing is checked on a server beyond `GET /v1/repos` and `GET /v1/problems`; `by --remote URL harnesses` and `by --remote URL services` show more.
 
 ## Adding a check
 
@@ -235,7 +236,8 @@ A check is a function from the shared context to rows, in `crates/branchyard-cli
 - a provider that cannot run, an undefined or untrusted recipe, a default harness that is not installed, and `enforce = "required"` on a host that cannot confine (made deterministic with `BRANCHYARD_EGRESS_NETNS=off`);
 - `host.landlock` naming the Landlock ABI where the host has it, and warning with `BRANCHYARD_GUARD=off` (`crates/branchyard-cli/tests/guard.rs`);
 - a configured server asked once with its token against a mock, a refused token, a missing token file, a repository it does not serve, a server that stopped, and an `ssh://` remote left alone, with `readiness` saying in each case whether the credentials or the control plane failed, from the same single request;
+- `server.problems` against the same mock: one `GET /v1/problems` after `GET /v1/repos`, a listed problem as a warning naming it with its `next` as the fix, `not checked` and no request after a refused token or a stopped server, a server answering `404` for the route told to upgrade, and no row without a server or for an `ssh://` remote;
 - Substrate with a missing bridge key: `readiness` fails the operator credentials and leaves the control plane, capacity and installed checks `unknown`; against the fake cluster (`crates/branchyard-cli/tests/substrate.rs`) the control plane `verified`, capacity `unknown`, and no actor created;
 - the model gateway's key variables named and never shown, and an unpriced routed model.
 
-Unit tests cover the rendering (the table never cuts a detail, the summary with to-dos, the mode line, the JSON shape, colour on the status only), each check's pure part (stale services, sandbox age against `max_kept_minutes`, the harness summary and rows and the default-harness row, a server URL without its credentials, `[secrets]` sources, key rows, trust rows), and a request to a server that hangs ending at its deadline. The engine's read-only schema reader, its sandbox listing and its price lookup are tested in `crates/branchyard/src/doctor.rs`.
+Unit tests cover the rendering (the table never cuts a detail, the summary with to-dos, the mode line, the JSON shape, colour on the status only), each check's pure part (stale services, sandbox age against `max_kept_minutes`, the harness summary and rows and the default-harness row, a server URL without its credentials, `[secrets]` sources, key rows, trust rows, the `server.problems` row from each answer), and a request to a server that hangs ending at its deadline. The engine's read-only schema reader, its sandbox listing and its price lookup are tested in `crates/branchyard/src/doctor.rs`.

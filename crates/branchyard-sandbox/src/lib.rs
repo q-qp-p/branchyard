@@ -21,6 +21,7 @@
 use std::fmt;
 
 pub mod conformance;
+pub mod exec;
 pub mod fake;
 mod provider;
 

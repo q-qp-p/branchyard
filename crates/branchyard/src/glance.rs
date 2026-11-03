@@ -7,11 +7,13 @@
 //! upgrades an older store and recovers branches whose engine stopped,
 //! killing their processes. [`read`] opens `.branchyard/state.db` through a
 //! read-only connection, waits at most [`READ_WAIT`] for a writer, and reads
-//! three things. `read_postgres` (the `postgres` feature) reads the same
-//! three from a server's PostgreSQL store in a read-only transaction, and a
-//! caller that asked a server instead puts its answers together with
-//! [`Glance::from_parts`] and [`unanswered`], so every source gives the
-//! same [`Glance`].
+//! four things: the branches, the pending approval asks, the unanswered
+//! questions and one branch's unread messages. `read_postgres` (the
+//! `postgres` feature) reads the same four from a server's PostgreSQL store
+//! in a read-only transaction, and a caller that asked a server instead
+//! puts its answers together with [`Glance::from_parts`] and
+//! [`unanswered`], so every source gives the same [`Glance`], each branch
+//! with the [`BranchInfo::stage`] the engine gives it.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -19,9 +21,10 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection, OpenFlags};
 
+use crate::stage::{self, Reason};
 use crate::state::Record;
 use crate::store_codec::decode;
-use crate::{BranchInfo, BranchStatus, Error, Message, MessageKind};
+use crate::{BranchInfo, Error, Message, MessageKind};
 
 /// How long a read waits for another process's write lock.
 pub const READ_WAIT: Duration = Duration::from_millis(300);
@@ -34,7 +37,7 @@ pub const QUESTIONS_MAX: u32 = 200;
 pub struct Glance {
     /// The repository root, where `.branchyard/` is.
     pub root: PathBuf,
-    /// Every branch, oldest first.
+    /// Every branch, oldest first, each with its stage.
     pub branches: Vec<BranchInfo>,
     /// Questions and escalations that no answer replies to yet and whose
     /// sender is still running a turn, oldest first: what a branch is
@@ -46,22 +49,25 @@ pub struct Glance {
 }
 
 impl Glance {
-    /// A glance from what was read: `questions` are unanswered questions
-    /// and escalations, oldest first, of which those whose sender is
-    /// running are kept as [`Glance::asking`]; `unread` is
-    /// [`Glance::unread`].
+    /// A glance from what was read: `branches` with their
+    /// [`BranchInfo::awaiting`] already set; `questions` are unanswered
+    /// questions and escalations, oldest first, of which those whose
+    /// sender is running are kept as [`Glance::asking`]; `unread` is
+    /// [`Glance::unread`]. Each branch is given its stage by the rules
+    /// [`Yard::branches`](crate::Yard::branches) uses.
     pub fn from_parts(
         root: PathBuf,
         branches: Vec<BranchInfo>,
         questions: Vec<Message>,
         unread: Vec<Message>,
     ) -> Glance {
+        let branches = stage::staged(branches, &questions);
         let asking = questions
             .into_iter()
             .filter(|m| {
                 branches
                     .iter()
-                    .any(|b| b.name == m.from && b.status == BranchStatus::Running)
+                    .any(|b| b.name == m.from && stage::counts_as_asking(m, &b.status))
             })
             .collect();
         Glance {
@@ -72,28 +78,27 @@ impl Glance {
         }
     }
 
-    /// How many branches are in each of the states a person acts on, in
-    /// the order a status line shows them.
+    /// How many branches are in each of the states a person acts on, by
+    /// each one's [`BranchInfo::stage`], in the order a status line shows
+    /// them. A branch without a stage counts nowhere.
     pub fn counts(&self) -> Counts {
-        let mut counts = Counts {
-            asking: self.asking.len(),
-            ..Counts::default()
-        };
-        for info in &self.branches {
-            match info.status {
-                BranchStatus::Running | BranchStatus::WaitingOnChildren => counts.running += 1,
-                BranchStatus::Waiting => counts.waiting += 1,
-                BranchStatus::Blocked { .. } | BranchStatus::AwaitingPlanApproval => {
-                    counts.blocked += 1
-                }
-                BranchStatus::Ready => counts.ready += 1,
-                BranchStatus::Failed { .. }
-                | BranchStatus::BudgetExceeded { .. }
-                | BranchStatus::Interrupted => counts.failed += 1,
-                BranchStatus::NoChanges
-                | BranchStatus::Merged { .. }
-                | BranchStatus::Discarded { .. } => {}
-            }
+        let mut counts = Counts::default();
+        for reason in self
+            .branches
+            .iter()
+            .filter_map(|b| b.stage.map(|s| s.reason))
+        {
+            let count = match reason {
+                Reason::Running | Reason::WaitingOnChildren | Reason::Parent => &mut counts.running,
+                Reason::Waiting => &mut counts.waiting,
+                Reason::Approval | Reason::Question => &mut counts.asking,
+                Reason::AwaitingPlanApproval | Reason::Blocked => &mut counts.blocked,
+                Reason::Stalled => &mut counts.stalled,
+                Reason::Ready => &mut counts.ready,
+                Reason::Failed | Reason::Interrupted | Reason::BudgetExceeded => &mut counts.failed,
+                Reason::NoChanges | Reason::Merged | Reason::Discarded => continue,
+            };
+            *count += 1;
         }
         counts
     }
@@ -107,17 +112,21 @@ impl Glance {
     }
 }
 
-/// Branch counts by state; see [`Glance::counts`].
+/// Branch counts by stage; see [`Glance::counts`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Running a turn, or parked until its children settle.
+    /// Running a turn, parked until its children settle, or a settled
+    /// child whose parent still works.
     pub running: usize,
     /// Created, waiting for prerequisites.
     pub waiting: usize,
-    /// Unanswered questions and escalations from running branches.
+    /// Parked on an approval, or running with a question or escalation
+    /// nobody has answered.
     pub asking: usize,
     /// Blocked, or waiting for its plan to be approved.
     pub blocked: usize,
+    /// Running, with its harness silent for its stall window.
+    pub stalled: usize,
     /// Its last turn produced a candidate not yet integrated.
     pub ready: usize,
     /// Failed, interrupted or stopped at a limit.
@@ -143,9 +152,10 @@ fn state_db(root: &Path) -> PathBuf {
     state_dir(root).join("state.db")
 }
 
-/// Read `root`'s branches, what they are asking, and, given `inbox_of`,
-/// that branch's unread messages, without creating, upgrading or
-/// recovering anything. `Ok(None)` when `root` has no `state.db`.
+/// Read `root`'s branches, what their turns are parked on, what they are
+/// asking, and, given `inbox_of`, that branch's unread messages, without
+/// creating, upgrading or recovering anything. `Ok(None)` when `root` has
+/// no `state.db`.
 ///
 /// # Errors
 ///
@@ -166,8 +176,13 @@ pub fn read(root: &Path, inbox_of: Option<&str>) -> Result<Option<Glance>, Error
     .map_err(|e| failed("open", e))?;
     conn.busy_timeout(READ_WAIT)
         .map_err(|e| failed("busy timeout", e))?;
-    let branches = branches(&conn).map_err(|e| failed("branches", e))??;
-    let questions = questions(&conn).map_err(|e| failed("questions", e))?;
+    let parked = crate::parked(crate::sqlite::asks(&conn, true)?);
+    let branches = branches(&conn)
+        .map_err(|e| failed("branches", e))??
+        .into_iter()
+        .map(|info| crate::with_awaiting(info, &parked))
+        .collect();
+    let questions = crate::sqlite::unanswered(&conn).map_err(|e| failed("questions", e))?;
     let unread = match inbox_of {
         Some(branch) => unread(&conn, branch).map_err(|e| failed("inbox", e))?,
         None => Vec::new(),
@@ -202,9 +217,15 @@ pub fn read_postgres(
     inbox_of: Option<&str>,
 ) -> Result<Glance, Error> {
     let read = crate::pg::Glanced::read(url, scope, inbox_of, CONNECT_WAIT, READ_WAIT)?;
+    let parked = crate::parked(read.asks);
+    let branches = read
+        .branches
+        .into_iter()
+        .map(|info| crate::with_awaiting(info, &parked))
+        .collect();
     Ok(Glance::from_parts(
         root.to_path_buf(),
-        read.branches,
+        branches,
         read.questions,
         read.unread,
     ))
@@ -251,20 +272,6 @@ fn branches(conn: &Connection) -> rusqlite::Result<Result<Vec<BranchInfo>, Error
 const MESSAGE_COLUMNS: &str =
     "id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, next_turn";
 
-fn questions(conn: &Connection) -> rusqlite::Result<Vec<Message>> {
-    let mut statement = conn.prepare(&format!(
-        "SELECT {MESSAGE_COLUMNS} FROM messages q \
-         WHERE kind IN ('question', 'escalation') \
-         AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.in_reply_to = q.id) \
-         ORDER BY id DESC LIMIT ?1"
-    ))?;
-    let mut newest: Vec<Message> = statement
-        .query_map(params![QUESTIONS_MAX], crate::sqlite::message_from)?
-        .collect::<rusqlite::Result<_>>()?;
-    newest.reverse();
-    Ok(newest)
-}
-
 fn unread(conn: &Connection, branch: &str) -> rusqlite::Result<Vec<Message>> {
     let mut statement = conn.prepare(&format!(
         "SELECT {MESSAGE_COLUMNS} FROM messages \
@@ -277,7 +284,7 @@ fn unread(conn: &Connection, branch: &str) -> rusqlite::Result<Vec<Message>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Yard;
+    use crate::{BranchStatus, Yard};
 
     fn repository() -> tempfile::TempDir {
         let dir = tempfile::Builder::new()
@@ -355,6 +362,81 @@ mod tests {
         );
         assert!(parts.asking.is_empty());
         assert_eq!(parts.counts(), Counts::default());
+    }
+
+    fn info(name: &str, status: BranchStatus, parent: Option<&str>) -> BranchInfo {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "git_branch": format!("by/{name}"), "worktree": "/w", "prompt": "p",
+            "harness": "fake", "profile": "p", "base": "main", "status": status, "turns": 1,
+            "created_at": 0, "parent": parent, "depth": u32::from(parent.is_some())
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn every_branch_is_staged_and_counted_by_its_stage() {
+        let parked = BranchInfo {
+            awaiting: Some(crate::Awaiting {
+                kind: crate::AwaitingKind::Approval,
+                id: "ask-1".into(),
+                about: "tool write marker".into(),
+                since_ms: 1,
+            }),
+            ..info("parked", BranchStatus::Running, None)
+        };
+        let silent = BranchInfo {
+            stalled: true,
+            ..info("silent", BranchStatus::Running, None)
+        };
+        let branches = vec![
+            parked,
+            silent,
+            info("lead", BranchStatus::Running, None),
+            info("kid", BranchStatus::Ready, Some("lead")),
+            info("asker", BranchStatus::Running, Some("lead")),
+            info("ended", BranchStatus::Ready, None),
+            info("plan", BranchStatus::AwaitingPlanApproval, None),
+            info("parks", BranchStatus::WaitingOnChildren, None),
+            info("idle", BranchStatus::NoChanges, None),
+        ];
+        let questions = vec![
+            message(1, "asker", MessageKind::Question, None),
+            message(2, "ended", MessageKind::Question, None),
+        ];
+        let glance = Glance::from_parts(PathBuf::new(), branches, questions, Vec::new());
+        let reasons: Vec<(&str, Reason)> = glance
+            .branches
+            .iter()
+            .map(|b| (b.name.as_str(), b.stage.unwrap().reason))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                ("parked", Reason::Approval),
+                ("silent", Reason::Stalled),
+                ("lead", Reason::Running),
+                ("kid", Reason::Parent),
+                ("asker", Reason::Question),
+                ("ended", Reason::Ready),
+                ("plan", Reason::AwaitingPlanApproval),
+                ("parks", Reason::WaitingOnChildren),
+                ("idle", Reason::NoChanges),
+            ]
+        );
+        let asking: Vec<u64> = glance.asking.iter().map(|m| m.id).collect();
+        assert_eq!(asking, [1]);
+        assert_eq!(
+            glance.counts(),
+            Counts {
+                running: 3,
+                waiting: 0,
+                asking: 2,
+                blocked: 1,
+                stalled: 1,
+                ready: 1,
+                failed: 0,
+            }
+        );
     }
 
     #[test]
