@@ -442,6 +442,24 @@ const STEPS: &[(&str, &str)] = &[
         "CREATE INDEX IF NOT EXISTS by_approval_asks_pending ON by_approval_asks \
          (repo, answered, created_ms)",
     ),
+    (
+        "by_timers",
+        "CREATE TABLE IF NOT EXISTS by_timers (
+            repo TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            key TEXT NOT NULL,
+            due_ms BIGINT NOT NULL,
+            revision BIGINT NOT NULL,
+            attempts BIGINT NOT NULL,
+            claimed_until_ms BIGINT,
+            payload TEXT NOT NULL,
+            PRIMARY KEY (repo, kind, key)
+        )",
+    ),
+    (
+        "by_timers_due",
+        "CREATE INDEX IF NOT EXISTS by_timers_due ON by_timers (repo, kind, due_ms)",
+    ),
 ];
 
 fn steer_row(r: &Row) -> Result<SteerRow, Error> {
@@ -551,6 +569,18 @@ impl From<crate::store_codec::CodecError> for Fail {
 }
 
 type R<T> = Result<T, Fail>;
+
+/// The database's clock, in milliseconds since the Unix epoch. Lease
+/// expiry is written and judged by it, so engines on several hosts agree
+/// without synchronized clocks. `clock_timestamp()`, not `now()`: a
+/// transaction retried after a serialization failure reads the time again.
+const CLOCK_SQL: &str = "SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint";
+
+/// [`CLOCK_SQL`] within `tx`.
+fn tx_clock(tx: &mut Transaction<'_>) -> R<u64> {
+    let row = tx.query_one(CLOCK_SQL, &[]).map_err(db("clock"))?;
+    Ok(from_db("clock_ms", row.get(0))?)
+}
 
 /// A database error in `context`, retried when it is a serialization
 /// failure or a deadlock.
@@ -1122,7 +1152,7 @@ impl Postgres {
             }
         }
         let generation = current.map_or(1, |row| row.generation + 1);
-        let now = now_ms();
+        let now = tx_clock(tx)?;
         tx.execute(
             "INSERT INTO by_leases (repo, branch, incarnation, generation, turn, owner, host, \
              pid, pid_start, acquired_ms, expires_ms, deadline_ms) \
@@ -1484,12 +1514,13 @@ impl Backend for Postgres {
     fn renew(&self, fence: &Fence, ttl: Duration) -> Result<(), Error> {
         self.tx(true, |tx| {
             self.check(tx, fence)?;
+            let now = tx_clock(tx)?;
             tx.execute(
                 "UPDATE by_leases SET expires_ms = $3 WHERE repo = $1 AND branch = $2",
                 &[
                     &self.repo,
                     &fence.branch,
-                    &to_db("expires_ms", deadline(now_ms(), ttl))?,
+                    &to_db("expires_ms", deadline(now, ttl))?,
                 ],
             )
             .map_err(db("renew"))?;
@@ -1525,6 +1556,11 @@ impl Backend for Postgres {
         }
     }
 
+    fn clock_ms(&self) -> Result<u64, Error> {
+        let row = self.query(|client| client.query_one(CLOCK_SQL, &[]))?;
+        Ok(from_db("clock_ms", row.get(0))?)
+    }
+
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
         let rows = self.query(|c| {
             c.query(
@@ -1544,7 +1580,7 @@ impl Backend for Postgres {
         ttl: Duration,
     ) -> Result<Option<Fence>, Error> {
         self.tx(true, |tx| {
-            let now = now_ms();
+            let now = tx_clock(tx)?;
             let changed = tx
                 .execute(
                     "UPDATE by_leases SET generation = generation + 1, owner = $4, host = $5, \
@@ -3094,7 +3130,7 @@ impl StorageBackend for Postgres {
             self.check(tx, fence)?;
             let row = tx.query_one("SELECT turn, expires_ms FROM by_leases WHERE repo = $1 AND branch = $2", &[&self.repo, &fence.branch])
                 .map_err(db("capture lease"))?;
-            if from_db("expires_ms", row.get(1))? <= now_ms() {
+            if from_db("expires_ms", row.get(1))? <= tx_clock(tx)? {
                 return Err(fenced(fence, "expired before capture").into());
             }
             let cancelled: bool = tx.query_one("SELECT EXISTS(SELECT 1 FROM by_cancels WHERE incarnation = $1 AND turn = $2)",
@@ -3573,6 +3609,177 @@ impl crate::models::UsageBackend for Postgres {
             )
         })?;
         rows.iter().map(usage_row).collect()
+    }
+}
+
+/// The columns [`pg_timer`] reads, in order.
+const PG_TIMER_COLUMNS: &str = "kind, key, due_ms, revision, attempts, claimed_until_ms, payload";
+
+fn pg_timer(r: &postgres::Row) -> Result<crate::timers::Timer, Error> {
+    Ok(crate::timers::Timer {
+        kind: r.get(0),
+        key: r.get(1),
+        due_ms: from_db("due_ms", r.get(2))?,
+        revision: from_db("revision", r.get(3))?,
+        attempts: from_db_u32("attempts", r.get(4))?,
+        claimed_until_ms: from_db_opt("claimed_until_ms", r.get(5))?,
+        payload: decode("timer payload", &r.get::<_, String>(6))?,
+    })
+}
+
+impl Postgres {
+    /// `(kind, key)`'s timer within `tx`, locked for the transaction.
+    fn timer_for_update(
+        &self,
+        tx: &mut Transaction<'_>,
+        kind: &str,
+        key: &str,
+    ) -> R<Option<crate::timers::Timer>> {
+        let row = tx
+            .query_opt(
+                &format!(
+                    "SELECT {PG_TIMER_COLUMNS} FROM by_timers \
+                     WHERE repo = $1 AND kind = $2 AND key = $3 FOR UPDATE"
+                ),
+                &[&self.repo, &kind, &key],
+            )
+            .map_err(db("timer"))?;
+        Ok(row.map(|r| pg_timer(&r)).transpose()?)
+    }
+
+    /// Claim `timer` within `tx` until `until_ms`: one more attempt.
+    fn claim_timer_row(
+        &self,
+        tx: &mut Transaction<'_>,
+        mut timer: crate::timers::Timer,
+        until_ms: u64,
+    ) -> R<crate::timers::Timer> {
+        timer.attempts = timer.attempts.saturating_add(1);
+        timer.claimed_until_ms = Some(until_ms);
+        tx.execute(
+            "UPDATE by_timers SET attempts = $4, claimed_until_ms = $5 \
+             WHERE repo = $1 AND kind = $2 AND key = $3",
+            &[
+                &self.repo,
+                &timer.kind,
+                &timer.key,
+                &to_db("attempts", u64::from(timer.attempts))?,
+                &to_db("claimed_until_ms", until_ms)?,
+            ],
+        )
+        .map_err(db("timer"))?;
+        Ok(timer)
+    }
+}
+
+impl crate::timers::TimerBackend for Postgres {
+    fn set_timer(&self, kind: &str, key: &str, due_ms: u64, payload: &Value) -> Result<u64, Error> {
+        let text = encode("timer payload", payload)?;
+        let due = to_db("due_ms", due_ms)?;
+        self.tx(true, |tx| {
+            let revision = match self.timer_for_update(tx, kind, key)? {
+                Some(timer) => timer.revision.saturating_add(1),
+                None => 1,
+            };
+            tx.execute(
+                "INSERT INTO by_timers \
+                 (repo, kind, key, due_ms, revision, attempts, claimed_until_ms, payload) \
+                 VALUES ($1, $2, $3, $4, $5, 0, NULL, $6) \
+                 ON CONFLICT (repo, kind, key) DO UPDATE SET due_ms = $4, revision = $5, \
+                 claimed_until_ms = NULL, payload = $6",
+                &[
+                    &self.repo,
+                    &kind,
+                    &key,
+                    &due,
+                    &to_db("revision", revision)?,
+                    &text,
+                ],
+            )
+            .map_err(db("timer"))?;
+            Ok(revision)
+        })
+    }
+
+    fn claim_timer(
+        &self,
+        kind: &str,
+        key: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<Option<crate::timers::Timer>, Error> {
+        let until = now_ms.saturating_add(lease_ms);
+        self.tx(true, |tx| match self.timer_for_update(tx, kind, key)? {
+            Some(timer) if timer.claimable(now_ms) => {
+                self.claim_timer_row(tx, timer, until).map(Some)
+            }
+            Some(_) => Ok(None),
+            None => {
+                tx.execute(
+                    "INSERT INTO by_timers \
+                     (repo, kind, key, due_ms, revision, attempts, claimed_until_ms, payload) \
+                     VALUES ($1, $2, $3, $4, 1, 1, $5, 'null')",
+                    &[
+                        &self.repo,
+                        &kind,
+                        &key,
+                        &to_db("due_ms", now_ms)?,
+                        &to_db("claimed_until_ms", until)?,
+                    ],
+                )
+                .map_err(db("timer"))?;
+                Ok(Some(crate::timers::Timer {
+                    kind: kind.to_owned(),
+                    key: key.to_owned(),
+                    due_ms: now_ms,
+                    revision: 1,
+                    attempts: 1,
+                    claimed_until_ms: Some(until),
+                    payload: Value::Null,
+                }))
+            }
+        })
+    }
+
+    fn finish_timer(&self, kind: &str, key: &str, revision: u64) -> Result<bool, Error> {
+        let revision = to_db("revision", revision)?;
+        self.tx(true, |tx| {
+            let deleted = tx
+                .execute(
+                    "DELETE FROM by_timers WHERE repo = $1 AND kind = $2 AND key = $3 \
+                     AND revision = $4",
+                    &[&self.repo, &kind, &key, &revision],
+                )
+                .map_err(db("timer"))?;
+            Ok(deleted == 1)
+        })
+    }
+
+    fn timer(&self, kind: &str, key: &str) -> Result<Option<crate::timers::Timer>, Error> {
+        let row = self.query(|client| {
+            client.query_opt(
+                &format!(
+                    "SELECT {PG_TIMER_COLUMNS} FROM by_timers \
+                     WHERE repo = $1 AND kind = $2 AND key = $3"
+                ),
+                &[&self.repo, &kind, &key],
+            )
+        })?;
+        row.map(|r| pg_timer(&r)).transpose()
+    }
+
+    fn timers(&self, kind: Option<&str>) -> Result<Vec<crate::timers::Timer>, Error> {
+        let rows = self.query(|client| {
+            client.query(
+                &format!(
+                    "SELECT {PG_TIMER_COLUMNS} FROM by_timers \
+                     WHERE repo = $1 AND ($2::text IS NULL OR kind = $2) \
+                     ORDER BY due_ms, kind, key"
+                ),
+                &[&self.repo, &kind],
+            )
+        })?;
+        rows.iter().map(pg_timer).collect()
     }
 }
 

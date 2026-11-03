@@ -279,11 +279,43 @@ pub struct EffectEntry {
     /// The idempotency key the gateway sent upstream, when it sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream_key: Option<String>,
+    /// The decision the call carries out, as the harness named it
+    /// (`_meta.decision_key`, or the `X-Branchyard-Decision-Key` header).
+    /// The key sent upstream is then [`EffectEntry::key`], the same for
+    /// every call of that decision in the task, so a repeat in a later
+    /// turn reaches the upstream with the key it already saw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_key: Option<String>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
 
+/// The idempotency key every call of `decision` in `task` sends upstream
+/// for `connector`'s `operation`: the same across turns and attempts, so
+/// the upstream recognises a repeat; scoped by task and operation, so two
+/// tasks or two operations that reuse a decision's name never collide.
+pub fn decision_upstream_key(
+    task: &str,
+    connector: &str,
+    operation: &str,
+    decision: &str,
+) -> String {
+    let hash = blake3::hash(format!("{task}\0{connector}\0{operation}\0{decision}").as_bytes());
+    format!("bydk-{}", &hash.to_hex()[..32])
+}
+
 impl EffectEntry {
+    /// The idempotency key its call sends upstream: its decision's key
+    /// when it names one ([`decision_upstream_key`]), else its own id.
+    pub fn key(&self) -> String {
+        match &self.decision_key {
+            Some(decision) => {
+                decision_upstream_key(&self.task, &self.connector, &self.operation, decision)
+            }
+            None => self.id.clone(),
+        }
+    }
+
     /// `slack: chat_post`, for people.
     pub fn title(&self) -> String {
         format!("{}: {}", self.connector, self.operation)

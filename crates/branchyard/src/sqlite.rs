@@ -314,6 +314,17 @@ CREATE TABLE IF NOT EXISTS approval_asks (
     ask TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS approval_asks_pending ON approval_asks (answered, created_ms);
+CREATE TABLE IF NOT EXISTS timers (
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    due_ms INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    attempts INTEGER NOT NULL,
+    claimed_until_ms INTEGER,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (kind, key)
+);
+CREATE INDEX IF NOT EXISTS timers_due ON timers (kind, due_ms);
 ";
 
 #[derive(Debug)]
@@ -1256,6 +1267,10 @@ impl Backend for Sqlite {
             .map_err(|e| db("release", e))?;
             Ok(())
         })
+    }
+
+    fn clock_ms(&self) -> Result<u64, Error> {
+        Ok(now_ms())
     }
 
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
@@ -3401,6 +3416,179 @@ impl crate::effects::EffectBackend for Sqlite {
                 .map_err(e)?;
             let texts = rows.collect::<Result<Vec<_>, _>>().map_err(e)?;
             texts.iter().map(|t| decode("approval", t)).collect()
+        })
+    }
+}
+
+/// A `timers` row as SQLite returns it, before conversion.
+type TimerRow = (String, String, i64, i64, i64, Option<i64>, String);
+
+/// The columns [`timer_row`] reads, in order.
+const TIMER_COLUMNS: &str = "kind, key, due_ms, revision, attempts, claimed_until_ms, payload";
+
+fn timer_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TimerRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+    ))
+}
+
+fn timer_from(
+    (kind, key, due, revision, attempts, until, payload): (
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        Option<i64>,
+        String,
+    ),
+) -> Result<crate::timers::Timer, Error> {
+    Ok(crate::timers::Timer {
+        kind,
+        key,
+        due_ms: from_db("due_ms", due)?,
+        revision: from_db("revision", revision)?,
+        attempts: from_db_u32("attempts", attempts)?,
+        claimed_until_ms: from_db_opt("claimed_until_ms", until)?,
+        payload: decode("timer payload", &payload)?,
+    })
+}
+
+/// `(kind, key)`'s timer within `tx`, if any.
+fn read_timer(
+    tx: &Transaction<'_>,
+    kind: &str,
+    key: &str,
+) -> Result<Option<crate::timers::Timer>, Error> {
+    tx.query_row(
+        &format!("SELECT {TIMER_COLUMNS} FROM timers WHERE kind = ?1 AND key = ?2"),
+        params![kind, key],
+        timer_row,
+    )
+    .optional()
+    .map_err(|e| db("timer", e))?
+    .map(timer_from)
+    .transpose()
+}
+
+/// Claim `timer` within `tx` until `until_ms`: one more attempt.
+fn claim_row(
+    tx: &Transaction<'_>,
+    mut timer: crate::timers::Timer,
+    until_ms: u64,
+) -> Result<crate::timers::Timer, Error> {
+    timer.attempts = timer.attempts.saturating_add(1);
+    timer.claimed_until_ms = Some(until_ms);
+    tx.execute(
+        "UPDATE timers SET attempts = ?3, claimed_until_ms = ?4 WHERE kind = ?1 AND key = ?2",
+        params![
+            timer.kind,
+            timer.key,
+            to_db("attempts", u64::from(timer.attempts))?,
+            to_db("claimed_until_ms", until_ms)?
+        ],
+    )
+    .map_err(|e| db("timer", e))?;
+    Ok(timer)
+}
+
+impl crate::timers::TimerBackend for Sqlite {
+    fn set_timer(&self, kind: &str, key: &str, due_ms: u64, payload: &Value) -> Result<u64, Error> {
+        let text = encode("timer payload", payload)?;
+        self.tx(true, |tx| {
+            let revision = match read_timer(tx, kind, key)? {
+                Some(timer) => timer.revision.saturating_add(1),
+                None => 1,
+            };
+            tx.execute(
+                "INSERT INTO timers (kind, key, due_ms, revision, attempts, claimed_until_ms, payload) \
+                 VALUES (?1, ?2, ?3, ?4, 0, NULL, ?5) \
+                 ON CONFLICT (kind, key) DO UPDATE SET due_ms = ?3, revision = ?4, \
+                 claimed_until_ms = NULL, payload = ?5",
+                params![kind, key, to_db("due_ms", due_ms)?, to_db("revision", revision)?, text],
+            )
+            .map_err(|e| db("timer", e))?;
+            Ok(revision)
+        })
+    }
+
+    fn claim_timer(
+        &self,
+        kind: &str,
+        key: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<Option<crate::timers::Timer>, Error> {
+        let until = now_ms.saturating_add(lease_ms);
+        self.tx(true, |tx| match read_timer(tx, kind, key)? {
+            Some(timer) if timer.claimable(now_ms) => claim_row(tx, timer, until).map(Some),
+            Some(_) => Ok(None),
+            None => {
+                tx.execute(
+                    "INSERT INTO timers (kind, key, due_ms, revision, attempts, claimed_until_ms, payload) \
+                     VALUES (?1, ?2, ?3, 1, 1, ?4, 'null')",
+                    params![kind, key, to_db("due_ms", now_ms)?, to_db("claimed_until_ms", until)?],
+                )
+                .map_err(|e| db("timer", e))?;
+                Ok(Some(crate::timers::Timer {
+                    kind: kind.to_owned(),
+                    key: key.to_owned(),
+                    due_ms: now_ms,
+                    revision: 1,
+                    attempts: 1,
+                    claimed_until_ms: Some(until),
+                    payload: Value::Null,
+                }))
+            }
+        })
+    }
+
+    fn finish_timer(&self, kind: &str, key: &str, revision: u64) -> Result<bool, Error> {
+        self.tx(true, |tx| {
+            let deleted = tx
+                .execute(
+                    "DELETE FROM timers WHERE kind = ?1 AND key = ?2 AND revision = ?3",
+                    params![kind, key, to_db("revision", revision)?],
+                )
+                .map_err(|e| db("timer", e))?;
+            Ok(deleted == 1)
+        })
+    }
+
+    fn timer(&self, kind: &str, key: &str) -> Result<Option<crate::timers::Timer>, Error> {
+        self.query(|conn| {
+            conn.query_row(
+                &format!("SELECT {TIMER_COLUMNS} FROM timers WHERE kind = ?1 AND key = ?2"),
+                params![kind, key],
+                timer_row,
+            )
+            .optional()
+            .map_err(|e| db("timer", e))?
+            .map(timer_from)
+            .transpose()
+        })
+    }
+
+    fn timers(&self, kind: Option<&str>) -> Result<Vec<crate::timers::Timer>, Error> {
+        self.query(|conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT {TIMER_COLUMNS} FROM timers WHERE ?1 IS NULL OR kind = ?1 \
+                     ORDER BY due_ms, kind, key"
+                ))
+                .map_err(|e| db("timers", e))?;
+            let rows = statement
+                .query_map(params![kind], timer_row)
+                .map_err(|e| db("timers", e))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| db("timers", e))?;
+            rows.into_iter().map(timer_from).collect()
         })
     }
 }

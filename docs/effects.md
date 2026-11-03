@@ -41,6 +41,16 @@ A turn whose engine stopped is never continued, so its next turn starts with the
 
 Stores: the server's operation store (SQLite, PostgreSQL) and, locally, the yard's store; the same conformance suite as every other backend. Entries are append-only events; the current state is a projection.
 
+## Decision keys
+
+A turn whose engine stopped is never continued; its next turn re-decides, and a call it makes again would be a new entry with a new key, which the upstream cannot match to the first. A call can name the decision it carries out instead: `_meta.decision_key` on the MCP `tools/call`, or the `X-Branchyard-Decision-Key` header on a REST call (at most 200 characters; the turn's instructions say so whenever it has connectors). Then:
+
+- **The key sent upstream** is the decision's, `bydk-` and a hash of the task, the connector, the operation and the name (`EffectEntry::key`): every call of that decision in the task sends the same one, whichever turn or attempt makes it, and its lookup asks by it. Without a decision key, the entry's id is the key, as before.
+- **A repeat is refused before it is sent.** If an earlier entry of the same task, operation and decision `confirmed`, is `begun` or `unknown`, or is `staged`, the call answers `decision_already_made` with what is known (`decision "invoice-7" was already sent in turn 1 of pay (effect 4ZC47TTQ), and its answer was lost: it may have happened. It was not sent again; by effects reconcile asks the upstream`). Nothing is written to the ledger and nothing reaches the gateway. After an entry `failed`, `undone` or `compensated`, the call is made again, under the same key, which the upstream deduplicates.
+- **Promoting a staged entry** sends its decision's key, so a draft and its promotion are one decision upstream too.
+
+What this does not do: an upstream that ignores idempotency keys still sees a second call if one is made; the refusal before the call is what prevents it here. And the key reaches the upstream only through the gateway, which passes the key it is given (`Idempotency-Key`, `_meta.idempotency_key`).
+
 ## Approvals
 
 Each tool, and each connector operation, resolves to `allow`, `ask`, `block` or `stage` from, in order: an administrator's locked policy (cannot be loosened below), the seat's or rig's policy, the person's policy, the preset. Defaults follow the class:
@@ -52,6 +62,7 @@ Each tool, and each connector operation, resolves to `allow`, `ask`, `block` or 
 | `compensable` | `ask` |
 | `irreversible` | `stage`: written as a draft and held until approved |
 | any deletion | always `ask`, whatever the policy says, unless an administrator's policy says otherwise |
+| `irreversible` that declares no lookup, when a policy allows it | `ask`, recorded with the layer `unsettleable`: if its answer were lost, nothing could tell whether it happened, so a policy alone never performs it. `stage`, `ask` and `block` stand; an administrator's policy, which only tightens, cannot loosen it either. Declaring a lookup in the operation's contract is what lets a policy allow it outright |
 
 An `ask` is a question in the person's inbox, answerable from `by watch`, the companion page, the server's API or a delegating parent; the turn waits, within its budget, and while it waits the branch says so: its record's `awaiting` names the ask, what it asks and since when (`by ls` shows `waiting for approval: …`), read from the pending asks whenever the branch is listed or looked up, and the server's `GET …/decisions` puts it first. Every answer is recorded on the ledger entry and in the task's history.
 

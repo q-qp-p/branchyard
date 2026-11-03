@@ -154,3 +154,10 @@ pub fn stored_record(root: &Path, name: &str) -> serde_json::Value {
         .unwrap();
     serde_json::from_str(&text).unwrap()
 }
+
+/// Panic unless every branch's record agrees with its event log
+/// (`Yard::drift`): what each test that drives a write path checks last.
+pub fn assert_no_drift(yard: &branchyard::Yard) {
+    let drift = yard.drift(None).unwrap();
+    assert!(drift.is_empty(), "records and logs disagree: {drift:?}");
+}

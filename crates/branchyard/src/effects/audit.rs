@@ -138,6 +138,7 @@ pub(crate) fn observe(yard: &Yard, branch: &str, at_ms: u64, line: &Value) {
         declared: false,
         detail: None,
         upstream_key: None,
+        decision_key: None,
         created_ms: at_ms,
         updated_ms: at_ms,
     };

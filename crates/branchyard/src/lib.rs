@@ -110,6 +110,7 @@ pub mod connectors;
 pub mod contract;
 mod delegation;
 pub mod doctor;
+mod drift;
 pub mod effects;
 mod egress;
 mod endpoint;
@@ -173,6 +174,7 @@ mod storage;
 pub mod store_codec;
 mod tarball;
 pub mod tasks;
+mod timers;
 pub mod up;
 mod wake;
 mod workspace;
@@ -226,6 +228,7 @@ pub use delegation::{
     Delegate, Delegated, DelegationPlan, Envelope, EventPage, Inbox, Inspection, Sent, Spawn,
     Spawned, Waited, BRIEF_ENTRY_MAX, BRIEF_MAX, DEFAULT_MAX_WAKES,
 };
+pub use drift::Drift;
 pub use egress::{EgressActivity, Enforcement as EgressEnforcement};
 pub use endpoint::SandboxHost;
 pub use environments::{
@@ -312,6 +315,7 @@ pub use snapshots::{
 pub use spotlight::{TryEntry, TryFile, TryState};
 use std::collections::{BTreeMap, HashMap};
 pub use storage::{ArtifactRef, ScratchArea, ScratchLock, DEFAULT_ARTIFACT_LIMIT};
+pub use timers::Timer;
 pub use workspace::{
     check_glob as check_workspace_glob, RanIn, WorkspaceInfo, WorkspacePhase, WorkspaceReport,
     WorkspaceSpec, ENV_PORT, ENV_WORKTREE, OUTPUT_TAIL as WORKSPACE_OUTPUT_TAIL,
@@ -721,7 +725,7 @@ impl Yard {
     /// integrated. Read from the ledger, the asks, the records and the
     /// leases; nothing is stored. See `docs/obligations.md`.
     pub fn obligations(&self, branch: Option<&str>) -> Result<Vec<Obligation>, Error> {
-        self.obligations_at(branch, branchyard_support::time::now_ms())
+        self.obligations_at(branch, self.store().backend().clock_ms()?)
     }
 
     /// [`Yard::obligations`] as of `now_ms`, for an undo window's deadline
@@ -734,13 +738,31 @@ impl Yard {
         obligations::list(&self.store(), branch, now_ms)
     }
 
+    /// Branches whose record disagrees with their event log: the status
+    /// the record holds against the last status the log recorded. Every
+    /// write that changes a status appends its event in the same
+    /// transaction, so this is empty unless a write path broke that rule.
+    /// `branch` checks one; `None` checks every branch. See
+    /// `docs/durability.md#the-record-and-the-log`.
+    pub fn drift(&self, branch: Option<&str>) -> Result<Vec<Drift>, Error> {
+        let store = self.store();
+        let records = match branch {
+            Some(name) => vec![store.read(name)?],
+            None => store.list()?,
+        };
+        let mut drifted = Vec::new();
+        for record in records {
+            let events = record::read(&store, &record.info.name)?;
+            drifted.extend(drift::check(&record, &events));
+        }
+        Ok(drifted)
+    }
+
     /// The liveness of each branch holding a lease, by branch.
     fn liveness(&self) -> Result<HashMap<String, Liveness>, Error> {
-        let leases = self.store().backend().leases()?;
-        Ok(liveness::by_branch(
-            &leases,
-            branchyard_support::time::now_ms(),
-        ))
+        let store = self.store();
+        let leases = store.backend().leases()?;
+        Ok(liveness::by_branch(&leases, store.backend().clock_ms()?))
     }
 
     /// The oldest pending ask of each branch that has one, by branch: what

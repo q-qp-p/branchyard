@@ -220,6 +220,7 @@ fn a_fork_at_a_checkpoint_has_its_files_and_a_summarized_fresh_session() {
         parent.fork_at(9, "x", f.options()),
         Err(Error::State(message)) if message.contains("no checkpoint 9")
     ));
+    common::assert_no_drift(&f.yard);
 }
 
 #[test]
@@ -312,6 +313,7 @@ fn a_rewind_goes_back_and_forward_resuming_the_session_only_where_it_ended() {
         all.iter().map(|(to, _)| *to).collect::<Vec<_>>(),
         [1, 3, 1, 0]
     );
+    common::assert_no_drift(&f.yard);
 }
 
 #[test]
@@ -464,6 +466,7 @@ fn a_rewind_cut_short_is_finished_by_recovery() {
             yard.branch(name).unwrap().checkpoints().unwrap().current,
             Some(1)
         );
+        common::assert_no_drift(&yard);
     }
 }
 

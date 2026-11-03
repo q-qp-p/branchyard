@@ -34,14 +34,13 @@ use crate::{
     placement, proc, Activity, BranchStatus, Error, Event, NativeSession, RecordedEvent, Recovery,
     Yard,
 };
-use branchyard_support::time::now_ms;
 
 /// Recover every branch that needs it. A branch that cannot be recovered
 /// does not stop the others; the first such error is returned after all
 /// were tried.
 pub(crate) fn all(yard: &Yard) -> Result<Vec<Recovery>, Error> {
     let store = yard.store();
-    let now = now_ms();
+    let now = store.backend().clock_ms()?;
     let mut recovered = Vec::new();
     let mut failed = None;
     let leases = store.backend().leases()?;
@@ -97,7 +96,7 @@ pub(crate) fn all(yard: &Yard) -> Result<Vec<Recovery>, Error> {
 /// can start from what is known.
 pub(crate) fn stale(yard: &Yard, name: &str) -> Result<(), Error> {
     let store = yard.store();
-    let now = now_ms();
+    let now = store.backend().clock_ms()?;
     for row in store.backend().leases()? {
         if row.branch == name {
             if let Some(why) = row.stale(now) {
@@ -116,7 +115,7 @@ pub(crate) fn settle(yard: &Yard, name: &str) -> Result<(), Error> {
     let leases = store.backend().leases()?;
     match leases.iter().find(|row| row.branch == name) {
         Some(row) => {
-            if let Some(why) = row.stale(now_ms()) {
+            if let Some(why) = row.stale(store.backend().clock_ms()?) {
                 lease(yard, row, &why)?;
             }
         }
@@ -215,9 +214,10 @@ fn lease(yard: &Yard, row: &LeaseRow, why: &str) -> Result<Option<Recovery>, Err
         .and_then(|s| s.intent.get("prompt")?.as_str().map(str::to_owned))
         .unwrap_or_else(|| record.info.prompt.clone());
     let cut_off = ended.is_none();
+    let clock = store.backend().clock_ms()?;
     let late = row
         .deadline_ms
-        .filter(|deadline| *deadline <= now_ms())
+        .filter(|deadline| *deadline <= clock)
         .map(|_| "; its max_duration deadline had passed")
         .unwrap_or_default();
     // A turn whose prompt was submitted and whose end is unknown.

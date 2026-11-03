@@ -435,6 +435,7 @@ pub(crate) fn execute(
                 _ => EffectClass::Reversible,
             }),
             deletion: false,
+            settleable: decl.lookup.is_some(),
         };
         if let Some(resolved) = resolve(&layers, &subject) {
             if resolved.approval == Approval::Block {

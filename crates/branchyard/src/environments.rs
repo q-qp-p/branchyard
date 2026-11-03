@@ -313,6 +313,29 @@ pub(crate) fn inputs(base: &Path, spec: &WorkspaceSpec) -> Vec<EnvironmentInput>
         .collect()
 }
 
+/// Which of `paths` are setup inputs of `spec`: the files its environment
+/// is keyed by (its `inputs` globs, or [`DEFAULT_INPUTS`]).
+pub(crate) fn input_paths(spec: &WorkspaceSpec, paths: &[String]) -> Vec<String> {
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let patterns: Vec<glob::Pattern> = match spec.inputs.is_empty() {
+        true => DEFAULT_INPUTS.iter().map(|p| p.to_string()).collect(),
+        false => spec.inputs.clone(),
+    }
+    .iter()
+    .filter(|p| crate::workspace::check_glob(p).is_ok())
+    .filter_map(|p| glob::Pattern::new(p).ok())
+    .collect();
+    paths
+        .iter()
+        .filter(|path| patterns.iter().any(|p| p.matches_with(path, options)))
+        .cloned()
+        .collect()
+}
+
 /// `(key, recipe)` of `spec` built at `place` from `inputs`.
 pub(crate) fn key(
     spec: &WorkspaceSpec,
@@ -1456,6 +1479,22 @@ pub(crate) fn new_use(key: &str, origin: EnvironmentOrigin) -> EnvironmentUse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_inputs_among_changed_paths_follow_the_specs_globs_or_the_defaults() {
+        let changed: Vec<String> = ["package-lock.json", "src/app.js", "web/package.json"]
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+        let defaults = WorkspaceSpec::default();
+        assert_eq!(input_paths(&defaults, &changed), ["package-lock.json"]);
+        let nested = WorkspaceSpec {
+            inputs: vec!["*/package.json".into()],
+            ..WorkspaceSpec::default()
+        };
+        assert_eq!(input_paths(&nested, &changed), ["web/package.json"]);
+        assert!(input_paths(&defaults, &["README.md".to_owned()]).is_empty());
+    }
 
     #[test]
     fn variables_change_the_recipe_only_when_present() {
