@@ -389,6 +389,67 @@ class Workflow(unittest.TestCase):
             job_text("postgres-lint"),
         )
 
+    def test_postgres_reclaims_space_before_cache_restore_and_preserves_build_inputs(self):
+        text = job_text("postgres")
+        name = "Reclaim space for the PostgreSQL build"
+        cleanup = re.search(rf"- name: {name}\n(?:        #.*\n)*        run: \|\n((?:          .*\n)+)", text)
+        self.assertIsNotNone(cleanup)
+        assert cleanup is not None
+        self.assertLess(text.index(name), text.index("uses: Swatinem/rust-cache@"))
+        script = "\n".join(line[10:] for line in cleanup.group(1).splitlines())
+        unused = (
+            "usr/share/dotnet",
+            "usr/local/lib/android",
+            "opt/ghc",
+            "usr/local/.ghcup",
+            "usr/share/swift",
+            "opt/hostedtoolcache/CodeQL",
+        )
+        retained = (
+            "var/lib/docker/volumes/postgres",
+            "home/runner/.cargo/registry",
+            "home/runner/.rustup/toolchains",
+            "home/runner/work/branchyard/branchyard/target",
+            "opt/hostedtoolcache/Python",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = root / "runner"
+            for path in (*unused, *retained):
+                directory = fixture / path
+                directory.mkdir(parents=True)
+                (directory / "keep").write_text("payload")
+            binaries = root / "bin"
+            binaries.mkdir()
+            fake = (
+                f"#!{sys.executable}\n"
+                "import os, pathlib, shutil, sys\n"
+                "name = pathlib.Path(sys.argv[0]).name\n"
+                "if name == 'sudo':\n"
+                "    assert sys.argv[1] == 'rm', sys.argv\n"
+                "    os.execvp(sys.argv[1], sys.argv[1:])\n"
+                "elif name == 'rm':\n"
+                "    assert sys.argv[1:3] == ['-rf', '--'], sys.argv\n"
+                "    for path in sys.argv[3:]:\n"
+                "        root = pathlib.Path(os.environ['RUNNER_FIXTURE'])\n"
+                "        target = (root / path.lstrip('/')).resolve()\n"
+                "        assert target.is_relative_to(root), target\n"
+                "        shutil.rmtree(target, ignore_errors=True)\n"
+            )
+            for command in ("sudo", "rm", "df"):
+                executable = binaries / command
+                executable.write_text(fake)
+                executable.chmod(0o755)
+            # No real command is on PATH; removals affect only the disposable fixture.
+            env = {"PATH": str(binaries), "RUNNER_FIXTURE": str(fixture)}
+            for _ in range(2):
+                done = subprocess.run(["/bin/bash", "-eu", "-c", script], env=env, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+            for path in unused:
+                self.assertFalse((fixture / path).exists(), path)
+            for path in retained:
+                self.assertEqual((fixture / path / "keep").read_text(), "payload", path)
+
     def test_the_coverage_shards_cover_every_test_and_are_joined_whole(self):
         # Each shard runs a slice of the workspace's tests; `coverage` holds the floors on their
         # reports joined end to end, and fails when any shard did not succeed.
