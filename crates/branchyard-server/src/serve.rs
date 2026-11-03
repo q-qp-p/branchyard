@@ -840,23 +840,23 @@ pub(crate) fn configure_yard(config: &Config, name: &str, yard: &Yard) -> Result
     let allowed = config.allow_providers.clone();
     yard.use_provider_admission(Arc::new(move |actual, options| {
         let Some(provider) = actual else { return Ok(()); };
-        match provider {
-            branchyard::Provider::Local => Ok(()),
-            branchyard::Provider::Container(_) | branchyard::Provider::AgentSandbox(_) => {
-                if options.provider.as_ref() == Some(provider) && allowed.contains(&provider.label()) {
+        match provider.harness_location() {
+            branchyard::HarnessLocation::Local => Ok(()),
+            branchyard::HarnessLocation::Image => {
+                if options.provider.as_ref() == Some(provider) && allowed.contains(provider.name()) {
                     Ok(())
                 } else {
                     Err(branchyard::Error::Denied("native execution requires the exact operator-resolved preset on this worker".into()))
                 }
             }
-            branchyard::Provider::Microsandbox(_) | branchyard::Provider::Substrate(_) => {
-                if allowed.contains(&provider.label()) {
+            branchyard::HarnessLocation::Microsandbox | branchyard::HarnessLocation::Substrate(_) => {
+                if allowed.contains(provider.name()) {
                     Ok(())
                 } else {
                     Err(branchyard::Error::Denied("this worker does not allow the branch's provider".into()))
                 }
             }
-            branchyard::Provider::Recipe(_) => Err(branchyard::Error::Denied("a server never runs environment recipes".into())),
+            branchyard::HarnessLocation::Recipe(_) => Err(branchyard::Error::Denied("a server never runs environment recipes".into())),
         }
     }));
     // Only an operator's configuration lets a repository's scripts run;

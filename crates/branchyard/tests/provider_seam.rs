@@ -35,14 +35,12 @@ const SEAM: &str = "crates/branchyard/src/providers/";
 /// - `branchyard-cli`: announcing the chosen provider (`commands/mod.rs`,
 ///   `remote.rs`), building it from flags (`commands/mod.rs`), and a local-only
 ///   check (`harness_cmd.rs`).
-/// - `branchyard-server`: admitting a requested provider against
-///   `allow_providers` (`api.rs`). These crates cannot reach the
-///   crate-private trait; they need a public accessor first.
+/// These remaining CLI sites use the closed enum directly; callers can
+/// use the public constructors and semantic accessors to lower this list.
 const RATCHET: &[(&str, usize)] = &[
     ("crates/branchyard-cli/src/commands/mod.rs", 4),
     ("crates/branchyard-cli/src/harness_cmd.rs", 1),
     ("crates/branchyard-cli/src/remote.rs", 1),
-    ("crates/branchyard-server/src/api.rs", 6),
 ];
 
 fn workspace() -> PathBuf {
@@ -118,7 +116,7 @@ fn only_the_providers_directory_names_the_variants() {
         if found > limit {
             problems.push(format!(
                 "{rel}: names a Provider variant {found} time(s), {limit} allowed. Add the \
-                 behaviour to `ProviderKind` and its four implementations in {SEAM} and call \
+                 behaviour to `ProviderKind` and its implementations in {SEAM} and call \
                  `provider.kind().method()` instead of matching (docs/providers.md, \
                  \"Adding a provider\")"
             ));

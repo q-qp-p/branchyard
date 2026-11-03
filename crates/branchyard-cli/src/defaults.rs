@@ -495,10 +495,10 @@ mod tests {
         };
         apply_task(&saved, &mut task, Scope::NewBranch).unwrap();
         assert!(task.container.is_none());
-        assert!(matches!(
-            crate::commands::provider(&task).unwrap(),
-            Some(branchyard::Provider::AgentSandbox(_))
-        ));
+        assert_eq!(
+            crate::commands::provider(&task).unwrap().unwrap().name(),
+            "agent_sandbox"
+        );
     }
 
     #[test]

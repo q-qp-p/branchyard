@@ -601,18 +601,14 @@ impl PresetHarness {
     }
 }
 
-/// A Substrate provider's options. Read through the provider's JSON form:
-/// only `crates/branchyard/src/providers/` names a `Provider` variant
-/// (`crates/branchyard/tests/provider_seam.rs`).
+/// A Substrate provider's options, exposed by its harness placement.
 pub(crate) fn substrate_options(
     provider: &branchyard::Provider,
 ) -> Option<branchyard::SubstrateOptions> {
-    if provider.label() != "substrate" {
-        return None;
+    match provider.harness_location() {
+        branchyard::HarnessLocation::Substrate(options) => Some(options.clone()),
+        _ => None,
     }
-    serde_json::to_value(provider)
-        .and_then(serde_json::from_value)
-        .ok()
 }
 
 /// `preset` with its Substrate paths resolved by `resolve`, keeping the
@@ -1380,31 +1376,28 @@ impl Config {
             if preset.label.trim().is_empty() {
                 return fail("label is empty".into());
             }
-            let kind = preset.provider.label();
-            if kind.starts_with("recipe") {
+            let kind = preset.provider.name();
+            if kind == "recipe" {
                 return fail(
                     "a server never runs environment recipes (docs/recipes.md); use local, \
                      substrate or microsandbox"
                         .into(),
                 );
             }
-            if kind != "local" && !self.allow_providers.contains(&kind) {
+            if kind != "local" && !self.allow_providers.contains(kind) {
                 return fail(format!(
                     "its provider {kind} is not in allow_providers; allow it with \
                      --allow-provider {kind}"
                 ));
             }
-            match &preset.provider {
-                branchyard::Provider::Container(options) => options.validate().map_err(|_| {
-                    format!("execution preset {id}: invalid container configuration")
-                })?,
-                branchyard::Provider::AgentSandbox(options) => {
-                    options.validate().map_err(|_| {
-                        format!("execution preset {id}: invalid Agent Sandbox configuration")
-                    })?
-                }
-                _ => {}
-            }
+            preset.provider.validate_options().map_err(|_| {
+                let name = if kind == "agent_sandbox" {
+                    "Agent Sandbox"
+                } else {
+                    kind
+                };
+                format!("execution preset {id}: invalid {name} configuration")
+            })?;
             if let Some(options) = substrate_options(&preset.provider) {
                 let paths = [
                     Some(&options.key),

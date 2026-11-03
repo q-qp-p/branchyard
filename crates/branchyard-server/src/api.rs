@@ -520,35 +520,32 @@ impl App {
         let Some(provider) = requested else {
             return Ok(None);
         };
-        let kind = match &provider {
-            Provider::Local => return Ok(Some(provider)),
-            Provider::Microsandbox(_) => "microsandbox",
-            Provider::Substrate(_) => "substrate",
-            Provider::Container(_) | Provider::AgentSandbox(_) => {
-                return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "preset_required",
-                    "this provider requires an operator execution preset; select one from GET /v1/execution-presets",
-                ));
-            }
-            // A recipe is the repository's own scripts, run as the person
-            // who trusted them on the machine that has the repository; a
-            // request carries its commands, which this server would run
-            // as itself. Refused whatever allow_providers says.
-            Provider::Recipe(options) => {
-                return Err(ApiError::new(
-                    StatusCode::FORBIDDEN,
-                    "provider_not_allowed",
-                    format!(
-                        "a server does not run environment recipes (recipe {}): a recipe runs \
-                         where the repository is, as the person who trusted it; run it with by \
-                         run --provider recipe:{} there, without --remote",
-                        options.name, options.name
-                    ),
-                )
-                .detail(serde_json::json!({ "provider": "recipe" })))
-            }
-        };
+        let kind = provider.name();
+        if Provider::is_local(Some(&provider)) {
+            return Ok(Some(provider));
+        }
+        if provider.is_native_image() {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "preset_required",
+                "this provider requires an operator execution preset; select one from GET /v1/execution-presets",
+            ));
+        }
+        // A request carries a recipe's commands, which the server would
+        // run as itself. Refuse them whatever allow_providers says.
+        if let branchyard::HarnessLocation::Recipe(options) = provider.harness_location() {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "provider_not_allowed",
+                format!(
+                    "a server does not run environment recipes (recipe {}): a recipe runs \
+                     where the repository is, as the person who trusted it; run it with by \
+                     run --provider recipe:{} there, without --remote",
+                    options.name, options.name
+                ),
+            )
+            .detail(serde_json::json!({ "provider": "recipe" })));
+        }
         if !self.config.allow_providers.contains(kind) {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
@@ -560,7 +557,7 @@ impl App {
             )
             .detail(serde_json::json!({ "provider": kind })));
         }
-        if let Provider::Substrate(options) = &provider {
+        if let branchyard::HarnessLocation::Substrate(options) = provider.harness_location() {
             if !options.key.is_absolute() {
                 return Err(ApiError::bad_request(format!(
                     "provider.key must be an absolute path on the server, not {}",
@@ -1709,8 +1706,7 @@ pub(crate) async fn admit_task(
     let mut requires = required_labels(&request.require_labels)?;
     // Steer a task that runs its harnesses by name, here, toward a worker
     // whose inventory says they can run (docs/harness-lifecycle.md).
-    let by_name = options.command.is_none()
-        && matches!(options.provider, None | Some(branchyard::Provider::Local));
+    let by_name = options.command.is_none() && Provider::is_local(options.provider.as_ref());
     if by_name {
         let named: Vec<String> = match request.harnesses.is_empty() {
             true => request.harness.iter().cloned().collect(),

@@ -8,13 +8,17 @@ use std::time::Duration;
 use branchyard_sandbox::SandboxProvider;
 use branchyard_substrate::SubstrateProvider;
 
-use super::ProviderKind;
+use super::{HarnessLocation, ProviderKind};
 use crate::placement::{pull_staged, said_back, staging, Placement, SandboxPlan};
 use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
 use crate::{Error, SubstrateOptions, Yard};
 
 impl ProviderKind for SubstrateOptions {
+    fn harness_location(&self) -> HarnessLocation<'_> {
+        HarnessLocation::Substrate(self)
+    }
+
     fn banner(&self, _isolated: bool, server: bool) -> (&'static str, String) {
         let what = match server {
             false => format!(

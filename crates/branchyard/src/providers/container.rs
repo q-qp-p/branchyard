@@ -5,13 +5,19 @@ use std::sync::Arc;
 use branchyard_sandbox::SandboxProvider;
 use serde_json::json;
 
-use super::{native, ProviderKind};
+use super::{native, HarnessLocation, ProviderKind};
 use crate::placement::{sandbox_name, Placement, SandboxPlan, HOME, WORKSPACE};
 use crate::snapshots::Lifecycle;
 use crate::state::{Fence, Record};
 use crate::{ContainerOptions, ContainerRuntime, Error, Yard};
 
 impl ProviderKind for ContainerOptions {
+    fn harness_location(&self) -> HarnessLocation<'_> {
+        HarnessLocation::Image
+    }
+    fn validate_options(&self) -> Result<(), Error> {
+        self.validate()
+    }
     fn name(&self) -> &'static str {
         "container"
     }

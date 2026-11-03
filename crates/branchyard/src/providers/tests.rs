@@ -232,7 +232,7 @@ fn each_variant_serializes_under_its_own_name() {
     let fixture = fixture();
     for (good, _) in samples(&fixture) {
         let value = serde_json::to_value(&good).unwrap();
-        assert_eq!(value["kind"], good.kind().name(), "{good:?}");
+        assert_eq!(value["kind"], good.name(), "{good:?}");
         let back: Provider = serde_json::from_value(value).unwrap();
         assert_eq!(back, good);
     }
@@ -240,6 +240,69 @@ fn each_variant_serializes_under_its_own_name() {
     assert_eq!(of(None).name(), "local");
     assert!(!of(None).sandboxed());
     assert!(!of(None).copies_worktree());
+}
+
+#[test]
+fn public_harness_locations_cover_the_inventory_and_borrow_the_selected_target() {
+    let fixture = fixture();
+    for (provider, _) in samples(&fixture) {
+        match (&provider, provider.harness_location()) {
+            (Provider::Local, HarnessLocation::Local)
+            | (Provider::Microsandbox(_), HarnessLocation::Microsandbox)
+            | (Provider::Container(_) | Provider::AgentSandbox(_), HarnessLocation::Image) => {}
+            (Provider::Substrate(expected), HarnessLocation::Substrate(actual)) => {
+                assert!(std::ptr::eq(expected, actual));
+            }
+            (Provider::Recipe(expected), HarnessLocation::Recipe(actual)) => {
+                assert!(std::ptr::eq(expected, actual));
+            }
+            (_, location) => panic!(
+                "{} has the wrong harness location: {location:?}",
+                provider.name()
+            ),
+        }
+        assert_eq!(
+            provider.is_native_image(),
+            matches!(provider.harness_location(), HarnessLocation::Image),
+            "{}",
+            provider.name()
+        );
+    }
+}
+
+#[test]
+fn public_option_validation_checks_native_specs_without_opening_a_runtime() {
+    let fixture = fixture();
+    for (good, bad) in samples(&fixture) {
+        assert!(good.validate_options().is_ok(), "{}", good.name());
+        let native = matches!(&good, Provider::Container(_) | Provider::AgentSandbox(_));
+        assert_eq!(good.is_native_image(), native, "{}", good.name());
+        if native {
+            assert!(matches!(bad.validate_options(), Err(Error::Unsupported(_))));
+            for (field, value) in [
+                ("image", json!("example.test/runtime:unpinned")),
+                ("cpus", json!(0)),
+                ("memory_mib", json!(0)),
+                ("pass_env", json!(["KUBECONFIG"])),
+            ] {
+                let mut invalid = serde_json::to_value(&good).unwrap();
+                invalid[field] = value;
+                let invalid: Provider = serde_json::from_value(invalid).unwrap();
+                assert!(
+                    matches!(invalid.validate_options(), Err(Error::Unsupported(_))),
+                    "{} must reject invalid {field}",
+                    good.name()
+                );
+            }
+        } else {
+            // Legacy providers defer runtime-dependent checks to preparation.
+            assert!(bad.validate_options().is_ok(), "{}", bad.name());
+        }
+    }
+    assert!(
+        !fixture.yard.root().join(".branchyard/native").exists(),
+        "pure option validation created native state"
+    );
 }
 
 #[test]

@@ -309,14 +309,14 @@ enum Place {
 
 impl Place {
     fn of(provider: &branchyard::Provider) -> Place {
-        match provider {
-            branchyard::Provider::Local => Place::Local,
-            branchyard::Provider::Microsandbox(_) => Place::Microsandbox,
-            branchyard::Provider::Substrate(options) => Place::Substrate(Box::new(options.clone())),
-            branchyard::Provider::Container(_) | branchyard::Provider::AgentSandbox(_) => {
-                Place::NativeImage
+        match provider.harness_location() {
+            branchyard::HarnessLocation::Local => Place::Local,
+            branchyard::HarnessLocation::Microsandbox => Place::Microsandbox,
+            branchyard::HarnessLocation::Substrate(options) => {
+                Place::Substrate(Box::new(options.clone()))
             }
-            branchyard::Provider::Recipe(_) => Place::Recipe,
+            branchyard::HarnessLocation::Image => Place::NativeImage,
+            branchyard::HarnessLocation::Recipe(_) => Place::Recipe,
         }
     }
 
@@ -595,18 +595,17 @@ impl ResolvedPreset {
                 "the session provider differs from its execution preset",
             ));
         }
-        match &self.provider {
-            branchyard::Provider::Container(_) | branchyard::Provider::AgentSandbox(_) => {
-                if !app.config.allow_providers.contains(&self.provider.label()) {
-                    return Err(ApiError::new(
-                        StatusCode::FORBIDDEN,
-                        "provider_not_allowed",
-                        "this server no longer allows the preset's provider",
-                    ));
-                }
-                Ok(Some(self.provider.clone()))
+        if self.provider.is_native_image() {
+            if !app.config.allow_providers.contains(self.provider.name()) {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "provider_not_allowed",
+                    "this server no longer allows the preset's provider",
+                ));
             }
-            _ => app.provider(Some(self.provider.clone())),
+            Ok(Some(self.provider.clone()))
+        } else {
+            app.provider(Some(self.provider.clone()))
         }
     }
 }

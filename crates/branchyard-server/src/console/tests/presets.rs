@@ -302,7 +302,7 @@ async fn native_targets_require_the_server_resolved_preset() {
                 .code,
             "preset_required"
         );
-        request.provider = Some(branchyard::Provider::Local);
+        request.provider = Some(serde_json::from_value(json!({"kind":"local"})).unwrap());
         assert_eq!(
             crate::work::preset_task_options(&case.fixture.app, &repo, &request, &resolved)
                 .err()

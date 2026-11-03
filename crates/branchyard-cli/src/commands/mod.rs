@@ -608,10 +608,10 @@ pub(crate) fn provision(task: &TaskArgs) -> Result<Option<branchyard::Provisioni
 /// the recipe here and is refused unless it may run.
 pub(crate) fn provider(task: &TaskArgs) -> Result<Option<Provider>, Failure> {
     if let Some(container) = &task.container {
-        return Ok(Some(Provider::Container(container.clone())));
+        return Ok(Some(Provider::container(container.clone())));
     }
     if let Some(agent_sandbox) = &task.agent_sandbox {
-        return Ok(Some(Provider::AgentSandbox(agent_sandbox.clone())));
+        return Ok(Some(Provider::agent_sandbox(agent_sandbox.clone())));
     }
     if let Some(recipe) = &task.recipe {
         return crate::recipe_cmd::provider(recipe).map(|o| Some(Provider::Recipe(o)));

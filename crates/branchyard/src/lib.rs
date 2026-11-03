@@ -208,6 +208,7 @@ pub use native_options::{
 pub use pg::postgres_config;
 pub use placement::{HOME as SANDBOX_HOME, WORKSPACE as SANDBOX_WORKSPACE};
 pub use provider_admission::ProviderAdmission;
+pub use providers::HarnessLocation;
 
 pub use access::{AccessActivity, Ceiling, DelegationScope, NetworkScope};
 pub use adopt::{AdoptSpec, Adoption};
