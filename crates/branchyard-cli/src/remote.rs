@@ -1818,6 +1818,7 @@ mod tests {
             created_at: 10_000,
             stalled: false,
             awaiting: None,
+            liveness: None,
             superseded_by: None,
             model: None,
             provider: provider.into(),

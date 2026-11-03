@@ -31,6 +31,13 @@ Examples:
 
 See docs/effects.md.";
 
+pub(crate) const OBLIGATIONS_EXAMPLES: &str = "\
+Examples:
+  by obligations
+  by obligations lead --json
+
+See docs/obligations.md.";
+
 pub(crate) const UNDO_EXAMPLES: &str = "\
 Examples:
   by undo board-update --to 3 --plan

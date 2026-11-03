@@ -20926,6 +20926,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -21227,6 +21238,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -22816,6 +22881,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -23117,6 +23193,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -24737,6 +24867,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -25038,6 +25179,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -29181,6 +29376,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -29482,6 +29688,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -43744,6 +44004,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -44045,6 +44316,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -44495,6 +44820,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -44796,6 +45132,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -46875,6 +47265,17 @@
           ],
           "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
         },
+        "liveness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Liveness"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+        },
         "superseded_by": {
           "type": [
             "string",
@@ -47178,6 +47579,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
@@ -48401,6 +48856,17 @@
               ],
               "description": "What the running turn is parked on, waiting for a person: the\noldest approval ask it has open (`docs/effects.md#approvals`).\nRead from the pending asks when the record is listed or looked up,\nnever stored, so it is exact: `None` the moment the ask is\nanswered, and `None` whenever the branch is not running. A parked\nturn is never stalled; it moves only when someone answers."
             },
+            "liveness": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Liveness"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Whether a running turn's engine is still heard from: `live`,\n`unknown` once its lease renewals stopped, `lost` once the lease no\nlonger protects it and recovery will end the turn. Read from the\nbranch's lease when the record is listed or looked up, never stored;\n`None` whenever the branch is not running. See\n`docs/durability.md#liveness`."
+            },
             "superseded_by": {
               "type": [
                 "string",
@@ -48702,6 +49168,60 @@
             }
           ],
           "description": "The kinds of answer a parked turn waits for."
+        },
+        "Liveness": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/LivenessState",
+              "description": "What is known."
+            },
+            "heard_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the engine last renewed the lease, milliseconds since the Unix\nepoch."
+            },
+            "known_until_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Until when the lease protects the turn without another renewal,\nmilliseconds since the Unix epoch: past it, the turn is `lost`."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the turn is `lost`, when it is."
+            }
+          },
+          "required": [
+            "state",
+            "heard_ms",
+            "known_until_ms"
+          ],
+          "description": "A running branch's liveness, read from its lease when the branch is\nlisted or looked up; never stored."
+        },
+        "LivenessState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "live",
+              "description": "The engine renewed the lease within the last two heartbeats."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "No renewal for longer than two heartbeats, and the lease has not\nexpired: the engine may be busy, paused or gone. Nothing acts on it\nuntil the lease expires."
+            },
+            {
+              "type": "string",
+              "const": "lost",
+              "description": "The lease no longer protects a live engine: it expired, or its\nengine's process is gone from this host. The next recovery ends the\nturn `interrupted`."
+            }
+          ],
+          "description": "What is known about a running turn's engine; see the module docs."
         },
         "Guard": {
           "oneOf": [
