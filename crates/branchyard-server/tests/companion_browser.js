@@ -321,11 +321,15 @@ const shots = process.env.BY_SCREENSHOTS;
   // sentence, not a held allow); nothing is left to undo.
   await nextLine();
   await page.waitForFunction(() => document.title === '(1) Branchyard', null, { timeout: 60000 });
+  await page.waitForFunction(() => {
+    const first = document.querySelector('#main .bay-item');
+    return first && first.dataset.decision.startsWith('question:kid:');
+  }, null, { timeout: 60000 });
   const bayFirst = page.locator('#main .bay-item').first();
   await bayFirst.waitFor({ timeout: 60000 });
   if (!(await bayFirst.getAttribute('data-decision') || '').startsWith('question:kid:')) throw new Error(`the bay does not list the question first: ${await bayFirst.innerText()}`);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  const question = page.locator('#main .deck-card');
+  const question = page.locator('#main .deck-card.deck-question');
   await question.waitFor({ timeout: 60000 });
   if (!(await question.evaluate((el) => el.classList.contains('deck-question')))) throw new Error(`the first card is not the question: ${await question.innerText()}`);
   if (await page.locator('#main .deck-card').count() !== 1) throw new Error('the deck shows more than one card');
