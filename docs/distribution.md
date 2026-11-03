@@ -221,7 +221,10 @@ return their exit status, and repeating the same command can finish a partial
 installation.
 
 The release publishes dist's `sha256.sum` and an additional `SHA256SUMS` for the
-entrypoint assets and built archives. Build provenance is attached to the
+entrypoint assets, built archives and shipped JSON metadata. Per-job
+`*-dist-manifest.json` reports are excluded because publication removes them;
+the full `dist-manifest.json` and runtime manifests and provenance stay covered.
+Build provenance is attached to the
 platform artifacts. For a manual check, use `gh attestation verify` with the
 archive and `--repo vamsiramakrishnan/branchyard`.
 

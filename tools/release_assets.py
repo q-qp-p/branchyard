@@ -20,7 +20,9 @@ def build_assets(artifacts: Path, output: Path) -> list[Path]:
     inputs = {
         path.name: path
         for path in artifacts.iterdir()
-        if path.is_file() and path.name.endswith((".tar.gz", "-installer.sh", ".json", ".zip", ".whl"))
+        if path.is_file()
+        and path.name.endswith((".tar.gz", "-installer.sh", ".json", ".zip", ".whl"))
+        and not path.name.endswith("-dist-manifest.json")
     }
     inputs[bootstrap.name] = bootstrap
     sums = output / "SHA256SUMS"
