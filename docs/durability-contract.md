@@ -41,7 +41,7 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 | O2 | A takeover writes a new generation; exactly one contender wins | `take_over` updates only the observed generation |
 | O3 | A fenced-out owner writes nothing more and stops its work | `Error::Fenced`; the heartbeat notices within one beat |
 | O4 | Liveness is reported as known, unknown or lost, with when the owner was last heard and until when the lease holds; a reader is never told `running` without it | `BranchInfo::liveness`; [liveness](durability.md#liveness) |
-| O5 | *Planned.* A graceful stop seals: the owner ends at a boundary and releases with a checkpoint; only an unsealed owner is fenced and killed | design record, step 4 |
+| O5 | A graceful stop stops its turns before the process ends, through the durable cancel, so each ends with a known outcome rather than lost; only a turn that outlasts the grace period is left for recovery | the server's shutdown; [shutdown](durability.md#shutdown) |
 | O6 | Lease expiry is written and judged on one clock, the store's: on a shared database, the database's, so owners on several hosts need no synchronized clocks | `Backend::clock_ms`; [leases and fencing](durability.md#leases-and-fencing) |
 
 ## 4. Signals and time
@@ -79,6 +79,7 @@ Each is a scenario either implementation can run against its own store; the Bran
 | A call the gateway describes nothing about is irreversible, and, though a policy allows it, is asked about first | E4, E7 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |
 | A write after losing the lease is refused | O3 | `tests/durable.rs` `an_event_of_a_turn_that_lost_its_lease_is_refused` |
+| SIGTERM with a turn that never ends: the turn is stopped cleanly within the grace period, its operation finishes, its branch is `interrupted` by the shutdown with no recovery | O5 | `branchyard-server` `tests/signals.rs` `sigterm_stops_the_server_within_its_grace_period` |
 | A lease's expiry is the store's clock plus its time to live, on grant and on renewal | O6 | `conformance.rs` `clock`, both backends |
 | A held turn reads live from another owner; a dead owner's turn reads lost before recovery | O4 | `tests/durable.rs` (the two tests above); `liveness.rs` unit tests |
 | A timer claimed by one holder is not claimed by another until its lease lapses; a finish naming a stale revision deletes nothing | S3 | `conformance.rs` `timers`, both backends |

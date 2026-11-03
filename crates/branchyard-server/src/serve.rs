@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use branchyard_support::LockExt as _;
 use std::time::Duration;
 
 use branchyard::Yard;
@@ -31,6 +33,20 @@ use crate::webhook;
 const DRAIN: Duration = Duration::from_secs(10);
 /// The least time connections get to drain, even with no grace period.
 const MIN_DRAIN: Duration = Duration::from_secs(1);
+/// The least of the grace period kept for stopping turns cleanly: an
+/// interrupted turn still snapshots and checkpoints, which under load takes
+/// more than a moment.
+const MIN_STOP: Duration = Duration::from_secs(2);
+/// The most of the grace period kept for stopping turns cleanly.
+const MAX_STOP: Duration = Duration::from_secs(10);
+
+/// How much of `grace` is kept at its end for stopping the turns still
+/// running: a quarter, at least [`MIN_STOP`] and at most [`MAX_STOP`], and
+/// never more than the grace period itself (a short one stops them at
+/// once). Operations get the rest to finish on their own.
+fn stop_margin(grace: Duration) -> Duration {
+    (grace / 4).clamp(MIN_STOP, MAX_STOP).min(grace)
+}
 const TLS_HANDSHAKE: Duration = Duration::from_secs(10);
 
 /// A server that is accepting connections.
@@ -71,10 +87,14 @@ pub struct Running {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Stopped {
     /// Operations recorded as interrupted because they outlasted the grace
-    /// period.
+    /// period, even once their turns were asked to stop.
     pub interrupted: usize,
+    /// Operations whose turns were stopped for the shutdown near the end of
+    /// the grace period, and which then finished, their branches
+    /// `interrupted` with a known outcome.
+    pub stopped: usize,
     /// Operations that were running when the shutdown began and finished
-    /// within the grace period.
+    /// within the grace period on their own.
     pub finished: usize,
     /// Operations left in the queue for the next start, or for another
     /// server or worker on the same store: the queued ones, and those
@@ -86,13 +106,18 @@ impl Stopped {
     /// The one line a server logs once it has stopped: what happened to
     /// the operations it was running, and what waits for the next start.
     pub fn summary(&self) -> String {
-        let mut parts = match (self.finished, self.interrupted) {
-            (0, 0) => vec!["nothing was running".to_owned()],
-            (finished, 0) => vec![format!("{finished} finished within the grace period")],
-            (finished, interrupted) => vec![
-                format!("{finished} finished within the grace period"),
-                format!("{interrupted} recorded interrupted"),
-            ],
+        let mut parts = match (self.finished, self.stopped, self.interrupted) {
+            (0, 0, 0) => vec!["nothing was running".to_owned()],
+            (finished, stopped, interrupted) => {
+                let mut parts = vec![format!("{finished} finished within the grace period")];
+                if stopped > 0 {
+                    parts.push(format!("{stopped} stopped cleanly for the shutdown"));
+                }
+                if interrupted > 0 {
+                    parts.push(format!("{interrupted} recorded interrupted"));
+                }
+                parts
+            }
         };
         match self.queued {
             Some(0) => {}
@@ -208,7 +233,31 @@ impl Running {
         }
         let registry = self.registry.clone();
         let grace = self.grace;
-        let idle = tokio::task::spawn_blocking(move || registry.wait_running(grace));
+        // Operations get the grace period less a margin to finish on their
+        // own; then the turns still running are stopped through the
+        // durable cancel, and get the margin to conclude with a known
+        // outcome rather than die with the process.
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let idle = {
+            let asked = asked.clone();
+            tokio::task::spawn_blocking(move || {
+                let margin = stop_margin(grace);
+                if registry.wait_running(grace.saturating_sub(margin)) {
+                    return true;
+                }
+                // No grace period: nothing is waited for, nothing stopped.
+                if margin.is_zero() {
+                    return false;
+                }
+                let ids = registry.stop_running_turns();
+                tracing::info!(
+                    operations = ids.len(),
+                    "the grace period is ending: stopping running turns cleanly"
+                );
+                *asked.lock_recovering("asked") = ids;
+                registry.wait_running(margin)
+            })
+        };
         // A connection that has not finished its request by then (a
         // client that sent half its headers) is dropped with the process.
         let drained = tokio::time::timeout(grace.max(MIN_DRAIN), self.accept);
@@ -216,6 +265,11 @@ impl Running {
             _ = async { tokio::join!(idle, drained) } => {}
             _ = self.force.notified() => {}
         }
+        let asked = asked.lock_recovering("asked").clone();
+        let stopped = asked
+            .iter()
+            .filter(|id| !self.registry.runs_here(id))
+            .count();
         let registry = self.registry.clone();
         let interrupted = tokio::task::spawn_blocking(move || registry.close())
             .await
@@ -235,7 +289,8 @@ impl Running {
         }
         Stopped {
             interrupted,
-            finished: running.saturating_sub(interrupted),
+            stopped,
+            finished: running.saturating_sub(interrupted + stopped),
             queued,
         }
     }
@@ -1145,6 +1200,7 @@ mod shutdown_lines {
         );
         let stopped = Stopped {
             interrupted: 1,
+            stopped: 0,
             finished: 7,
             queued: Some(2),
         };
@@ -1155,12 +1211,25 @@ mod shutdown_lines {
         );
         let idle = Stopped {
             interrupted: 0,
+            stopped: 0,
             finished: 0,
             queued: Some(0),
         };
         assert_eq!(idle.summary(), "stopped: nothing was running");
+        let drained = Stopped {
+            interrupted: 0,
+            stopped: 1,
+            finished: 0,
+            queued: Some(1),
+        };
+        assert_eq!(
+            drained.summary(),
+            "stopped: 0 finished within the grace period; 1 stopped cleanly for the shutdown; 1 \
+             left in the queue for the next start, or another server on the database"
+        );
         let unread = Stopped {
             interrupted: 0,
+            stopped: 0,
             finished: 2,
             queued: None,
         };
@@ -1174,6 +1243,17 @@ mod shutdown_lines {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quarter_of_the_grace_period_from_two_to_ten_seconds_is_kept_for_stopping_turns() {
+        let secs = Duration::from_secs;
+        assert_eq!(stop_margin(secs(20)), secs(5));
+        assert_eq!(stop_margin(secs(60)), secs(10));
+        assert_eq!(stop_margin(secs(6)), secs(2));
+        // A short grace period stops turns at once.
+        assert_eq!(stop_margin(secs(1)), secs(1));
+        assert_eq!(stop_margin(Duration::ZERO), Duration::ZERO);
+    }
     use std::os::fd::AsFd;
     use std::os::unix::fs::PermissionsExt;
 

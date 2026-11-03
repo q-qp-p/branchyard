@@ -516,8 +516,8 @@ fn max_running_quota_is_reserved_and_released() {
 }
 
 /// `max_running` counts the tenant's queued and running operations in the
-/// operation store, so it holds across a restart: an operation interrupted
-/// at shutdown frees its slot, and one still queued keeps holding its own
+/// operation store, so it holds across a restart: an operation ended at
+/// shutdown frees its slot, and one still queued keeps holding its own
 /// until it finishes on the restarted server.
 #[test]
 fn max_running_quota_holds_across_a_restart_with_queued_operations() {
@@ -550,9 +550,17 @@ fn max_running_quota_holds_across_a_restart_with_queued_operations() {
     let server = Server::start(config);
     let client = server.client();
     let repo = client.repo("app");
-    assert_eq!(
-        client.operation(&first.id).unwrap().state,
-        OperationState::Interrupted
+    // The shutdown stops its turn at once (the grace period is shorter
+    // than the time kept for stopping turns): the operation finished with
+    // its turn stopped, or, had the turn not concluded within the 300 ms,
+    // was recorded interrupted. Either way it holds no slot now.
+    let ended = client.operation(&first.id).unwrap().state;
+    assert!(
+        matches!(
+            ended,
+            OperationState::Succeeded | OperationState::Interrupted
+        ),
+        "{ended:?}"
     );
     // The queued one survived the restart and runs now; it still counts.
     wait::until("h2 to start", || started(&client, "app", "h2"));
