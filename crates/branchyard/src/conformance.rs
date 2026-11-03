@@ -2265,6 +2265,7 @@ pub(crate) fn effects_backend(
         declared: false,
         detail: None,
         upstream_key: None,
+        decision_key: None,
         created_ms: at,
         updated_ms: at,
     };

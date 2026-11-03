@@ -31,7 +31,7 @@ staged ──promote──▶ begun ──answer──▶ confirmed ──▶ un
 | E3 | `unknown` is a state, not an error. An unknown call is settled by asking the upstream (a lookup by key or captured id), never by calling it again | `reconcile.rs`; an entry with no lookup stays `unknown` and is shown |
 | E4 | Every effect has a class (`reversible`, `compensable`, `irreversible`, `read`), declared by the operation, never guessed; one that declares nothing is `irreversible` | `EffectClass`; [effects](effects.md#effect-classes) |
 | E5 | An undo is recorded on the original entry, with its deadline | `Undo::deadline_ms` |
-| E6 | *Planned.* A key may name the decision rather than the call, so a repeat in a later turn reaches the upstream with the same key | design record, step 2 |
+| E6 | A call may name the decision it carries out; every call of it in the task sends the same key upstream, and one already made (confirmed, unknown or staged) is refused before it is sent | `EffectEntry::decision_key`, `EffectEntry::key`; [decision keys](effects.md#decision-keys) |
 | E7 | An irreversible operation whose fate nothing could settle (no lookup) is never performed on a policy's say-so alone: it is staged by default, and an `allow` becomes an `ask` | `Layer::Unsettleable` in `resolve`; [approvals](effects.md#approvals) |
 
 ## 3. Ownership
@@ -78,6 +78,7 @@ Each is a scenario either implementation can run against its own store; the Bran
 | A recorded step is used, not taken again | T4 | `tests/durable.rs` `a_recorded_snapshot_is_used_when_recovery_finishes_a_turn` |
 | A rewind across a changed lockfile runs setup again before the next turn; one that leaves the inputs alone does not | T5 | `tests/workspace.rs` `a_rewind_across_a_changed_lockfile_runs_setup_again_before_the_next_turn` |
 | A lost answer is unknown, never retried, and settled by the lookup | E1–E3 | `tests/effects.rs` `a_lost_answer_is_unknown_until_the_lookup_settles_it` |
+| A decision whose answer was lost is refused in the next turn; once settled it is still not made again; another decision gets a key of its own | E6 | `tests/effects.rs` `a_decision_is_keyed_upstream_alike_across_turns_and_not_made_twice` |
 | A call the gateway describes nothing about is irreversible, and, though a policy allows it, is asked about first | E4, E7 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |
 | A write after losing the lease is refused | O3 | `tests/durable.rs` `an_event_of_a_turn_that_lost_its_lease_is_refused` |

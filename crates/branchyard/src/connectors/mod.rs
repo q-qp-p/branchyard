@@ -546,7 +546,11 @@ pub(crate) fn prepare(
         ],
         instruction: format!(
             "Connectors ({}) are available through Branchyard's gateway: before using one, read {} \
-             and follow it; never ask for or use upstream credentials.{}",
+             and follow it; never ask for or use upstream credentials. When a call carries out a \
+             decision you might repeat after a restart (a payment, a message), name it: \
+             `_meta.decision_key` on the MCP call, or the `X-Branchyard-Decision-Key` header, \
+             such as `invoice-7-payment`; a repeat of a decision already made is refused with what \
+             is known.{}",
             names.join(", "),
             guest(&format!("{HOME_DIR}/INDEX.md")),
             match composed {

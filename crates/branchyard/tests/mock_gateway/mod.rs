@@ -725,6 +725,11 @@ args = sys.argv[1:]
 rest = args[:1] == ["--rest"]
 if rest:
     args = args[1:]
+decision = None
+if args[:1] == ["--decision"]:
+    decision, args = args[1], args[2:]
+    if rest:
+        headers["X-Branchyard-Decision-Key"] = decision
 tool, arguments = args[0], json.loads(args[1] if len(args) > 1 else "{}")
 if rest:
     base = url[:-len("/mcp")] if url.endswith("/mcp") else url
@@ -759,8 +764,11 @@ init, session = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params"
     "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}})
 rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
 try:
+    params = {"name": tool, "arguments": arguments}
+    if decision:
+        params["_meta"] = {"decision_key": decision}
     answer, _ = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                     "params": {"name": tool, "arguments": arguments}}, session)
+                     "params": params}, session)
 except Exception as e:
     print("call %s failed: %s" % (tool, e))
     sys.exit(0)
