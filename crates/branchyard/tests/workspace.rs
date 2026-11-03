@@ -245,6 +245,69 @@ fn setup_runs_before_the_first_turn_with_the_branch_variables() {
 }
 
 #[test]
+fn a_rewind_across_a_changed_lockfile_runs_setup_again_before_the_next_turn() {
+    let f = Fixture::new();
+    fs::write(f.root.join("package-lock.json"), "v1\n").unwrap();
+    f.git(&["add", "package-lock.json"]);
+    f.git(&["commit", "-q", "-m", "lockfile"]);
+    let spec = WorkspaceSpec {
+        setup: vec!["echo installed".into()],
+        ..WorkspaceSpec::default()
+    };
+    let setups = |branch: &branchyard::Branch| {
+        reports(&branch.events().unwrap())
+            .into_iter()
+            .filter(|r| r.phase == WorkspacePhase::Setup)
+            .count()
+    };
+    let rebuilds = |branch: &branchyard::Branch| -> Vec<String> {
+        branch
+            .events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.activity {
+                Activity::Warning(w) if w.contains("changed setup inputs") => Some(w),
+                _ => None,
+            })
+            .collect()
+    };
+    let branch = f
+        .yard
+        .task("WRITE a.txt=1")
+        .options(with(&f, spec))
+        .name("deps")
+        .run()
+        .unwrap();
+    assert_eq!(setups(&branch), 1);
+    // Turn 2 changes the lockfile; setup does not run again for it.
+    let branch = branch
+        .send("WRITE package-lock.json=v2", f.options())
+        .unwrap();
+    assert_eq!(setups(&branch), 1);
+
+    // Back to checkpoint 1: the code has v1 again, what setup installed
+    // was built from v2. Setup runs again before the next turn.
+    branch.rewind(1).unwrap();
+    let branch = f.yard.branch("deps").unwrap();
+    let said = rebuilds(&branch);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("(package-lock.json)"), "{}", said[0]);
+    assert!(said[0].contains("checkpoint 1"), "{}", said[0]);
+    let branch = branch.send("WHOAMI", f.options()).unwrap();
+    assert_eq!(setups(&branch), 2, "setup ran again");
+
+    // A rewind that leaves the inputs alone changes nothing about setup.
+    let branch = branch.send("WRITE b.txt=1", f.options()).unwrap();
+    let turns = branch.info().turns;
+    branch.rewind(turns - 1).unwrap();
+    let branch = f.yard.branch("deps").unwrap();
+    assert_eq!(rebuilds(&branch).len(), 1);
+    let branch = branch.send("WHOAMI", f.options()).unwrap();
+    assert_eq!(setups(&branch), 2);
+    common::assert_no_drift(&f.yard);
+}
+
+#[test]
 fn a_failing_setup_fails_the_branch_with_its_output_and_runs_no_turn() {
     let f = Fixture::new();
     let spec = WorkspaceSpec {

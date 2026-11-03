@@ -136,6 +136,8 @@ $ by workspace kill srv --yes               # SIGTERM to each listening process
 
 Copy and setup are one journaled step, `setup`, in the turn that runs them ([durable execution](durability.md#journaled-steps)): its intent (globs, commands, port, the spawn marker and host) is recorded before anything is copied, its outcome after. Every setup command is recorded as a process of the turn and carries the turn's `BRANCHYARD_SPAWN` marker. When an engine dies mid-setup, recovery kills the setup's process group and everything carrying its marker, records `… before the harness was started; the turn never ran; its workspace setup was cut short and runs again, from the start, before its next turn`, and ends the branch `interrupted`. It does not run setup itself. The branch's record still says its workspace is not ready, so its next turn (`by send`, which starts a fresh session because no prompt was ever submitted) runs copy and setup again before the prompt. Setup commands must therefore be idempotent, which install commands are. The alternative, failing the branch, would leave a person to recreate it for what is usually a killed terminal.
 
+A rewind across a change to the setup inputs (a lockfile, the toolchain file) marks setup to run again before the next turn, so what it installed matches the code it went back to ([rewind](checkpoints.md#rewind)).
+
 A removal is journaled already; a teardown cut short by a crash is not repeated by recovery, and repeating the removal runs it again.
 
 ## Surfaces

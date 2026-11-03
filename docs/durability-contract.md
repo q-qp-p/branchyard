@@ -12,6 +12,7 @@ The model in one sentence: **one append-only journal, with projections of what i
 | T2 | A turn whose prompt was submitted and whose end was not recorded has an *unknown* outcome, and says so | `End::Lost`; the branch ends `interrupted` |
 | T3 | Resuming is re-deciding with what was known, not replaying: the next turn is told what happened, including every effect of the lost turn and what is known of it | `<branchyard-recovered>`, `wake::recovered_note` |
 | T4 | Every step records its intent before its effect and its outcome after, keyed by (branch, turn, step); a step with a recorded outcome is not repeated | `steps` table, `begin_step`/`finish_step` |
+| T5 | Going back in time keeps derived state consistent with the code: a rewind across a change to the setup inputs runs setup again before the next turn | the rewind step; [rewind](checkpoints.md#rewind) |
 
 ## 2. Effects
 
@@ -75,6 +76,7 @@ Each is a scenario either implementation can run against its own store; the Bran
 | An owner killed after submitting its prompt: recovered, its processes killed, the prompt received once | T1, T2 | `tests/durable.rs` `a_killed_engine_is_recovered_its_harness_killed_and_nothing_resubmitted` |
 | The turn after a lost one is told which calls it made and what is known of each | T3 | `tests/effects.rs` `the_turn_after_a_lost_one_is_told_which_calls_it_made` |
 | A recorded step is used, not taken again | T4 | `tests/durable.rs` `a_recorded_snapshot_is_used_when_recovery_finishes_a_turn` |
+| A rewind across a changed lockfile runs setup again before the next turn; one that leaves the inputs alone does not | T5 | `tests/workspace.rs` `a_rewind_across_a_changed_lockfile_runs_setup_again_before_the_next_turn` |
 | A lost answer is unknown, never retried, and settled by the lookup | E1–E3 | `tests/effects.rs` `a_lost_answer_is_unknown_until_the_lookup_settles_it` |
 | A call the gateway describes nothing about is irreversible, and, though a policy allows it, is asked about first | E4, E7 | `tests/effects.rs` `a_call_the_gateway_describes_nothing_about_is_irreversible` |
 | Two owners never drive one branch; a cancel from the other reaches the owner | O1, S1 | `tests/durable.rs` `two_yards_never_drive_one_branch_and_a_cancel_reaches_the_other` |

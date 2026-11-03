@@ -624,6 +624,36 @@ pub(crate) fn rewind(yard: &Yard, name: &str, to: u32) -> Result<Rewound, Error>
     finish(yard, lease, record, &intent, None)
 }
 
+/// When `record`'s workspace has setup and its inputs (lockfiles, the
+/// toolchain file) differ between the head the rewind left and the
+/// checkpoint it went to, mark setup to run again before the next turn and
+/// say so. Compared in git, between the journaled head and commit, so a
+/// rewind recovery finishes says the same.
+fn setup_inputs_changed(
+    yard: &Yard,
+    record: &mut Record,
+    intent: &Intent,
+) -> Result<Option<String>, Error> {
+    let Some(workspace) = record.workspace.as_mut() else {
+        return Ok(None);
+    };
+    if workspace.spec.setup.is_empty() || !workspace.ready || intent.head.is_empty() {
+        return Ok(None);
+    }
+    let changed = git::changed_paths(&yard.root, &intent.head, &intent.commit)?;
+    let inputs = crate::environments::input_paths(&workspace.spec, &changed);
+    if inputs.is_empty() {
+        return Ok(None);
+    }
+    workspace.ready = false;
+    Ok(Some(format!(
+        "the rewind changed setup inputs ({}); setup runs again before the next turn, so \
+         what it installs matches checkpoint {}",
+        inputs.join(", "),
+        intent.to
+    )))
+}
+
 /// Carry out a journaled rewind and settle the branch. Repeating it is
 /// harmless: the reset goes to the same commit.
 fn finish(
@@ -667,6 +697,11 @@ fn finish(
     record.info.stalled = false;
     record.context = intent.context.clone();
     record.checkpoint = Some(intent.to);
+    // Code went back; what setup built from it (installed packages, a
+    // toolchain) did not. When the setup inputs differ between the head
+    // and the checkpoint, the next turn runs setup again first, so the
+    // dependencies match the code.
+    let rebuild = setup_inputs_changed(yard, &mut record, intent)?;
     // The kept sandbox holds the state after a later turn: it goes, and
     // the next turn's sandbox comes from checkpoint N's provider snapshot
     // when there is one (`crate::snapshots`).
@@ -698,6 +733,9 @@ fn finish(
         commit: intent.commit.clone(),
         session: intent.session.clone(),
     })?;
+    if let Some(note) = rebuild {
+        recorder.record(Activity::Warning(note))?;
+    }
     for activity in discarded {
         recorder.record(activity)?;
     }
