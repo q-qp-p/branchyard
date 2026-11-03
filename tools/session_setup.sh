@@ -13,7 +13,8 @@
 #   (the document previews, docs/artifact-previews.md); openssh-client
 #   (tests/test_compute_gce.py). LibreOffice is not installed: DOCX and PPTX
 #   page previews need it, and it is large; install it when a task needs it.
-# - pip: ruff and mypy, which python3 tools/check.py --fast runs.
+# - pip: ruff and mypy, which python3 tools/check.py --fast runs, and the
+#   docs site's markdown-it-py (tools/docs_site/requirements.lock).
 # - cargo fetch --locked: the gates and CI build with --offline.
 # - cargo-nextest: CI's test runner (tools/install_ci_tool.py pins its digest).
 # - fast_rust_builds.py: mold, sccache and line tables only, in ~/.cargo/config.toml.
@@ -37,6 +38,7 @@ if [ "$apt" = yes ] && command -v apt-get >/dev/null 2>&1; then
 fi
 
 python3 -m pip install -q --disable-pip-version-check ruff mypy
+python3 -m pip install -q --disable-pip-version-check --require-hashes -r tools/docs_site/requirements.lock
 
 cargo fetch --locked
 

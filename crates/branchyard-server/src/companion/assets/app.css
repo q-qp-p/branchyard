@@ -221,6 +221,10 @@ button.primary, .button.primary { background: var(--green); border-color: var(--
 button.primary:hover, .button.primary:hover { background: var(--green-hover); border-color: var(--green-active); }
 button.primary:active, .button.primary:active { background: var(--green-active); }
 button.danger { background: var(--red); border-color: var(--red); color: var(--on-red); }
+/* Deny is a real answer, not the expected one: red words on a quiet button,
+   so the one filled button on a card is the action it suggests. */
+button.deny { color: var(--red); border-color: var(--red-line); }
+button.deny:hover:not(:disabled) { background: var(--red-tint); border-color: var(--red); color: var(--red); }
 button.ghost { background: transparent; border-color: transparent; color: var(--ink-2); box-shadow: none; }
 button.ghost:hover { background: var(--wash-2); border-color: transparent; }
 button:disabled, button:disabled:hover { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
@@ -1080,6 +1084,7 @@ details.request summary { color: var(--ink-3); font-size: 12px; font-weight: 600
 .deck-actions button kbd, .lever kbd { margin-left: 2px; }
 .deck-actions .primary kbd, .lever kbd { color: var(--on-green); background: rgba(255, 255, 252, .22); box-shadow: none; }
 .deck-actions .danger kbd { color: var(--on-red); background: rgba(255, 255, 252, .22); box-shadow: none; }
+.deck-actions .deny kbd { color: var(--red); background: var(--red-tint); box-shadow: none; }
 .deck-keys { font-size: 12px; }
 .lever { position: relative; overflow: hidden; min-width: 132px; }
 .lever::before { content: ""; position: absolute; inset: 0; background: var(--green-active); transform: scaleX(0); transform-origin: left; }
@@ -1178,7 +1183,7 @@ details.more details.ledger > summary { margin-top: 14px; }
 .tile-needs .tile-value { color: var(--amber-text); }
 .tile-running .tile-body { background: linear-gradient(var(--blue), var(--blue)) top / 100% 2px no-repeat, var(--surface-raised); }
 .tile-ready .tile-body { background: linear-gradient(var(--green), var(--green)) top / 100% 2px no-repeat, var(--surface-raised); }
-.tile-cost .tile-value { font-family: var(--mono); font-size: 24px; letter-spacing: -.02em; }
+
 .dot-cost { background: var(--ink-3); }
 .board {
   display: flex; flex-direction: column; background: var(--surface-raised); border: 1px solid var(--border-raised);

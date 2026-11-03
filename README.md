@@ -2,57 +2,37 @@
 
 # Branchyard
 
-Run several AI agents at once, each on its own branch, then review and merge only what passes.
+Run several coding agents at once. Each one works on its own branch. You merge what passes.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-branches-dark.png">
-  <img src="assets/screenshots/console-branches.png" alt="The Branchyard console in a desktop browser. The sidebar sorts a Rust library's branches into Needs you, Running, Ready and Done. The open branch, parser-fix, shows the request, the agent's reply with each tool call as a note in the margin beside it, a receipt closing the turn, a Merge button at the top, its two changed files and the first file's diff.">
+  <img src="assets/screenshots/console-branches.png" alt="The Branchyard console. The sidebar sorts a Rust library's branches into Needs you, Running, Ready and Done. The open branch, parser-fix, shows the request, the agent's reply with each tool call in the margin, a receipt for the turn, a Merge button and the diff.">
 </picture>
 
-<sub>A scripted agent produced the demo data in these screenshots, and no model ran. [How to regenerate them](assets/screenshots/README.md).</sub>
-
-Home is a board: the yard's numbers, then every open branch on one clock, each turn a bar with its tool calls as ticks, a wait on you filled amber, and what each branch cost.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-board-dark.png">
-  <img src="assets/screenshots/console-board.png" alt="The console's home in a desktop browser. Tiles count the branches in flight, needing you, ready and merged today, and what they spent. Below, a board lists a Rust library's open branches on one time axis, each turn a bar with a tick for each tool call: the branch changelog waiting for you in an amber row with an Answer button, an interrupted branch with Resume, two running branches with Steer and two ready branches with Merge, each with its cost, and three merged branches folded under their merge ticks. Under the board, today's decisions and each branch's spend.">
-</picture>
-
-Needs you is a deck: one decision at a time, with the question, the evidence and the answers.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-decide-dark.png">
-  <img src="assets/screenshots/console-decide.png" alt="The console's Needs you view. One raised card, tinted amber, asks whether the agent on the changelog branch may use Claude Code's Write tool on CHANGELOG.md, with what it was doing beside what it asks, a reason field and the answers Allow, Deny, Open and Later; the next card peeks under it, and beside it a queue of the two ready branches to merge and the interrupted branch. Below, what was decided today.">
-</picture>
+<sub>A scripted agent made this demo data. No model ran. [Regenerate the screenshots](assets/screenshots/README.md).</sub>
 
 ## Why
 
-One coding agent in one checkout works. Two agents in the same checkout overwrite each other's files, and you lose track of which change came from which request. When a task finishes, you still have to find its changes, run the tests and decide whether to merge.
+One agent in one checkout works. Two agents in one checkout overwrite each other's files. You lose track of which change came from which request. When a task ends, you still have to find its changes, run the tests and decide.
 
-Branchyard gives each task its own Git branch and worktree, a separate working copy of your repository. Agents run side by side without touching each other's files or yours. When a task finishes, you read its diff, and `by merge` runs your checks on the combined result before anything lands. Nothing reaches your branch until you merge it.
+Branchyard fixes that:
 
-The same model covers documents and data. A session reads the sources you upload, writes files such as spreadsheets and slide decks, and you accept the outputs you want to keep.
+- **Each task gets its own branch and worktree.** Agents never touch each other's files, or yours.
+- **Your agent runs as it is.** Antigravity, Claude Code, Codex and others keep their own login and tools.
+- **You see everything in one place.** The terminal or the browser shows what each agent said, changed and spent.
+- **Nothing lands until it passes.** `by merge` runs your check on the merged result first.
 
-## How it works
+## Install
 
-- `by run` starts a task. Branchyard creates its branch and worktree and starts your agent there, such as Antigravity, Claude Code or Codex, with that agent's own login and tools.
-- `by watch` or the browser console shows every task, what its agent said and which files it changed.
-- `by merge` runs the task's check, such as `cargo test`, on the merge result and merges only when it passes.
-- A server (`by serve`) runs the same tasks for a team or on remote machines, and the console connects to it from any browser.
-
-## Install and check setup
-
-From your repository, install the released binaries and start guided setup:
+Run this from your repository:
 
 ```sh
 curl -fsSL https://github.com/vamsiramakrishnan/branchyard/releases/latest/download/install.sh | sh -s -- --setup
 ```
 
-Setup finds the agents you have installed, writes project settings and connects the agents to Branchyard. It lists any login or trust steps you still need to take. `by up --plan` checks readiness without installing tools or starting services. [Installation options](docs/distribution.md#install-by) covers version pinning and headless machines.
+Setup finds the agents you have and connects them. It lists any login or trust step left for you. `by up --plan` checks readiness and changes nothing. [Install options](docs/distribution.md#install-by) covers pinned versions and headless machines.
 
-## Run a task and review it
-
-With Antigravity CLI installed and signed in, try this in a Rust repository:
+## Run a task
 
 ```sh
 by run "Make the flaky parser test deterministic. Add a regression test." \
@@ -62,38 +42,52 @@ by diff parser-fix
 by merge parser-fix
 ```
 
-Use your project's test command in place of `cargo test`. The agent works on the branch `by/parser-fix`. `by diff` shows what it changed, and `by merge` runs the check on the combined changes before it merges them.
+The agent works on `by/parser-fix`. `by diff` shows its changes. `by merge` runs `cargo test` on the merged result and merges only if it passes. Use your own test command.
 
-`--allow-unapproved-tools` lets Antigravity apply its own tool permissions, and `--yes` approves the requests that reach Branchyard. A local agent runs as your operating-system user and can read your files. [Execution modes](docs/modes.md) describes the isolation options.
+`--yes` approves the requests that reach Branchyard. `--allow-unapproved-tools` lets Antigravity apply its own tool rules. A local agent runs as you and can read your files. [Execution modes](docs/modes.md) lists the stronger isolation options.
 
-`by watch` follows running tasks in the terminal. To split implementation and review across agents, see [cooperative teams](docs/cooperative-teams.md).
+`by watch` follows running tasks in the terminal. [Cooperative teams](docs/cooperative-teams.md) splits building and reviewing across agents.
 
 ## Follow work in the browser
 
-`by serve --app` serves a console for the repository you run it in. `by serve token new --link` prints a link that signs a browser in. The console lists tasks by what they need from you, shows each task's conversation and diff, and puts the one next step, such as Merge, at the top. It works on a phone too. The [console guide](docs/companion.md) covers pairing, permissions and notifications.
+`by serve --app` serves the console. `by serve token new --link` prints a sign-in link.
 
-<p align="center"><img src="assets/screenshots/console-phone.png" width="260" alt="The parser-fix branch in the console on a phone, in one column, with Merge at the top and the agent's reply below."></p>
+Home is a board. Every open branch sits on one clock. Each turn is a bar and each tool call a tick. Amber means it waits on you.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-board-dark.png">
+  <img src="assets/screenshots/console-board.png" alt="The console's home. Tiles count branches in flight, needing you, ready and merged today, and what they spent. Below, every open branch on one time axis: one waits on you in amber with an Answer button, running ones have Steer, ready ones have Merge, and each row shows its cost.">
+</picture>
+
+Needs you is a deck. You take one decision at a time, with the question, the evidence and the answers.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-decide-dark.png">
+  <img src="assets/screenshots/console-decide.png" alt="The console's Needs you view. One card asks whether the agent on the changelog branch may write CHANGELOG.md. It shows what the agent was doing beside what it asks, a reason field, and Allow, Deny, Open and Later. A queue beside it lists what comes next.">
+</picture>
+
+The console works on a phone. The [console guide](docs/companion.md) covers pairing, permissions and notifications.
+
+<p align="center"><img src="assets/screenshots/console-phone.png" width="260" alt="The parser-fix branch on a phone, in one column, with Merge at the top."></p>
 
 ## Work with documents and data
-
-Start the console from any directory, which does not need to be a Git repository:
 
 ```sh
 by serve --app --knowledge
 ```
 
-Open the printed URL, create a knowledge project and upload your sources. Start one or more named sessions, follow their conversations, preview the documents they produce and accept the ones you keep. Each session works in its own copy. The [console guide](docs/companion.md#projects-and-workspaces) covers credentials, permissions and preview setup.
+Run it from any folder. It does not need to be a Git repository. Create a project and upload your sources. Start one or more sessions. Each works in its own copy. Preview what they produce and keep what you want. The [console guide](docs/companion.md#projects-and-workspaces) covers credentials, permissions and previews.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/console-workspace-dark.png">
-  <img src="assets/screenshots/console-workspace.png" alt="A knowledge workspace in the console. Tabs name its two sessions, the open session answers questions about customer churn from two uploaded exports, and the Outputs tab previews the CSV table it published.">
+  <img src="assets/screenshots/console-workspace.png" alt="A knowledge workspace. Tabs name two sessions. The open one answers questions about customer churn from two uploaded exports, and the Outputs tab previews the CSV table it published.">
 </picture>
 
-The [skills](plugins/branchyard/skills/INDEX.md) teach agents to work with sources, tables, data cleaning, calculations and editable documents, and the design skills guide layouts and charts. In the [parallel deck example](examples/rigs/parallel-deck.toml), several workers draft separate sections and one assembles the presentation.
+The [skills](plugins/branchyard/skills/INDEX.md) teach agents to read sources, clean tables, calculate and write editable documents. In the [parallel deck example](examples/rigs/parallel-deck.toml), several workers draft sections and one assembles the deck.
 
-The [document tools](docs/artifact-toolkit.md#installed-skills-and-runtime) need their packages installed first. Office previews need LibreOffice and Poppler. Google Workspace work needs a connected account with access to the documents. See [knowledge work](docs/knowledge-skills.md) and [collecting output files](docs/artifact-capture.md).
+The [document tools](docs/artifact-toolkit.md#installed-skills-and-runtime) need their packages first. Office previews need LibreOffice and Poppler. Google Workspace needs a connected account. See [knowledge work](docs/knowledge-skills.md) and [collecting output files](docs/artifact-capture.md).
 
-## Use a remote worker
+## Run on another machine
 
 With `by` and your agent installed on an SSH worker:
 
@@ -101,10 +95,18 @@ With `by` and your agent installed on an SSH worker:
 by --remote ssh://you@worker.example/srv/project ls
 ```
 
-The [SSH guide](docs/remote-ssh.md), [GCE setup](docs/compute-gce.md) and [GKE setup](docs/substrate-gke.md) walk through each option. Branchyard is in early development; the [status page](docs/status.md) records the tested versions and the gaps that remain.
+`by serve` runs the same tasks for a team or on remote machines. See the [SSH guide](docs/remote-ssh.md), [GCE setup](docs/compute-gce.md) and [GKE setup](docs/substrate-gke.md).
 
-## Documentation and license
+## Status
+
+Branchyard is early. The [status page](docs/status.md) lists what has run, on which versions, and what has not.
+
+## Documentation
 
 [Getting started](docs/getting-started.md) · [All guides](docs/README.md) · [SDKs](docs/sdk.md) · [Contributing](CONTRIBUTING.md)
 
-Branchyard's own code is [Apache-2.0](LICENSE). Bundled dependencies keep their own licenses; see [third-party notices](THIRD_PARTY.md).
+The same pages are a [searchable site](https://vamsiramakrishnan.github.io/branchyard/), built from `docs/` on every push to `main`.
+
+## License
+
+Branchyard's own code is [Apache-2.0](LICENSE). Bundled dependencies keep their own licenses. See [third-party notices](THIRD_PARTY.md).

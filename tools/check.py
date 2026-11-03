@@ -183,6 +183,8 @@ STEPS = (
     Step("test_check_coverage", "fast", (PY, "tests/test_check_coverage.py")),
     Step("test_supply_chain", "fast", (PY, "tests/test_supply_chain.py")),
     Step("test_readme_screenshots", "fast", (PY, "tests/test_readme_screenshots.py")),
+    Step("docs_site", "fast", (PY, "tools/docs_site/build.py", "--check")),
+    Step("test_docs_site", "fast", (PY, "tests/test_docs_site.py")),
     # The controls job's Python gates, in its order.
     Step("verify_vendor", "controls", (PY, "tools/verify_vendor.py")),
     Step("test_verify_vendor", "controls", (PY, "tests/test_verify_vendor.py")),
