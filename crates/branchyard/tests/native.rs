@@ -267,12 +267,13 @@ fn native_parked_recovery_denial_keeps_the_turn_for_an_approved_wake() {
     let kind = Native::Gke(AgentSandboxRuntime::Microvm);
     let (_serial, f, bin, options) = fixture(kind);
     let options = delegating(options);
-    f.yard
+    let first = f.yard
         .task("WRITE root.txt=before-wake")
         .options(options.clone())
         .name("root")
         .run()
         .unwrap();
+    assert_eq!(first.info().status, BranchStatus::Ready, "initial native turn");
     // A stopped engine's parked turn after its last child was removed.
     common::edit_record(&f.root, "root", |record| {
         record["info"]["status"] = json!({"state": "waiting_on_children"});

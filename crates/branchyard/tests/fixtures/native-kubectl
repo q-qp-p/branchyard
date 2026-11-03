@@ -26,8 +26,11 @@ code = source.read_text().replace(
 ).replace(
     'if operation == "create":',
     'if operation == "create":\n    if body["kind"] == "Sandbox":\n        for directory in ("workspace", "home"):\n            shutil.rmtree(root / directory)\n            (root / directory).mkdir()',
-).replace(
-    "os.execvp(command[0], command)",
-    "command = [arg.replace('/branchyard/home', str(root / 'home')).replace('/workspace', str(root / 'workspace')) for arg in command]\n    os.execvp(command[0], command)",
+)
+execute = "result = subprocess.run(command, check=False)"
+assert execute in code, "the shared fake kubectl execution hook changed"
+code = code.replace(
+    execute,
+    "command = [arg.replace('/branchyard/home', str(root / 'home')).replace('/workspace', str(root / 'workspace')) for arg in command]\n    " + execute,
 )
 exec(compile(code, str(source), "exec"))

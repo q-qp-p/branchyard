@@ -734,7 +734,7 @@ fn write_effect(f: &Fixture, entry: &EffectEntry) {
             entry.id,
             entry.branch,
             entry.state.as_str(),
-            entry.created_ms,
+            branchyard::store_codec::to_db("created_ms", entry.created_ms).unwrap(),
             serde_json::to_string(entry).unwrap()
         ],
     )
