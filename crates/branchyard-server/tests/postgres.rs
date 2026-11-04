@@ -61,6 +61,9 @@ fn a_server_keeps_branches_and_operations_in_postgres_across_a_restart() {
                 "hello",
                 &SendRequest {
                     prompt: "WHOAMI".into(),
+                    // As the task: the fake agent behind gemini-cli keeps a
+                    // restricting policy only in a private home.
+                    policy: branchyard_client::api::PolicySpec::allow_all(),
                     ..SendRequest::default()
                 },
                 &new_key(),
@@ -396,6 +399,9 @@ fn two_servers_on_one_database_run_each_operation_once() {
     wait::until("the held turn to start", || prompts_seen(&cb, "held"));
     let send = SendRequest {
         prompt: "WHOAMI".into(),
+        // As the task: the fake agent behind gemini-cli keeps a restricting
+        // policy only in a private home.
+        policy: branchyard_client::api::PolicySpec::allow_all(),
         ..SendRequest::default()
     };
     let busy = cb.repo("app").send("held", &send, &new_key()).unwrap_err();
