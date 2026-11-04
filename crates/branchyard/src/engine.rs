@@ -28,7 +28,7 @@
 //! runs; what became of each is recorded in the store and the event log.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use branchyard_harness::profiles::Profile;
@@ -1614,7 +1614,7 @@ fn run(
                     recorder,
                     &mut session,
                     turn,
-                    &bounds.policy,
+                    (&bounds.policy, Path::new(&placement.cwd())),
                     &request,
                     stopping,
                     (deadline_ms, &cancelled),
@@ -2066,7 +2066,7 @@ fn answer(
     recorder: &mut Recorder,
     session: &mut Session,
     turn: &Turn<'_>,
-    policy: &Policy,
+    (policy, root): (&Policy, &Path),
     request: &PermissionRequest,
     stopping: bool,
     (deadline_ms, cancelled): (Option<u64>, &dyn Fn() -> bool),
@@ -2077,7 +2077,7 @@ fn answer(
         };
         (decision, DecisionSource::Engine)
     } else {
-        let decided = policy.decide_with_source(&turn.record.info.name, request);
+        let decided = policy.decide_in(&turn.record.info.name, request, root);
         // Approvals only tighten what the policy allowed.
         match decided {
             (PermissionDecision::Allow, source) => crate::effects::tool::decide(

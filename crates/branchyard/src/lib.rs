@@ -2863,7 +2863,20 @@ impl Policy {
         branch: &str,
         request: &PermissionRequest,
     ) -> (PermissionDecision, DecisionSource) {
-        policy::decide(self, branch, request)
+        policy::decide(self, branch, request, None)
+    }
+
+    /// [`Policy::decide_with_source`] for a harness working in `root`: a
+    /// rule's relative path (`Edit(src/**)`) is matched against the call's
+    /// path relative to `root`, and a path outside it matches no relative
+    /// rule. See `docs/egress.md#rules-that-name-arguments-and-paths`.
+    pub fn decide_in(
+        &self,
+        branch: &str,
+        request: &PermissionRequest,
+        root: &std::path::Path,
+    ) -> (PermissionDecision, DecisionSource) {
+        policy::decide(self, branch, request, Some(root))
     }
 }
 

@@ -301,6 +301,18 @@ The refusal is the error `unsupported` with the detail `{"unsupported": "unbound
 
 **Opting out.** `--allow-unapproved-tools` (`TaskOptions::unapproved_tools`) lets the harness's own permissions decide what the profile cannot bind. Branchyard still answers every request the harness sends. The branch's log then carries a warning on every turn naming the profile and what was given up. A server operator can forbid the flag, as before (`unapproved_tools_not_allowed`). The branch remembers it: its sends, forks, reincarnations and delegated children keep it, since the person chose it for that work. A harness judge, a distiller and a goal's judge deny every tool and never take it; on a profile that needs a private home they need an isolated branch, or they fall back as any judge that cannot run does.
 
+**Claude Code's permission modes.** The session runs in `default`, and the driver refuses one that reports another. Claude Code 2.1.318, run against a stand-in model API on 4 November 2026, showed why the other modes are not passed through. With Branchyard's hook, every call still reached Branchyard in `plan`, `acceptEdits`, `dontAsk` and `auto`, so none of them adds a guarantee. `plan` did not refuse a write in print mode even without the hook. `dontAsk` refuses calls itself, but the hook's `ask` overrides that refusal. Branchyard's own policies give the same postures and are enforced on every harness:
+
+| Claude Code mode | Branchyard |
+|---|---|
+| `plan` | `--permissions read-only`, the policy a [planning turn](plans-and-goals.md) runs under |
+| `acceptEdits` | `--permissions edit-worktree`, or `Edit(src/**)`-style [rules](egress.md#rules-that-name-arguments-and-paths) |
+| `dontAsk` | the default policy, which denies what no rule allows |
+| `auto` | no equivalent: Branchyard does not let a classifier approve |
+| `bypassPermissions` | never: Claude Code itself refuses it as root, and Branchyard never passes it |
+
+Branchyard answers an allowed call with the input Claude Code sent (`updatedInput`), unchanged. A rule that names arguments or paths decides on that input.
+
 **What is still the harness's.**
 
 - An administrator's rules decide first on every harness: Claude Code's managed settings, Codex's `requirements.toml`, Gemini CLI's system policies. Codex's `requirements.toml` can lower the approval policy; the driver then sees the reported policy differ and refuses the thread.

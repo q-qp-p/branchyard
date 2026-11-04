@@ -740,7 +740,7 @@ The keys are `[sync]`'s ([sync](sync.md#quick-start)) and `lease_seconds` (defau
 - **Plain HTTP** exposes tokens, prompts and code to anyone on the path. The server refuses it off loopback unless told `--insecure-bind`.
 - **Information exposure.** Responses include server paths (worktrees, repository roots) and the server's harness availability. `GET /.well-known/branchyard` is public: it names the served repositories and the kinds and capabilities of live services, not their endpoints or owners.
 - **Service registrations** need the `admin` scope, are owned by the registering principal, and never carry anything for the server to reclaim.
-- **Policy is per request.** A `deny` default is safe; rules match tool names only, as in the SDK.
+- **Policy is per request.** A `deny` default is safe; rules match a tool name, or a tool and what it touches (`Bash(git *)`, `Edit(src/**)`; [egress](egress.md#rules-that-name-arguments-and-paths)), as in the SDK.
 
 ## Run live on 27 October 2026
 

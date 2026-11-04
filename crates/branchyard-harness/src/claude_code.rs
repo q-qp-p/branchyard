@@ -164,6 +164,27 @@ struct Call {
 /// mode itself.
 const PERMISSION_MODE: &str = "default";
 
+/// The tool a Bash call that asks to run outside Claude Code's sandbox
+/// (`dangerouslyDisableSandbox: true` in its input, the request's
+/// `decision_reason_type` `sandboxOverride`) is reported as, so a rule that
+/// allows `Bash` does not allow leaving the sandbox; only a policy that
+/// allows everything, or one that names it, does. Allowed, the command
+/// runs unsandboxed (Claude Code 2.1.318, 4 November 2026).
+pub const UNSANDBOXED_BASH: &str = "Bash:unsandboxed";
+
+/// The tool name Branchyard reports for a `can_use_tool` request: the
+/// harness's own, or [`UNSANDBOXED_BASH`] for a Bash call that asks to
+/// leave the sandbox.
+fn reported_tool(request: &Value) -> String {
+    let tool = request["tool_name"].as_str().unwrap_or_default();
+    let unsandboxed = request["input"]["dangerouslyDisableSandbox"] == true
+        || request["decision_reason_type"] == "sandboxOverride";
+    match (tool, unsandboxed) {
+        ("Bash", true) => UNSANDBOXED_BASH.to_owned(),
+        _ => tool.to_owned(),
+    }
+}
+
 /// The callback ID of the `PreToolUse` hook registered at `initialize`.
 /// Hooks run before a settings file's allow rules and before the permission
 /// mode, so every tool call reaches it, including the ones an allow rule in
@@ -648,7 +669,7 @@ impl ClaudeCode {
                 turn: self.turns.active,
                 request: PermissionRequest {
                     key: PermissionKey(id),
-                    tool: request["tool_name"].as_str().unwrap_or_default().to_owned(),
+                    tool: reported_tool(request),
                     input,
                 },
             });

@@ -12,16 +12,19 @@ pub(crate) fn decide(
     policy: &Policy,
     branch: &str,
     request: &PermissionRequest,
+    root: Option<&Path>,
 ) -> (PermissionDecision, DecisionSource) {
     let matches = |rule: &Rule| {
-        let tool = match rule.tool.strip_suffix('*') {
+        let (name, spec) = split_rule(&rule.tool);
+        let tool = match name.strip_suffix('*') {
             Some(prefix) => request.tool.starts_with(prefix),
-            None => request.tool == rule.tool,
+            None => request.tool == name,
         };
-        tool && rule
-            .delegation_by
-            .as_deref()
-            .is_none_or(|by| is_delegation_command(&request.input, by))
+        tool && spec.is_none_or(|spec| input_matches(spec, &request.input, rule.allow, root))
+            && rule
+                .delegation_by
+                .as_deref()
+                .is_none_or(|by| is_delegation_command(&request.input, by))
     };
     let deny = || PermissionDecision::Deny {
         message: "Denied by Branchyard policy.".into(),
@@ -45,6 +48,163 @@ pub(crate) fn decide(
             Fallback::Ask(ask) => (ask(branch, request), DecisionSource::Asked),
         },
     }
+}
+
+/// A rule's tool and, for `Tool(spec)`, what it says of the call's input:
+/// `Bash(git *)`, `Edit(src/**)`, `WebFetch(domain:example.com)`.
+pub(crate) fn split_rule(tool: &str) -> (&str, Option<&str>) {
+    match tool.strip_suffix(')').and_then(|t| t.split_once('(')) {
+        Some((name, spec)) if !name.is_empty() && !name.contains(['(', ')']) => (name, Some(spec)),
+        _ => (tool, None),
+    }
+}
+
+/// Whether a call's `input` is what `spec` names: a shell command's
+/// (`command`), a file's (`file_path`, `path`, `notebook_path`, `filePath`),
+/// or a URL's (`url`). A call that carries none of them does not match.
+fn input_matches(spec: &str, input: &Value, allow: bool, root: Option<&Path>) -> bool {
+    if let Some(command) = input["command"].as_str() {
+        return command_matches(spec, command, allow);
+    }
+    let path = ["file_path", "path", "notebook_path", "filePath"]
+        .iter()
+        .find_map(|key| input[*key].as_str());
+    if let Some(path) = path {
+        return path_matches(spec, path, root);
+    }
+    if let Some(url) = input["url"].as_str() {
+        return url_matches(spec, url);
+    }
+    false
+}
+
+/// A shell command against `spec`, a glob over the whole command (`git *`
+/// also matches `git` alone; `npm run test:*`, Claude Code's prefix form,
+/// is `npm run test` and anything after it). A compound command is split on
+/// `&&`, `||`, `;`, `|` and newlines: an allowing rule matches only when
+/// every part does and the command substitutes nothing (`$(`, a backtick),
+/// so `git status && rm -rf x` is not allowed by `Bash(git *)`; a denying
+/// rule matches when any part does.
+fn command_matches(spec: &str, command: &str, allow: bool) -> bool {
+    let spec = match spec.strip_suffix(":*") {
+        Some(prefix) => format!("{prefix} *"),
+        None => spec.to_owned(),
+    };
+    let one = |part: &str| {
+        let part = part.trim();
+        glob(&spec, part, false)
+            || spec
+                .strip_suffix(" *")
+                .is_some_and(|bare| glob(bare, part, false))
+    };
+    let parts: Vec<&str> = command
+        .split(['\n', ';', '|', '&'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    match allow {
+        true => {
+            !command.contains("$(")
+                && !command.contains('`')
+                && !parts.is_empty()
+                && parts.iter().all(|part| one(part))
+        }
+        false => parts.iter().any(|part| one(part)) || one(command),
+    }
+}
+
+/// A file path against `spec`, a glob where `*` stays within one path
+/// component and `**` crosses them. An absolute `spec` is matched against
+/// the absolute path; a relative one against the path relative to `root`
+/// (the directory the harness works in), so a path outside it never
+/// matches a relative rule. `..` is resolved before matching.
+fn path_matches(spec: &str, path: &str, root: Option<&Path>) -> bool {
+    let absolute = |p: &Path| match (p.is_absolute(), root) {
+        (true, _) => Some(p.to_path_buf()),
+        (false, Some(root)) => Some(root.join(p)),
+        (false, None) => None,
+    };
+    let given = Path::new(path);
+    match spec.starts_with('/') {
+        true => absolute(given)
+            .map(|p| lexical(&p))
+            .is_some_and(|p| glob(spec, &p.display().to_string(), true)),
+        false => match (absolute(given), root) {
+            (Some(p), Some(root)) => lexical(&p)
+                .strip_prefix(lexical(root))
+                .is_ok_and(|rel| glob(spec, &rel.display().to_string(), true)),
+            _ => {
+                let rel = lexical(given);
+                !rel.starts_with("..") && glob(spec, &rel.display().to_string(), true)
+            }
+        },
+    }
+}
+
+/// A URL against `spec`: `domain:example.com` matches that host and its
+/// subdomains; anything else is a glob over the whole URL.
+fn url_matches(spec: &str, url: &str) -> bool {
+    match spec.strip_prefix("domain:") {
+        Some(domain) => {
+            let host = url_host(url);
+            let domain = domain.to_ascii_lowercase();
+            host == domain || host.ends_with(&format!(".{domain}"))
+        }
+        None => glob(spec, url, false),
+    }
+}
+
+/// A URL's host, lower-cased, without credentials or a port.
+fn url_host(url: &str) -> String {
+    let authority = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    host.split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// `path` with `.` dropped and `..` taken back, without touching the disk.
+fn lexical(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A glob: `*` matches any run of characters (within one `/`-separated
+/// component when `paths`), `**` any run across them.
+fn glob(pattern: &str, text: &str, paths: bool) -> bool {
+    fn go(p: &[u8], t: &[u8], paths: bool) -> bool {
+        match p.split_first() {
+            None => t.is_empty(),
+            Some((b'*', rest)) => {
+                let (crosses, rest) = match rest.split_first() {
+                    Some((b'*', after)) => (true, after.strip_prefix(b"/").unwrap_or(after)),
+                    _ => (!paths, rest),
+                };
+                (0..=t.len())
+                    .any(|i| (crosses || !t[..i].contains(&b'/')) && go(rest, &t[i..], paths))
+            }
+            Some((c, rest)) => t.first() == Some(c) && go(rest, &t[1..], paths),
+        }
+    }
+    go(pattern.as_bytes(), text.as_bytes(), paths)
 }
 
 /// `policy` as data, for a harness that enforces its own permission rules
@@ -98,6 +258,8 @@ pub const EDIT_TOOLS: &[&str] = &[
 /// Tools that run commands.
 pub const SHELL_TOOLS: &[&str] = &[
     "Bash",
+    // Claude Code's Bash call that asks to run outside its sandbox.
+    "Bash:unsandboxed",
     "BashOutput",
     "KillBash",
     "KillShell",
@@ -123,8 +285,9 @@ pub const WEB_TOOLS: &[&str] = &[
 /// `permission_policy`, a server request's `policy.preset`,
 /// `[defaults] permissions`). See `docs/egress.md#permission-presets`.
 ///
-/// Rules match tool names only: a preset says which tools may run, not
-/// what they touch.
+/// A preset's rules name tools only: it says which tools may run, not
+/// what they touch. A rule of its own may name both
+/// (`docs/egress.md#rules-that-name-arguments-and-paths`).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -564,5 +727,119 @@ mod tests {
             narrowed.decide("b", &shell("by children")),
             PermissionDecision::Deny { .. }
         ));
+    }
+
+    fn call(tool: &str, input: serde_json::Value) -> PermissionRequest {
+        PermissionRequest {
+            key: PermissionKey("1".into()),
+            tool: tool.into(),
+            input,
+        }
+    }
+
+    fn rules(rules: &[(&str, bool)]) -> Policy {
+        Policy {
+            rules: rules
+                .iter()
+                .map(|(tool, allow)| Rule {
+                    tool: (*tool).into(),
+                    allow: *allow,
+                    delegation_by: None,
+                })
+                .collect(),
+            fallback: Fallback::Deny,
+            preset: None,
+        }
+    }
+
+    /// `Bash(git *)` allows git and only git: every part of a compound
+    /// command must match, and a substitution never does; a denying rule
+    /// refuses when any part matches.
+    #[test]
+    fn a_command_rule_matches_the_command_and_every_part_of_it() {
+        let allow = rules(&[("Bash(git *)", true)]);
+        let allowed = |command: &str| {
+            allow.decide("b", &call("Bash", serde_json::json!({"command": command})))
+                == PermissionDecision::Allow
+        };
+        assert!(allowed("git status"));
+        assert!(allowed("git"));
+        assert!(allowed("git add . && git commit -m x"));
+        assert!(!allowed("gitk"));
+        assert!(!allowed("git status && rm -rf /"));
+        assert!(!allowed("git log | sh"));
+        assert!(!allowed("git $(rm -rf /)"));
+        assert!(!allowed("git `rm -rf /`"));
+        let prefix = rules(&[("Bash(npm run test:*)", true)]);
+        let run = |command: &str| {
+            prefix.decide("b", &call("Bash", serde_json::json!({"command": command})))
+                == PermissionDecision::Allow
+        };
+        assert!(run("npm run test") && run("npm run test -- --watch"));
+        assert!(!run("npm run build"));
+
+        let deny = rules(&[("Bash(rm *)", false), ("Bash", true)]);
+        let denied = |command: &str| {
+            deny.decide("b", &call("Bash", serde_json::json!({"command": command})))
+                != PermissionDecision::Allow
+        };
+        assert!(denied("rm -rf x"));
+        assert!(denied("ls && rm x"));
+        assert!(!denied("ls"));
+        // A call with no command does not match a command rule.
+        assert!(
+            allow.decide("b", &call("Bash", serde_json::Value::Null)) != PermissionDecision::Allow
+        );
+    }
+
+    /// A relative path rule matches paths under the harness's working
+    /// directory only; `..` cannot climb out of it; an absolute rule matches
+    /// the absolute path.
+    #[test]
+    fn a_path_rule_matches_relative_to_the_working_directory() {
+        let policy = rules(&[("Edit(src/**)", true), ("Write(/var/out/*)", true)]);
+        let root = Path::new("/work/repo");
+        let edit = |path: &str| {
+            policy
+                .decide_in(
+                    "b",
+                    &call("Edit", serde_json::json!({"file_path": path})),
+                    root,
+                )
+                .0
+                == PermissionDecision::Allow
+        };
+        assert!(edit("/work/repo/src/lib.rs"));
+        assert!(edit("/work/repo/src/a/b/c.rs"));
+        assert!(edit("src/main.rs"));
+        assert!(!edit("/work/repo/docs/x.md"));
+        assert!(!edit("/work/repo/src/../../other/src/x.rs"));
+        assert!(!edit("/elsewhere/src/x.rs"));
+        let write = |path: &str| {
+            policy
+                .decide_in(
+                    "b",
+                    &call("Write", serde_json::json!({"file_path": path})),
+                    root,
+                )
+                .0
+                == PermissionDecision::Allow
+        };
+        assert!(write("/var/out/a.txt"));
+        assert!(!write("/var/out/sub/a.txt"));
+        assert!(!write("/var/other.txt"));
+    }
+
+    #[test]
+    fn a_domain_rule_matches_the_host_and_its_subdomains() {
+        let policy = rules(&[("WebFetch(domain:example.com)", true)]);
+        let fetch = |url: &str| {
+            policy.decide("b", &call("WebFetch", serde_json::json!({"url": url})))
+                == PermissionDecision::Allow
+        };
+        assert!(fetch("https://example.com/a"));
+        assert!(fetch("https://docs.example.com:8443/b?c"));
+        assert!(!fetch("https://example.com.evil.net/"));
+        assert!(!fetch("https://user@notexample.com/"));
     }
 }

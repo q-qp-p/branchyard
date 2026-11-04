@@ -188,9 +188,24 @@ An ACP agent's request is matched by the tool name the agent gives (in the reque
 
 `read-only` is the policy a [planning turn](plans-and-goals.md) runs under. A harness's own allow rules cannot approve what it refuses ([composing with a harness's own permissions](harness-integration.md#composing-with-a-harnesss-own-permissions)).
 
-A preset is also the last layer of [approvals](effects.md#approvals) for connector operations (`PolicyPreset::approvals`): `read-only` and `edit-worktree` block every reversible, compensable and irreversible operation, since they change nothing outside the machine; `full` keeps the class defaults (reversible allowed, compensable asked, irreversible staged, deletions asked). Approvals that name a tool only tighten what the preset allowed. Rules match tool names only: `edit-worktree` says a harness may edit, not where; the harness's own tools decide what path an edit touches.
+A preset is also the last layer of [approvals](effects.md#approvals) for connector operations (`PolicyPreset::approvals`): `read-only` and `edit-worktree` block every reversible, compensable and irreversible operation, since they change nothing outside the machine; `full` keeps the class defaults (reversible allowed, compensable asked, irreversible staged, deletions asked). Approvals that name a tool only tighten what the preset allowed. A preset's rules name tools only: `edit-worktree` says a harness may edit, not where. A rule of your own can say where ([below](#rules-that-name-arguments-and-paths)).
 
 Below the rules, on Linux, a local harness under `read-only` or `edit-worktree` also runs under the [file guard](modes.md#the-file-guard): Landlock holds it, and everything it starts, to the preset's write scope (`edit-worktree`: the worktree, its git directory, `HOME`, its temporary directory, `/dev`; `read-only`: the same without the worktree and the git directory), whether or not the harness asks Branchyard before a write. That is what makes the presets hold for a harness that runs a shell write without asking (Pi, Antigravity, DeepSeek Harness, Hermes, OpenCode on its defaults). It does not limit reads or the network (the policy above does that when it is set), and `full`, `--yes` and `--ask` run without it. The run prints `by: guard: landlock (PRESET): …`; a host without Landlock prints one `by: note: no file guard on this host (…)` and runs unguarded.
+
+### Rules that name arguments and paths
+
+A rule may name what a call touches as well as the tool: `Tool(spec)`. It matches a call to that tool whose input fits `spec`; a call without the input the rule speaks of does not match it.
+
+| Rule | Matches | Notes |
+|---|---|---|
+| `Bash(git *)` | a shell command: `git status`, `git` | A glob over the whole command. `Bash(npm run test:*)`, Claude Code's prefix form, is `npm run test` and anything after it. |
+| `Edit(src/**)` | a file path relative to the harness's working directory | `*` stays within one path part; `**` crosses them. `..` is resolved first, so a path that climbs out of the working directory matches no relative rule. |
+| `Write(/var/out/*)` | an absolute file path | Matched against the absolute path. |
+| `WebFetch(domain:example.com)` | a URL on that host or a subdomain | Any other spec is a glob over the whole URL. |
+
+A compound shell command is split on `&&`, `||`, `;`, `|` and newlines. An allowing rule matches only when every part matches and nothing is substituted (`$(…)`, backticks), so `Bash(git *)` does not allow `git status && rm -rf x`. A denying rule matches when any part does. A redirection such as `2>&1` splits too, so an allowing rule refuses it unless that part matches. The command is read from the call's `command` input; the path from `file_path`, `path`, `notebook_path` or `filePath`; the URL from `url`.
+
+A Claude Code Bash call that asks to run outside its sandbox (`dangerouslyDisableSandbox`) reaches the policy as `Bash:unsandboxed`, so `Bash` and `Bash(git *)` do not allow it. The presets that deny the shell deny it by name.
 
 How a preset combines:
 

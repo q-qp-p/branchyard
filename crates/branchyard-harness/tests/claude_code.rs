@@ -163,6 +163,35 @@ fn replays_a_recorded_claude_code_turn() {
         .any(|e| matches!(e, Event::ProtocolViolation { .. })));
 }
 
+/// A Bash call that asks to run outside Claude Code's sandbox is its own
+/// tool, so a rule that allows `Bash` does not allow leaving the sandbox.
+#[test]
+fn a_bash_call_leaving_the_sandbox_is_its_own_tool() {
+    let mut driver = ready(SessionMode::Fresh);
+    driver.submit("fetch it").unwrap();
+    for (n, request) in [
+        json!({"subtype": "can_use_tool", "tool_name": "Bash",
+            "input": {"command": "curl x", "dangerouslyDisableSandbox": true}}),
+        json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "curl x"},
+            "decision_reason_type": "sandboxOverride"}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let frame =
+            json!({"type": "control_request", "request_id": format!("p{n}"), "request": request});
+        let (events, _) = feed(&mut driver, &frame);
+        let Event::PermissionRequested { request, .. } = &events[0] else {
+            panic!("{events:?}")
+        };
+        assert_eq!(
+            request.tool,
+            branchyard_harness::claude_code::UNSANDBOXED_BASH
+        );
+        assert_eq!(request.input["command"], "curl x");
+    }
+}
+
 #[test]
 fn permission_prompts_round_trip() {
     let mut driver = ready(SessionMode::Fresh);
