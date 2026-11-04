@@ -115,7 +115,7 @@ for number, line in enumerate(sys.stdin):
             OperationState::Succeeded
         );
         let wid = w["workspace_id"].as_str().unwrap().to_owned();
-        let (status,s)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("writer"),json!({"name":"Writer","prompt":"WRITE report.txt=checked","harness":"codex-acp","access":"writer","provider":provider})).await;
+        let (status,s)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("writer"),json!({"name":"Writer","prompt":"WRITE report.txt=checked","harness":"gemini-cli","access":"writer","provider":provider})).await;
         assert_eq!(status, StatusCode::OK, "{s}");
         let done = f.finished(s["id"].as_str().unwrap());
         assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
@@ -283,7 +283,7 @@ async fn actual_acl_rejects_foreign_reviewers_and_other_creators() {
         .unwrap()
         .commit
         .clone();
-    let (status,reviewer)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("reviewer"),json!({"name":"Reviewer","prompt":"Review only","harness":"codex-acp","access":"reviewer","candidate":candidate})).await;
+    let (status,reviewer)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("reviewer"),json!({"name":"Reviewer","prompt":"Review only","harness":"gemini-cli","access":"reviewer","candidate":candidate})).await;
     assert_eq!(status, StatusCode::OK, "{reviewer}");
     let done = f.finished(reviewer["id"].as_str().unwrap());
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
@@ -547,7 +547,7 @@ async fn configured_remote_runtime_actions_keep_native_state_and_durable_results
             .count(),
         1
     );
-    let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-provider"),json!({"name":"Denied","prompt":"say hello","harness":"codex-acp","access":"writer","provider":Provider::substrate(branchyard::SubstrateOptions::default())})).await;
+    let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-provider"),json!({"name":"Denied","prompt":"say hello","harness":"gemini-cli","access":"writer","provider":Provider::substrate(branchyard::SubstrateOptions::default())})).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{error}");
     assert_eq!(error["error"]["code"], "provider_not_allowed");
     let (status,error)=f.json(Method::POST,&format!("/v1/workspaces/{wid}/sessions"),OWNER,Some("denied-ack"),json!({"name":"Unapproved","prompt":"say hello","harness":"antigravity-stream-json","access":"writer","unapproved_tools":true})).await;

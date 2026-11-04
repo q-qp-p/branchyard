@@ -6,7 +6,7 @@ use branchyard::{Activity, Event};
 use branchyard_client::api::OperationState;
 use sha2::{Digest as _, Sha256};
 
-const HARNESS: &str = "claude-code-acp";
+const HARNESS: &str = "gemini-cli";
 const REQUESTED: &str = "## Requested result";
 const MANIFEST: &str = "write artifact manifest `outputs/artifacts.json`";
 

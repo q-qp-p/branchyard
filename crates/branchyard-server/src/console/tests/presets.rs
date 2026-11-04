@@ -333,6 +333,8 @@ async fn raw_graph_edits_cannot_advance_native_provider_work() {
         harness: Some("gemini-cli".into()),
         name: Some("native-parent".into()),
         delegation: Some(branchyard::Envelope::default()),
+        // A home of its own, where Gemini CLI keeps the default policy.
+        isolated: true,
         ..Default::default()
     };
     let (status, operation) = case
@@ -1178,6 +1180,9 @@ async fn a_branch_takes_the_projection_of_its_nearest_session_on_the_same_reposi
         let path = match parent {
             None => {
                 body["delegation"] = json!({"max_depth":3,"max_children":3,"harnesses":[]});
+                // A home of its own, which its children share: there Gemini
+                // CLI keeps the default policy.
+                body["isolated"] = json!(true);
                 "/v1/repos/code/tasks".to_owned()
             }
             Some(parent) => format!("/v1/repos/code/branches/{parent}/spawn"),

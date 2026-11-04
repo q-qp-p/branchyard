@@ -1502,6 +1502,11 @@ pub fn harness_profile(id: &str) -> Result<HarnessProfile, Error> {
         harness: profile.harness.to_owned(),
         profile: profile.id.to_owned(),
         tool_approvals: profile.driver().capabilities().tool_approvals,
+        policy_binding: match profile.composition.binding {
+            branchyard_harness::Binding::Always => PolicyBinding::Anywhere,
+            branchyard_harness::Binding::PrivateHome => PolicyBinding::PrivateHome,
+            branchyard_harness::Binding::Unverified => PolicyBinding::Unverified,
+        },
     })
 }
 
@@ -1523,6 +1528,27 @@ pub struct HarnessProfile {
     /// Whether its driver routes tool permission requests to the policy;
     /// without it, a task needs [`TaskOptions::unapproved_tools`].
     pub tool_approvals: bool,
+    /// Where it keeps a restricting policy against its harness's own
+    /// permissions; elsewhere such a run needs
+    /// [`TaskOptions::unapproved_tools`]. See
+    /// `docs/harness-integration.md#composing-with-a-harnesss-own-permissions`.
+    #[serde(default)]
+    pub policy_binding: PolicyBinding,
+}
+
+/// Where a profile keeps a restricting policy against its harness's own
+/// permissions ([`HarnessProfile::policy_binding`]).
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyBinding {
+    /// In any home.
+    Anywhere,
+    /// Only in a home Branchyard prepares: an isolated branch or a sandbox.
+    PrivateHome,
+    /// Nowhere yet: no mechanism is verified for it.
+    #[default]
+    Unverified,
 }
 
 impl Yard {

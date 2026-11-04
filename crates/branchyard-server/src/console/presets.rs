@@ -386,7 +386,12 @@ fn abilities(harness: &str) -> Abilities {
     let profile = branchyard_harness::profiles::default_for(harness)
         .or_else(|| branchyard_harness::profiles::by_id(harness));
     Abilities {
-        tool_approvals: branchyard::harness_profile(harness).is_ok_and(|p| p.tool_approvals),
+        // A console session's home is its own, where a profile that keeps
+        // the policy in a private home keeps it; one verified nowhere needs
+        // the same acknowledgement as one that routes no approvals.
+        tool_approvals: branchyard::harness_profile(harness).is_ok_and(|p| {
+            p.tool_approvals && p.policy_binding != branchyard::PolicyBinding::Unverified
+        }),
         effort: profile
             .is_some_and(|p| branchyard_provision::takes_effort(p.harness, p.protocol, true)),
     }
