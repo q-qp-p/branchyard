@@ -128,6 +128,18 @@ pub fn contract() -> Value {
     entry::<crate::workspace_api::Workspace>("workspace.Workspace", &mut types);
     entry::<crate::workspace_api::Session>("workspace.Session", &mut types);
     entry::<crate::workspace_api::StartSessionRequest>("workspace.StartSessionRequest", &mut types);
+    entry::<crate::workspace_api::Helpers>("workspace.Helpers", &mut types);
+    entry::<crate::workspace_api::GatewayState>("workspace.GatewayState", &mut types);
+    entry::<crate::workspace_api::ConnectionState>("workspace.ConnectionState", &mut types);
+    entry::<crate::workspace_api::ConnectedAccount>("workspace.ConnectedAccount", &mut types);
+    entry::<crate::workspace_api::Connection>("workspace.Connection", &mut types);
+    entry::<crate::workspace_api::ConnectionList>("workspace.ConnectionList", &mut types);
+    entry::<crate::workspace_api::ConnectRequest>("workspace.ConnectRequest", &mut types);
+    entry::<crate::workspace_api::ConnectStart>("workspace.ConnectStart", &mut types);
+    entry::<crate::workspace_api::ApiKeyRequest>("workspace.ApiKeyRequest", &mut types);
+    entry::<crate::workspace_api::SkillOption>("workspace.SkillOption", &mut types);
+    entry::<crate::workspace_api::HelperOptions>("workspace.HelperOptions", &mut types);
+    entry::<crate::workspace_api::SessionTools>("workspace.SessionTools", &mut types);
     entry::<crate::workspace_api::MessageRequest>("workspace.MessageRequest", &mut types);
     entry::<crate::workspace_api::Message>("workspace.Message", &mut types);
     entry::<crate::workspace_api::MessagePage>("workspace.MessagePage", &mut types);

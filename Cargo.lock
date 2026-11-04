@@ -943,6 +943,7 @@ dependencies = [
  "branchyard",
  "branchyard-bridge",
  "branchyard-client",
+ "branchyard-controls",
  "branchyard-harness",
  "branchyard-provision",
  "branchyard-runtime",

@@ -72,7 +72,7 @@
     }
   },
   "http": {
-    "route_count": 134,
+    "route_count": 138,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -87,6 +87,9 @@
       "/v1/app/push",
       "/v1/app/push/subscriptions",
       "/v1/app/push/test",
+      "/v1/connections",
+      "/v1/connections/{connector}/connect",
+      "/v1/connections/{connector}/key",
       "/v1/execution-presets",
       "/v1/harnesses",
       "/v1/inventory",
@@ -207,7 +210,8 @@
       "/v1/workspaces/{workspace}/sources",
       "/v1/workspaces/{workspace}/sources/{source}/content",
       "/v1/workspaces/{workspace}/sources/{source}/preview",
-      "/v1/workspaces/{workspace}/sources/{source}/preview/assets/{asset}"
+      "/v1/workspaces/{workspace}/sources/{source}/preview/assets/{asset}",
+      "/v1/workspaces/{workspace}/tools"
     ]
   },
   "runtime": {

@@ -199,6 +199,11 @@ pub struct Session {
     /// Execution preset the session started with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
+    /// What it was started with beyond its harness: `connectors` (each
+    /// `connector`, `mode`, `account`), `skills` (unset: every built-in
+    /// skill) and `helpers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<serde_json::Value>,
 }
 
 /// Admit an isolated native session through the durable queue.
@@ -254,6 +259,212 @@ pub struct StartSessionRequest {
     /// A reviewer may select this instead of artifact inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<String>,
+    /// Connectors this session may use, each as an object or the
+    /// `CONNECTOR[@ACCOUNT][:MODE[:OPS]]` form. Works beside `preset`;
+    /// refused beside `provision.connectors`. Each must be served by the
+    /// gateway, connected by the caller and within the caller's ceiling.
+    /// A reviewer's are read only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connectors: Vec<branchyard::connectors::GrantEntry>,
+    /// Built-in skills to stage, by id, from `GET
+    /// /v1/workspaces/{workspace}/tools`. Unset: every built-in skill.
+    /// Connectors bring their own skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Other harnesses this session may hand parts of its work to. Needs
+    /// the server's `allow_delegation`; refused for a reviewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Helpers>,
+}
+
+/// The harnesses a session may delegate to, one level deep.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Helpers {
+    /// Harness IDs its children may run. Empty: only its own harness.
+    #[serde(default)]
+    pub harnesses: Vec<String>,
+    /// Children it may have at once. Default 4, at most 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
+/// Whether the connector gateway answers.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayState {
+    /// It answered.
+    Ready,
+    /// This server has no `[connectors]` gateway.
+    NotConfigured,
+    /// It is configured and did not answer.
+    Unreachable,
+}
+
+/// Where the caller stands with one connector.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    /// An account is connected and usable.
+    Connected,
+    /// The provider refused a refresh; connect again.
+    NeedsReconnect,
+    /// No account is connected.
+    NotConnected,
+    /// The caller's ceiling allows nothing of it.
+    Blocked,
+    /// The gateway's status is not known.
+    Unknown,
+}
+
+/// One connected account, without any secret.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedAccount {
+    /// The account name; `default` unless the caller named one.
+    pub account: String,
+    /// `connected` or `needs_reconnect`.
+    pub state: ConnectionState,
+    /// `oauth` or `static` (an API key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// When the gateway last changed it, as it reports the time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// One connector the gateway serves, as the caller sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connection {
+    /// The connector ID a grant names.
+    pub connector: String,
+    /// Its display name.
+    pub name: String,
+    /// What it gives a session access to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The caller's overall state with it.
+    pub state: ConnectionState,
+    /// The caller's accounts.
+    #[serde(default)]
+    pub accounts: Vec<ConnectedAccount>,
+    /// The most a session may do with it under the caller's ceiling;
+    /// absent when blocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_mode: Option<branchyard::connectors::GrantMode>,
+    /// One plain sentence when it cannot be used now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `GET /v1/connections`: the caller's connections.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionList {
+    /// Whether the gateway answered.
+    pub gateway: GatewayState,
+    /// One plain sentence when it is not ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Every connector it serves.
+    pub connections: Vec<Connection>,
+}
+
+/// `POST /v1/connections/{connector}/connect`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectRequest {
+    /// The account to connect; `default` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// How to finish connecting.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectStart {
+    /// Open `url` to sign in with the provider; it expires at
+    /// `expires_at` (epoch milliseconds).
+    Oauth {
+        /// The provider's authorization URL.
+        url: String,
+        /// When the sign-in expires.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+    },
+    /// The connector takes an API key: send it to
+    /// `POST /v1/connections/{connector}/key`.
+    Key,
+}
+
+/// `POST /v1/connections/{connector}/key`: an API key or personal token
+/// for a key-based connector. The server passes it to the gateway's vault
+/// once and keeps no copy.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyRequest {
+    /// The key.
+    pub api_key: String,
+    /// The account to store it as; `default` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+impl std::fmt::Debug for ApiKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyRequest")
+            .field("api_key", &"<redacted>")
+            .field("account", &self.account)
+            .finish()
+    }
+}
+
+/// One built-in skill a session may choose.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillOption {
+    /// The ID `skills` takes.
+    pub id: String,
+    /// What it does.
+    pub description: String,
+    /// Its topic's heading.
+    pub topic: String,
+    /// The skills it brings with it.
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
+/// Whether a session may delegate, and how widely.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperOptions {
+    /// Whether `helpers` is accepted.
+    pub allowed: bool,
+    /// One plain sentence when it is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The most `max_children` may be.
+    pub max_children: u32,
+}
+
+/// `GET /v1/workspaces/{workspace}/tools`: what the caller may choose for
+/// a session here. Advice for the form; starting a session checks again.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTools {
+    /// The caller's connections.
+    pub connections: ConnectionList,
+    /// The built-in skills, in catalogue order.
+    pub skills: Vec<SkillOption>,
+    /// Delegation.
+    pub helpers: HelperOptions,
 }
 
 /// Continue, steer or resume one native session.
@@ -634,6 +845,49 @@ impl crate::Client {
             },
         );
         self.get(&path)
+    }
+
+    /// The caller's connections at the connector gateway, without secrets.
+    pub fn connections(&self) -> Result<ConnectionList, crate::Error> {
+        self.get("/v1/connections")
+    }
+
+    /// Start connecting `connector` as the caller: a sign-in URL, or word
+    /// that it takes a key ([`Self::connect_key`]).
+    pub fn connect(
+        &self,
+        connector: &str,
+        request: &ConnectRequest,
+        key: &str,
+    ) -> Result<ConnectStart, crate::Error> {
+        self.post(
+            &format!("/v1/connections/{}/connect", crate::http::encode(connector)),
+            request,
+            key,
+        )
+    }
+
+    /// Store an API key for a key-based connector in the gateway's vault.
+    pub fn connect_key(
+        &self,
+        connector: &str,
+        request: &ApiKeyRequest,
+        key: &str,
+    ) -> Result<serde_json::Value, crate::Error> {
+        self.post(
+            &format!("/v1/connections/{}/key", crate::http::encode(connector)),
+            request,
+            key,
+        )
+    }
+
+    /// What a session in `workspace` may choose: connections, built-in
+    /// skills and helpers.
+    pub fn session_tools(&self, workspace: &str) -> Result<SessionTools, crate::Error> {
+        self.get(&format!(
+            "/v1/workspaces/{}/tools",
+            crate::http::encode(workspace)
+        ))
     }
 
     /// Start a named attempt through the existing operation queue.

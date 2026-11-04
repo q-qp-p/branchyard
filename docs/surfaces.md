@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->134<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->138<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -456,6 +456,17 @@ A branch's harness calls GitHub, Slack or an internal API through Anvil's gatewa
 | `by connect CONNECTOR [--account NAME] [--api-key-stdin] [--open]` | none | local only: `anvil connect` as you, with a token naming you and granting nothing |
 | `GET /.well-known/jwks.json` | none | the server's public keys, no token; `404` without `connectors` |
 | `[connectors]` in `branchyard.toml`, `connectors` in the server configuration | none | in `schema/branchyard.config.json` and `schema/server.config.json`; a rig seat's `connectors` in `schema/rig.json` |
+
+## Added with console connections
+
+A person connects accounts and chooses, per session, its connectors, how-tos and helpers from the console; see [connecting from the console](server.md#connecting-from-the-console).
+
+| Surface | Before | Now |
+|---|---|---|
+| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | `by connect` on the server's host only | the caller's connections and connecting one through the server (`ConnectionList`, `ConnectStart`, `ApiKeyRequest`); the console's Connections page; `Client::connections`, `connect`, `connect_key`; Python `connections()`, `connect()`, `connect_key()` |
+| `GET /v1/workspaces/{workspace}/tools` (`SessionTools`) | none | what a session may choose; `Client::session_tools`; Python `session_tools()` |
+| `StartSessionRequest::connectors`, `skills`, `helpers` (`Helpers`) | `provision.connectors`, refused beside a preset | per-session connectors beside a preset, checked at admission (`connector_not_connected`, `connector_over_ceiling`, `connector_not_served`, `connectors_conflict`, `reviewer_read_only`); built-in skills; helpers as a one-level envelope; the console's Tools step; Python `start_workspace_session(connectors=, skills=, helpers=, max_helpers=)`; a session's `tools` |
+| `Provisioning::skills`, `branchyard_provision::built_in` | every built-in skill staged | only the chosen built-in skills and what they need, with indexes listing only those; `provision.skills` over HTTP; refused when unknown |
 
 ## Added with the ports
 

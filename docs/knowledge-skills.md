@@ -20,6 +20,23 @@ budget, enforced by the generator for the built-in skills and at run time for
 a repository's own (below). The canonical catalog and dependency list are
 generated into the [toolkit reference](artifact-toolkit.md).
 
+## Choosing built-in skills
+
+A task may stage only some built-in skills: `provision.skills` on a task, or
+`skills` on a console session start (the console's Tools step, "How-tos").
+Each chosen skill brings the skills it needs (`pptx` brings `artifact-tools`),
+the rest are not staged, and a skill an earlier, wider turn left in the home is
+removed. The root and topic indexes are rebuilt from the catalog in the
+generator's own format, so they list only what was staged and a topic with
+nothing staged is left out. Without a choice they are the shipped indexes, byte
+for byte. An id that is not built in is refused before the branch exists.
+
+This narrows what a harness is told about, not what it may do: a skill is
+guidance, and the branch's policy still decides every tool call. Connector skills
+follow the connector grant instead, and repository skills their own gate below.
+`crates/branchyard-provision/src/built_in.rs` holds the rule;
+`crates/branchyard/src/capabilities.rs` stages it.
+
 ## Your repository's skills
 
 A repository can carry its own skills in `.agents/skills/<name>/`, the folder

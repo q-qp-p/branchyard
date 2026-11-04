@@ -1895,6 +1895,8 @@ fn provision(
         model: seat.model.clone(),
         effort: seat.effort,
         telemetry: seat.telemetry.clone(),
+        // A rig's seats stage every built-in skill.
+        skills: None,
     }
 }
 

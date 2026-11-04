@@ -14,7 +14,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use branchyard_provision::skillset::{self, SkillEntry};
-use branchyard_provision::{apply, skills, Edit, Plan};
+use branchyard_provision::{apply, built_in, skills, Edit, Plan};
 use serde::Deserialize;
 
 use crate::skills::RepositorySet;
@@ -92,15 +92,31 @@ pub(crate) fn catalogued() -> Result<Vec<&'static skills::Skill>, String> {
 
 /// Install the embedded payload, and `repository`'s skills when given, on
 /// the host, naming paths as the guest sees them.
+///
+/// `only` is the task's choice of built-in skills
+/// ([`crate::Provisioning::skills`]): those and the skills they need are
+/// staged, the rest removed, and the indexes list only what was staged.
+/// `None` stages every built-in skill.
 pub(crate) fn stage(
     host: &Path,
     guest: &Path,
     repository: Option<&RepositorySet>,
+    only: Option<&[String]>,
 ) -> Result<Staged, String> {
+    let chosen = only.map(built_in::closure).transpose()?;
+    let indexes = built_in::indexes(chosen.as_ref())?;
     let mut plan = Plan::default();
     let mut built_in = Vec::new();
     for skill in catalogued()? {
         let directory = format!("{DIRECTORY}/{}", skill.name);
+        let staged = chosen.as_ref().is_none_or(|set| set.contains(skill.name));
+        if !staged {
+            // A narrower turn than the last removes what it does not give.
+            for stale in files_under(host, &directory)? {
+                plan.edit(&stale, false, Edit::Remove);
+            }
+            continue;
+        }
         for (path, content) in skill.files {
             plan.edit(
                 &format!("{directory}/{path}"),
@@ -116,11 +132,11 @@ pub(crate) fn stage(
     let mut custom = BTreeSet::new();
     match repository {
         None => {
-            plan.edit(&index_path, false, Edit::Put(skills::INDEX.into()));
+            plan.edit(&index_path, false, Edit::Put(indexes.root.clone()));
             plan.edit(&custom_path, false, Edit::Remove);
         }
         Some(set) => {
-            let index = skillset::custom_index(skills::INDEX, &set.skills, &set.commit)?;
+            let index = skillset::custom_index(&indexes.root, &set.skills, &set.commit)?;
             plan.edit(&index_path, false, Edit::Put(index.root));
             plan.edit(&custom_path, false, Edit::Put(index.topic));
             for skill in &set.skills {
@@ -144,12 +160,12 @@ pub(crate) fn stage(
             Edit::Put(skills::UPSTREAM_LOCK.into()),
         );
     }
-    for (path, content) in skills::TOPIC_INDEXES {
-        plan.edit(
-            &format!("{DIRECTORY}/{path}"),
-            false,
-            Edit::Put((*content).into()),
-        );
+    for (path, content) in indexes.topics {
+        let edit = match content {
+            Some(text) => Edit::Put(text),
+            None => Edit::Remove,
+        };
+        plan.edit(&format!("{DIRECTORY}/{path}"), false, edit);
     }
     let applied = apply::apply(&plan, host)
         .map_err(|e| format!("could not install document capabilities: {e}"))?;
@@ -214,7 +230,7 @@ mod tests {
     fn source_free_payload_uses_guest_paths_and_repeated_staging_is_unchanged() {
         let host = tempfile::tempdir().unwrap();
         let guest = Path::new("/guest/home");
-        let first = stage(host.path(), guest, None).unwrap();
+        let first = stage(host.path(), guest, None, None).unwrap();
         assert!(!first.written.is_empty());
         assert!(first
             .instruction
@@ -279,7 +295,42 @@ mod tests {
         );
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(report.is_object());
-        assert!(stage(host.path(), guest, None).unwrap().written.is_empty());
+        assert!(stage(host.path(), guest, None, None)
+            .unwrap()
+            .written
+            .is_empty());
+    }
+
+    /// A turn that chooses some built-in skills gets those and what they
+    /// need, an index naming only them, and nothing an earlier, wider turn
+    /// left; a later turn without a choice gets every skill back.
+    #[test]
+    fn a_chosen_set_stages_only_those_skills_and_their_needs() {
+        let host = tempfile::tempdir().unwrap();
+        let root = host.path().join(DIRECTORY);
+        stage(host.path(), host.path(), None, None).unwrap();
+        assert!(root.join("docx/SKILL.md").is_file());
+        let chosen = ["pptx".to_owned()];
+        let narrow = stage(host.path(), host.path(), None, Some(&chosen)).unwrap();
+        let names: Vec<&str> = narrow.built_in.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["artifact-tools", "pptx"]);
+        assert!(root.join("pptx/SKILL.md").is_file());
+        assert!(root.join("artifact-tools/SKILL.md").is_file());
+        assert!(!root.join("docx/SKILL.md").exists());
+        assert!(!root.join("topics/design/INDEX.md").exists());
+        let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
+        assert!(index.contains("topics/documents/INDEX.md"));
+        assert!(!index.contains("topics/design/INDEX.md"));
+        let documents = std::fs::read_to_string(root.join("topics/documents/INDEX.md")).unwrap();
+        assert!(documents.contains("[pptx]") && !documents.contains("[docx]"));
+        stage(host.path(), host.path(), None, None).unwrap();
+        assert!(root.join("docx/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
+            skills::INDEX
+        );
+        let error = stage(host.path(), host.path(), None, Some(&["nope".to_owned()])).unwrap_err();
+        assert!(error.contains("\"nope\""), "{error}");
     }
 
     fn repository_set(texts: &[(&str, &str)]) -> RepositorySet {
@@ -312,27 +363,27 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let root = host.path().join(DIRECTORY);
         let set = repository_set(&[("style", "references/a.md"), ("tone", "")]);
-        let first = stage(host.path(), host.path(), Some(&set)).unwrap();
+        let first = stage(host.path(), host.path(), Some(&set), None).unwrap();
         assert_eq!(first.built_in.len(), catalogued().unwrap().len());
         assert!(root.join("repository/style/references/a.md").is_file());
         assert!(root.join("repository/tone/SKILL.md").is_file());
         let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
         assert!(index.contains("[Custom](topics/custom/INDEX.md)"));
         assert!(root.join(skillset::CUSTOM_TOPIC).is_file());
-        assert!(stage(host.path(), host.path(), Some(&set))
+        assert!(stage(host.path(), host.path(), Some(&set), None)
             .unwrap()
             .written
             .is_empty());
 
         let smaller = repository_set(&[("style", "")]);
-        let second = stage(host.path(), host.path(), Some(&smaller)).unwrap();
+        let second = stage(host.path(), host.path(), Some(&smaller), None).unwrap();
         assert!(!root.join("repository/style/references/a.md").exists());
         assert!(!root.join("repository/tone/SKILL.md").exists());
         assert!(second
             .written
             .contains(&format!("{DIRECTORY}/repository/tone/SKILL.md")));
 
-        let none = stage(host.path(), host.path(), None).unwrap();
+        let none = stage(host.path(), host.path(), None, None).unwrap();
         assert!(!root.join("repository/style/SKILL.md").exists());
         assert!(!root.join(skillset::CUSTOM_TOPIC).exists());
         assert_eq!(
@@ -349,7 +400,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("keep.txt"), "mine").unwrap();
-        stage(host.path(), host.path(), None).unwrap();
+        stage(host.path(), host.path(), None, None).unwrap();
         std::os::unix::fs::symlink(
             outside.path(),
             host.path().join(DIRECTORY).join(skillset::REPOSITORY_ROOT),
@@ -358,7 +409,7 @@ mod tests {
         assert!(files_under(host.path(), &format!("{DIRECTORY}/repository"))
             .unwrap()
             .is_empty());
-        stage(host.path(), host.path(), None).unwrap();
+        stage(host.path(), host.path(), None, None).unwrap();
         assert!(outside.path().join("keep.txt").is_file());
     }
 
@@ -371,7 +422,7 @@ mod tests {
         );
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), state.path().join(".branchyard")).unwrap();
-        assert!(stage(state.path(), Path::new("/home/guest"), None)
+        assert!(stage(state.path(), Path::new("/home/guest"), None, None)
             .unwrap_err()
             .contains("symbolic link"));
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
@@ -391,7 +442,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), linked.path().join("state")).unwrap();
         let home = local_home(&linked.path().join("state"), "branch").unwrap();
         assert!(home.starts_with(outside.path().canonicalize().unwrap()));
-        assert!(stage(&home, &home, None).is_ok());
+        assert!(stage(&home, &home, None, None).is_ok());
         assert_eq!(
             local_home(&linked.path().join("state"), "branch").unwrap(),
             home

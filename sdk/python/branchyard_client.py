@@ -1615,9 +1615,90 @@ class Client:
         sources: Optional[Sequence[str]] = None,
         artifacts: Optional[Sequence[str]] = None,
         candidate: Optional[str] = None,
+        connectors: Optional[Grants] = None,
+        skills: Optional[Sequence[str]] = None,
+        helpers: Optional[Sequence[str]] = None,
+        max_helpers: Optional[int] = None,
         key: Optional[str] = None,
     ) -> Operation:
         """Queue an isolated writer or reviewer using the existing harness.
+        `connectors` (grants, beside a preset), `skills` (built-in skill IDs;
+        unset stages all) and `helpers` (harness IDs it may delegate to, at
+        most `max_helpers` at once) are the choices `session_tools()` offers;
+        the server checks each again."""
+        tools: JSON = {}
+        if connectors is not None:
+            tools["connectors"] = grants_json(connectors)
+        if skills is not None:
+            tools["skills"] = list(skills)
+        if helpers is not None:
+            tools["helpers"] = _drop_none({"harnesses": list(helpers), "max_children": max_helpers})
+        return self._start_workspace_session(
+            workspace,
+            name,
+            prompt,
+            harness=harness,
+            preset=preset,
+            provider=provider,
+            unapproved_tools=unapproved_tools,
+            model=model,
+            effort=effort,
+            policy=policy,
+            provision=provision,
+            result_contract=result_contract,
+            access=access,
+            sources=sources,
+            artifacts=artifacts,
+            candidate=candidate,
+            tools=tools,
+            key=key,
+        )
+
+    def connections(self) -> Record:
+        """`GET /v1/connections`: `gateway` (`ready`, `not_configured` or
+        `unreachable`) and each served connector's `state`, accounts and
+        `max_mode` for the caller. No secrets."""
+        return Record(self.get("/v1/connections"))
+
+    def connect(self, connector: str, account: Optional[str] = None) -> Record:
+        """Start connecting `connector`: `{"kind": "oauth", "url"}` to open in
+        a browser, or `{"kind": "key"}` for `connect_key`."""
+        return Record(self.post(f"/v1/connections/{_q(connector)}/connect", _drop_none({"account": account})))
+
+    def connect_key(self, connector: str, api_key: str, account: Optional[str] = None) -> Record:
+        """Store an API key for a key-based connector in the gateway's vault.
+        The server keeps no copy."""
+        body = _drop_none({"api_key": api_key, "account": account})
+        return Record(self.post(f"/v1/connections/{_q(connector)}/key", body))
+
+    def session_tools(self, workspace: str) -> Record:
+        """What a session in `workspace` may choose: `connections`, built-in
+        `skills` and `helpers`."""
+        return Record(self.get(self._workspace(workspace, "/tools")))
+
+    def _start_workspace_session(
+        self,
+        workspace: str,
+        name: str,
+        prompt: str,
+        *,
+        harness: str,
+        preset: Optional[str],
+        provider: Optional[JSON],
+        unapproved_tools: Optional[bool],
+        model: Optional[str],
+        effort: Optional[str],
+        policy: Optional[JSON],
+        provision: Optional[JSON],
+        result_contract: Optional[JSON],
+        access: str,
+        sources: Optional[Sequence[str]],
+        artifacts: Optional[Sequence[str]],
+        candidate: Optional[str],
+        tools: JSON,
+        key: Optional[str],
+    ) -> Operation:
+        """The body of `start_workspace_session`: the existing fields.
         Omitted policy retains the server's deny default. Sources and review
         artifacts are immutable IDs; candidate is an exact workspace commit.
         Provisioning names operator-known secrets and connector grants.
@@ -1644,6 +1725,7 @@ class Client:
                 "sources": list(sources) if sources is not None else None,
                 "artifacts": list(artifacts) if artifacts is not None else None,
                 "candidate": candidate,
+                **tools,
             },
             key,
             preserve_empty=True,

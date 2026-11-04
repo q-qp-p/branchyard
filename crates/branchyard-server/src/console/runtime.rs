@@ -567,6 +567,7 @@ fn start_once(
         }
         provision.effort = Some(effort);
     }
+    let chosen = chosen_tools(app, caller, &body, access, &mut provision)?;
     let policy = match body.get("policy").filter(|value| !value.is_null()) {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| ApiError::bad_request(error.to_string()))?,
@@ -608,6 +609,8 @@ fn start_once(
         policy,
         provision: Some(provision),
         result,
+        allow_delegation: chosen.delegation.is_some(),
+        delegation: chosen.delegation.clone(),
         ..Default::default()
     };
     match preset.as_ref() {
@@ -631,7 +634,7 @@ fn start_once(
         Collection::Sessions,
         &sid,
         caller,
-        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"created_at_ms":branchyard_support::time::now_ms()}),
+        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"created_at_ms":branchyard_support::time::now_ms()}),
     );
     let mutations = vec![
         insert(row),
@@ -652,6 +655,112 @@ fn start_once(
         mutations,
     )
 }
+/// What a start chose beyond its harness: connectors, built-in skills and
+/// helpers, checked and written into `provision`, with the envelope its
+/// helpers need and the view the session row keeps.
+struct Chosen {
+    delegation: Option<branchyard::Envelope>,
+    view: Value,
+}
+
+fn chosen_tools(
+    app: &App,
+    caller: &Caller,
+    body: &Value,
+    access: &str,
+    provision: &mut branchyard::Provisioning,
+) -> Result<Chosen, ApiError> {
+    let field = |key: &str| body.get(key).filter(|value| !value.is_null()).cloned();
+    let connectors: Vec<branchyard::connectors::GrantEntry> = field("connectors")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid connectors: {error}")))?
+        .unwrap_or_default();
+    if !connectors.is_empty() {
+        if !provision.connectors.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "connectors_conflict",
+                "give connectors or provision.connectors, not both",
+            ));
+        }
+        if access == "reviewer"
+            && connectors
+                .iter()
+                .any(|e| e.mode != branchyard::connectors::GrantMode::Read)
+        {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "reviewer_read_only",
+                "A reviewer reads only, so its connectors are read only.",
+            ));
+        }
+        super::connections::admit(app, caller, &connectors)?;
+        provision.connectors = connectors;
+    }
+    let skills: Option<Vec<String>> = field("skills")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid skills: {error}")))?;
+    if let Some(skills) = &skills {
+        branchyard_provision::built_in::check(skills)
+            .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why))?;
+        provision.skills = Some(skills.clone());
+    }
+    let helpers: Option<branchyard_client::workspace_api::Helpers> = field("helpers")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid helpers: {error}")))?;
+    let delegation = match &helpers {
+        None => None,
+        Some(_) if access == "reviewer" => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "reviewer_read_only",
+                "A reviewer reads only, so it cannot hand work to helpers.",
+            ))
+        }
+        Some(helpers) => {
+            let max_children = helpers
+                .max_children
+                .unwrap_or(super::connections::DEFAULT_HELPERS);
+            if !(1..=super::connections::MAX_HELPERS).contains(&max_children) {
+                return Err(ApiError::bad_request(format!(
+                    "helpers.max_children must be from 1 to {}",
+                    super::connections::MAX_HELPERS
+                )));
+            }
+            if let Some(unknown) = helpers.harnesses.iter().find(|h| {
+                branchyard_harness::profiles::by_id(h).is_none()
+                    && branchyard_harness::profiles::default_for(h).is_none()
+            }) {
+                return Err(ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "harness_unavailable",
+                    format!("{unknown} is not a harness this server knows"),
+                )
+                .detail(json!({ "harness": unknown })));
+            }
+            Some(branchyard::Envelope {
+                max_depth: 1,
+                max_children,
+                harnesses: helpers.harnesses.clone(),
+                ..branchyard::Envelope::default()
+            })
+        }
+    };
+    let view = json!({
+        "connectors": provision.connectors.iter().map(|e| json!({
+            "connector": e.connector,
+            "mode": e.mode,
+            "account": e.account,
+        })).collect::<Vec<_>>(),
+        "skills": skills,
+        "helpers": helpers,
+    });
+    Ok(Chosen { delegation, view })
+}
+
 fn review_candidate(
     app: &App,
     caller: &Caller,

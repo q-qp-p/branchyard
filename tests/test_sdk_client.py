@@ -996,6 +996,71 @@ class WorkspaceRequests(unittest.TestCase):
             query=None,
         )
 
+    def test_connections_and_session_tools_reach_their_routes(self):
+        c = self.client
+        listed = self.assert_request(
+            c.connections,
+            {"gateway": "ready", "connections": [{"connector": "atlassian", "state": "connected"}]},
+            "GET",
+            "/v1/connections",
+            query=None,
+        )
+        self.assertEqual(listed.connections[0]["state"], "connected")
+        self.assert_request(
+            lambda: c.connect("github"),
+            {"kind": "oauth", "url": "https://github.com/login"},
+            "POST",
+            "/v1/connections/github/connect",
+            {},
+            key=None,
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.connect_key("linear", "secret", account="work"),
+            {"connected": True},
+            "POST",
+            "/v1/connections/linear/key",
+            {"api_key": "secret", "account": "work"},
+            key=None,
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.session_tools("w1"),
+            {"skills": [], "helpers": {"allowed": False}},
+            "GET",
+            "/v1/workspaces/w1/tools",
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.start_workspace_session(
+                "w1",
+                "Brief",
+                "Summarise the epic",
+                harness="codex",
+                preset="substrate-gke",
+                connectors=["atlassian"],
+                skills=["docx"],
+                helpers=["claude-code"],
+                max_helpers=2,
+                key="tools",
+            ),
+            self.operation(),
+            "POST",
+            "/v1/workspaces/w1/sessions",
+            {
+                "name": "Brief",
+                "prompt": "Summarise the epic",
+                "harness": "codex",
+                "preset": "substrate-gke",
+                "access": "writer",
+                "connectors": [{"connector": "atlassian", "operations": ["*"], "mode": "read"}],
+                "skills": ["docx"],
+                "helpers": {"harnesses": ["claude-code"], "max_children": 2},
+            },
+            key="tools",
+            query=None,
+        )
+
     def test_native_messages_cancellation_lifecycle_and_acceptance_keep_their_contracts(self):
         c = self.client
         page = {"messages": [{"id": "s1:4", "role": "assistant", "text": "Evidence", "time": 12}], "next_cursor": "5"}
@@ -3555,6 +3620,10 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     ],
     "/v1/workspaces/{workspace}/sessions/{session}/cancel": [lambda c, _r: c.cancel_workspace_session("w1", "s1")],
     "/v1/execution-presets": [lambda c, _r: c.execution_presets(), lambda c, _r: c.execution_presets("w1")],
+    "/v1/connections": [lambda c, _r: c.connections()],
+    "/v1/connections/{connector}/connect": [lambda c, _r: c.connect("github")],
+    "/v1/connections/{connector}/key": [lambda c, _r: c.connect_key("linear", "key")],
+    "/v1/workspaces/{workspace}/tools": [lambda c, _r: c.session_tools("w1")],
     "/v1/workspaces/{workspace}/actions/{action}": [lambda c, _r: c.workspace_action("w1", "archive", revision=1)],
     "/v1/workspaces/{workspace}/finalize": [lambda c, _r: c.finalize_workspace("w1", ["a1"], revision=1)],
     "/v1/workspaces/{workspace}/members": [lambda c, _r: c.workspace_members("w1")],

@@ -214,6 +214,25 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 
 A branch's token names the principal that created it (`sub` its name, `by_tenant` its tenant; forks and delegated children keep their parent's) and the branch as `<repo>/<branch>`, so one gateway and one audit log can serve every repository; each repository's poller records only its own lines. A request naming connectors on a server without `connectors` is `403 connectors_not_configured`. Requests choose grants freely within what they ask for: the gateway enforces each grant against the person's own connected accounts, and a delegated child's is narrowed to its parent's. `by connect` and `by gateway` act locally only.
 
+### Connecting from the console
+
+A person connects their own accounts through the server, so nobody needs a terminal on its host. The server signs the caller's connect token (`by_purpose: "connect"`, ten minutes, the subject and tenant the caller's console turns carry, so the account connected is the one their sessions use) and asks the gateway's connect routes for them. The token never leaves the server; an API key passes through once to the gateway's vault and is not kept, logged or answered back.
+
+| Route | What it does | Scope |
+|---|---|---|
+| `GET /v1/connections` | `gateway` (`ready`, `not_configured`, `unreachable`) and, for each connector the gateway serves, the caller's `state` (`connected`, `needs_reconnect`, `not_connected`, `blocked` by their ceiling, `unknown` while the gateway does not answer), `accounts`, `max_mode` under their ceiling and a plain `reason` | `read` |
+| `POST /v1/connections/{connector}/connect` | `{"account"?}`: `{"kind": "oauth", "url", "expires_at"}` to open in a browser, or `{"kind": "key"}` | `run` |
+| `POST /v1/connections/{connector}/key` | `{"api_key", "account"?}`: stores a key for a key-based connector; answers `{"connected", "connector", "account"}` | `run` |
+| `GET /v1/workspaces/{workspace}/tools` | What a session form offers: `connections` (as above), the built-in `skills` (id, description, topic, what each brings), and `helpers` (`allowed`, `reason`, `max_children`) | `read` on the workspace |
+
+A console session start (`POST /v1/workspaces/{workspace}/sessions`) takes three more fields, all optional and all checked again at admission:
+
+- `connectors`: grants in the object or `CONNECTOR[@ACCOUNT][:MODE[:OPS]]` form. They sit beside a `preset` (unlike `provision`, which a preset refuses) and are refused beside `provision.connectors`. Each must be served by the gateway, within the caller's ceiling and connected by the caller; a reviewer's are read only.
+- `skills`: the built-in skills to stage, by id; each brings the skills it needs, and the harness's skill index lists only those ([knowledge skills](knowledge-skills.md#choosing-built-in-skills)). Unset: every built-in skill.
+- `helpers`: `{"harnesses", "max_children"?}`, the harnesses the session may delegate to, one level deep, at most 16 at once (default 4). It needs `allow_delegation`; with a preset, each harness must be one the preset offers; a reviewer has none.
+
+The session row keeps what it chose as `tools`, which the console shows beside the session.
+
 ## Approvals
 
 `"approvals"` sets the layers of [approvals](effects.md#approvals) the server holds: `admin`, the administrator's locked policy, which nothing below it can loosen and which alone may change how deletions are treated; and `people`, each principal's own policy by name. A seat's policy comes with the request (`provision.approvals`).
@@ -555,7 +574,14 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `unsupported_media_type` | 415 | `POST` body not declared as JSON |
 | `body_too_large` | 413 | Body over `max_body_bytes`, or an artifact upload over `max_artifact_bytes`; `detail.limit` |
 | `command_not_allowed` | 403 | A request `command`, or `provision.mcp_servers`, on a server that does not allow client commands |
-| `connectors_not_configured` | 403 | `provision.connectors` on a server without `connectors` |
+| `connectors_not_configured` | 403 | `provision.connectors`, a session's `connectors`, or a connect route, on a server without `connectors` |
+| `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
+| `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
+| `connector_over_ceiling` | 403 | A connector, or a write, beyond the caller's ceiling; `detail.connector`, and `detail.max_mode` when reads are allowed |
+| `connector_not_connected` | 409 | A session's connector the caller has not connected, or must reconnect; `detail.connector`, `detail.account`, `detail.action` (`connect`) |
+| `gateway_unreachable`, `gateway_refused`, `gateway_unexpected` | 502 | The connector gateway did not answer, refused a connect call (`detail.status`, `detail.code`), or answered something else |
+| `skill_unknown` | 422 | A session's `skills` names one that is not built in; the message lists those that are |
+| `reviewer_read_only` | 422 | A reviewer session asking for a connector write or helpers |
 | `secret_not_allowed` | 403 | A `provision.secrets` name the server's operator did not define; `detail.secret` |
 | `provider_not_allowed` | 403 | A provider the server's operator did not allow; `detail.provider` |
 | `preset_required` | 400 | A workspace session start without `preset` on a server with `require_workspace_execution_presets` |
@@ -579,7 +605,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `invalid_name`, `unknown_harness` | 400 | SDK refusals |
 | `denied` | 403 | The envelope or authority refused a delegation operation, as `by --json` reports `denied` |
 | `remote_error` | 502 | An error the engine running a delegating turn returned through its broker; `detail.kind` is its kind |
-| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`, and the refusal of a profile that cannot keep a restricting policy against its harness's own permissions is `unsupported` with `detail` `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}` ([composing](harness-integration.md#composing-with-a-harnesss-own-permissions)); check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
+| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals, and a session's `helpers` naming a harness this server does not know (`detail.harness`) (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`, and the refusal of a profile that cannot keep a restricting policy against its harness's own permissions is `unsupported` with `detail` `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}` ([composing](harness-integration.md#composing-with-a-harnesss-own-permissions)); check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
 
 ## Published schema
 
@@ -887,6 +913,8 @@ fields. Poll the existing operation route to determine its outcome.
 | `GET /v1/workspaces/{workspace}` | Read revision, task binding, sessions, source provenance, members, accepted outputs, and capabilities |
 | `GET /v1/workspaces/{workspace}/sessions` | Derive named session views from native attempts and operations |
 | `GET /v1/execution-presets?workspace=ID` | List the [execution presets](#execution-presets) offered to the caller's tenant, with readiness and, with a workspace, `can_start` |
+| `GET /v1/workspaces/{workspace}/tools` | The connections, built-in skills and helpers a session here may choose ([connecting from the console](#connecting-from-the-console)) |
+| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | The caller's connections, and connecting one ([connecting from the console](#connecting-from-the-console)) |
 | `POST /v1/workspaces/{workspace}/sessions` | Start `{name,prompt,harness,preset?,model?,effort?,result_contract?,access,sources?,artifacts?}` |
 | `GET /v1/workspaces/{workspace}/sessions/{session}/messages?after=CURSOR` | Read native prompt, output, and steering text with a cursor |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/messages` | Continue `{prompt,action:"send"|"resume"|"steer"}` in the same native attempt |

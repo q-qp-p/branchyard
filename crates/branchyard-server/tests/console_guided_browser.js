@@ -173,7 +173,7 @@ const same = (got, want, what) => {
   if (!detail.members.some((m) => m.subject === 'viewer' && m.role === 'viewer')) throw new Error(`the viewer is not a member: ${JSON.stringify(detail.members)}`);
   say('SOURCES');
 
-  const radios = form.getByRole('radio');
+  const radios = form.locator('#sf-environments').getByRole('radio');
   await radios.nth(2).waitFor();
   same(await radios.evaluateAll((rs) => rs.map((r) => r.value)), PRESETS, 'the environments offered');
   const discovered = (await callApi(page, 'GET', `/v1/execution-presets?workspace=${ws}`)).body;

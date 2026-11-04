@@ -43,6 +43,7 @@ pub(crate) fn router() -> Router<Shared> {
         .merge(super::sources::router())
         .merge(super::previews::router())
         .merge(super::collaboration::router())
+        .merge(super::connections::router())
 }
 pub(super) fn project_access(
     app: &App,
@@ -378,7 +379,10 @@ async fn start_session(
 ) -> Result<Json<Value>, ApiError> {
     let body =
         serde_json::to_value(request).map_err(|error| ApiError::internal(error.to_string()))?;
-    super::runtime::start(&app, &caller, &wid, &headers, body).map(Json)
+    // Off the async runtime: admitting connectors asks the gateway.
+    crate::api::blocking(move || super::runtime::start(&app, &caller, &wid, &headers, body))
+        .await?
+        .map(Json)
 }
 async fn execution_presets(
     State(app): State<Shared>,

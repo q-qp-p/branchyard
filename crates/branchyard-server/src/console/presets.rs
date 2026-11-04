@@ -714,6 +714,14 @@ fn choose(
             return Err(unavailable("effort", effort, Vec::new()));
         }
     }
+    // A helper runs where the session does, so it must be one the preset
+    // offers.
+    for helper in request.helpers.iter().flat_map(|h| &h.harnesses) {
+        if !preset.harnesses.iter().any(|h| &h.harness == helper) {
+            let allowed = preset.harnesses.iter().map(|h| h.harness.clone()).collect();
+            return Err(unavailable("helper harness", helper, allowed));
+        }
+    }
     Ok(model)
 }
 
@@ -1162,6 +1170,25 @@ mod tests {
         assert_eq!(
             chosen(json!({"harness":"codex","effort":"high"})),
             Some("gpt-small".into())
+        );
+        // Helpers run where the session does: only harnesses the preset
+        // offers.
+        assert_eq!(
+            chosen(json!({"harness":"codex","helpers":{"harnesses":["claude-code"]}})),
+            Some("gpt-small".into())
+        );
+        assert_eq!(
+            refused(
+                &gke,
+                json!({"harness":"codex","helpers":{"harnesses":["gemini-cli"]}})
+            )
+            .2,
+            json!({"field":"helper harness","allowed":["antigravity","codex","claude-code"]})
+        );
+        assert_eq!(
+            chosen(json!({"harness":"codex","connectors":["atlassian"]})),
+            Some("gpt-small".into()),
+            "connectors sit beside a preset, unlike provision"
         );
         for conflict in [
             json!({"harness":"antigravity","provider":{"kind":"local"}}),

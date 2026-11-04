@@ -208,6 +208,9 @@ pub(crate) fn check(spec: Option<&Provisioning>, private_home: bool) -> Result<(
     if let Some(approvals) = &spec.approvals {
         approvals.check().or_else(refuse)?;
     }
+    if let Some(skills) = &spec.skills {
+        branchyard_provision::built_in::check(skills).or_else(refuse)?;
+    }
     if !spec.connectors.is_empty() && !private_home {
         return refuse(
             "connectors are placed only into a home private to the branch; run it --isolated \
@@ -378,7 +381,12 @@ pub(crate) fn prepare(
         crate::skills::ForTurn::Staged(set) => Some(set),
         crate::skills::ForTurn::Nothing | crate::skills::ForTurn::Withheld(_) => None,
     };
-    let capabilities = crate::capabilities::stage(&capability_home, capability_guest, repository)?;
+    let capabilities = crate::capabilities::stage(
+        &capability_home,
+        capability_guest,
+        repository,
+        spec.skills.as_deref(),
+    )?;
     let skill_set = crate::skills::skill_set(capabilities.built_in, skills);
     // Branchyard's own server first, then the task's, with the variables
     // they take from secrets. A sandboxed harness gets Branchyard's over

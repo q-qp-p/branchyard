@@ -116,6 +116,8 @@ What a branch holds is visible: `by inspect` prints its grant as `connectors`, `
 
 A grant needs a home private to the branch (`--isolated` or a sandbox provider), as secrets do: a request without one is refused before a branch exists.
 
+**From the console.** A person connects their own accounts from the console's **Connections** page and picks, per session, which connectors it may use and whether each may make changes; the server signs their connect token and calls the gateway's connect routes for them, and checks each session's connectors at admission (served, within their ceiling, connected). See [connecting from the console](server.md#connecting-from-the-console) and the [console](companion.md#connections).
+
 **Narrower only.** A delegated child's grant is computed from what it asks for (`by spawn --connector`, `Spawn::connectors`, the MCP `spawn` tool's `connectors`, `branchyard.spawn(..., connectors=[...])`), else its seat's `connectors` (a seat without any gets none), else its parent's, and is always intersected with its parent's grant: each entry is cut to the operations, mode, confirmation and account both allow. An entry the parent allows nothing of is refused by name (`denied`), rather than silently dropped. A send that gives a delegated child a new grant is narrowed the same way, whoever sends it. A rig is checked when it is planned: a seat's grant must be within its parent seat's. Glob intersection is sound but not complete: when Branchyard cannot tell that one glob covers another it keeps neither, so a grant can come out narrower than strictly necessary, never wider.
 
 ### Keys and tokens
@@ -234,6 +236,7 @@ Built in Anvil (ADR-0029 there, `docs/branchyard.md`): the `branchyard` inbound 
 - Effects, approvals and undo are Branchyard's side only until Anvil declares effects; see [effects](effects.md#what-is-not-done).
 - Egress enforcement for sandboxes (above), and any check of the sandbox addresses on a KVM host or a Substrate cluster.
 - A real harness using a connector: the end-to-end test drives the packaged SDK from the fake agent's shell.
+- A real sign-in from the console: its connect calls are tested against a mock of the gateway's connect routes, shaped after Anvil's `serve-fleet-http.ts` (hermetic), not against a running gateway or a provider. Disconnecting an account needs a gateway route that does not exist yet.
 - Codex's shell commands and `ANVIL_GATEWAY_TOKEN_FILE`: Codex drops variables named like `*TOKEN*` from the environment of the commands it runs by default ([delegation](delegation.md#what-a-delegated-harness-gets)), so a Codex harness on a granted branch would have the variable and its packaged CLI would not. Not tested and not changed; Codex's `shell_environment_policy.set` could name it.
 - The gateway as an MCP server of the harness's own, for a harness without a shell ([above](#files-in-the-harness-home-anvil-packages-branchyard-places)): every harness Branchyard drives reaches it through its shell.
 - One gateway per host for several local repositories: each local yard runs its own (`by gateway` per repository) with its own issuer and keys.

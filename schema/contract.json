@@ -1249,6 +1249,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -3095,6 +3105,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -7263,6 +7283,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -8181,6 +8211,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -14773,6 +14813,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -16295,6 +16345,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -17656,6 +17716,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -28891,6 +28961,9 @@
                 "null"
               ],
               "description": "Execution preset the session started with."
+            },
+            "tools": {
+              "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
             }
           },
           "required": [
@@ -29196,6 +29269,9 @@
             "null"
           ],
           "description": "Execution preset the session started with."
+        },
+        "tools": {
+          "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
         }
       },
       "required": [
@@ -29419,6 +29495,34 @@
             "null"
           ],
           "description": "Exact immutable candidate commit from this workspace's native task.\nA reviewer may select this instead of artifact inputs."
+        },
+        "connectors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GrantEntry"
+          },
+          "description": "Connectors this session may use, each as an object or the\n`CONNECTOR[@ACCOUNT][:MODE[:OPS]]` form. Works beside `preset`;\nrefused beside `provision.connectors`. Each must be served by the\ngateway, connected by the caller and within the caller's ceiling.\nA reviewer's are read only."
+        },
+        "skills": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Built-in skills to stage, by id, from `GET\n/v1/workspaces/{workspace}/tools`. Unset: every built-in skill.\nConnectors bring their own skills."
+        },
+        "helpers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Helpers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Other harnesses this session may hand parts of its work to. Needs\nthe server's `allow_delegation`; refused for a reviewer."
         }
       },
       "required": [
@@ -30232,6 +30336,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -30673,6 +30787,894 @@
             }
           ],
           "description": "An attempt has isolated writing or constrained review access."
+        },
+        "Helpers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "harnesses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Harness IDs its children may run. Empty: only its own harness.",
+              "default": []
+            },
+            "max_children": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "Children it may have at once. Default 4, at most 16."
+            }
+          },
+          "description": "The harnesses a session may delegate to, one level deep."
+        }
+      }
+    },
+    "workspace.Helpers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Harness IDs its children may run. Empty: only its own harness.",
+          "default": []
+        },
+        "max_children": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Children it may have at once. Default 4, at most 16."
+        }
+      },
+      "description": "The harnesses a session may delegate to, one level deep.",
+      "title": "Helpers",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.GatewayState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ready",
+          "description": "It answered."
+        },
+        {
+          "type": "string",
+          "const": "not_configured",
+          "description": "This server has no `[connectors]` gateway."
+        },
+        {
+          "type": "string",
+          "const": "unreachable",
+          "description": "It is configured and did not answer."
+        }
+      ],
+      "description": "Whether the connector gateway answers.",
+      "title": "GatewayState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ConnectionState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "connected",
+          "description": "An account is connected and usable."
+        },
+        {
+          "type": "string",
+          "const": "needs_reconnect",
+          "description": "The provider refused a refresh; connect again."
+        },
+        {
+          "type": "string",
+          "const": "not_connected",
+          "description": "No account is connected."
+        },
+        {
+          "type": "string",
+          "const": "blocked",
+          "description": "The caller's ceiling allows nothing of it."
+        },
+        {
+          "type": "string",
+          "const": "unknown",
+          "description": "The gateway's status is not known."
+        }
+      ],
+      "description": "Where the caller stands with one connector.",
+      "title": "ConnectionState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ConnectedAccount": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string",
+          "description": "The account name; `default` unless the caller named one."
+        },
+        "state": {
+          "$ref": "#/$defs/ConnectionState",
+          "description": "`connected` or `needs_reconnect`."
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`oauth` or `static` (an API key)."
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "When the gateway last changed it, as it reports the time."
+        }
+      },
+      "required": [
+        "account",
+        "state"
+      ],
+      "description": "One connected account, without any secret.",
+      "title": "ConnectedAccount",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        }
+      }
+    },
+    "workspace.Connection": {
+      "type": "object",
+      "properties": {
+        "connector": {
+          "type": "string",
+          "description": "The connector ID a grant names."
+        },
+        "name": {
+          "type": "string",
+          "description": "Its display name."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What it gives a session access to."
+        },
+        "state": {
+          "$ref": "#/$defs/ConnectionState",
+          "description": "The caller's overall state with it."
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConnectedAccount"
+          },
+          "description": "The caller's accounts.",
+          "default": []
+        },
+        "max_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GrantMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The most a session may do with it under the caller's ceiling;\nabsent when blocked."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One plain sentence when it cannot be used now."
+        }
+      },
+      "required": [
+        "connector",
+        "name",
+        "state"
+      ],
+      "description": "One connector the gateway serves, as the caller sees it.",
+      "title": "Connection",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        },
+        "ConnectedAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "string",
+              "description": "The account name; `default` unless the caller named one."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "`connected` or `needs_reconnect`."
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`oauth` or `static` (an API key)."
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When the gateway last changed it, as it reports the time."
+            }
+          },
+          "required": [
+            "account",
+            "state"
+          ],
+          "description": "One connected account, without any secret."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.ConnectionList": {
+      "type": "object",
+      "properties": {
+        "gateway": {
+          "$ref": "#/$defs/GatewayState",
+          "description": "Whether the gateway answered."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One plain sentence when it is not ready."
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Connection"
+          },
+          "description": "Every connector it serves."
+        }
+      },
+      "required": [
+        "gateway",
+        "connections"
+      ],
+      "description": "`GET /v1/connections`: the caller's connections.",
+      "title": "ConnectionList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "GatewayState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "It answered."
+            },
+            {
+              "type": "string",
+              "const": "not_configured",
+              "description": "This server has no `[connectors]` gateway."
+            },
+            {
+              "type": "string",
+              "const": "unreachable",
+              "description": "It is configured and did not answer."
+            }
+          ],
+          "description": "Whether the connector gateway answers."
+        },
+        "Connection": {
+          "type": "object",
+          "properties": {
+            "connector": {
+              "type": "string",
+              "description": "The connector ID a grant names."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its display name."
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What it gives a session access to."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "The caller's overall state with it."
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectedAccount"
+              },
+              "description": "The caller's accounts.",
+              "default": []
+            },
+            "max_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The most a session may do with it under the caller's ceiling;\nabsent when blocked."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "One plain sentence when it cannot be used now."
+            }
+          },
+          "required": [
+            "connector",
+            "name",
+            "state"
+          ],
+          "description": "One connector the gateway serves, as the caller sees it."
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        },
+        "ConnectedAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "string",
+              "description": "The account name; `default` unless the caller named one."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "`connected` or `needs_reconnect`."
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`oauth` or `static` (an API key)."
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When the gateway last changed it, as it reports the time."
+            }
+          },
+          "required": [
+            "account",
+            "state"
+          ],
+          "description": "One connected account, without any secret."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.ConnectRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The account to connect; `default` when unset."
+        }
+      },
+      "description": "`POST /v1/connections/{connector}/connect`.",
+      "title": "ConnectRequest",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ConnectStart": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "The provider's authorization URL."
+            },
+            "expires_at": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When the sign-in expires."
+            },
+            "kind": {
+              "type": "string",
+              "const": "oauth"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "description": "Open `url` to sign in with the provider; it expires at\n`expires_at` (epoch milliseconds)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "key"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "The connector takes an API key: send it to\n`POST /v1/connections/{connector}/key`."
+        }
+      ],
+      "description": "How to finish connecting.",
+      "title": "ConnectStart",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ApiKeyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": "string",
+          "description": "The key."
+        },
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The account to store it as; `default` when unset."
+        }
+      },
+      "required": [
+        "api_key"
+      ],
+      "description": "`POST /v1/connections/{connector}/key`: an API key or personal token\nfor a key-based connector. The server passes it to the gateway's vault\nonce and keeps no copy.",
+      "title": "ApiKeyRequest",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.SkillOption": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The ID `skills` takes."
+        },
+        "description": {
+          "type": "string",
+          "description": "What it does."
+        },
+        "topic": {
+          "type": "string",
+          "description": "Its topic's heading."
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The skills it brings with it.",
+          "default": []
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "topic"
+      ],
+      "description": "One built-in skill a session may choose.",
+      "title": "SkillOption",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.HelperOptions": {
+      "type": "object",
+      "properties": {
+        "allowed": {
+          "type": "boolean",
+          "description": "Whether `helpers` is accepted."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One plain sentence when it is not."
+        },
+        "max_children": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The most `max_children` may be."
+        }
+      },
+      "required": [
+        "allowed",
+        "max_children"
+      ],
+      "description": "Whether a session may delegate, and how widely.",
+      "title": "HelperOptions",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.SessionTools": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "$ref": "#/$defs/ConnectionList",
+          "description": "The caller's connections."
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SkillOption"
+          },
+          "description": "The built-in skills, in catalogue order."
+        },
+        "helpers": {
+          "$ref": "#/$defs/HelperOptions",
+          "description": "Delegation."
+        }
+      },
+      "required": [
+        "connections",
+        "skills",
+        "helpers"
+      ],
+      "description": "`GET /v1/workspaces/{workspace}/tools`: what the caller may choose for\na session here. Advice for the form; starting a session checks again.",
+      "title": "SessionTools",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ConnectionList": {
+          "type": "object",
+          "properties": {
+            "gateway": {
+              "$ref": "#/$defs/GatewayState",
+              "description": "Whether the gateway answered."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "One plain sentence when it is not ready."
+            },
+            "connections": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Connection"
+              },
+              "description": "Every connector it serves."
+            }
+          },
+          "required": [
+            "gateway",
+            "connections"
+          ],
+          "description": "`GET /v1/connections`: the caller's connections."
+        },
+        "GatewayState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "It answered."
+            },
+            {
+              "type": "string",
+              "const": "not_configured",
+              "description": "This server has no `[connectors]` gateway."
+            },
+            {
+              "type": "string",
+              "const": "unreachable",
+              "description": "It is configured and did not answer."
+            }
+          ],
+          "description": "Whether the connector gateway answers."
+        },
+        "Connection": {
+          "type": "object",
+          "properties": {
+            "connector": {
+              "type": "string",
+              "description": "The connector ID a grant names."
+            },
+            "name": {
+              "type": "string",
+              "description": "Its display name."
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What it gives a session access to."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "The caller's overall state with it."
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectedAccount"
+              },
+              "description": "The caller's accounts.",
+              "default": []
+            },
+            "max_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The most a session may do with it under the caller's ceiling;\nabsent when blocked."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "One plain sentence when it cannot be used now."
+            }
+          },
+          "required": [
+            "connector",
+            "name",
+            "state"
+          ],
+          "description": "One connector the gateway serves, as the caller sees it."
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        },
+        "ConnectedAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "string",
+              "description": "The account name; `default` unless the caller named one."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "`connected` or `needs_reconnect`."
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`oauth` or `static` (an API key)."
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When the gateway last changed it, as it reports the time."
+            }
+          },
+          "required": [
+            "account",
+            "state"
+          ],
+          "description": "One connected account, without any secret."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "SkillOption": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "The ID `skills` takes."
+            },
+            "description": {
+              "type": "string",
+              "description": "What it does."
+            },
+            "topic": {
+              "type": "string",
+              "description": "Its topic's heading."
+            },
+            "requires": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "The skills it brings with it.",
+              "default": []
+            }
+          },
+          "required": [
+            "id",
+            "description",
+            "topic"
+          ],
+          "description": "One built-in skill a session may choose."
+        },
+        "HelperOptions": {
+          "type": "object",
+          "properties": {
+            "allowed": {
+              "type": "boolean",
+              "description": "Whether `helpers` is accepted."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "One plain sentence when it is not."
+            },
+            "max_children": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most `max_children` may be."
+            }
+          },
+          "required": [
+            "allowed",
+            "max_children"
+          ],
+          "description": "Whether a session may delegate, and how widely."
         }
       }
     },
@@ -33544,6 +34546,9 @@
                 "null"
               ],
               "description": "Execution preset the session started with."
+            },
+            "tools": {
+              "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
             }
           },
           "required": [
@@ -33867,6 +34872,9 @@
                 "null"
               ],
               "description": "Execution preset the session started with."
+            },
+            "tools": {
+              "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
             }
           },
           "required": [
@@ -60669,6 +61677,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -62885,6 +63903,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -65120,6 +66148,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -67351,6 +68389,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -69924,6 +70972,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -72280,6 +73338,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -74494,6 +75562,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -76721,6 +77799,16 @@
                 }
               ],
               "description": "The seat's or rig's approval policy for tools and connector\noperations (allow, ask, block or stage); see `docs/effects.md`. A\ndelegated child's is held within its parent's: it may only be\nstricter."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."

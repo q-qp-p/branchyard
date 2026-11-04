@@ -366,6 +366,14 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
         None
     );
     assert_eq!(client.workspaces(Some(&project.id)).unwrap().len(), 1);
+    // The typed client reads connections and the session form's tools.
+    assert_eq!(
+        client.connections().unwrap().gateway,
+        branchyard_client::workspace_api::GatewayState::NotConfigured
+    );
+    let tools = client.session_tools(&workspace.id).unwrap();
+    assert!(tools.skills.iter().any(|s| s.id == "docx"));
+    assert!(!tools.helpers.allowed);
     let started = client
         .start_workspace_session(
             &workspace.id,
@@ -385,6 +393,9 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
                 sources: None,
                 artifacts: None,
                 candidate: None,
+                connectors: Vec::new(),
+                skills: None,
+                helpers: None,
             },
             "typed-session",
         )

@@ -1014,6 +1014,7 @@
     triggers: renderTriggers,
     queue: renderQueue,
     settings: renderSettings,
+    connections: renderConnections,
     newProject: renderNewProject,
     project: renderProject,
     workspace: renderWorkspace,
@@ -2976,7 +2977,7 @@
   // Everything the new-session form offers for a draft, what is closed and
   // why, and the first thing still missing. Pure: the form draws it and
   // Start checks it.
-  function startChoices(environments, roles, draft, outputs) {
+  function startChoices(environments, roles, draft, outputs, tools = { state: 'loading' }) {
     const envs = environments.list.map((env) => ({ env, why: env.canStart ? null : 'Your role in this workspace cannot start sessions here.' }));
     const open = envs.filter((e) => !e.why);
     const picked = open.find((e) => e.env.key === draft.env) || (open.length === 1 ? open[0] : null);
@@ -3023,20 +3024,21 @@
         return { field: 'harness', text: typed ? 'Type a harness this server runs.' : usable.length ? 'Choose a harness.' : `No harness in ${env.label} can start a session for your role; choose another environment.` };
       }
       if (acknowledgement && !draft.ack) return { field: 'ack', text: `Tick “I accept tools without per-tool approval” to start ${harness.id} as a writer, or choose another harness.` };
-      if (!draft.name.trim()) return { field: 'name', text: 'Name the session.' };
-      if (!draft.prompt.trim()) return { field: 'prompt', text: 'Give it a first prompt.' };
+      if (!draft.prompt.trim()) return { field: 'prompt', text: 'Say what it should do.' };
+      if (t.blocked) return { field: 'tools', text: `${t.blocked.x.name}: ${t.blocked.why} Connect it or remove it under Tools.` };
       if (value === 'reviewer' && !outputs.some((a) => draft.outputs.has(a.id))) {
         return { field: 'outputs', text: outputs.length ? 'Choose at least one output to review (under Advanced).' : 'No outputs to review yet: a reviewer needs at least one.' };
       }
       return null;
     };
-    return { envs, env, harnesses, harness, typed, access, model, effort, acknowledgement, missing: firstMissing() };
+    const t = toolChoices(tools, draft, { access, env });
+    return { envs, env, harnesses, harness, typed, access, model, effort, acknowledgement, tools: t, missing: firstMissing() };
   }
 
   // The body of a start for a draft whose choices miss nothing.
   function startRequest(c, draft, sources, outputs) {
     const writer = c.access.value === 'writer';
-    const body = { name: draft.name.trim(), prompt: draft.prompt.trim(), harness: c.harness.id, access: c.access.value };
+    const body = { name: draft.name.trim() || nameFrom(draft.prompt), prompt: draft.prompt.trim(), harness: c.harness.id, access: c.access.value };
     if (c.env.preset !== null) body.preset = c.env.preset;
     const model = c.model.kind === 'none' ? '' : c.model.value.trim();
     if (model) body.model = model;
@@ -3047,16 +3049,21 @@
     if (writer && draft.collect) body.result_contract = OUTPUT_CONTRACT;
     if (writer && draft.allowAll) body.policy = { mode: 'allow' };
     if (writer && c.acknowledgement && draft.ack) body.unapproved_tools = true;
+    Object.assign(body, toolRequest(c.tools, draft));
     return body;
   }
 
   // A new session's draft. A source missing from `sources` has not been
   // seen by the draft, so it starts ticked.
   function freshDraft(v, keep = {}) {
+    const mode = keep.mode || (v.workspace.result_mode === 'code' ? 'code' : 'work');
+    const kept = rememberedTools(v.id);
     return {
       name: '', prompt: '', env: keep.env || null, harness: keep.harness || null, model: keep.model || '', effort: '',
       access: workspaceCanRun(v) ? 'writer' : 'reviewer', sources: new Map(), outputs: new Set(),
-      collect: v.workspace.result_mode !== 'code', allowAll: false, ack: false,
+      collect: mode === 'work' || v.workspace.result_mode !== 'code', allowAll: false, ack: false,
+      mode, connectors: kept ? kept.connectors : new Map(), skills: kept ? kept.skills : null,
+      helpers: { on: false, harnesses: new Set(), max: 3 },
     };
   }
 
@@ -3075,6 +3082,18 @@
       sources: new Map(sourcesOf(v).map((src) => [src.id, (s.sources || []).includes(src.id)])),
       outputs: new Set((s.artifacts || []).map((a) => a.id)),
       collect: s.result_contract != null,
+      ...toolsFrom(s),
+    };
+  }
+
+  // The tools a session was started with, as a draft holds them.
+  function toolsFrom(s) {
+    const t = s.tools || {};
+    const helpers = t.helpers || null;
+    return {
+      connectors: new Map((t.connectors || []).map((c) => [c.connector, c.mode === 'write' ? 'write' : 'read'])),
+      skills: Array.isArray(t.skills) ? new Set(t.skills) : null,
+      helpers: { on: !!helpers, harnesses: new Set(helpers ? helpers.harnesses || [] : []), max: helpers && helpers.max_children ? helpers.max_children : 3 },
     };
   }
 
@@ -3148,6 +3167,303 @@
     forbidden: OPERATOR_REFUSED,
   };
 
+  // A refused start that names a connection, a skill or a helper: the
+  // tools are read again, and the Tools step says what to do.
+  const TOOLS_REFUSED = { reload: 'tools', text: (e) => `${said(e.message)} Your draft is kept.` };
+  Object.assign(START_REFUSED, {
+    connector_not_connected: {
+      reload: 'tools',
+      text: (e) => `${said(e.message)} Connect it under Tools, or remove it, then start. Your draft is kept.`,
+    },
+    connector_over_ceiling: TOOLS_REFUSED,
+    connector_not_served: TOOLS_REFUSED,
+    connectors_not_configured: TOOLS_REFUSED,
+    connectors_conflict: TOOLS_REFUSED,
+    gateway_unreachable: TOOLS_REFUSED,
+    skill_unknown: TOOLS_REFUSED,
+    harness_unavailable: TOOLS_REFUSED,
+    reviewer_read_only: TOOLS_REFUSED,
+    delegation_not_allowed: TOOLS_REFUSED,
+  });
+
+  // ---------------------------------------------------------------
+  // Connections and tools: what a session may use beyond its files.
+
+  // Each connection state as a person reads it: a short label and the
+  // lane its dot takes (colour is never the only mark: the label says it).
+  const CONNECTION_STATES = {
+    connected: { label: 'Connected', lane: 'ready' },
+    needs_reconnect: { label: 'Needs reconnecting', lane: 'needs' },
+    not_connected: { label: 'Not connected', lane: 'done' },
+    blocked: { label: 'Not allowed', lane: 'done' },
+    unknown: { label: 'Status unknown', lane: 'done' },
+  };
+  const connectionState = (x) => CONNECTION_STATES[x.state] || CONNECTION_STATES.unknown;
+  const connectAction = (x) => (x.state === 'needs_reconnect' ? 'Reconnect' : x.state === 'not_connected' ? 'Connect' : null);
+
+  // The tools a session here may choose, read with the workspace. A later
+  // read replaces an earlier one, never the reverse.
+  async function loadTools(v) {
+    const asked = (v.toolsAsked = (v.toolsAsked || 0) + 1);
+    v.tools = { ...v.tools, state: v.tools.data ? 'ready' : 'loading', error: null };
+    let next;
+    try {
+      const data = await api('GET', `${workspacePath(v.id)}/tools`);
+      next = { state: 'ready', data, error: null, at: Date.now() };
+    } catch (e) {
+      next = { state: 'failed', data: null, error: e.message, at: 0 };
+    }
+    if (wsView !== v || asked !== v.toolsAsked) return;
+    v.tools = next;
+    if (v.composing && v.syncForm) v.syncForm();
+  }
+
+  // The tools this browser chose last in a workspace, so a person sets
+  // Jira once per project, not once per session. Only names are kept.
+  const TOOLS_KEY = (id) => `branchyard.tools.${id}`;
+  function rememberedTools(id) {
+    try {
+      const kept = JSON.parse(localStorage.getItem(TOOLS_KEY(id)) || 'null');
+      if (!kept || typeof kept !== 'object') return null;
+      return {
+        connectors: new Map((kept.connectors || []).filter((c) => Array.isArray(c) && typeof c[0] === 'string').map(([c, m]) => [c, m === 'write' ? 'write' : 'read'])),
+        skills: Array.isArray(kept.skills) ? new Set(kept.skills.filter((s) => typeof s === 'string')) : null,
+      };
+    } catch (_) { return null; }
+  }
+  function rememberTools(id, draft) {
+    try {
+      localStorage.setItem(TOOLS_KEY(id), JSON.stringify({
+        connectors: Array.from(draft.connectors.entries()),
+        skills: draft.skills ? Array.from(draft.skills) : null,
+      }));
+    } catch (_) { /* private mode: not remembered */ }
+  }
+
+  // What the Tools step offers for a draft, what is closed and why. Pure.
+  function toolChoices(tools, draft, c) {
+    const reviewer = c.access.value === 'reviewer';
+    if (tools.state !== 'ready') {
+      return { state: tools.state, error: tools.error, connections: [], chosen: [], blocked: null, skills: [], helpers: null, gateway: null };
+    }
+    const list = tools.data.connections;
+    const connections = list.connections.map((x) => {
+      const pick = draft.connectors.get(x.connector);
+      const canWrite = x.max_mode === 'write' && !reviewer;
+      return {
+        x, on: pick != null, mode: pick === 'write' && canWrite ? 'write' : 'read', canWrite,
+        why: x.state === 'connected' ? null : x.reason || 'It cannot be used now.', action: connectAction(x),
+      };
+    });
+    // A remembered choice the server no longer serves is dropped quietly;
+    // one it serves but cannot use now is shown, with why.
+    const chosen = connections.filter((r) => r.on);
+    const helpers = tools.data.helpers;
+    const offered = c.env ? c.env.harnesses.map((x) => x.id) : [];
+    return {
+      state: 'ready', gateway: list.gateway, gatewayWhy: list.reason, connections, chosen,
+      blocked: chosen.find((r) => r.why) || null,
+      skills: tools.data.skills,
+      helpers: {
+        allowed: helpers.allowed && !reviewer,
+        why: reviewer ? 'A reviewer reads only, so it hands no work to helpers.' : helpers.reason,
+        max: helpers.max_children, offered,
+      },
+    };
+  }
+
+  // The body's tools for a draft: only what was chosen, so a start that
+  // chose nothing is the start it always was.
+  function toolRequest(t, draft) {
+    const body = {};
+    if (t.chosen.length) body.connectors = t.chosen.map((r) => (r.mode === 'write' ? `${r.x.connector}:write` : r.x.connector));
+    if (draft.skills) body.skills = Array.from(draft.skills);
+    if (t.helpers && t.helpers.allowed && draft.helpers.on) {
+      const harnesses = t.helpers.offered.filter((id) => draft.helpers.harnesses.has(id));
+      body.helpers = { harnesses, max_children: Math.max(1, Math.min(t.helpers.max, draft.helpers.max || 3)) };
+    }
+    return body;
+  }
+
+  // A session's name from its prompt's first line, for a person who gave none.
+  const nameFrom = (prompt) => {
+    const line = prompt.trim().split('\n')[0].replace(/\s+/g, ' ');
+    return line.length > 60 ? `${line.slice(0, 57).trimEnd()}…` : line;
+  };
+
+  // Connect one connector as this person, in place: an OAuth sign-in in a
+  // new tab (the page asks the server until it says connected, at most ten
+  // minutes, and again whenever the tab is shown), or a key typed here.
+  // `ui` draws into `slot` and calls `done(connected)` when it ends.
+  function connectFlow(x, slot, done) {
+    let stopped = false;
+    const stop = (connected) => {
+      if (stopped) return;
+      stopped = true;
+      document.removeEventListener('visibilitychange', check);
+      done(connected);
+    };
+    const status = h('p', { class: 'hint', role: 'status' });
+    const cancel = h('button', { type: 'button', text: 'Cancel', onclick: () => stop(false) });
+    const deadline = Date.now() + 10 * 60 * 1000;
+    let timer = null;
+    async function check() {
+      if (stopped || document.visibilityState === 'hidden') return;
+      clearTimeout(timer);
+      try {
+        const list = await api('GET', '/v1/connections');
+        const now = list.connections.find((c) => c.connector === x.connector);
+        if (now && now.state === 'connected') {
+          toast(`${x.name} connected.`);
+          stop(true);
+          return;
+        }
+      } catch (_) { /* asked again below */ }
+      if (Date.now() > deadline) {
+        status.textContent = 'The sign-in expired. Start again when you are ready.';
+        fill(slot, status, h('div', { class: 'row' }, h('button', { type: 'button', text: 'Close', onclick: () => stop(false) })));
+        return;
+      }
+      timer = setTimeout(check, 2000);
+    }
+    const keyForm = () => {
+      const input = h('input', { type: 'password', id: nextId('conn-key'), autocomplete: 'off', spellcheck: 'false', 'aria-describedby': `${slot.id}-key-hint` });
+      const save = h('button', { type: 'submit', class: 'primary', text: 'Save key' });
+      const form = h('form', { class: 'conn-key' },
+        h('label', { class: 'block', for: input.id, text: `${x.name} API key or token` }), input,
+        h('p', { class: 'hint', id: `${slot.id}-key-hint`, text: 'It goes to the connection service, which keeps it encrypted. This server keeps no copy, and sessions never see it.' }),
+        h('div', { class: 'row form-actions' }, save, cancel), status);
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (!input.value.trim()) { status.textContent = 'Paste the key first.'; input.focus(); return; }
+        save.disabled = true;
+        status.textContent = 'Saving…';
+        try {
+          await api('POST', `/v1/connections/${enc(x.connector)}/key`, { api_key: input.value });
+          input.value = '';
+          toast(`${x.name} connected.`);
+          stop(true);
+        } catch (e) {
+          save.disabled = false;
+          status.textContent = `Not saved: ${said(e.message)}`;
+        }
+      });
+      fill(slot, form);
+      input.focus();
+    };
+    (async () => {
+      fill(slot, h('p', { class: 'hint', role: 'status', text: `Asking how to connect ${x.name}…` }));
+      let started;
+      try {
+        started = await api('POST', `/v1/connections/${enc(x.connector)}/connect`, {});
+      } catch (e) {
+        fill(slot, h('p', { class: 'error', role: 'alert', text: `Could not connect ${x.name}: ${said(e.message)}` }),
+          h('div', { class: 'row' }, h('button', { type: 'button', text: 'Close', onclick: () => stop(false) })));
+        return;
+      }
+      if (stopped) return;
+      if (started.kind === 'key') { keyForm(); return; }
+      const opened = window.open(started.url, '_blank');
+      if (opened) opened.opener = null;
+      const link = h('a', { href: started.url, target: '_blank', rel: 'noopener noreferrer', text: `Open the ${x.name} sign-in` });
+      status.textContent = opened
+        ? `Finish signing in to ${x.name} in the new tab. This updates when you are done.`
+        : 'Your browser blocked the new tab. Open the sign-in yourself:';
+      fill(slot, h('div', { class: 'conn-waiting' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), status), opened ? null : link,
+        h('div', { class: 'row' }, opened ? link : null, cancel));
+      document.addEventListener('visibilitychange', check);
+      timer = setTimeout(check, 2000);
+      (opened ? cancel : link).focus();
+    })();
+  }
+
+  // One connection as a card: what it is, where the person stands, and the
+  // one thing to do next.
+  function connectionCard(x, refresh) {
+    const id = `conn-${x.connector}`;
+    const st = connectionState(x);
+    const action = connectAction(x);
+    const slot = h('div', { class: 'conn-flow', id: `${id}-flow` });
+    const accounts = x.accounts.filter((a) => a.state === 'connected' && a.account !== 'default').map((a) => a.account);
+    const facts = [
+      accounts.length ? `As ${accounts.join(', ')}` : null,
+      x.max_mode === 'read' ? 'Read only, set by your administrator' : null,
+    ].filter(Boolean);
+    const button = action ? h('button', {
+      type: 'button', class: action === 'Connect' ? 'primary' : '', id: `${id}-action`, text: action,
+      'aria-describedby': `${id}-state`,
+      onclick: () => {
+        button.hidden = true;
+        connectFlow(x, slot, (connected) => {
+          fill(slot);
+          button.hidden = false;
+          if (connected) refresh(x.connector); else button.focus();
+        });
+      },
+    }) : null;
+    return h('li', { class: 'conn-card', 'data-state': x.state, id },
+      h('div', { class: 'conn-head' },
+        h('span', { class: 'conn-mark', 'aria-hidden': 'true', text: x.name.charAt(0).toUpperCase() }),
+        h('h3', { text: x.name }),
+        h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label)),
+      x.description ? h('p', { class: 'hint conn-about', text: x.description }) : null,
+      facts.length ? h('p', { class: 'conn-facts', text: facts.join(' · ') }) : null,
+      x.state !== 'connected' && x.reason ? h('p', { class: 'conn-why', text: x.reason }) : null,
+      button ? h('div', { class: 'row conn-actions' }, button) : null,
+      slot);
+  }
+
+  async function renderConnections() {
+    const list = h('ul', { class: 'conn-list', 'aria-label': 'Connections' });
+    const status = h('div', { role: 'status', class: 'conn-status' }, h('p', { class: 'muted', text: 'Loading your connections…' }));
+    const search = h('input', { type: 'search', id: 'conn-search', placeholder: 'Find a connection', autocomplete: 'off', hidden: true });
+    let all = [];
+    const draw = (focusId) => {
+      const needle = search.value.trim().toLowerCase();
+      const shown = all.filter((x) => !needle || `${x.name} ${x.description || ''}`.toLowerCase().includes(needle));
+      const order = ['needs_reconnect', 'connected', 'not_connected', 'unknown', 'blocked'];
+      shown.sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || a.name.localeCompare(b.name));
+      fill(list, shown.map((x) => connectionCard(x, (connector) => reload(`conn-${connector}-state`))));
+      if (needle && !shown.length) fill(list, h('li', { class: 'muted', text: 'No connection matches.' }));
+      const back = focusId && $(focusId);
+      if (back) back.focus();
+    };
+    search.addEventListener('input', () => draw());
+    const reload = async (focusId) => {
+      let got;
+      try {
+        got = await api('GET', '/v1/connections');
+      } catch (e) {
+        fill(status, h('p', { class: 'error', text: `Could not read your connections: ${said(e.message)}` }),
+          h('button', { type: 'button', text: 'Retry', onclick: () => reload() }));
+        return;
+      }
+      if (state.route.name !== 'connections') return;
+      all = got.connections;
+      if (got.gateway === 'not_configured') {
+        fill(status, h('div', { class: 'card empty-state' },
+          h('h2', { text: 'Connections are not set up here' }),
+          h('p', { text: got.reason }),
+          h('details', {}, h('summary', { text: 'What your administrator does' }),
+            h('p', { class: 'hint', text: 'They run Anvil\'s connector gateway beside this server and add it under [connectors] in the server\'s configuration. The connectors page of the Branchyard docs walks through it.' }))));
+      } else if (got.gateway === 'unreachable') {
+        fill(status, h('p', { class: 'error', text: got.reason }), h('button', { type: 'button', text: 'Retry', onclick: () => reload() }));
+      } else {
+        const on = all.filter((x) => x.state === 'connected').length;
+        fill(status, h('p', { class: 'muted', text: all.length ? `${plural(on, 'connection')} ready of ${all.length} this server offers.` : 'This server offers no connections yet.' }));
+      }
+      search.hidden = all.length <= 8;
+      draw(focusId);
+    };
+    main(h('div', { class: 'page narrow connections' },
+      h('a', { class: 'back', href: '#/', text: '‹ Back' }),
+      h('header', { class: 'page-head' }, h('div', {},
+        h('h1', { text: 'Connections' }),
+        h('p', { class: 'muted', text: 'Connect the tools you work in, such as Jira, Confluence or Drive. Then choose, for each session, which ones it may use.' }))),
+      search, status, list));
+    await reload();
+  }
+
   // The open workspace, kept across polls and session switches.
   let wsView = null;
 
@@ -3207,6 +3523,7 @@
       // Try again has a prompt that never ran), and the environments.
       draft: null, sent: new Map(), syncForm: null,
       environments: { state: 'loading', list: [], error: null, at: 0 }, environmentsAsked: 0,
+      tools: { state: 'loading', data: null, error: null, at: 0 }, toolsAsked: 0,
     };
     wsView = v;
     main(h('div', { class: 'page' }, h('p', { class: 'muted', role: 'status', text: 'Opening the workspace…' })));
@@ -3223,6 +3540,7 @@
     selectSession(v, session);
     loadArtifacts(v).then(() => { if (wsView === v) drawWorkspace(v); });
     loadEnvironments(v);
+    loadTools(v);
     scheduleWorkspace(v);
   }
 
@@ -3533,6 +3851,21 @@
 
   // What the selected session is: where it runs, on what, what it reads,
   // and where it stands. Hidden while composing.
+  // What a session was given beyond its files, as facts: each connection
+  // and what it may do there, a narrowed set of how-tos, its helpers.
+  function toolFacts(s) {
+    const t = s.tools || {};
+    const named = (id) => {
+      const known = wsView && wsView.tools.data && wsView.tools.data.connections.connections.find((c) => c.connector === id);
+      return known ? known.name : id;
+    };
+    return [
+      ...(t.connectors || []).map((c) => `${named(c.connector)} ${c.mode === 'write' ? '(can make changes)' : '(read only)'}`),
+      Array.isArray(t.skills) ? `${plural(t.skills.length, 'how-to')}` : null,
+      t.helpers ? `helpers${(t.helpers.harnesses || []).length ? `: ${t.helpers.harnesses.join(', ')}` : ''}` : null,
+    ];
+  }
+
   function drawSessionFacts(v) {
     const s = v.composing ? null : selectedSession(v);
     const box = $('session-facts');
@@ -3547,6 +3880,7 @@
       s.access === 'reviewer' ? `reviews ${plural((s.artifacts || []).length, 'output')}` : null,
       `reads ${plural((s.sources || []).length, 'source')}`,
       s.access === 'reviewer' ? null : s.result_contract ? 'collects outputs' : 'collects no outputs',
+      ...toolFacts(s),
     ].filter(Boolean) : [];
     const signature = JSON.stringify([facts, phase && [phase.label, phase.lane]]);
     if (signature === v.drawn.facts) return;
@@ -4027,16 +4361,19 @@
     const box = $('convo');
     if (!box || box.querySelector('#session-form')) return;
     if (!v.draft) v.draft = freshDraft(v);
-    const choices = () => startChoices(v.environments, { run: workspaceCanRun(v), comment: workspaceCanComment(v) }, v.draft, reviewable(v));
+    const choices = () => startChoices(v.environments, { run: workspaceCanRun(v), comment: workspaceCanComment(v) }, v.draft, reviewable(v), v.tools);
     const blocked = (c) => (notReady(v.workspace) ? { field: 'workspace', text: notReady(v.workspace) } : c.missing);
     const heading = h('h2', { id: 'session-form-h', tabindex: '-1', text: 'New session' });
     const sourcesSlot = h('div', { class: 'slot', id: 'sf-sources' });
     const envSlot = h('div', { class: 'slot', id: 'sf-environments' });
     const agentSlot = h('div', { class: 'slot', id: 'sf-agent' });
     const collectSlot = h('div', { class: 'slot', id: 'sf-collect-slot' });
+    const modeSlot = h('div', { class: 'slot', id: 'sf-mode-slot' });
+    const toolsSlot = h('div', { class: 'slot', id: 'sf-tools' });
+    const runSlot = h('div', { class: 'slot', id: 'sf-run-slot' });
     const advancedSlot = h('div', { class: 'slot', id: 'sf-advanced-slot' });
     const advanced = h('details', { class: 'advanced', id: 'sf-advanced' }, h('summary', { id: 'sf-advanced-summary', text: 'Advanced' }), advancedSlot);
-    const name = h('input', { id: 'sf-name', type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst' });
+    const name = h('input', { id: 'sf-name', type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst', 'aria-describedby': 'sf-name-hint' });
     name.value = v.draft.name;
     name.addEventListener('input', () => { v.draft.name = name.value; syncForm(); });
     const prompt = h('textarea', { id: 'sf-prompt', rows: '5', placeholder: 'What should this session do?', 'aria-describedby': 'sf-prompt-hint' });
@@ -4147,6 +4484,197 @@
       ];
     };
 
+    // Work or Code: what kind of session this is. Work collects files and
+    // folds where it runs into one line once that is settled; Code shows
+    // every setting and collects no files unless the project mixes both.
+    const drawMode = () => h('div', { class: 'mode-switch', role: 'radiogroup', 'aria-labelledby': 'sf-mode-label' },
+      h('span', { class: 'visually-hidden', id: 'sf-mode-label', text: 'Kind of session' }),
+      [['work', 'Work', 'Documents, research and files to review'], ['code', 'Code', 'Changes to a repository']].map(([key, label, about]) => {
+        const id = `sf-mode-${key}`;
+        const input = h('input', { type: 'radio', name: 'sf-mode', id, value: key, checked: v.draft.mode === key, 'aria-describedby': `${id}-about` });
+        input.addEventListener('change', () => {
+          if (!input.checked) return;
+          v.draft.mode = key;
+          v.draft.collect = key === 'work' || v.workspace.result_mode === 'mixed';
+          runOpen = key === 'code' || !settled(choices());
+          syncForm();
+        });
+        return h('label', { class: 'mode', for: id }, input,
+          h('span', { class: 'mode-name', text: label }), h('span', { class: 'mode-about', id: `${id}-about`, text: about }));
+      }));
+
+    // Where it runs is settled when the server leaves nothing to choose:
+    // one environment, one harness, and nothing there to acknowledge.
+    const settled = (c) => !!c.env && !!c.harness && !c.acknowledgement && !c.typed
+      && c.envs.filter((e) => !e.why).length === 1 && c.harnesses.filter((x) => !x.why).length === 1;
+    // Decided once, when the environments are in, so nothing folds while
+    // the person is choosing.
+    let runOpen = true;
+    let runDecided = false;
+    const openRun = () => {
+      if (runOpen) return;
+      runOpen = true;
+      syncForm();
+    };
+    const drawRun = (c) => (runOpen || !settled(c) ? null : h('p', { class: 'run-line', id: 'sf-run-line' },
+      h('span', { text: `Runs in ${c.env.label} with ${c.harness.id}${c.model.value ? `, ${c.model.value}` : ''}.` }),
+      h('button', {
+        type: 'button', class: 'link-button', id: 'sf-run-change', text: 'Change',
+        onclick: () => { runOpen = true; syncForm(); focusField('environment'); },
+      })));
+
+    // The Tools step: chips for what is chosen, and a panel to choose.
+    let toolsOpen = false;
+    const flows = new Map();
+    const flowSlot = (id) => {
+      if (!flows.has(id)) flows.set(id, h('div', { class: 'conn-flow', id: `sf-conn-${id}-flow` }));
+      return flows.get(id);
+    };
+    const connecting = new Set();
+    const changed = () => { rememberTools(v.id, v.draft); syncForm(); };
+    const chip = (text, remove, warn, id) => h('span', { class: warn ? 'chip chip-warn' : 'chip', id },
+      h('span', { text }),
+      remove ? h('button', { type: 'button', class: 'chip-x', 'aria-label': remove.label, onclick: remove.run }, icon('cross', true)) : null);
+    const connectionRow = (r, c) => {
+      const id = `sf-conn-${r.x.connector}`;
+      const st = connectionState(r.x);
+      const box = h('input', {
+        type: 'checkbox', id, checked: r.on, disabled: !r.on && !!r.why && !r.action,
+        'aria-describedby': `${id}-state${r.why ? ` ${id}-why` : ''}`,
+      });
+      box.addEventListener('change', () => {
+        if (box.checked) v.draft.connectors.set(r.x.connector, 'read'); else v.draft.connectors.delete(r.x.connector);
+        changed();
+      });
+      let mode = null;
+      if (r.on && r.canWrite) {
+        mode = h('div', { class: 'conn-mode', role: 'radiogroup', 'aria-label': `What ${r.x.name} may do` },
+          [['read', 'Read only'], ['write', 'Can make changes']].map(([key, label]) => {
+            const mid = `${id}-${key}`;
+            const radio = h('input', { type: 'radio', name: `${id}-mode`, id: mid, value: key, checked: r.mode === key });
+            radio.addEventListener('change', () => { if (radio.checked) { v.draft.connectors.set(r.x.connector, key); changed(); } });
+            return h('label', { class: 'toggle', for: mid }, radio, h('span', { text: label }));
+          }));
+      }
+      const action = r.action && !connecting.has(r.x.connector) ? h('button', {
+        type: 'button', class: 'link-button', id: `${id}-connect`, text: `${r.action} ${r.x.name}`,
+        onclick: () => {
+          connecting.add(r.x.connector);
+          syncForm();
+          connectFlow(r.x, flowSlot(r.x.connector), (connected) => {
+            connecting.delete(r.x.connector);
+            fill(flowSlot(r.x.connector));
+            if (connected) v.draft.connectors.set(r.x.connector, v.draft.connectors.get(r.x.connector) || 'read');
+            loadTools(v).then(() => { const back = $(id); if (back) back.focus(); });
+          });
+        },
+      }) : null;
+      return h('li', { class: 'conn-row', 'data-state': r.x.state },
+        h('label', { class: 'conn-pick', for: id }, box, h('span', { class: 'conn-name', text: r.x.name })),
+        h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label),
+        r.x.description ? h('p', { class: 'hint conn-about', text: r.x.description }) : null,
+        r.why ? h('p', { class: 'hint conn-why', id: `${id}-why`, text: r.why }) : null,
+        r.on && !r.canWrite && r.x.max_mode === 'read' ? h('p', { class: 'hint', text: 'Read only: your administrator allows no changes.' }) : null,
+        r.on && r.mode === 'write' ? h('p', { class: 'hint', text: `It may change things in ${r.x.name}. You are asked before anything that needs confirming.` }) : null,
+        mode, action, flowSlot(r.x.connector));
+    };
+    const drawConnections = (t, c) => {
+      if (t.gateway === 'not_configured') return h('p', { class: 'hint', text: t.gatewayWhy });
+      if (t.gateway === 'unreachable' && !t.connections.length) return h('p', { class: 'error', text: t.gatewayWhy });
+      if (!t.connections.length) return h('p', { class: 'hint', text: 'This server offers no connections yet.' });
+      return [
+        c.access.value === 'reviewer' ? h('p', { class: 'hint', text: 'A reviewer reads only, so its connections are read only.' }) : null,
+        h('ul', { class: 'conn-rows' }, t.connections.map((r) => connectionRow(r, c))),
+        h('p', { class: 'hint' }, h('a', { href: '#/connections', text: 'Manage connections' })),
+      ];
+    };
+    const drawSkills = (t) => {
+      const all = !v.draft.skills;
+      const pick = (only) => {
+        v.draft.skills = only ? new Set(v.draft.skills || []) : null;
+        changed();
+      };
+      const radio = (id, label, checked, only) => {
+        const input = h('input', { type: 'radio', name: 'sf-skills-mode', id, checked });
+        input.addEventListener('change', () => { if (input.checked) pick(only); });
+        return h('label', { class: 'toggle', for: id }, input, h('span', { text: label }));
+      };
+      const byTopic = new Map();
+      for (const skill of t.skills) {
+        if (!byTopic.has(skill.topic)) byTopic.set(skill.topic, []);
+        byTopic.get(skill.topic).push(skill);
+      }
+      return [
+        h('p', { class: 'hint', text: 'How-tos teach the session a kind of work, such as editing a spreadsheet or building a deck. Each connection brings its own.' }),
+        h('div', { class: 'row', role: 'radiogroup', 'aria-label': 'Which how-tos' },
+          radio('sf-skills-all', 'All how-tos', all, false), radio('sf-skills-some', 'Only the ones I choose', !all, true)),
+        all ? null : Array.from(byTopic.entries()).map(([topic, skills]) => h('fieldset', { class: 'choices skill-topic' },
+          h('legend', { text: topic }),
+          skills.map((skill) => {
+            const id = `sf-skill-${skill.id}`;
+            const box = h('input', { type: 'checkbox', id, checked: v.draft.skills.has(skill.id), 'aria-describedby': `${id}-about` });
+            box.addEventListener('change', () => {
+              if (box.checked) v.draft.skills.add(skill.id); else v.draft.skills.delete(skill.id);
+              changed();
+            });
+            return [h('label', { class: 'toggle', for: id, title: skill.description }, box, h('span', { text: skill.id })),
+              h('span', { class: 'visually-hidden', id: `${id}-about`, text: skill.description })];
+          }))),
+      ];
+    };
+    const drawHelpers = (t) => {
+      const help = t.helpers;
+      if (!help.allowed) return h('p', { class: 'hint', text: help.why || 'Helpers are not available here.' });
+      const on = v.draft.helpers.on;
+      const max = h('input', { type: 'number', id: 'sf-helpers-max', min: '1', max: String(help.max), value: String(v.draft.helpers.max), inputmode: 'numeric' });
+      max.addEventListener('change', () => {
+        const n = Math.max(1, Math.min(help.max, parseInt(max.value, 10) || 1));
+        v.draft.helpers.max = n;
+        max.value = String(n);
+        syncForm();
+      });
+      return [
+        toggle('sf-helpers', 'Let it hand parts of the work to helpers', on, (yes) => { v.draft.helpers.on = yes; syncForm(); }, 'sf-helpers-hint'),
+        h('p', { class: 'hint', id: 'sf-helpers-hint', text: 'A helper is another assistant that takes one part of the task, in its own copy, within this session\'s tools.' }),
+        on ? h('fieldset', { class: 'choices' }, h('legend', { text: 'Helpers it may use' }),
+          help.offered.length ? help.offered.map((id) => toggle(`sf-helper-${id}`, id, v.draft.helpers.harnesses.has(id), (yes) => {
+            if (yes) v.draft.helpers.harnesses.add(id); else v.draft.helpers.harnesses.delete(id);
+            syncForm();
+          })) : h('p', { class: 'hint', text: 'Choose where it runs first; its harnesses are the helpers on offer.' }),
+          h('p', { class: 'hint', text: 'None ticked: helpers run as the same assistant.' })) : null,
+        on ? h('div', { class: 'helpers-max' }, h('label', { for: 'sf-helpers-max', text: 'At most at once' }), max) : null,
+      ];
+    };
+    const drawTools = (c) => {
+      const t = c.tools;
+      if (t.state === 'loading') return h('p', { class: 'hint', 'aria-busy': 'true', text: 'Loading your connections and how-tos…' });
+      if (t.state === 'failed') {
+        return [h('p', { class: 'error', text: `Tools did not load: ${said(t.error)} You can still start without them.` }),
+          h('div', { class: 'row step-tools' }, h('button', { type: 'button', id: 'sf-tools-retry', text: 'Retry', onclick: () => loadTools(v) }))];
+      }
+      const chips = [
+        t.chosen.map((r) => chip(`${r.x.name} · ${r.mode === 'write' ? 'can make changes' : 'read only'}${r.why ? ' · needs you' : ''}`,
+          { label: `Remove ${r.x.name}`, run: () => { v.draft.connectors.delete(r.x.connector); changed(); $('sf-tools-toggle').focus(); } }, !!r.why, `sf-chip-${r.x.connector}`)),
+        v.draft.skills ? chip(`${plural(v.draft.skills.size, 'how-to')}`, { label: 'Use all how-tos', run: () => { v.draft.skills = null; changed(); $('sf-tools-toggle').focus(); } }) : null,
+        t.helpers.allowed && v.draft.helpers.on ? chip(`Helpers${v.draft.helpers.harnesses.size ? `: ${Array.from(v.draft.helpers.harnesses).join(', ')}` : ''}`,
+          { label: 'No helpers', run: () => { v.draft.helpers.on = false; syncForm(); $('sf-tools-toggle').focus(); } }) : null,
+      ].flat().filter(Boolean);
+      const toggleButton = h('button', {
+        type: 'button', id: 'sf-tools-toggle', 'aria-expanded': String(toolsOpen), 'aria-controls': 'sf-tools-panel',
+        text: toolsOpen ? 'Done' : chips.length ? 'Change tools' : 'Choose tools',
+        onclick: () => { toolsOpen = !toolsOpen; syncForm(); },
+      });
+      return [
+        h('div', { class: 'tool-chips', role: 'group', 'aria-label': 'Tools for this session' },
+          chips.length ? chips : h('span', { class: 'hint', text: 'Only its files and every how-to. Add Jira, Confluence or another connection here.' }),
+          toggleButton),
+        toolsOpen ? h('div', { class: 'tools-panel', id: 'sf-tools-panel' },
+          h('fieldset', { class: 'tool-group' }, h('legend', { text: 'Connections' }), drawConnections(t, c)),
+          h('fieldset', { class: 'tool-group' }, h('legend', { text: 'How-tos' }), drawSkills(t)),
+          h('fieldset', { class: 'tool-group' }, h('legend', { text: 'Helpers' }), drawHelpers(t))) : null,
+      ];
+    };
+
     const drawCollect = (c) => (c.access.value !== 'writer' ? null : [
       toggle('sf-collect', `Collect outputs (${OUTPUT_MANIFEST})`, v.draft.collect, (on) => { v.draft.collect = on; syncForm(); }, 'sf-collect-hint'),
       h('p', { class: 'hint', id: 'sf-collect-hint', text: `Collect outputs asks the session to list its result files in ${OUTPUT_MANIFEST} and end with a JSON summary; the server publishes those files as outputs you can preview and accept.` }),
@@ -4189,9 +4717,14 @@
     const FOCUS = {
       workspace: () => $('strip').querySelector('details.menu > summary'),
       environments: () => $('sf-retry'),
-      environment: () => envSlot.querySelector('input[type="radio"]:not(:disabled)'),
-      harness: () => $('sf-harness'),
-      ack: () => $('sf-ack'),
+      environment: () => { openRun(); return envSlot.querySelector('input[type="radio"]:not(:disabled)'); },
+      harness: () => { openRun(); return $('sf-harness'); },
+      ack: () => { openRun(); return $('sf-ack'); },
+      tools: () => {
+        if (!toolsOpen) { toolsOpen = true; syncForm(); }
+        const blocked = choices().tools.blocked;
+        return (blocked && ($(`sf-conn-${blocked.x.connector}-connect`) || $(`sf-conn-${blocked.x.connector}`))) || $('sf-tools-toggle');
+      },
       name: () => name,
       prompt: () => prompt,
       outputs: () => {
@@ -4228,6 +4761,23 @@
       redraw(agentSlot, JSON.stringify([v.environments.at, c.env && c.env.key, c.typed, harnesses, c.typed || !c.harness ? null : c.harness.id,
         c.model.kind, c.model.options, c.acknowledgement]), () => drawAgent(c));
       redraw(collectSlot, c.access.value, () => drawCollect(c));
+      redraw(modeSlot, v.draft.mode, drawMode);
+      const t = c.tools;
+      redraw(toolsSlot, JSON.stringify([t.state, t.error, v.tools.at, toolsOpen, c.access.value, c.env && c.env.key,
+        Array.from(v.draft.connectors.entries()), v.draft.skills && Array.from(v.draft.skills), v.draft.helpers.on,
+        Array.from(v.draft.helpers.harnesses), v.draft.helpers.max, Array.from(connecting)]), () => drawTools(c));
+      if (!runDecided && v.environments.state === 'ready') {
+        runDecided = true;
+        runOpen = v.draft.mode === 'code' || !settled(c);
+      }
+      const folded = !runOpen && settled(c);
+      envStep.hidden = folded;
+      agentStep.hidden = folded;
+      redraw(runSlot, JSON.stringify([folded, c.env && c.env.label, c.harness && c.harness.id, c.model.value]), () => drawRun(c));
+      const hint = v.draft.mode === 'work'
+        ? 'Say what you want and which files to produce, for example: Summarise the open launch epics in Jira into a one-page brief and a status sheet.'
+        : 'Say what to change and how to check it, for example: Fix the failing login test and add a regression test.';
+      if (promptHint.textContent !== hint) promptHint.textContent = hint;
       redraw(advancedSlot, JSON.stringify([c.access, reviewable(v).map((a) => [a.id, a.label]), c.effort.offered]), () => drawAdvanced(c));
       if (c.access.forced && !forcedShown) {
         advanced.open = true;
@@ -4256,6 +4806,10 @@
         if (wsView === v) drawWorkspace(v);
       }
       if (known && known.reload === 'environments') await loadEnvironments(v);
+      if (known && known.reload === 'tools') {
+        await loadTools(v);
+        if (wsView === v) focusField('tools');
+      }
       if (wsView !== v) return;
       error.textContent = known ? known.text(e, v) : `${said(e.message)} Your draft is kept.`;
     };
@@ -4287,7 +4841,8 @@
         return;
       }
       v.sent.set(op.session_id, body);
-      v.draft = freshDraft(v, { env: c.env.key, harness: c.harness.id, model: c.model.kind === 'none' ? v.draft.model : c.model.value });
+      rememberTools(v.id, v.draft);
+      v.draft = freshDraft(v, { env: c.env.key, harness: c.harness.id, model: c.model.kind === 'none' ? v.draft.model : c.model.value, mode: v.draft.mode });
       toast('Session started.');
       v.composing = false;
       v.drawn.convo = null;
@@ -4296,15 +4851,21 @@
       if (wsView === v) go(workspaceHref(v.id, op.session_id));
     });
 
+    const envStep = h('fieldset', { class: 'step' }, h('legend', { text: 'Where it runs' }), envSlot);
+    const agentStep = h('fieldset', { class: 'step' }, h('legend', { text: 'Agent' }), agentSlot);
+    const promptHint = h('p', { class: 'hint', id: 'sf-prompt-hint' });
     fill(box, h('section', { class: 'card form session-form', id: 'session-form', 'aria-labelledby': 'session-form-h' },
-      heading,
+      h('div', { class: 'form-head' }, heading, modeSlot),
       h('fieldset', { class: 'step' }, h('legend', { text: 'Sources it reads' }), sourcesSlot),
-      h('fieldset', { class: 'step' }, h('legend', { text: 'Where it runs' }), envSlot),
-      h('fieldset', { class: 'step' }, h('legend', { text: 'Agent' }), agentSlot),
+      h('fieldset', { class: 'step', id: 'sf-tools-step' }, h('legend', { text: 'Tools' }), toolsSlot),
+      runSlot,
+      envStep,
+      agentStep,
       h('fieldset', { class: 'step' }, h('legend', { text: 'Task' }),
         field('sf-name', 'Session name', name),
+        h('p', { class: 'hint', id: 'sf-name-hint', text: 'Optional: without one, it is named from the first line of the prompt.' }),
         field('sf-prompt', 'First prompt', prompt),
-        h('p', { class: 'hint', id: 'sf-prompt-hint', text: 'Say what it should do and which files it should produce, for example: Summarise the backlog by owner in an XLSX and a one-page DOCX.' }),
+        promptHint,
         collectSlot),
       advanced,
       h('div', { class: 'row form-actions' }, start, cancel),

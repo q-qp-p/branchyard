@@ -1,5 +1,6 @@
 //! HTTP and durable worker regressions, using only fake agents and providers.
 
+mod connections;
 mod decisions;
 mod discovery;
 mod harness_input;
@@ -120,6 +121,12 @@ struct Fixture {
 
 impl Fixture {
     fn new(start: bool) -> Self {
+        Self::with(start, |_, _| {})
+    }
+
+    /// A fixture whose configuration `configure` adjusts, given the
+    /// scratch directory, before the server is built.
+    fn with(start: bool, configure: impl FnOnce(&mut Config, &std::path::Path)) -> Self {
         let scratch = branchyard_testkit::Scratch::new("console-inprocess");
         let mut config = Config::new(scratch.path().join("data"));
         config.managed_knowledge.enabled = true;
@@ -152,6 +159,7 @@ impl Fixture {
             name: "tokenonly".into(),
             secret: TOKENONLY.into(),
         });
+        configure(&mut config, scratch.path());
         let mut options = Options::new(vec![super::MANAGED_REPO.into()]);
         options.poll = Duration::from_millis(10);
         let registry = Registry::open(Box::<MemoryStore>::default(), options).unwrap();
