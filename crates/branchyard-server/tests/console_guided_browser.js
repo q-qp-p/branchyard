@@ -205,7 +205,7 @@ const same = (got, want, what) => {
   await form.getByRole('radio', { name: 'Local workers', exact: true }).check();
   const harness = form.getByLabel('Harness', { exact: true });
   const model = form.getByLabel('Model', { exact: true });
-  same(await harness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity-stream-json', false]], 'the local harnesses');
+  same(await harness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['gemini-cli', false], ['antigravity-stream-json', false]], 'the local harnesses');
   same(await model.locator('option').evaluateAll((os) => os.map((o) => o.value)), ['fake-fast', 'fake-deep'], 'the models offered');
   if (await model.inputValue() !== 'fake-fast') throw new Error('the preset\'s default model is not chosen');
   const harnessRows = await form.locator('#sf-harness-ready').innerText();
@@ -248,16 +248,16 @@ const same = (got, want, what) => {
   await sourceBox(DOCX).uncheck();
   await prompt.fill(PROMPT);
   if (!(await form.getByRole('checkbox', { name: 'Collect outputs (outputs/artifacts.json)', exact: true }).isChecked())) throw new Error('an outputs project does not collect outputs by default');
-  await statusSays('Ready to start: Local workers · claude-code-acp · reads 2 sources');
+  await statusSays('Ready to start: Local workers · gemini-cli · reads 2 sources');
   const first = await start();
   same([first.body.preset, first.body.harness, first.body.model, first.body.access, first.body.sources, !!first.body.result_contract, 'unapproved_tools' in first.body],
-    ['local', 'claude-code-acp', 'fake-deep', 'writer', [sourceId[CSV], sourceId[XLSX]], true, false], 'the first start');
+    ['local', 'gemini-cli', 'fake-deep', 'writer', [sourceId[CSV], sourceId[XLSX]], true, false], 'the first start');
   const analystA = await opened(first);
 
   await plus.click();
   await form.waitFor();
   if (!(await form.getByRole('radio', { name: 'Local workers', exact: true }).isChecked())) throw new Error('the next draft lost its environment');
-  same([await harness.inputValue(), await model.inputValue(), await name.inputValue(), await prompt.inputValue()], ['claude-code-acp', 'fake-deep', '', ''], 'the next draft');
+  same([await harness.inputValue(), await model.inputValue(), await name.inputValue(), await prompt.inputValue()], ['gemini-cli', 'fake-deep', '', ''], 'the next draft');
   for (const title of [CSV, XLSX, DOCX]) if (!(await sourceBox(title).isChecked())) throw new Error(`the next draft does not read ${title}`);
   await name.fill('Analyst B');
   await sourceBox(CSV).uncheck();
@@ -289,7 +289,7 @@ const same = (got, want, what) => {
   }
   await openTab(analystA);
   const facts = await page.locator('#session-facts').innerText();
-  for (const part of ['Local workers (Local)', 'claude-code-acp', 'fake-deep', 'writer', 'reads 2 sources', 'collects outputs', 'Completed']) {
+  for (const part of ['Local workers (Local)', 'gemini-cli', 'fake-deep', 'writer', 'reads 2 sources', 'collects outputs', 'Completed']) {
     if (!facts.includes(part)) throw new Error(`the facts line says ${JSON.stringify(facts)}, without ${part}`);
   }
   if (await page.locator('#composer-text').inputValue() !== 'draft for A') throw new Error('the composer draft did not survive switching sessions');
@@ -384,7 +384,7 @@ const same = (got, want, what) => {
   await name.fill('Remote check');
   await prompt.fill(PROMPT);
   const remote = await start();
-  same([remote.body.preset, remote.body.harness, remote.body.model], ['substrate-closed', 'claude-code-acp', 'fake-fast'], 'the Substrate start');
+  same([remote.body.preset, remote.body.harness, remote.body.model], ['substrate-closed', 'gemini-cli', 'fake-fast'], 'the Substrate start');
   const remoteSid = await opened(remote);
   await phase(remoteSid, /: (Failed|Did not start)/, page, REMOTE);
   const recovery = page.locator('#convo section.recovery');
@@ -408,7 +408,7 @@ const same = (got, want, what) => {
   await recovery.getByRole('button', { name: 'Try again', exact: true }).click();
   await form.waitFor();
   same([await name.inputValue(), await prompt.inputValue(), await harness.inputValue(), await model.inputValue()],
-    ['Remote check (again)', PROMPT, 'claude-code-acp', 'fake-fast'], 'the draft Try again restores');
+    ['Remote check (again)', PROMPT, 'gemini-cli', 'fake-fast'], 'the draft Try again restores');
   if (!(await form.getByRole('radio', { name: 'Substrate, cluster closed', exact: true }).isChecked())) throw new Error('Try again lost the environment');
   for (const title of [CSV, XLSX, DOCX]) if (!(await sourceBox(title).isChecked())) throw new Error(`Try again lost the source ${title}`);
   await form.getByRole('radio', { name: 'Substrate, key missing', exact: true }).check();
@@ -450,7 +450,7 @@ const same = (got, want, what) => {
   await strip.getByRole('button', { name: 'Restore', exact: true }).click();
   await toast('Restored.');
   await strip.locator('p.state', { hasText: 'Ready' }).waitFor(TURN);
-  await statusSays('Ready to start: Local workers · claude-code-acp · reads 3 sources');
+  await statusSays('Ready to start: Local workers · gemini-cli · reads 3 sources');
   const restarted = await start();
   same([restarted.body.name, restarted.body.prompt, restarted.body.preset], ['After restore', 'Say hello after the restore.', 'local'], 'the start after Restore');
   const restoredSid = await opened(restarted);
@@ -508,7 +508,7 @@ const same = (got, want, what) => {
   if (await access.inputValue() !== 'reviewer' || !(await access.isDisabled())) throw new Error('a reviewer\'s access is not fixed to reviewer');
   await review.getByRole('radio', { name: 'Local workers', exact: true }).check();
   const reviewHarness = review.getByLabel('Harness', { exact: true });
-  same(await reviewHarness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['claude-code-acp', false], ['antigravity-stream-json', true]], 'the reviewer\'s harnesses');
+  same(await reviewHarness.locator('option').evaluateAll((os) => os.map((o) => [o.value, o.disabled])), [['gemini-cli', false], ['antigravity-stream-json', true]], 'the reviewer\'s harnesses');
   await review.getByText('antigravity-stream-json is not available: reviewers need a harness that routes each tool request for approval.', { exact: true }).waitFor();
   if (await review.getByRole('checkbox', { name: ACK, exact: true }).count()) throw new Error('a reviewer is asked for the tool acknowledgement');
   if (await review.getByRole('checkbox', { name: 'Collect outputs (outputs/artifacts.json)', exact: true }).count()) throw new Error('a reviewer is offered Collect outputs');
@@ -518,7 +518,7 @@ const same = (got, want, what) => {
   await review.locator('#sf-outputs').getByRole('checkbox', { name: CSV, exact: true }).check();
   const reviewStart = await start(reviewer);
   same([reviewStart.body.access, reviewStart.body.preset, reviewStart.body.harness, reviewStart.body.artifacts, 'result_contract' in reviewStart.body, 'unapproved_tools' in reviewStart.body],
-    ['reviewer', 'local', 'claude-code-acp', [csvId], false, false], 'the review start');
+    ['reviewer', 'local', 'gemini-cli', [csvId], false, false], 'the review start');
   const reviewSid = await opened(reviewStart, reviewer);
   await phase(reviewSid, /: Completed/, reviewer);
   await reviewer.locator('#composer[data-mode="send"]').waitFor(TURN);

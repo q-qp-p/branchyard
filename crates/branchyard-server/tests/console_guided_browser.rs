@@ -15,7 +15,7 @@
 //! their own tokens, see what their roles allow; the reviewer starts and
 //! continues a review. The form and the workspace fit 390 pixels. Driven by
 //! Playwright (`console_guided_browser.js`) with documents from
-//! `tools/console_fixtures.py`, the fake ACP agent as `claude-code-acp`,
+//! `tools/console_fixtures.py`, the fake ACP agent as `gemini-cli`,
 //! and a fake Antigravity stream; skipped, saying so, when Node or
 //! Playwright's module is not installed. `BY_TEST_PLAYWRIGHT` names the
 //! module's directory; otherwise `$(npm root -g)/playwright` is tried, with
@@ -118,7 +118,10 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
         serde_json::json!({"kind": "substrate", "endpoint": closed, "router": closed,
             "template": "harnesses", "key": key})
     };
-    let models = serde_json::json!({"harness": "claude-code-acp",
+    // Gemini CLI keeps a writer's or reviewer's policy in the session's
+    // own home, so it starts without the tool acknowledgement; a profile
+    // verified nowhere (claude-code-acp) would need it.
+    let models = serde_json::json!({"harness": "gemini-cli",
         "models": ["fake-fast", "fake-deep"], "default_model": "fake-fast"});
     let native_image = format!("private-registry/worker@sha256:{}", "a".repeat(64));
     let path = f.dir.join("server.json");
@@ -157,7 +160,7 @@ fn the_guided_start_runs_parallel_sessions_in_operator_environments_in_the_brows
         branchyard_server::cli::resolve(&["--config".into(), path.display().to_string()]).unwrap();
     config.listen = "127.0.0.1:0".parse().unwrap();
     config.harness_commands.insert(
-        "claude-code-acp".into(),
+        "gemini-cli".into(),
         vec![fake_agent().display().to_string()],
     );
     config.harness_commands.insert(

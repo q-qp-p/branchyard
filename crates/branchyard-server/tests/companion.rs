@@ -530,6 +530,9 @@ fn push_notifications_reach_a_subscribed_browser() {
         prompt: "PERMISSION WRITE x.txt=1".into(),
         harness: Some("gemini-cli".into()),
         name: Some("asks".into()),
+        // A private home keeps the default policy binding on the fake
+        // agent, which has no permission system of its own.
+        isolated: true,
         ..Default::default()
     };
     let op = common::run(&server.client(), &task);

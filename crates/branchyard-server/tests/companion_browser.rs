@@ -22,7 +22,18 @@ use branchyard_client::api::{OperationState, PolicySpec, SendRequest, SpawnReque
 use branchyard_client::new_key;
 use branchyard_server::companion::{link, store};
 use branchyard_testkit::wait;
-use common::{await_operation, costly_task, run, task, Fixture, Server};
+use common::{await_operation, costly_task, run, Fixture, Server};
+
+/// A task for the fake agent in a private home. The fake agent has no
+/// permission system of its own, so the person's approval policy (which
+/// names `write *`) binds it only there; a send, a fork and a delegated
+/// child share that home.
+fn task(prompt: &str, name: &str) -> TaskRequest {
+    TaskRequest {
+        isolated: true,
+        ..common::task(prompt, name)
+    }
+}
 
 fn playwright() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("BY_TEST_PLAYWRIGHT") {

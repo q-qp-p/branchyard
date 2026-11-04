@@ -145,13 +145,24 @@ fn publish_over_the_configured_limit_is_refused() {
 #[test]
 fn scratch_areas_are_created_and_lock_contention_is_enforced_across_two_clients() {
     let f = Fixture::new();
-    let server = Server::start(f.config());
+    // The fake agent has no permission system of its own for the default
+    // policy of root's hung send to compose with; root opts out, and its
+    // send inherits that.
+    let mut config = f.config();
+    config.allow_unapproved_tools = true;
+    let server = Server::start(config);
     let client_a = server.client();
     let client_b = server.client();
     let repo_a = client_a.repo("app");
     let repo_b = client_b.repo("app");
 
-    let root = run(&client_a, &task("WRITE r.txt=1", "root"));
+    let root = run(
+        &client_a,
+        &TaskRequest {
+            unapproved_tools: true,
+            ..task("WRITE r.txt=1", "root")
+        },
+    );
     assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
     let other = run(&client_a, &task("WRITE o.txt=1", "other"));
     assert_eq!(other.state, OperationState::Succeeded, "{other:?}");

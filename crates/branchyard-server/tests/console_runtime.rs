@@ -60,6 +60,9 @@ impl Case {
                     harness: Some("gemini-cli".into()),
                     command: Some(vec![common::fake_agent().display().to_string()]),
                     workspace: Some(WorkspaceSpec::default()),
+                    // The fake agent has no permission system of its own
+                    // for the default policy to compose with.
+                    unapproved_tools: true,
                     ..TaskOptions::default()
                 })
                 .name(name)

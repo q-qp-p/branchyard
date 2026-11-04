@@ -293,6 +293,11 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
     let f = Fixture::new();
     let mut config = f.config();
     config.allow_delegation = true;
+    // The fake agent has no permission system of its own for the default
+    // policy to compose with, so root opts out and its children inherit
+    // that. Not isolated: the model refusal below is about a child with no
+    // private home.
+    config.allow_unapproved_tools = true;
     // The fake agent starts the MCP server only when asked to, so any
     // executable stands in for `by` here; `by --remote` tests run the real
     // one.
@@ -305,6 +310,7 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
         &client,
         &TaskRequest {
             delegation: Some(Envelope::depth(2)),
+            unapproved_tools: true,
             ..task("ENV BRANCHYARD_BRANCH BRANCHYARD_BY", "root")
         },
     );

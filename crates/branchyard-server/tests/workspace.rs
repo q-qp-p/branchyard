@@ -96,6 +96,9 @@ fn a_repositorys_scripts_run_only_when_the_operator_allows_them() {
                 teardown: vec!["touch $BRANCHYARD_ROOT/../local-torn".into()],
                 ..Default::default()
             }),
+            // The fake agent has no permission system of its own for the
+            // default policy to compose with.
+            unapproved_tools: true,
             ..Default::default()
         })
         .name("local")
