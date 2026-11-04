@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "ListFiles",
+      "WebFetch",
+      "WebSearch",
+      "tool_call",
+      "skill",
+      "agent",
+      "notebook_edit",
+      "todo_write",
+      "save_memory",
+      "lsp",
+      "monitor",
+      "mcp__*"
+    ]
+  }
+}

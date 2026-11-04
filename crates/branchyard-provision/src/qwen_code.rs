@@ -138,7 +138,16 @@ mod tests {
         let plan = QwenCode.plan(&context).unwrap();
         assert_eq!(plan.auth.as_deref(), Some("api-key"));
         let env: Vec<&str> = plan.env.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(env, ["OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY"]);
+        // The private home's system defaults file is named last.
+        assert_eq!(
+            env,
+            [
+                "OPENAI_API_KEY",
+                "OPENAI_BASE_URL",
+                "GEMINI_API_KEY",
+                SYSTEM_DEFAULTS_VAR
+            ]
+        );
         assert!(plan
             .secrets
             .iter()
@@ -164,7 +173,7 @@ mod tests {
         context.secrets = vec![Secret::new("OPENAI_MODEL", "glm-4.6")];
         context.model = Some("glm-5.3".into());
         let plan = QwenCode.plan(&context).unwrap();
-        assert_eq!(plan.env, [EnvVar::plain("OPENAI_MODEL", "glm-5.3")]);
+        assert_eq!(plan.env[0], EnvVar::plain("OPENAI_MODEL", "glm-5.3"));
         assert!(plan.secrets.is_empty());
         assert_eq!(plan.unused_secrets, ["OPENAI_MODEL"]);
     }

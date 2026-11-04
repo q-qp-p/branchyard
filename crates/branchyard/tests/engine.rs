@@ -1272,9 +1272,12 @@ fn a_restricting_policy_runs_only_where_the_profile_keeps_it() {
             },
         )
         .unwrap();
-    assert_eq!(
-        again.info().status,
-        BranchStatus::Ready,
+    // It ran: a prompt that writes nothing ends with no changes.
+    assert!(
+        matches!(
+            again.info().status,
+            BranchStatus::Ready | BranchStatus::NoChanges
+        ),
         "{:?}",
         again.events()
     );

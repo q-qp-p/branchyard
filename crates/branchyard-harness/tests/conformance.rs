@@ -43,9 +43,12 @@ fn answer(protocol: Protocol) -> impl Fn(&Value) -> Vec<Value> {
             (Protocol::Acp, Some("initialize")) => json!({"protocolVersion": 1}),
             // The models an agent may list (agy 1.4.12 does); a profile
             // that chooses one sets it next.
+            // The mode a profile that pins one asks in (Gemini CLI's and
+            // Qwen Code's `default`).
             (Protocol::Acp, Some("session/new")) => json!({"sessionId": "s1",
                 "models": {"availableModels": [{"modelId": "small-model"}, {"modelId": "big-model"}],
-                           "currentModelId": "big-model"}}),
+                           "currentModelId": "big-model"},
+                "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}]}}),
             (Protocol::Acp, Some("session/set_model")) => json!({}),
             (Protocol::PiRpc, _) if frame["type"] == "get_state" => {
                 return vec![

@@ -1734,6 +1734,10 @@ fn qwen_code_on_zai_gets_the_three_variables_it_logs_in_from() {
         [
             ("OPENAI_API_KEY", ZAI_KEY),
             ("OPENAI_MODEL", "glm-4.5-air"),
+            (
+                "QWEN_CODE_SYSTEM_DEFAULTS_PATH",
+                "/branchyard/home/.qwen/branchyard/system-defaults.json"
+            ),
             ("OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"),
         ]
     );
