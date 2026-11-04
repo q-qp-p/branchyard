@@ -20,7 +20,7 @@ and a rule file that asks about every call, and a session in another mode is
 refused. Other profiles are refused under a restricting policy until a mechanism
 is verified for them. Branchyard no longer writes
 `/etc/claude-code/managed-settings.json` in a sandbox, which replaced an image
-administrator's file. Claude Code takes `--effort` as `CLAUDE_CODE_EFFORT_LEVEL`.
+administrator's file. Over `antigravity-acp`, a private home now gets `ask` rules in the project file `agy acp` reads and `toolPermission: request-review`, so commands, file writes, edits and reads reach Branchyard; the `permissions` lists Branchyard's docs named for it are read only headless. Antigravity's ACP profile still cannot keep a restricting policy, since web search, scheduling and subagents run without asking. Claude Code takes `--effort` as `CLAUDE_CODE_EFFORT_LEVEL`.
 Reported by @arsenyspb in
 [#62](https://github.com/vamsiramakrishnan/branchyard/issues/62); the details
 are in [composing with a harness's own permissions](docs/harness-integration.md#composing-with-a-harnesss-own-permissions).

@@ -203,6 +203,14 @@ const QWEN_COMPOSITION: &str = "it runs with --approval-mode default (its defaul
      tool it names, which outranks an allow rule in any settings file; deny rules still refuse \
      first; the session's reported mode is checked; a tool a later release adds is not on the list";
 
+/// Why Antigravity's ACP profile cannot keep a restricting policy, from
+/// Antigravity CLI 1.4.12 run against a stand-in model API (4 November
+/// 2026). In a home Branchyard prepares, its provisioner still writes the
+/// rules that send commands, writes, edits and reads to Branchyard.
+const ANTIGRAVITY_ACP_UNBOUND: &str = "in a home Branchyard prepares, ask rules send its \
+     commands, file writes, edits and reads to Branchyard, but web search, scheduling and \
+     subagent definitions run without asking, and a subagent's tools do not reach Branchyard";
+
 /// A profile that routes no tool approvals at all: its harness's own
 /// configuration decides every call.
 const UNROUTED: &str = "the harness routes no tool approvals to Branchyard, so its own \
@@ -263,6 +271,7 @@ pub const PROFILES: &[Profile] = &[
         acp_auth_method: Some("gemini-api-key"),
         acp_models: true,
         acp_usage: true,
+        composition: Composition::unverified(ANTIGRAVITY_ACP_UNBOUND),
         ..acp("antigravity-acp", "antigravity", &["agy", "acp"])
     },
     Profile {
