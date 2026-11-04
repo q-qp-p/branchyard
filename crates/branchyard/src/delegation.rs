@@ -5699,6 +5699,7 @@ Checks on the merged result: \
             plan: None,
             goal: None,
             deny: Vec::new(),
+            unapproved_tools: false,
             removed: Vec::new(),
             metered_from: None,
             skills: None,

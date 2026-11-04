@@ -852,6 +852,16 @@ pub(crate) fn find_ask(backend: &dyn EffectBackend, id: &str) -> Result<Approval
     }
 }
 
+/// Whether `policy` stages, asks about or blocks a harness tool: a rule
+/// whose pattern names a tool (a connector operation's has a `:`) and whose
+/// decision is not allow.
+pub(crate) fn restricts_tools(policy: &ApprovalPolicy) -> bool {
+    policy
+        .rules
+        .iter()
+        .any(|(pattern, decision)| !pattern.contains(':') && *decision != Approval::Allow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,14 +897,4 @@ mod tests {
         assert!(a.starts_with("blake3:") && !a.contains("secret"));
         assert_ne!(a, request_digest("g", "p", &serde_json::json!({"a": 1})));
     }
-}
-
-/// Whether `policy` stages, asks about or blocks a harness tool: a rule
-/// whose pattern names a tool (a connector operation's has a `:`) and whose
-/// decision is not allow.
-pub(crate) fn restricts_tools(policy: &ApprovalPolicy) -> bool {
-    policy
-        .rules
-        .iter()
-        .any(|(pattern, decision)| !pattern.contains(':') && *decision != Approval::Allow)
 }
