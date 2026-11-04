@@ -88,10 +88,15 @@ impl Fixture {
     }
 
     /// Options that run the fake agent through an ACP profile.
+    /// A Gemini CLI turn driven by the fake agent, which has no permission
+    /// system of its own. Gemini CLI keeps a restricting policy only in a
+    /// home Branchyard prepares, so a local turn in the test's own home lets
+    /// the harness's permissions decide (`unapproved_tools`): there are none.
     pub fn options(&self) -> TaskOptions {
         TaskOptions {
             harness: Some("gemini-cli".into()),
             command: Some(vec![fake_agent().display().to_string()]),
+            unapproved_tools: true,
             ..TaskOptions::default()
         }
     }

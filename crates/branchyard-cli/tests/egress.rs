@@ -298,6 +298,9 @@ fn permission_presets_decide_tool_requests() {
             "gemini-cli",
             "--command",
             &agent,
+            // A private home, where gemini-cli keeps the preset's
+            // restrictions; in the test's own home it is refused.
+            "--isolated",
             "--permissions",
             preset,
             "--",
@@ -338,6 +341,7 @@ fn permission_presets_decide_tool_requests() {
         "gemini-cli",
         "--command",
         &agent,
+        "--isolated",
         "--",
         "PERMISSION",
     ]);

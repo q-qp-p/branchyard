@@ -169,7 +169,12 @@ fn a_repeated_idempotency_key_runs_once() {
 #[test]
 fn a_task_runs_through_merge_over_http() {
     let f = Fixture::new();
-    let server = Server::start(f.config());
+    // The fake agent has no permission system of its own for the policy to
+    // compose with; the branch's opt-out carries to its send's default
+    // policy.
+    let mut config = f.config();
+    config.allow_unapproved_tools = true;
+    let server = Server::start(config);
     let client = server.client();
     let repo = client.repo("app");
 
@@ -180,7 +185,8 @@ fn a_task_runs_through_merge_over_http() {
             Some(TOKEN),
             "",
             r#"{"prompt": "WRITE hello.txt=hi", "harness": "gemini-cli", "name": "hello",
-                "policy": {"mode": "allow"}, "budget": {"max_turns": 5}}"#,
+                "policy": {"mode": "allow"}, "budget": {"max_turns": 5},
+                "unapproved_tools": true}"#,
         ),
     );
     assert_eq!(status, 202, "{body}");
@@ -325,6 +331,9 @@ fn presets_and_network_policies_reach_the_engine() {
             &client,
             &branchyard_client::api::TaskRequest {
                 policy: PolicySpec::preset(preset),
+                // A private home keeps the preset binding on the fake agent,
+                // which has no permission system of its own.
+                isolated: true,
                 ..task("PERMISSION", name)
             },
         );
@@ -905,14 +914,18 @@ fn operations_survive_a_restart() {
 #[test]
 fn a_client_disconnect_does_not_stop_a_turn() {
     let f = Fixture::new();
-    let server = Server::start(f.config());
+    // The fake agent has no permission system of its own for the default
+    // policy to compose with.
+    let mut config = f.config();
+    config.allow_unapproved_tools = true;
+    let server = Server::start(config);
     let client = server.client();
     let repo = client.repo("app");
 
     // Submit, read the acceptance, and hang up while the turn runs; an
     // event stream is dropped mid-turn too.
     let body = r#"{"prompt": "HANG", "harness": "gemini-cli", "name": "left",
-                   "budget": {"max_seconds": 3}}"#;
+                   "budget": {"max_seconds": 3}, "unapproved_tools": true}"#;
     let mut stream = TcpStream::connect(server.addr).unwrap();
     stream
         .write_all(post("/v1/repos/app/tasks", Some(TOKEN), "", body).as_bytes())

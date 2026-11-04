@@ -33,6 +33,8 @@ pub fn open(dir: &Path, mode: SessionMode) -> Open {
         instructions: None,
         mcp_config_file: None,
         remote_mcp_servers: Vec::new(),
+        permission_profile: None,
+        json_schema: None,
     }
 }
 

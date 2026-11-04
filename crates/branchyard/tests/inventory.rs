@@ -588,7 +588,11 @@ fn the_router_excludes_what_the_machine_cannot_run_with_the_reason() {
         .yard
         .route(
             "fix the bug",
-            &TaskOptions::default(),
+            // Only installation decides here, not composition.
+            &TaskOptions {
+                unapproved_tools: true,
+                ..TaskOptions::default()
+            },
             &table,
             &how,
             Some(1),
@@ -615,6 +619,7 @@ fn the_router_excludes_what_the_machine_cannot_run_with_the_reason() {
     // the inventory; so is every candidate of a task with a command.
     let commanded = TaskOptions {
         command: Some(vec![fake_agent().display().to_string()]),
+        unapproved_tools: true,
         ..TaskOptions::default()
     };
     let route = f
@@ -635,7 +640,10 @@ fn the_router_excludes_what_the_machine_cannot_run_with_the_reason() {
         .yard
         .route(
             "fix the bug",
-            &TaskOptions::default(),
+            &TaskOptions {
+                unapproved_tools: true,
+                ..TaskOptions::default()
+            },
             &by_name_fleet(&["goose"]),
             &how,
             Some(1),

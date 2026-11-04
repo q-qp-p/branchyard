@@ -79,7 +79,11 @@ pub use branchyard_harness::profiles::Protocol;
 pub use branchyard_harness::{Instructions, McpServer, RemoteMcpServer, RemoteTransport};
 use serde::{Deserialize, Serialize};
 
-pub use claude::{managed_settings, ManagedSettings, MANAGED_SETTINGS};
+/// Claude Code's switch that hides its credentials from the commands its
+/// tools run (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`); see
+/// [`Context::subprocess_isolation`].
+pub use claude::ENV_SCRUB as CLAUDE_ENV_SCRUB;
+pub use claude::MANAGED_SETTINGS;
 pub use edit::{Edit, JsonEdit, TomlEdit};
 pub use permissions::{Permissions, PermissionsWritten};
 
@@ -644,6 +648,13 @@ pub struct Context {
     /// What an earlier provisioning of this home installed in native
     /// configuration, from [`apply::installed`].
     pub installed: Installed,
+    /// Whether the host the harness runs on has what Claude Code's
+    /// subprocess isolation needs: `bwrap` and `socat` on `PATH` (Linux).
+    /// With it, a credential in Claude Code's environment is hidden from
+    /// the commands its tools run (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
+    /// `false` when unknown, as in a sandbox, or when the user set the
+    /// variable themselves.
+    pub subprocess_isolation: bool,
     /// The turn's model gateway, when the branch is on one, for a harness
     /// whose provider endpoint is a file in its home rather than the
     /// environment's base URL variables ([`models::ModelGateway`]).
@@ -677,6 +688,7 @@ impl Context {
             telemetry: None,
             permissions: None,
             installed: Installed::default(),
+            subprocess_isolation: false,
             model_gateway: None,
         }
     }
@@ -882,6 +894,14 @@ pub struct Session {
     /// For a driver that would otherwise put the MCP servers on its command
     /// line (Claude Code's stream-json), the file it is given instead.
     pub mcp_config: Option<McpConfigFile>,
+    /// A permission profile the plan wrote into the harness's own
+    /// configuration, which the driver must find active (Codex's
+    /// `default_permissions`).
+    pub permission_profile: Option<String>,
+    /// Arguments added to the harness's command line, after the profile's
+    /// own or the task's override: the ones that keep the harness asking
+    /// Branchyard (Gemini CLI's `--approval-mode default --policy FILE`).
+    pub args: Vec<String>,
 }
 
 /// The MCP configuration as a file the harness reads, mode 0600: in the
@@ -1137,7 +1157,8 @@ pub fn file_logins() -> Vec<FileLogin> {
 /// Whether `harness`'s provisioner takes a reasoning effort for a branch
 /// whose home is (`private_home`) or is not its own: Codex writes it into
 /// its `config.toml` and Oh My Pi into its `config.yml`, which need a
-/// private home; the others have no setting for it and refuse one.
+/// private home; Claude Code reads it from `CLAUDE_CODE_EFFORT_LEVEL`, in
+/// any home; the others have no setting for it and refuse one.
 pub fn takes_effort(harness: &str, protocol: Protocol, private_home: bool) -> bool {
     let mut context = Context::new(harness, protocol, "/home", "/work");
     context.private_home = private_home;
@@ -1407,11 +1428,20 @@ mod tests {
     }
 
     #[test]
-    fn only_codex_takes_an_effort_and_only_into_a_private_home() {
+    fn codex_takes_an_effort_into_a_private_home_and_claude_code_anywhere() {
         assert!(takes_effort("codex", Protocol::CodexAppServer, true));
         assert!(!takes_effort("codex", Protocol::CodexAppServer, false));
+        assert!(takes_effort(
+            "claude-code",
+            Protocol::ClaudeStreamJson,
+            true
+        ));
+        assert!(takes_effort(
+            "claude-code",
+            Protocol::ClaudeStreamJson,
+            false
+        ));
         for (harness, protocol) in [
-            ("claude-code", Protocol::ClaudeStreamJson),
             ("gemini-cli", Protocol::Acp),
             ("antigravity", Protocol::AntigravityStreamJson),
             ("goose", Protocol::Acp),

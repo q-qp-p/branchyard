@@ -87,7 +87,9 @@ pub fn sdk(error: &branchyard::Error) -> ApiError {
         E::InvalidName { .. } => (S::BAD_REQUEST, "invalid_name"),
         E::UnknownHarness(_) => (S::BAD_REQUEST, "unknown_harness"),
         E::HarnessUnavailable { .. } => (S::UNPROCESSABLE_ENTITY, "harness_unavailable"),
-        E::Unsupported(_) | E::UnroutedApprovals { .. } => (S::UNPROCESSABLE_ENTITY, "unsupported"),
+        E::Unsupported(_) | E::UnroutedApprovals { .. } | E::UnboundPolicy { .. } => {
+            (S::UNPROCESSABLE_ENTITY, "unsupported")
+        }
         E::Config(_) => (S::UNPROCESSABLE_ENTITY, "config_error"),
         E::NoCandidate(_) => (S::CONFLICT, "no_candidate"),
         E::TargetMoved { .. } => (S::CONFLICT, "target_moved"),
@@ -171,11 +173,14 @@ pub fn sdk(error: &branchyard::Error) -> ApiError {
             error_out.detail(json!({ "checks": checks }))
         }
         // What the engine says beyond its message: the harness and why it
-        // cannot start, the profile that routes no approvals.
-        E::HarnessUnavailable { .. } | E::UnroutedApprovals { .. } => match error.detail() {
-            Some(detail) => error_out.detail(detail),
-            None => error_out,
-        },
+        // cannot start, the profile that routes no approvals or cannot keep
+        // the policy against its harness's own permissions.
+        E::HarnessUnavailable { .. } | E::UnroutedApprovals { .. } | E::UnboundPolicy { .. } => {
+            match error.detail() {
+                Some(detail) => error_out.detail(detail),
+                None => error_out,
+            }
+        }
         _ => error_out,
     }
 }
@@ -229,6 +234,24 @@ mod tests {
         assert_eq!(
             e.body.detail,
             Some(json!({ "unsupported": "unrouted_approvals", "profile": "pi-rpc" }))
+        );
+        let e = sdk(&branchyard::Error::UnboundPolicy {
+            profile: "codex-app-server".into(),
+            reason: "why".into(),
+            private_home_binds: true,
+        });
+        assert_eq!(
+            (e.status, e.body.code.as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "unsupported")
+        );
+        assert_eq!(
+            e.body.detail,
+            Some(json!({
+                "unsupported": "unbound_policy",
+                "profile": "codex-app-server",
+                "reason": "why",
+                "private_home_binds": true,
+            }))
         );
     }
 

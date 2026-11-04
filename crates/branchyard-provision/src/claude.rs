@@ -35,11 +35,13 @@
 //! environment key needs, and the key never enters the environment its
 //! Bash tool and MCP servers inherit. With a helper,
 //! `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` is not set: 2.1.283 ignores
-//! `apiKeyHelper` when it is. An OAuth token and the Vertex
-//! variables have no such setting and stay in the environment, visible to
-//! tool commands: Claude Code does not filter its Bash tool's environment
-//! unless `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is on, which on Linux needs
-//! bubblewrap and is not set here.
+//! `apiKeyHelper` when it is. An OAuth token has no such setting and goes
+//! in the environment. Where the host has bwrap and socat, the plan sets
+//! `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, and Claude Code hides the token
+//! from its Bash commands and MCP servers (and sandboxes Bash); elsewhere
+//! the turn warns that they can read it (Claude Code 2.1.318, 4 November
+//! 2026). The Vertex AI project and region are not credentials and stay
+//! visible either way.
 //!
 //! An isolated harness keeps Claude Code's Vertex AI switch from the
 //! engine's environment, so every method but `vertex-ai` sets
@@ -67,8 +69,8 @@ use serde_json::json;
 use crate::auth::{Method, Spec};
 use crate::edit::{path, Edit, JsonEdit};
 use crate::{
-    needs_private_home, pass_session, unsupported, unused, Context, Credential, EnvVar,
-    McpConfigFile, Plan, Protocol, Provisioner, Refused, Via,
+    needs_private_home, pass_session, unused, Context, Credential, EnvVar, McpConfigFile, Plan,
+    Protocol, Provisioner, Refused, Via,
 };
 
 const CLAUDE_JSON: &str = ".claude.json";
@@ -167,123 +169,32 @@ pub fn resolve_model_alias(raw: &str, aliases: &[(&str, &str)]) -> String {
         .map_or(normalized.clone(), |(_, model)| (*model).to_owned())
 }
 
-/// Where Claude Code reads its managed settings on Linux and WSL, and where
-/// a sandboxed turn's are written; see `docs/provisioning.md#managed-settings`.
-pub const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
+/// Claude Code's switch that hides its own credentials from the commands
+/// its tools run, and sandboxes Bash.
+pub const ENV_SCRUB: &str = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB";
 
-/// Claude Code's built-in tool names, as its tools reference spells them in
-/// permission rules, and the names it had before that reference
-/// (`MultiEdit`, `BashOutput`, `KillBash`, `KillShell`). A denied name not in
-/// this list is another harness's, such as `shell` or `write_file`, and is
-/// not written: Claude Code would match nothing with it.
-const CLAUDE_CODE_TOOLS: &[&str] = &[
-    "Agent",
-    "Artifact",
-    "AskUserQuestion",
-    "Bash",
-    "CronCreate",
-    "CronDelete",
-    "CronList",
-    "Edit",
-    "EndConversation",
-    "EnterPlanMode",
-    "EnterWorktree",
-    "ExitPlanMode",
-    "ExitWorktree",
-    "Glob",
-    "Grep",
-    "LSP",
-    "ListAgents",
-    "ListMcpResourcesTool",
-    "Monitor",
-    "NotebookEdit",
-    "PowerShell",
-    "PushNotification",
-    "ReadMcpResourceTool",
-    "Read",
-    "RemoteTrigger",
-    "ReportFindings",
-    "ScheduleWakeup",
-    "SendFeedback",
-    "SendMessage",
-    "SendUserFile",
-    "ShareOnboardingGuide",
-    "Skill",
-    "SubagentHandback",
-    "TaskCreate",
-    "TaskGet",
-    "TaskList",
-    "TaskOutput",
-    "TaskStop",
-    "TaskUpdate",
-    "TodoWrite",
-    "ToolSearch",
-    "WaitForMcpServers",
-    "WebFetch",
-    "WebSearch",
-    "Workflow",
-    "Write",
-    "MultiEdit",
-    "BashOutput",
-    "KillBash",
-    "KillShell",
-];
+/// The warning a turn records when the OAuth token stays visible to tool
+/// commands.
+pub const OAUTH_IN_TOOLS: &str = "the Claude Code OAuth token is in the harness's environment, so \
+     its Bash commands and MCP servers can read it: Claude Code hides it only with \
+     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, which needs bwrap and socat on this host; install both, \
+     or give an API key, which reaches Claude Code through a file";
+
+/// Where Claude Code reads its managed settings on Linux and WSL: the
+/// administrator's file, which Branchyard reads nothing from and never
+/// writes; see `docs/provisioning.md#managed-settings`.
+pub const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
 
 /// The variables [`plan`] sets to turn Claude Code's telemetry export off.
 /// Pinned in managed settings too, so a setting in the home cannot turn it
 /// back on.
+#[cfg(test)]
 const TELEMETRY_OFF: &[(&str, &str)] = &[
     ("CLAUDE_CODE_ENABLE_TELEMETRY", "0"),
     ("OTEL_METRICS_EXPORTER", "none"),
     ("OTEL_LOGS_EXPORTER", "none"),
     ("OTEL_TRACES_EXPORTER", "none"),
 ];
-
-/// A sandboxed Claude Code turn's managed settings, and what they say.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ManagedSettings {
-    /// The tool names denied, sorted: the policy's denials that Claude Code
-    /// has a name for, and `mcp__` names.
-    pub deny: Vec<String>,
-    /// Whether the telemetry variables are pinned off.
-    pub telemetry_off: bool,
-    /// The file's content, with sorted keys and a trailing newline.
-    pub json: String,
-}
-
-/// The managed settings for a sandboxed Claude Code turn, from the tool
-/// names its policy denies (`denied`, names of any harness): the Claude Code
-/// ones are denied, bypass mode is disabled, and with `telemetry_off` the
-/// telemetry variables are pinned. Nothing else goes in the file. A policy
-/// with no denials gets no `deny` list; a turn with telemetry on or unset
-/// gets no `env` block, since provisioning sets no telemetry variable then.
-pub fn managed_settings(denied: &[&str], telemetry_off: bool) -> ManagedSettings {
-    let mut deny: Vec<String> = denied
-        .iter()
-        .copied()
-        .filter(|name| CLAUDE_CODE_TOOLS.contains(name) || name.starts_with("mcp__"))
-        .map(str::to_owned)
-        .collect();
-    deny.sort();
-    deny.dedup();
-    let mut permissions = json!({ "disableBypassPermissionsMode": "disable" });
-    if !deny.is_empty() {
-        permissions["deny"] = json!(deny);
-    }
-    let mut document = json!({ "permissions": permissions });
-    if telemetry_off {
-        let env: serde_json::Map<String, serde_json::Value> = TELEMETRY_OFF
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), json!(value)))
-            .collect();
-        document["env"] = serde_json::Value::Object(env);
-    }
-    ManagedSettings {
-        deny,
-        telemetry_off,
-        json: crate::json_text(&document),
-    }
-}
 
 pub(crate) struct Claude;
 
@@ -297,15 +208,14 @@ impl Provisioner for Claude {
     }
 
     fn plan(&self, context: &Context) -> Result<Plan, Refused> {
-        if context.effort.is_some() {
-            return Err(unsupported(
-                context,
-                "reasoning effort",
-                "Scion's Claude provisioner has no setting for it",
-            ));
-        }
         let mut plan = Plan::default();
         pass_session(context, &mut plan);
+        // Claude Code reads its reasoning effort from this variable (as
+        // `--effort` and the `effortLevel` setting do); Branchyard's level
+        // names are among its values.
+        if let Some(effort) = context.effort {
+            plan.set_env(EnvVar::plain("CLAUDE_CODE_EFFORT_LEVEL", effort.as_str()));
+        }
         let given: Vec<&str> = context.secrets.iter().map(|s| s.name.as_str()).collect();
         let resolved = AUTH.select(&given, context.auth.as_deref())?;
         let secret = |name: &str| context.secret(name).unwrap_or_default().to_owned();
@@ -339,12 +249,27 @@ impl Provisioner for Claude {
                 // Claude Code has no file or helper for a token from
                 // `claude setup-token`: `.credentials.json` holds a whole
                 // claude.ai login (CLAUDE_AUTH).
-                "oauth-token" => plan.secret_env(
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                    &secret("CLAUDE_CODE_OAUTH_TOKEN"),
-                    true,
-                ),
+                //
+                // In its environment the token reaches every command the
+                // Bash tool and MCP servers run, unless Claude Code scrubs
+                // their environment, which on Linux needs bwrap and socat
+                // and also sandboxes Bash: writes outside the working tree
+                // and its temporary directory are refused (Claude Code
+                // 2.1.318, 4 November 2026).
+                "oauth-token" => {
+                    let scrubbed = context.subprocess_isolation;
+                    plan.secret_env(
+                        "CLAUDE_CODE_OAUTH_TOKEN",
+                        "CLAUDE_CODE_OAUTH_TOKEN",
+                        &secret("CLAUDE_CODE_OAUTH_TOKEN"),
+                        !scrubbed,
+                    );
+                    if scrubbed {
+                        plan.set_env(EnvVar::plain(ENV_SCRUB, "1"));
+                    } else {
+                        plan.warnings.push(OAUTH_IN_TOOLS.into());
+                    }
+                }
                 "auth-file" => {
                     needs_private_home(context, "the credentials file")?;
                     let content = secret("CLAUDE_AUTH");
@@ -600,130 +525,33 @@ mod tests {
         );
     }
 
-    /// The tool names each preset denies, as `PolicyPreset::rules` lists
-    /// them (`EDIT_TOOLS`, `SHELL_TOOLS`, `WEB_TOOLS`); `full` denies none.
-    const READ_ONLY_DENIES: &[&str] = &[
-        "Edit",
-        "Write",
-        "MultiEdit",
-        "NotebookEdit",
-        "fileChange",
-        "write_file",
-        "replace",
-        "Bash",
-        "BashOutput",
-        "KillBash",
-        "KillShell",
-        "commandExecution",
-        "run_shell_command",
-        "shell",
-        "exec_command",
-        "WebFetch",
-        "WebSearch",
-        "web_fetch",
-        "google_web_search",
-    ];
-    const EDIT_WORKTREE_DENIES: &[&str] = &[
-        "Bash",
-        "BashOutput",
-        "KillBash",
-        "KillShell",
-        "commandExecution",
-        "run_shell_command",
-        "shell",
-        "exec_command",
-        "WebFetch",
-        "WebSearch",
-        "web_fetch",
-        "google_web_search",
-    ];
-
-    /// The file a sandboxed turn's `read-only` policy gets, with telemetry
-    /// on or off: the Claude Code names of its denials, bypass disabled.
+    /// Reasoning effort reaches Claude Code as the variable it reads, under
+    /// the level's own name; it used to be refused because Scion's
+    /// provisioner, which this one follows, had no setting for it.
     #[test]
-    fn read_only_writes_its_claude_code_denials() {
-        let deny = serde_json::json!([
-            "Bash",
-            "BashOutput",
-            "Edit",
-            "KillBash",
-            "KillShell",
-            "MultiEdit",
-            "NotebookEdit",
-            "WebFetch",
-            "WebSearch",
-            "Write"
-        ]);
-        let permissions =
-            serde_json::json!({ "disableBypassPermissionsMode": "disable", "deny": deny });
-        let off = managed_settings(READ_ONLY_DENIES, true);
-        assert_eq!(
-            parse(&off.json),
-            serde_json::json!({
-                "permissions": permissions,
-                "env": telemetry_off_env(),
-            })
-        );
-        assert_eq!(off.deny.len(), 10);
-        let on = managed_settings(READ_ONLY_DENIES, false);
-        assert_eq!(
-            parse(&on.json),
-            serde_json::json!({ "permissions": permissions })
-        );
-        assert!(!on.telemetry_off);
+    fn effort_is_claude_codes_effort_level() {
+        for (effort, level) in [
+            (crate::Effort::Low, "low"),
+            (crate::Effort::High, "high"),
+            (crate::Effort::Xhigh, "xhigh"),
+        ] {
+            let mut context = crate::Context::new(
+                "claude-code",
+                crate::Protocol::ClaudeStreamJson,
+                "/home/branch",
+                "/work",
+            );
+            context.effort = Some(effort);
+            let plan = crate::plan(&context).unwrap();
+            let set = plan
+                .env
+                .iter()
+                .find(|var| var.name == "CLAUDE_CODE_EFFORT_LEVEL");
+            assert_eq!(set.map(|var| var.value.as_str()), Some(level));
+        }
     }
 
-    /// `edit-worktree` denies the shell and the web and nothing it edits.
-    #[test]
-    fn edit_worktree_writes_its_shell_and_web_denials() {
-        let deny = serde_json::json!([
-            "Bash",
-            "BashOutput",
-            "KillBash",
-            "KillShell",
-            "WebFetch",
-            "WebSearch"
-        ]);
-        let permissions =
-            serde_json::json!({ "disableBypassPermissionsMode": "disable", "deny": deny });
-        assert_eq!(
-            parse(&managed_settings(EDIT_WORKTREE_DENIES, true).json),
-            serde_json::json!({ "permissions": permissions, "env": telemetry_off_env() })
-        );
-        assert_eq!(
-            parse(&managed_settings(EDIT_WORKTREE_DENIES, false).json),
-            serde_json::json!({ "permissions": permissions })
-        );
-    }
-
-    /// `full` denies nothing, so there is no `deny` list; bypass mode is
-    /// still disabled, since the drivers route every request through the
-    /// branch's policy.
-    #[test]
-    fn full_writes_no_denials_only_the_bypass_setting() {
-        let permissions = serde_json::json!({ "disableBypassPermissionsMode": "disable" });
-        let off = managed_settings(&[], true);
-        assert_eq!(
-            parse(&off.json),
-            serde_json::json!({ "permissions": permissions, "env": telemetry_off_env() })
-        );
-        assert!(off.deny.is_empty());
-        assert_eq!(
-            parse(&managed_settings(&[], false).json),
-            serde_json::json!({ "permissions": permissions })
-        );
-    }
-
-    /// Names of other harnesses are not written, and `mcp__` names are, as
-    /// Claude Code spells MCP tools.
-    #[test]
-    fn only_claude_code_names_are_written() {
-        let managed = managed_settings(&["shell", "Bash", "mcp__docs__search", "Bash"], false);
-        assert_eq!(managed.deny, ["Bash", "mcp__docs__search"]);
-    }
-
-    /// Telemetry pinned off is what [`plan`] sets when telemetry is off, so
-    /// the managed file never disagrees with the home's environment.
+    /// Telemetry turned off sets every variable that turns it off.
     #[test]
     fn pinned_telemetry_is_what_the_plan_sets_when_off() {
         let mut context = crate::Context::new(
@@ -743,15 +571,16 @@ mod tests {
         }
     }
 
-    fn parse(text: &str) -> serde_json::Value {
-        serde_json::from_str(text).unwrap()
-    }
-
-    fn telemetry_off_env() -> serde_json::Value {
-        TELEMETRY_OFF
-            .iter()
-            .map(|(name, value)| ((*name).to_owned(), serde_json::json!(value)))
-            .collect::<serde_json::Map<_, _>>()
-            .into()
+    /// A pinned Vertex AI version passes through the alias table as given;
+    /// only the size aliases are mapped.
+    #[test]
+    fn a_pinned_model_version_is_passed_as_given() {
+        for pinned in ["claude-sonnet-4-5@20250929", "claude-haiku-4-5@20251001"] {
+            assert_eq!(resolve_model_alias(pinned, MODEL_ALIASES), pinned);
+        }
+        assert_eq!(
+            resolve_model_alias("large", MODEL_ALIASES),
+            "claude-opus-5-5"
+        );
     }
 }

@@ -202,6 +202,9 @@ fn rig_json_enforces_required_results_without_changing_its_shape_or_native_turns
                 &name,
                 "--command",
                 &f.agent,
+                // The seat's deny-all policy restricts; the fake agent has no
+                // permission system of its own for it to compose with.
+                "--allow-unapproved-tools",
                 "--json",
             ]);
             assert_eq!(output.status.code(), Some(expected), "{}", shown(&output));
@@ -244,6 +247,7 @@ fn rig_declared_checks_gate_deliverables_in_both_output_formats() {
             name,
             "--command",
             &f.agent,
+            "--allow-unapproved-tools",
         ];
         if json {
             args.push("--json");

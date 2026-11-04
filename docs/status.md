@@ -50,7 +50,7 @@ A live run is protocol qualification against the real binary as a local process.
 
 | Harness | Profile | Status | Live run (local process) | Permissions answered | Steer |
 |---|---|---|---|---|---|
-| Claude Code | `claude-code-stream-json` (default) | live-qualified | 9 of 9 pass, 2026-11-01, 2.1.316 (Claude Code) ([report](qualification/claude-code-stream-json.json)) | live-tested | live-tested |
+| Claude Code | `claude-code-stream-json` (default) | live-qualified | 9 of 9 pass, 2026-11-04, 2.1.318 (Claude Code) ([report](qualification/claude-code-stream-json.json)) | live-tested | live-tested |
 | Claude Code | `claude-code-acp` (alternate) | live-qualified | 9 of 9 pass, 2026-09-26, 0.81.2 ([report](qualification/claude-code-acp.json)) | live-tested | live-tested |
 | Codex | `codex-app-server` (default) | live-qualified | 9 of 9 pass, 2026-11-01, codex-cli 0.166.0 ([report](qualification/codex-app-server.json)) | live-tested | live-tested |
 | Codex | `codex-acp` (alternate) | unqualified | not run | contract-only | not verified |

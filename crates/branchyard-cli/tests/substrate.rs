@@ -349,6 +349,9 @@ fn saved_substrate_runs_from_a_subdirectory_and_explicit_local_wins() {
             "local",
             "--command",
             setup.agent.to_str().unwrap(),
+            // Local, in the test's own home: the fake agent has no
+            // permission system of its own for the policy to compose with.
+            "--allow-unapproved-tools",
         ],
     );
     assert!(

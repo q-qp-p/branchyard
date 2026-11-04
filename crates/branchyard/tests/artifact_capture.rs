@@ -360,6 +360,8 @@ fn captured_lead_crash_child() {
         .unwrap();
     let options = TaskOptions {
         harness: Some("gemini-cli".into()),
+        // The fake agent has no permissions of its own to decide.
+        unapproved_tools: true,
         command: Some(vec![
             "env".into(),
             format!("FAKE_ACP_WAKE={wake}"),

@@ -41,7 +41,7 @@ if [ -z "$session" ]; then
 fi
 read -r line; reply "$line"
 read -r prompt
-printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
+printf '{"type":"system","subtype":"init","session_id":"%s","permissionMode":"default"}\n' "$session"
 echo '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"}}'
 eval "$1"
 echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash","description":"sleep"}]}'

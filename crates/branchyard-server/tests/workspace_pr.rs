@@ -137,6 +137,10 @@ async fn candidate_changes_and_invalid_controls_fail_before_side_effects() {
         .harness("gemini-cli")
         .command([fake_agent().display().to_string()])
         .policy(Policy::allow_all())
+        // The fake agent has no permission system of its own for the
+        // default policy of the send below to compose with; the branch
+        // remembers the opt-out.
+        .unapproved_tools(true)
         .run()
         .unwrap();
     let context =

@@ -44,7 +44,7 @@ by run [OPTIONS] [PROMPT]
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--deny <TOOL,TOOL,...>` | Tools the harness is denied outright, before any permission answer, --yes included; a trailing * matches a prefix. Stored with the branch: later sends and every child it delegates to keep them, as with by spawn --deny. Repeatable |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
@@ -143,7 +143,7 @@ by fan [OPTIONS] [PROMPT]
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
@@ -250,7 +250,7 @@ by map [OPTIONS] <PROMPT>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
@@ -372,7 +372,7 @@ by send [OPTIONS] <BRANCH> [PROMPT]
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
@@ -436,7 +436,7 @@ by fork [OPTIONS] <BRANCH> <PROMPT>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
@@ -511,7 +511,7 @@ by reincarnate [OPTIONS] <BRANCH>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
@@ -654,7 +654,7 @@ by task new [OPTIONS] <PROMPT>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--deny <TOOL,TOOL,...>` | Tools the harness is denied outright, before any permission answer, --yes included; a trailing * matches a prefix. Stored with the branch: later sends and every child it delegates to keep them, as with by spawn --deny. Repeatable |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
@@ -795,7 +795,7 @@ by task fork [OPTIONS] <TASK> <PROMPT>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--isolated <BOOL>` | Private HOME, not a sandbox; the harness is then usually not logged in (one of `true`, `false`) |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--provider <PROVIDER>` | Where the harness runs: local, microsandbox, container, agent-sandbox, substrate or recipe:NAME (default: local, or the branch's own) |
@@ -966,7 +966,7 @@ by pr [OPTIONS] <BRANCH>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--command <CMD>` | Launch this instead of the profile's executable for --watch's turns, for development and testing |
 
 ## `by workspace`
@@ -1169,7 +1169,7 @@ by review [OPTIONS] <BRANCH>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
@@ -1250,7 +1250,7 @@ by plan approve [OPTIONS] <BRANCH>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
@@ -1295,7 +1295,7 @@ by plan reject [OPTIONS] <BRANCH>
 | `-y, --yes` | Grant every tool permission request without asking; the harness may write files and run commands |
 | `--ask` | Ask on the terminal for each tool permission request |
 | `--permissions <PRESET>` | Answer tool permission requests by a named preset: read-only, edit-worktree, or full (as --yes); see docs/egress.md#permission-presets |
-| `--allow-unapproved-tools` | Run a profile that does not route tool permission requests to Branchyard (Antigravity, Pi, Amp); its tools run under the harness's own configuration |
+| `--allow-unapproved-tools` | Let the harness's own permissions decide what its profile cannot keep from your policy: a profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi, Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see docs/harness-integration.md#composing-with-a-harnesss-own-permissions |
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |

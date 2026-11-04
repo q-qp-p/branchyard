@@ -1,0 +1,5 @@
+# Written by Branchyard: every tool call asks its client.
+[[rule]]
+toolName = "*"
+decision = "ask_user"
+priority = 360

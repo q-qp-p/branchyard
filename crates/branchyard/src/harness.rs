@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use branchyard_harness::profiles::{self, Profile, PROFILES};
+use branchyard_harness::Binding;
 use branchyard_runtime::Environment;
 use serde_json::Value;
 
-use crate::{Error, HarnessInfo, Unavailable};
+use crate::{Error, HarnessInfo, TaskOptions, Unavailable};
 
 pub(crate) const DEFAULT_HARNESS: &str = "claude-code";
 
@@ -33,18 +34,46 @@ pub(crate) const CLAUDE_CONFIGURATION: &[&str] = &[
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ];
 
-/// Claude Code's Vertex AI selectors, which an isolated harness keeps from
-/// this process's environment though it loses every other `CLAUDE*` and
-/// `ANTHROPIC*` variable: like the `GOOGLE_*` variables Gemini CLI and
-/// OpenCode select Vertex AI with, which isolation keeps too, they name a
-/// switch, a project and a region, and the credential is Application
-/// Default Credentials. A Claude Code credential given as a secret turns the
-/// switch off (`branchyard_provision`'s Claude provisioner).
-pub(crate) const CLAUDE_VERTEX: &[&str] = &[
+/// Claude Code's provider selectors and model pins, which an isolated
+/// harness keeps from this process's environment though it loses every
+/// other `CLAUDE*` and `ANTHROPIC*` variable. None is a credential: they
+/// name a provider (Vertex AI, Bedrock, Foundry), a project and a region,
+/// the per-tier models an enterprise pins (`claude-sonnet-4-5@20250929`),
+/// and output and traffic limits, like the `GOOGLE_*` variables Gemini CLI
+/// and OpenCode select Vertex AI with, which isolation keeps too. The
+/// credential is the provider's own (Application Default Credentials for
+/// Vertex AI); a Claude Code credential given as a secret turns the
+/// Vertex switch off (`branchyard_provision`'s Claude provisioner).
+/// `CLAUDE_CONFIG_DIR` is not kept: it would point an isolated harness at
+/// the user's own settings, hooks and login, which isolation leaves out,
+/// and neither are the OAuth token or the client certificate's key.
+pub(crate) const CLAUDE_ISOLATED: &[&str] = &[
     "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "CLOUD_ML_REGION",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
 ];
+
+/// The prefix of Claude Code's per-model Vertex AI regions
+/// (`VERTEX_REGION_CLAUDE_4_5_SONNET`), which an isolated harness keeps too.
+pub(crate) const CLAUDE_VERTEX_REGION_PREFIX: &str = "VERTEX_REGION_CLAUDE_";
+
+/// Whether an isolated harness keeps the inherited variable `name`
+/// ([`CLAUDE_ISOLATED`], [`CLAUDE_VERTEX_REGION_PREFIX`]).
+pub(crate) fn kept_when_isolated(name: &str) -> bool {
+    CLAUDE_ISOLATED.contains(&name) || name.starts_with(CLAUDE_VERTEX_REGION_PREFIX)
+}
 
 /// Whether an inherited variable belongs to the running Claude Code process
 /// or its host rather than to the developer's configuration.
@@ -175,6 +204,98 @@ pub(crate) fn check_approvals(profile: &Profile, allowed: bool) -> Result<(), Er
     })
 }
 
+/// Refuse a run whose restrictions `profile` cannot make binding on its
+/// harness's own permission system ([`Error::UnboundPolicy`]), after
+/// [`check_approvals`]. `private_home` says whether the run gets a home
+/// Branchyard prepares (isolated, or on a sandbox provider). A run restricts when its policy refuses or asks
+/// about anything, or when an approval rule (the administrator's, a
+/// person's, or the task's own seat) names a tool. Nothing is refused when
+/// the task lets the harness's own permissions decide
+/// ([`TaskOptions::unapproved_tools`]); the branch's log then says so.
+pub(crate) fn check_composition(
+    profile: &Profile,
+    options: &TaskOptions,
+    private_home: bool,
+    approvals: &crate::effects::ApprovalSettings,
+) -> Result<(), Error> {
+    check_approvals(profile, options.unapproved_tools)?;
+    if options.unapproved_tools || !restricts(options, approvals) {
+        return Ok(());
+    }
+    let composition = profile.composition;
+    let bound = match composition.binding {
+        Binding::Always => true,
+        Binding::PrivateHome => private_home,
+        Binding::Unverified => false,
+    };
+    if bound {
+        return Ok(());
+    }
+    let private_home_binds = composition.binding == Binding::PrivateHome;
+    Err(Error::UnboundPolicy {
+        profile: profile.id.to_owned(),
+        reason: if private_home_binds {
+            OWN_HOME.to_owned()
+        } else {
+            composition.how.to_owned()
+        },
+        private_home_binds,
+    })
+}
+
+/// Why a profile that binds the policy in a private home cannot in the
+/// user's own.
+const OWN_HOME: &str = "Branchyard writes the settings that make it ask only into a home it \
+     prepares, and your own home's configuration can approve calls without asking Branchyard";
+
+/// Whether a run under `options` restricts anything a harness could
+/// approve on its own; see [`check_composition`].
+pub(crate) fn restricts(
+    options: &TaskOptions,
+    approvals: &crate::effects::ApprovalSettings,
+) -> bool {
+    options.policy.restricts()
+        || !options.deny.is_empty()
+        || approvals.restricts_tools()
+        || options
+            .provision
+            .as_ref()
+            .and_then(|p| p.approvals.as_ref())
+            .is_some_and(crate::effects::restricts_tools)
+}
+
+/// The line a branch's log carries when its task let the harness's own
+/// permissions decide calls the profile cannot bind
+/// ([`TaskOptions::unapproved_tools`]): which profile, and why. `None`
+/// when nothing was given up.
+pub(crate) fn unbound_note(
+    profile: &Profile,
+    options: &TaskOptions,
+    private_home: bool,
+    approvals: &crate::effects::ApprovalSettings,
+) -> Option<String> {
+    if !options.unapproved_tools || !restricts(options, approvals) {
+        return None;
+    }
+    let composition = profile.composition;
+    let bound = match composition.binding {
+        Binding::Always => profile.driver().capabilities().tool_approvals,
+        Binding::PrivateHome => private_home,
+        Binding::Unverified => false,
+    };
+    let why = match composition.binding {
+        Binding::PrivateHome => OWN_HOME,
+        _ => composition.how,
+    };
+    (!bound).then(|| {
+        format!(
+            "{} decides some tool calls itself, which Branchyard's policy and approvals do not \
+             reach ({why}); allowed by unapproved_tools",
+            profile.id
+        )
+    })
+}
+
 /// Refuse `model` for a profile that cannot deliver it. Its provisioner
 /// decides first, as a turn's provisioning would: it sets the model itself
 /// (Claude Code's `ANTHROPIC_MODEL`, Codex's `config.toml` over ACP, Gemini
@@ -282,19 +403,34 @@ pub(crate) fn is_branchyard_variable(name: &str) -> bool {
 
 /// The harness's environment: this process's, minus the parent Claude Code
 /// session's variables and Branchyard's own; or, isolated, the runtime's
-/// scrubbed environment with `home`, keeping [`CLAUDE_VERTEX`].
+/// scrubbed environment with `home`, keeping what [`kept_when_isolated`]
+/// names.
 pub(crate) fn environment(isolated_home: Option<&Path>) -> Environment {
     match isolated_home {
-        Some(home) => CLAUDE_VERTEX
-            .iter()
-            .fold(Environment::new(home).strip("BRANCHYARD_"), |env, name| {
-                env.keep(*name)
-            }),
+        Some(home) => isolated(
+            home,
+            std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()),
+        ),
         None => std::env::vars_os()
             .filter_map(|(name, _)| name.into_string().ok())
             .filter(|name| is_parent_session_variable(name) || is_branchyard_variable(name))
             .fold(Environment::inherit(), |env, name| env.remove(name)),
     }
+}
+
+/// The isolated environment with `home`, keeping each of `inherited` that
+/// [`kept_when_isolated`] names.
+fn isolated(home: &Path, inherited: impl Iterator<Item = String>) -> Environment {
+    let names: std::collections::BTreeSet<String> = CLAUDE_ISOLATED
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(inherited.filter(|name| kept_when_isolated(name)))
+        .collect();
+    names
+        .into_iter()
+        .fold(Environment::new(home).strip("BRANCHYARD_"), |env, name| {
+            env.keep(name)
+        })
 }
 
 pub(crate) fn list() -> Vec<HarnessInfo> {
@@ -544,7 +680,7 @@ mod tests {
         );
         let isolated = environment(Some(Path::new("/h")));
         assert_eq!(isolated.home(), Path::new("/h"));
-        for name in CLAUDE_VERTEX
+        for name in CLAUDE_ISOLATED
             .iter()
             .chain(&["GOOGLE_CLOUD_PROJECT", "PATH"])
         {
@@ -553,11 +689,24 @@ mod tests {
                 "{name} must reach an isolated harness"
             );
         }
+        // A per-model Vertex AI region is kept when this process has one.
+        let regional = super::isolated(
+            Path::new("/h"),
+            [
+                "VERTEX_REGION_CLAUDE_4_5_SONNET".to_owned(),
+                "PATH".to_owned(),
+            ]
+            .into_iter(),
+        );
+        assert!(regional.admits("VERTEX_REGION_CLAUDE_4_5_SONNET"));
         for name in [
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_OAUTH_TOKEN",
-            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_CLIENT_KEY",
+            "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
+            "CLAUDE_CONFIG_DIR",
             "CLAUDECODE",
             "OPENAI_API_KEY",
             "BRANCHYARD_REMOTE",

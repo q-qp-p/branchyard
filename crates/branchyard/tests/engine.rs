@@ -1086,7 +1086,7 @@ fn harnesses_lists_every_profile_with_availability_and_qualification() {
         .qualification
         .as_deref()
         .unwrap()
-        .starts_with("9/9 on 2.1.316"));
+        .starts_with("9/9 on 2.1.318"));
     let acp = harnesses
         .iter()
         .find(|h| h.profile == "claude-code-acp")
@@ -1142,7 +1142,7 @@ fn a_session_the_harness_cannot_find_fails_precisely() {
 fn profiles_that_route_no_tool_approvals_need_an_explicit_opt_in() {
     let f = Fixture::new();
     for profile in ["antigravity-stream-json", "pi-rpc", "amp-stream-json"] {
-        let refused = f.task("go").harness(profile).run();
+        let refused = f.task("go").harness(profile).unapproved_tools(false).run();
         assert!(
             matches!(&refused, Err(Error::UnroutedApprovals { profile: p }) if p == profile),
             "{profile}: {refused:?}"
@@ -1171,12 +1171,197 @@ fn profiles_that_route_no_tool_approvals_need_an_explicit_opt_in() {
             "{profile}: {admitted:?}"
         );
     }
-    let fan = f.task("go").run_on(&["gemini-cli", "pi"]);
+    // Isolated, Gemini CLI keeps the policy, so Pi's refusal is the one.
+    let fan = f
+        .task("go")
+        .unapproved_tools(false)
+        .isolated(true)
+        .run_on(&["gemini-cli", "pi"]);
     assert!(
         matches!(&fan, Err(Error::UnroutedApprovals { profile }) if profile == "pi-rpc"),
         "{fan:?}"
     );
     assert!(f.yard.branches().unwrap().is_empty(), "nothing was created");
+}
+
+/// A restricting policy starts only where the profile keeps it against its
+/// harness's own permissions: Gemini CLI in a home Branchyard prepares,
+/// with `--approval-mode default` and the policy file on its command line;
+/// in the user's own home it is refused, naming `--isolated`, and nothing
+/// is created; a policy that allows everything, or the opt-out, runs there.
+#[test]
+fn a_restricting_policy_runs_only_where_the_profile_keeps_it() {
+    let f = Fixture::new();
+    let refused = f.task("go").unapproved_tools(false).run();
+    let Err(refusal) = &refused else {
+        panic!("{refused:?}")
+    };
+    assert!(
+        matches!(
+            refusal,
+            Error::UnboundPolicy { profile, private_home_binds: true, .. }
+                if profile == "gemini-cli-acp"
+        ),
+        "{refusal:?}"
+    );
+    assert_eq!(refusal.kind(), "unsupported");
+    assert!(
+        refusal.to_string().contains("run it with --isolated"),
+        "{refusal}"
+    );
+    assert_eq!(
+        refusal.detail().unwrap()["unsupported"],
+        serde_json::json!("unbound_policy")
+    );
+    assert!(f.yard.branches().unwrap().is_empty(), "nothing was created");
+
+    // In a private home it runs, asking in `default` under the policy file.
+    let record = f.dir.join("launch.json");
+    let isolated = f
+        .task("go")
+        .name("isolated")
+        .unapproved_tools(false)
+        .isolated(true)
+        .command([
+            fake_agent().display().to_string(),
+            "--record-launch".into(),
+            record.display().to_string(),
+        ])
+        .run();
+    assert!(isolated.is_ok(), "{isolated:?}");
+    let launch: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
+    let cmdline: Vec<String> = serde_json::from_value(launch["cmdline"].clone()).unwrap();
+    let at = cmdline.iter().position(|a| a == "--approval-mode").unwrap();
+    assert_eq!(cmdline[at + 1], "default", "{cmdline:?}");
+    let at = cmdline.iter().position(|a| a == "--policy").unwrap();
+    let policy = fs::read_to_string(&cmdline[at + 1]).unwrap();
+    assert!(policy.contains("decision = \"ask_user\""), "{policy}");
+
+    // The fake agent, launched with the flag, reports the mode: a turn runs.
+    let allowed = f
+        .task("WRITE a.txt=1")
+        .name("allowed")
+        .unapproved_tools(false)
+        .policy(Policy::allow_all())
+        .run()
+        .unwrap();
+    assert_eq!(
+        allowed.info().status,
+        BranchStatus::Ready,
+        "{:?}",
+        allowed.events()
+    );
+
+    // The opt-out runs and says on the branch what was given up.
+    let opted = f.task("go").name("opted").run().unwrap();
+    let events = opted.events().unwrap();
+    assert!(
+        events.iter().any(|e| matches!(&e.activity,
+            Activity::Warning(w) if w.contains("gemini-cli-acp decides some tool calls itself"))),
+        "{events:?}"
+    );
+
+    // The branch remembers the opt-out: a send that does not repeat it runs.
+    let again = opted
+        .send(
+            "again",
+            TaskOptions {
+                unapproved_tools: false,
+                ..f.options()
+            },
+        )
+        .unwrap();
+    // It ran: a prompt that writes nothing ends with no changes.
+    assert!(
+        matches!(
+            again.info().status,
+            BranchStatus::Ready | BranchStatus::NoChanges
+        ),
+        "{:?}",
+        again.events()
+    );
+
+    // A policy that allows everything but names a denial restricts: the
+    // denial is what the harness's own allow rules could approve.
+    let denied = f
+        .task("go")
+        .options(TaskOptions {
+            deny: vec!["shell".into()],
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .run();
+    assert!(
+        matches!(&denied, Err(Error::UnboundPolicy { .. })),
+        "{denied:?}"
+    );
+    // A branch's stored denial counts on a send under an allowing policy.
+    let stored = f
+        .task("go")
+        .options(TaskOptions {
+            deny: vec!["shell".into()],
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .name("stored-deny")
+        .isolated(true)
+        .run()
+        .unwrap();
+    // Isolated, it runs; the same send to a branch in the user's own home
+    // would be refused for the stored denial alone.
+    let send = TaskOptions {
+        policy: Policy::allow_all(),
+        unapproved_tools: false,
+        ..f.options()
+    };
+    stored.send("again", send).unwrap();
+    let local = f
+        .task("WRITE l.txt=1")
+        .options(TaskOptions {
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .name("local-allowing")
+        .run()
+        .unwrap();
+    // Allowing everything, a local branch runs; a fork that adds a denial
+    // in the parent's home, the user's own, is refused.
+    let forked = local.fork(
+        "x",
+        true,
+        TaskOptions {
+            policy: Policy::allow_all(),
+            deny: vec!["shell".into()],
+            unapproved_tools: false,
+            ..f.options()
+        },
+    );
+    assert!(
+        matches!(&forked, Err(Error::UnboundPolicy { .. })),
+        "{forked:?}"
+    );
+
+    // A profile verified nowhere is refused in a private home too.
+    let goose = f
+        .task("go")
+        .harness("goose-acp")
+        .unapproved_tools(false)
+        .isolated(true)
+        .run();
+    assert!(
+        matches!(
+            &goose,
+            Err(Error::UnboundPolicy {
+                private_home_binds: false,
+                ..
+            })
+        ),
+        "{goose:?}"
+    );
 }
 
 #[test]

@@ -48,6 +48,24 @@ const INSTRUCTIONS: &str = ".gemini/GEMINI.md";
 /// The CLI's settings, which hold its permission rules.
 pub const SETTINGS: &str = ".gemini/antigravity-cli/settings.json";
 
+/// The project file `agy acp` reads its permission rules from: over ACP the
+/// `permissions` lists in [`SETTINGS`] are not read (Antigravity CLI
+/// 1.4.12, 4 November 2026), and every ACP session uses this project.
+pub const ACP_PROJECT: &str = ".gemini/config/projects/default-cli-project.json";
+
+/// `ask` rules for every action kind the CLI checks, in forms distinct from
+/// the usual allow rules: an identical string in `allow` would win over the
+/// `ask`, and `command(regex:.*)` and `write_file(/)` beat `command(*)` and
+/// `write_file(*)` (Antigravity CLI 1.4.12, 4 November 2026).
+pub const ACP_ASK: &[&str] = &[
+    "command(regex:.*)",
+    "write_file(/)",
+    "read_file(/)",
+    "read_url(*)",
+    "execute_url(*)",
+    "mcp(*)",
+];
+
 /// The CLI's shell tool, by the name its stream gives it
 /// (`step_update.tool_name`, seen from agy 1.3.3).
 pub const SHELL_TOOL: &str = "run_command";
@@ -399,6 +417,45 @@ impl Provisioner for Antigravity {
             plan.permissions = Some(written);
         }
 
+        // Over ACP, in a private home: the project file's `ask` rules send
+        // commands, writes, edits and reads to Branchyard, where by default
+        // only commands ask; the policy's denials refuse first, and no
+        // `allow` lets a call skip asking. `toolPermission` is pinned away
+        // from `always-proceed`, which would let commands run unasked. See
+        // docs/harness-integration.md#composing-with-a-harnesss-own-permissions.
+        if acp && context.private_home {
+            let deny = context
+                .permissions
+                .as_ref()
+                .map(|permissions| rules(context, permissions).deny)
+                .unwrap_or_default();
+            let grants = ["permissionGrants", "permissionGrants"];
+            let at = |list: &str| path(&[grants[0], grants[1], list]);
+            plan.edit(
+                ACP_PROJECT,
+                false,
+                Edit::Json {
+                    edits: vec![
+                        JsonEdit::Remove(at("allow")),
+                        JsonEdit::Set(at("ask"), json!(ACP_ASK)),
+                        JsonEdit::Set(at("deny"), json!(deny)),
+                    ],
+                    comment_lines: false,
+                },
+            );
+            plan.edit(
+                SETTINGS,
+                false,
+                Edit::Json {
+                    edits: vec![JsonEdit::Set(
+                        path(&["toolPermission"]),
+                        json!("request-review"),
+                    )],
+                    comment_lines: false,
+                },
+            );
+        }
+
         // Instructions: Branchyard's block in GEMINI.md, for the stream;
         // over ACP they went on the session above, and a block an earlier
         // stream-json turn left in this home is removed.
@@ -488,7 +545,7 @@ mod tests {
         assert!(written.allow.is_empty() && written.deny.is_empty());
         assert_eq!(plan.installed_mcp_servers, Some(Vec::new()));
         let paths: Vec<&str> = plan.files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, [MCP_CONFIG, SETTINGS, INSTRUCTIONS]);
+        assert_eq!(paths, [MCP_CONFIG, SETTINGS, ACP_PROJECT, INSTRUCTIONS]);
         let text = plan
             .files
             .iter()
@@ -603,5 +660,43 @@ mod tests {
         let mut spaced = context(&[]);
         spaced.workspace = "/my work".into();
         assert!(rules(&spaced, &edit_worktree).is_empty());
+    }
+
+    /// Over ACP, in a private home: the project file `agy acp` reads asks
+    /// about every action kind, carries the policy's denials and no allow,
+    /// and the settings pin `toolPermission` away from `always-proceed`.
+    #[test]
+    fn over_acp_a_private_home_asks_about_every_action_and_keeps_denials() {
+        let mut context = context(&[]);
+        context.protocol = Protocol::Acp;
+        context.private_home = true;
+        context.permissions = Some(Permissions {
+            rules: vec![rule(WRITE_TOOL, false)],
+            ..Permissions::new(Fallback::Ask)
+        });
+        let plan = Antigravity.plan(&context).unwrap();
+        let project = plan.files.iter().find(|f| f.path == ACP_PROJECT).unwrap();
+        let existing = r#"{"name": "default-cli-project",
+            "permissionGrants": {"permissionGrants": {"allow": ["command(*)"]}}}"#;
+        let out = crate::edit::apply_all(&project.edits, Some(existing))
+            .unwrap()
+            .unwrap();
+        let written: Value = serde_json::from_str(&out).unwrap();
+        let grants = &written["permissionGrants"]["permissionGrants"];
+        assert_eq!(grants["ask"], json!(ACP_ASK));
+        assert_eq!(grants["deny"], json!(["write_file(*)"]));
+        assert!(grants.get("allow").is_none(), "{out}");
+        assert_eq!(written["name"], "default-cli-project");
+        let settings = plan.files.iter().find(|f| f.path == SETTINGS).unwrap();
+        let out = crate::edit::apply_all(&settings.edits, None)
+            .unwrap()
+            .unwrap();
+        let settings: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(settings["toolPermission"], "request-review");
+
+        // The user's own home is theirs: nothing is written.
+        context.private_home = false;
+        let plan = Antigravity.plan(&context).unwrap();
+        assert!(plan.files.iter().all(|f| f.path != ACP_PROJECT));
     }
 }

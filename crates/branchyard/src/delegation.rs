@@ -3384,7 +3384,17 @@ impl Local {
         let launch = harness::command(profile, command.as_deref());
         self.yard
             .admit_provider(caller.provider.as_ref(), &self.options)?;
-        harness::check_approvals(profile, self.options.unapproved_tools)?;
+        // A child keeps its parent's opt-out, never one of its own.
+        let composing = TaskOptions {
+            unapproved_tools: self.options.unapproved_tools || caller.unapproved_tools,
+            ..self.options.clone()
+        };
+        harness::check_composition(
+            profile,
+            &composing,
+            isolated || crate::placement::sandboxed(caller.provider.as_ref()),
+            &self.yard.approval_settings(),
+        )?;
         harness::check_available(profile.harness, &launch)?;
         let seated_provision = seat.and_then(|s| s.provision.as_ref());
         let model = child_model(
@@ -3525,6 +3535,7 @@ impl Local {
                 depth: caller.info.depth + 1,
                 // Its denials are in its grant.
                 deny: Vec::new(),
+                unapproved_tools: caller.unapproved_tools,
                 // Its parent's, fixed when the parent was created: never
                 // read from a base its parent's turns may have changed.
                 skills: caller.skills.clone(),
@@ -5688,6 +5699,7 @@ Checks on the merged result: \
             plan: None,
             goal: None,
             deny: Vec::new(),
+            unapproved_tools: false,
             removed: Vec::new(),
             metered_from: None,
             skills: None,

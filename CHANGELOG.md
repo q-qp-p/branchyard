@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+A harness's own permissions and Branchyard's policy now compose: a Branchyard
+approval never overrides a native denial, and a native approval never bypasses
+a restriction of the branch's policy. A run whose policy restricts anything
+starts only on a profile that keeps both rules where it runs, and is refused
+with `unsupported` (detail `unbound_policy`, 422 from the server) otherwise.
+`by` names `--isolated` when a home Branchyard prepares would keep the policy,
+`--allow-unapproved-tools` to let the harness's permissions decide, and another
+profile. A branch remembers the opt-out for its sends, forks and children. Claude Code's stream-json profile keeps both rules anywhere: a
+`PreToolUse` hook sends every call to Branchyard, so an allow rule in the user's
+or the repository's settings no longer approves on its own, and the session must
+report `--permission-mode default`. Codex's app-server profile, Gemini CLI and
+Qwen Code keep them in a private home: Codex gets a permission profile with a
+deny entry, so an approved command is not run again outside its sandbox, and an
+untrusted working tree; Gemini CLI and Qwen Code get `--approval-mode default`
+and a rule file that asks about every call, and a session in another mode is
+refused. Other profiles are refused under a restricting policy until a mechanism
+is verified for them. Branchyard no longer writes
+`/etc/claude-code/managed-settings.json` in a sandbox, which replaced an image
+administrator's file. Over `antigravity-acp`, a private home now gets `ask` rules in the project file `agy acp` reads and `toolPermission: request-review`, so commands, file writes, edits and reads reach Branchyard; the `permissions` lists Branchyard's docs named for it are read only headless. Antigravity's ACP profile still cannot keep a restricting policy, since web search, scheduling and subagents run without asking. Claude Code takes `--effort` as `CLAUDE_CODE_EFFORT_LEVEL`.
+Reported by @arsenyspb in
+[#62](https://github.com/vamsiramakrishnan/branchyard/issues/62); the details
+are in [composing with a harness's own permissions](docs/harness-integration.md#composing-with-a-harnesss-own-permissions).
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

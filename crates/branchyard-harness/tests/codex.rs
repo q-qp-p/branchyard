@@ -25,6 +25,8 @@ fn fresh() -> Open {
         instructions: None,
         mcp_config_file: None,
         remote_mcp_servers: Vec::new(),
+        permission_profile: None,
+        json_schema: None,
     }
 }
 
@@ -35,13 +37,25 @@ fn open(mode: SessionMode) -> (Codex, Opened) {
     (driver, opened)
 }
 
+/// A thread response with the settings Codex reports for Branchyard's
+/// request: approvals from the user under `untrusted`, a workspace-write sandbox.
+fn thread_result(thread_id: &str) -> Value {
+    json!({
+        "thread": {"id": thread_id},
+        "approvalPolicy": "untrusted",
+        "approvalsReviewer": "user",
+        "sandbox": {"type": "workspaceWrite"},
+        "activePermissionProfile": null,
+    })
+}
+
 /// Play the App Server's side of the handshake, answering the thread request
 /// with `thread_id`.
 fn answer(thread_id: &str) -> impl FnMut(&Value) -> Vec<Value> + '_ {
     move |frame| match frame["method"].as_str() {
         Some("initialize") => vec![json!({"id": frame["id"], "result": {}})],
         Some("thread/start" | "thread/resume" | "thread/fork") => {
-            vec![json!({"id": frame["id"], "result": {"thread": {"id": thread_id}}})]
+            vec![json!({"id": frame["id"], "result": thread_result(thread_id)})]
         }
         _ => Vec::new(),
     }
@@ -78,6 +92,7 @@ fn replays_a_recorded_codex_session() {
     // Branchyard's own version is not the recording's (0.0.1).
     let replayed = Replay::new(&recorded)
         .ignore("/params/clientInfo/version")
+        .added_since_recording("/params/approvalsReviewer")
         .prompt("Say hello.")
         .run(&mut driver, &opened);
     assert_eq!(
@@ -461,6 +476,7 @@ fn turn_steer_joins_the_turn_in_flight() {
     assert_eq!(driver.steer("early"), Err(Rejected::NotReady));
     let replayed = Replay::new(&recorded)
         .ignore("/params/clientInfo/version")
+        .added_since_recording("/params/approvalsReviewer")
         .prompt("TEXTTURN: please start")
         .steer("STEER-MESSAGE: bananas")
         .run(&mut driver, &opened);
@@ -497,6 +513,7 @@ fn an_interrupt_drops_undelivered_steered_input() {
     let (mut driver, opened) = open(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .ignore("/params/clientInfo/version")
+        .added_since_recording("/params/approvalsReviewer")
         .prompt("TEXTTURN: please start")
         .steer("STEER-MESSAGE: bananas")
         .interrupt()
@@ -585,6 +602,7 @@ fn a_recorded_file_change_turn_names_its_file_and_reports_nothing_unrecognized()
     let (mut driver, opened) = open(SessionMode::Fresh);
     let replayed = Replay::new(&recorded)
         .ignore("/params/clientInfo/version")
+        .added_since_recording("/params/approvalsReviewer")
         .prompt("Create a file named rec.txt containing the single word rec and nothing else")
         .answer_permissions(PermissionDecision::Allow)
         .run(&mut driver, &opened);
@@ -715,4 +733,120 @@ fn resume_and_fork_ask_for_the_thread_without_its_history() {
     assert_eq!(request["params"]["excludeTurns"], true);
     let (_, _, request) = ready(SessionMode::Fresh, "t1");
     assert!(request["params"].get("excludeTurns").is_none());
+}
+
+/// Open a thread whose response reports `settings` beside the thread, with
+/// `profile` as the permission profile Branchyard prepared.
+fn open_reporting(profile: Option<&str>, settings: Value) -> (Vec<Event>, Value) {
+    let mut driver = Codex::new(vec!["codex".into()]);
+    let opened = driver
+        .open(Open {
+            permission_profile: profile.map(str::to_owned),
+            ..fresh()
+        })
+        .unwrap();
+    let mut thread_request = Value::Null;
+    let events = handshake(&mut driver, &opened.frames, |frame| {
+        match frame["method"].as_str() {
+            Some("initialize") => vec![json!({"id": frame["id"], "result": {}})],
+            Some("thread/start") => {
+                thread_request = frame.clone();
+                let mut result = settings.clone();
+                result["thread"] = json!({"id": "t1"});
+                vec![json!({"id": frame["id"], "result": result})]
+            }
+            _ => Vec::new(),
+        }
+    });
+    (events, thread_request)
+}
+
+fn refusal(events: &[Event]) -> Option<&str> {
+    events.iter().find_map(|e| match e {
+        Event::OpenFailed { reason } => Some(reason.as_str()),
+        _ => None,
+    })
+}
+
+/// Codex reports the settings it runs the thread with, and a configuration
+/// the user or an administrator wrote can change them. A thread that would
+/// run commands without asking Branchyard is refused before the first turn.
+#[test]
+fn a_thread_that_would_not_ask_branchyard_is_refused() {
+    let asks = json!({
+        "approvalPolicy": "untrusted",
+        "approvalsReviewer": "user",
+        "sandbox": {"type": "workspaceWrite"},
+    });
+    let (events, request) = open_reporting(None, asks.clone());
+    assert_eq!(refusal(&events), None, "{events:?}");
+    assert!(events.contains(&Event::Ready));
+    assert_eq!(request["params"]["approvalPolicy"], "untrusted");
+    assert_eq!(request["params"]["approvalsReviewer"], "user");
+    assert_eq!(request["params"]["sandbox"], "workspace-write");
+
+    for (field, value, says) in [
+        ("approvalPolicy", json!("never"), "approval policy never"),
+        (
+            "approvalsReviewer",
+            json!("auto_review"),
+            "decided by auto_review",
+        ),
+        (
+            "sandbox",
+            json!({"type": "dangerFullAccess"}),
+            "wider than workspace-write",
+        ),
+    ] {
+        let mut reported = asks.clone();
+        reported[field] = value;
+        let (events, _) = open_reporting(None, reported);
+        let reason = refusal(&events).unwrap_or_else(|| panic!("{field}: {events:?}"));
+        assert!(reason.contains(says), "{field}: {reason}");
+        assert!(!events.contains(&Event::Ready), "{field}");
+    }
+}
+
+/// A permission profile Branchyard wrote sets the sandbox, so the request
+/// names no sandbox of its own, and the thread must report that profile.
+#[test]
+fn a_permission_profile_sets_the_sandbox_and_must_be_the_one_reported() {
+    let settings = |id: &str| {
+        json!({
+            "approvalPolicy": "untrusted",
+            "approvalsReviewer": "user",
+            "sandbox": {"type": "dangerFullAccess"},
+            "activePermissionProfile": {"id": id},
+        })
+    };
+    let (events, request) = open_reporting(Some("branchyard"), settings("branchyard"));
+    assert_eq!(refusal(&events), None, "{events:?}");
+    assert!(request["params"].get("sandbox").is_none(), "{request}");
+
+    let (events, _) = open_reporting(Some("branchyard"), settings(":workspace"));
+    let reason = refusal(&events).unwrap();
+    assert!(
+        reason.contains("permission profile \"branchyard\""),
+        "{reason}"
+    );
+}
+
+/// An approval with a reason asks to run a command outside the sandbox. It
+/// is its own tool, so a rule that allows `commandExecution` does not allow
+/// leaving the sandbox.
+#[test]
+fn a_command_asking_to_leave_the_sandbox_is_its_own_tool() {
+    let (mut driver, _, _) = ready(SessionMode::Fresh, "t1");
+    driver.submit("fetch the crate").unwrap();
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"id": 4, "method": "item/commandExecution/requestApproval",
+            "params": {"itemId": "i1", "threadId": "t1", "turnId": "u1", "startedAtMs": 0,
+                "command": "cargo fetch", "reason": "needs network access"}}),
+    );
+    let Event::PermissionRequested { request, .. } = &events[0] else {
+        panic!("{events:?}")
+    };
+    assert_eq!(request.tool, branchyard_harness::codex::ESCALATED_COMMAND);
+    assert_eq!(request.input["command"], "cargo fetch");
 }

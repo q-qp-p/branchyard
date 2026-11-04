@@ -579,7 +579,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `invalid_name`, `unknown_harness` | 400 | SDK refusals |
 | `denied` | 403 | The envelope or authority refused a delegation operation, as `by --json` reports `denied` |
 | `remote_error` | 502 | An error the engine running a delegating turn returned through its broker; `detail.kind` is its kind |
-| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`; check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
+| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`, and the refusal of a profile that cannot keep a restricting policy against its harness's own permissions is `unsupported` with `detail` `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}` ([composing](harness-integration.md#composing-with-a-harnesss-own-permissions)); check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
 
 ## Published schema
 
@@ -740,7 +740,7 @@ The keys are `[sync]`'s ([sync](sync.md#quick-start)) and `lease_seconds` (defau
 - **Plain HTTP** exposes tokens, prompts and code to anyone on the path. The server refuses it off loopback unless told `--insecure-bind`.
 - **Information exposure.** Responses include server paths (worktrees, repository roots) and the server's harness availability. `GET /.well-known/branchyard` is public: it names the served repositories and the kinds and capabilities of live services, not their endpoints or owners.
 - **Service registrations** need the `admin` scope, are owned by the registering principal, and never carry anything for the server to reclaim.
-- **Policy is per request.** A `deny` default is safe; rules match tool names only, as in the SDK.
+- **Policy is per request.** A `deny` default is safe; rules match a tool name, or a tool and what it touches (`Bash(git *)`, `Edit(src/**)`; [egress](egress.md#rules-that-name-arguments-and-paths)), as in the SDK.
 
 ## Run live on 27 October 2026
 

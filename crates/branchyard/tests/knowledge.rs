@@ -268,7 +268,12 @@ fn a_harness_distiller_proposes_and_an_invalid_answer_falls_back() {
             command: Some(vec![fake_agent().display().to_string()]),
             rubric: None,
         },
-        options: TaskOptions::default(),
+        // A distiller denies every tool and never takes the opt-out, so
+        // Gemini CLI runs it in a home of its own, where it keeps that.
+        options: TaskOptions {
+            isolated: true,
+            ..TaskOptions::default()
+        },
     });
     // The distiller's prompt quotes the task, so its first line names the
     // canned answer; the branch's own first turn just answers it too.

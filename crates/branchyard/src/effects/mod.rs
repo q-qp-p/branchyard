@@ -750,6 +750,17 @@ pub struct ApprovalSettings {
 }
 
 impl ApprovalSettings {
+    /// Whether any layer stages, asks about or blocks a harness tool by
+    /// name. Such a rule binds only on a call that reaches Branchyard, so it
+    /// needs a harness that cannot approve the tool on its own.
+    pub fn restricts_tools(&self) -> bool {
+        self.admin
+            .iter()
+            .chain(self.person.iter())
+            .chain(self.people.values())
+            .any(restricts_tools)
+    }
+
     pub fn person_for(&self, subject: &str) -> Option<&ApprovalPolicy> {
         self.people.get(subject).or(self.person.as_ref())
     }
@@ -839,6 +850,16 @@ pub(crate) fn find_ask(backend: &dyn EffectBackend, id: &str) -> Result<Approval
             "{id} names {count} approvals; give more of its id"
         ))),
     }
+}
+
+/// Whether `policy` stages, asks about or blocks a harness tool: a rule
+/// whose pattern names a tool (a connector operation's has a `:`) and whose
+/// decision is not allow.
+pub(crate) fn restricts_tools(policy: &ApprovalPolicy) -> bool {
+    policy
+        .rules
+        .iter()
+        .any(|(pattern, decision)| !pattern.contains(':') && *decision != Approval::Allow)
 }
 
 #[cfg(test)]

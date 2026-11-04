@@ -11,7 +11,7 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use branchyard_client::api::{OperationState, SendRequest};
+use branchyard_client::api::{OperationState, SendRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_server::config::{MetricsConfig, SyncSettings};
 use branchyard_sync::engine::{Options, Remote, TaskState};
@@ -21,6 +21,16 @@ use branchyard_sync::store::ObjectStore as _;
 use branchyard_sync::SyncConfig;
 use branchyard_testkit::wait;
 use common::{await_operation, get, git, raw, run, task, Fixture, Server, TOKEN};
+
+/// The task both tests start from. The fake agent has no permission
+/// system of its own for the default policy to compose with, so the branch
+/// opts out, and its sends (under the default policy) inherit that.
+fn opted_out(prompt: &str, name: &str) -> TaskRequest {
+    TaskRequest {
+        unapproved_tools: true,
+        ..task(prompt, name)
+    }
+}
 
 fn remote(bucket: &std::path::Path, device: &str) -> Remote {
     let mut options = Options::default();
@@ -33,6 +43,7 @@ fn a_server_pulls_runs_under_the_lease_and_pushes() {
     let f = Fixture::new();
     let bucket = f.dir.join("bucket");
     let mut config = f.config();
+    config.allow_unapproved_tools = true;
     config.metrics = Some(MetricsConfig {
         listen: None,
         token_sha256: None,
@@ -48,7 +59,7 @@ fn a_server_pulls_runs_under_the_lease_and_pushes() {
     });
     let server = Server::start(config);
     let client = server.client();
-    let done = run(&client, &task("WRITE one.txt=1", "s1"));
+    let done = run(&client, &opted_out("WRITE one.txt=1", "s1"));
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
 
     // Pushed after it ran, keyed by the repository.
@@ -167,6 +178,7 @@ fn a_run_that_loses_its_lease_is_cancelled_not_accepted_and_not_pushed() {
     let f = Fixture::new();
     let bucket = f.dir.join("bucket");
     let mut config = f.config();
+    config.allow_unapproved_tools = true;
     config.metrics = Some(MetricsConfig {
         listen: None,
         token_sha256: None,
@@ -183,7 +195,7 @@ fn a_run_that_loses_its_lease_is_cancelled_not_accepted_and_not_pushed() {
     });
     let server = Server::start(config);
     let client = server.client();
-    let done = run(&client, &task("WRITE one.txt=1", "s1"));
+    let done = run(&client, &opted_out("WRITE one.txt=1", "s1"));
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
     let elsewhere = remote(&bucket, "laptop");
     wait::until("the task in the remote", || {

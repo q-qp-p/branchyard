@@ -317,8 +317,8 @@ pub fn sdk_error(error: branchyard_client::Error) -> branchyard::Error {
             let kind = crate::errors::local_kind(&error.code, error.detail.as_ref());
             // A failed check's siblings or the branches on whose own work
             // it failed, every check of the integration, why a harness
-            // cannot start and which profile routes no approvals, as a
-            // local `by` reports them.
+            // cannot start, which profile routes no approvals and which
+            // cannot keep the policy, and why, as a local `by` reports them.
             let detail = error.detail.as_ref().and_then(|d| {
                 let mut local = d
                     .get("shared")
@@ -331,6 +331,8 @@ pub fn sdk_error(error: branchyard_client::Error) -> branchyard::Error {
                     "cause",
                     "unsupported",
                     "profile",
+                    "reason",
+                    "private_home_binds",
                 ] {
                     if let Some(value) = d.get(key) {
                         local[key] = value.clone();

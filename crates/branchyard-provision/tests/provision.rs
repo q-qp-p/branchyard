@@ -239,6 +239,34 @@ fn claude_api_key_model_and_telemetry_keep_the_users_claude_json() {
     assert_eq!(settings, serde_json::json!({"theme": "dark"}));
     assert_eq!(plan.tool_env_secrets(), ["CLAUDE_CODE_OAUTH_TOKEN"]);
     assert!(installed(&temp.home()).credentials.is_empty());
+    // Without the subprocess isolation Claude Code needs, the turn says the
+    // token reaches tool commands.
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")),
+        "{:?}",
+        plan.warnings
+    );
+    assert!(plan
+        .env
+        .iter()
+        .all(|v| v.name != branchyard_provision::CLAUDE_ENV_SCRUB));
+
+    // With it, Claude Code scrubs its tools' environment: the token no
+    // longer reaches them, and nothing is warned.
+    context.subprocess_isolation = true;
+    let plan = provision(&temp, &context);
+    assert!(
+        plan.tool_env_secrets().is_empty(),
+        "{:?}",
+        plan.tool_env_secrets()
+    );
+    assert!(plan
+        .env
+        .iter()
+        .any(|v| v.name == branchyard_provision::CLAUDE_ENV_SCRUB && v.value == "1"));
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
 }
 
 #[test]
@@ -441,7 +469,9 @@ fn a_secret_given_to_an_mcp_server_is_used_and_delivered_with_it() {
             tool_env: false,
         }]
     );
-    assert!(plan.env.is_empty() && plan.files.is_empty());
+    // The secret reaches the server alone: no variable, no secret file.
+    assert!(plan.env.iter().all(|v| v.name != "DOCS_TOKEN"));
+    assert!(plan.files.iter().all(|f| !f.secret));
 }
 
 fn remote(name: &str) -> RemoteMcpServer {
@@ -1732,6 +1762,10 @@ fn qwen_code_on_zai_gets_the_three_variables_it_logs_in_from() {
         [
             ("OPENAI_API_KEY", ZAI_KEY),
             ("OPENAI_MODEL", "glm-4.5-air"),
+            (
+                "QWEN_CODE_SYSTEM_DEFAULTS_PATH",
+                "/branchyard/home/.qwen/branchyard/system-defaults.json"
+            ),
             ("OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"),
         ]
     );

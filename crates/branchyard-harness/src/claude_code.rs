@@ -159,10 +159,66 @@ struct Call {
     cache_write_1h: u64,
 }
 
+/// The permission mode every session runs in. In `default` a tool call is
+/// approved by a native allow rule or decided by Branchyard, never by the
+/// mode itself.
+const PERMISSION_MODE: &str = "default";
+
+/// The tool a Bash call that asks to run outside Claude Code's sandbox
+/// (`dangerouslyDisableSandbox: true` in its input, the request's
+/// `decision_reason_type` `sandboxOverride`) is reported as, so a rule that
+/// allows `Bash` does not allow leaving the sandbox; only a policy that
+/// allows everything, or one that names it, does. Allowed, the command
+/// runs unsandboxed (Claude Code 2.1.318, 4 November 2026).
+pub const UNSANDBOXED_BASH: &str = "Bash:unsandboxed";
+
+/// The tool name Branchyard reports for a `can_use_tool` request: the
+/// harness's own, or [`UNSANDBOXED_BASH`] for a Bash call that asks to
+/// leave the sandbox.
+fn reported_tool(request: &Value) -> String {
+    let tool = request["tool_name"].as_str().unwrap_or_default();
+    let unsandboxed = request["input"]["dangerouslyDisableSandbox"] == true
+        || request["decision_reason_type"] == "sandboxOverride";
+    match (tool, unsandboxed) {
+        ("Bash", true) => UNSANDBOXED_BASH.to_owned(),
+        _ => tool.to_owned(),
+    }
+}
+
+/// The tool `--json-schema` adds, which the model calls with its answer.
+const STRUCTURED_OUTPUT: &str = "StructuredOutput";
+
+/// The callback ID of the `PreToolUse` hook registered at `initialize`.
+/// Hooks run before a settings file's allow rules and before the permission
+/// mode, so every tool call reaches it, including the ones an allow rule in
+/// the user's or the repository's settings would approve on their own.
+const PRE_TOOL_USE_HOOK: &str = "branchyard-pre-tool-use";
+
+/// The hook's answer for every call: `ask`. Claude Code then sends the call
+/// to Branchyard as a `can_use_tool` request, which the policy decides. It
+/// does not loosen anything: a native deny rule or another hook's deny still
+/// refuses the call first (verified against Claude Code 2.1.317 on 3
+/// November 2026, `docs/harness-integration.md`).
+fn pre_tool_use_answer(request_id: &str) -> Value {
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": {
+                "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask"},
+            },
+        },
+    })
+}
+
 /// A Claude Code stream-json session.
 #[derive(Debug)]
 pub struct ClaudeCode {
     command: Vec<String>,
+    /// The session asked for a structured answer (`Open::json_schema`), so
+    /// the CLI's `StructuredOutput` tool is allowed without the policy.
+    structured: bool,
     mode: Option<SessionMode>,
     ready: bool,
     session: Option<NativeSession>,
@@ -271,6 +327,7 @@ impl ClaudeCode {
             answering: None,
             sent: HashSet::new(),
             names_messages: false,
+            structured: false,
             interrupting: false,
             steers: Vec::new(),
             next_steer: 0,
@@ -612,6 +669,24 @@ impl ClaudeCode {
             .to_owned();
         let request = &message["request"];
         let subtype = request["subtype"].as_str().unwrap_or_default();
+        // The schema's own tool records the answer and touches nothing:
+        // allowed without asking the policy, as it exists only when this
+        // session asked for a structured answer.
+        if subtype == "can_use_tool"
+            && !id.is_empty()
+            && request["tool_name"] == STRUCTURED_OUTPUT
+            && self.structured
+        {
+            let reply = json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": id,
+                    "response": {"behavior": "allow", "updatedInput": request["input"]}},
+            });
+            return Output {
+                events: Vec::new(),
+                frames: vec![frame(&reply)],
+            };
+        }
         if subtype == "can_use_tool" && !id.is_empty() {
             let input = request["input"].clone();
             self.permissions.insert(id.clone(), input.clone());
@@ -619,12 +694,18 @@ impl ClaudeCode {
                 turn: self.turns.active,
                 request: PermissionRequest {
                     key: PermissionKey(id),
-                    tool: request["tool_name"].as_str().unwrap_or_default().to_owned(),
+                    tool: reported_tool(request),
                     input,
                 },
             });
         }
-        // Hook callbacks, SDK MCP servers and dialogs are not part of this
+        if subtype == "hook_callback" && request["callback_id"] == PRE_TOOL_USE_HOOK {
+            return Output {
+                events: Vec::new(),
+                frames: vec![frame(&pre_tool_use_answer(&id))],
+            };
+        }
+        // SDK MCP servers, dialogs and other hooks are not part of this
         // profile. Answer so the CLI does not wait forever.
         let reply = json!({
             "type": "control_response",
@@ -823,6 +904,21 @@ impl ClaudeCode {
                 detail: "system/init without a usable session_id".into(),
             });
         };
+        // The mode the session runs in decides which calls Claude Code
+        // approves without asking: anything but `default` would let some
+        // through that Branchyard never sees.
+        match message["permissionMode"].as_str() {
+            Some(PERMISSION_MODE) => {}
+            other => {
+                return Output::event(Event::ProtocolViolation {
+                    detail: format!(
+                        "the session started in permission mode {}, not {PERMISSION_MODE}, so \
+                         Claude Code could approve tool calls without asking Branchyard",
+                        other.map_or("(none reported)".to_owned(), |mode| format!("{mode:?}"))
+                    ),
+                })
+            }
+        }
         if let Some(known) = &self.session {
             // The CLI repeats init on later turns of the same session.
             return if *known == session {
@@ -989,6 +1085,14 @@ impl ClaudeCode {
             turn: Some(turn),
             usage: usage(message),
         });
+        // A structured answer becomes the turn's last fenced JSON block,
+        // where a result contract reads the final answer from.
+        if let Some(answer) = message.get("structured_output").filter(|v| !v.is_null()) {
+            events.push(Event::MessageDelta {
+                turn,
+                text: format!("\n\n```json\n{answer}\n```\n"),
+            });
+        }
         let outcome = outcome(message, false);
         // Queued steered messages run as a follow-up the CLI starts itself:
         // the turn goes on until a result answers them, or the CLI drops
@@ -1300,6 +1404,7 @@ impl Driver for ClaudeCode {
         if self.mode.is_some() {
             return Err(Rejected::InvalidOpen("the session is already open".into()));
         }
+        self.structured = open.json_schema.is_some();
         let mut argv = self.command.clone();
         argv.extend(
             [
@@ -1311,11 +1416,23 @@ impl Driver for ClaudeCode {
                 "--verbose",
                 "--permission-prompt-tool",
                 "stdio",
+                // Whatever a settings file names as the default mode
+                // (`acceptEdits`, `auto`, `bypassPermissions`), the session
+                // starts in `default`, so the mode approves nothing on its
+                // own; `init` checks it took.
+                "--permission-mode",
+                PERMISSION_MODE,
             ]
             .map(String::from),
         );
         if let Some(model) = &open.model {
             argv.extend(["--model".into(), model.clone()]);
+        }
+        // The CLI adds a `StructuredOutput` tool the model must call with
+        // an answer matching the schema; its `result` then carries it as
+        // `structured_output` (Claude Code 2.1.318, 4 November 2026).
+        if let Some(schema) = &open.json_schema {
+            argv.extend(["--json-schema".into(), schema.to_string()]);
         }
         // Claude Code stops the turn with `error_max_budget_usd` once the
         // process's own spend reaches it; a resumed session's earlier cost
@@ -1381,8 +1498,13 @@ impl Driver for ClaudeCode {
             }
         }
         self.mode = Some(open.mode);
-        let initialize =
-            self.control_request(Pending::Initialize, json!({"subtype": "initialize"}));
+        let initialize = self.control_request(
+            Pending::Initialize,
+            json!({
+                "subtype": "initialize",
+                "hooks": {"PreToolUse": [{"matcher": "*", "hookCallbackIds": [PRE_TOOL_USE_HOOK]}]},
+            }),
+        );
         Ok(Opened {
             launch: LaunchSpec {
                 argv,

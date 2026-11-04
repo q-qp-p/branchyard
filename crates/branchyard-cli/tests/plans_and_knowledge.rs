@@ -90,6 +90,10 @@ impl Repo {
             "gemini-cli".into(),
             "--command".into(),
             fake_agent!().display().to_string(),
+            // A private home, where gemini-cli keeps the read-only planning
+            // phase and the goal judge's deny-all policy; in the test's own
+            // home it is refused, and a judge never takes the opt-out.
+            "--isolated".into(),
         ]
     }
 

@@ -273,6 +273,63 @@ The Branchyard tool surface initially needs `spawn`, `inspect`, `events`, `send`
 
 Native subagents are a separate concern. If the harness launches invisible descendants, attribute them to its existing sandbox allocation and report incomplete model-level accounting. For tasks requiring individually fenced descendants, disable or qualify native delegation and use Branchyard's spawn operation. A prompt asking the harness to obey a budget is not hard enforcement.
 
+## Composing with a harness's own permissions
+
+Each harness has its own permission system: allow and deny rules, modes, hooks, trusted folders, an administrator's policy. Branchyard's policy sits beside it. Two rules hold:
+
+- A Branchyard approval never overrides a native denial. The harness's deny rules, its hooks' denials and an administrator's policy still refuse first.
+- A native approval never bypasses Branchyard's restrictions. A user's or a repository's allow rule, a mode that approves on its own, or an automatic reviewer cannot run a call the branch's policy would refuse.
+
+Branchyard writes no administrator file. Before 3 November 2026 a sandboxed Claude Code turn wrote `/etc/claude-code/managed-settings.json` and replaced whatever an image's administrator had put there ([issue #62](https://github.com/vamsiramakrishnan/branchyard/issues/62)). That write is gone.
+
+**When a run is refused.** A run whose policy restricts anything (a fallback other than allow, a deny rule, a yard or seat approval rule) starts only on a profile that keeps both rules where it runs. Each profile says how in `Profile::composition` ([`profiles.rs`](../crates/branchyard-harness/src/profiles.rs)):
+
+| Profile | Keeps both rules | How |
+|---|---|---|
+| `claude-code-stream-json` | anywhere | A `PreToolUse` hook registered at `initialize` answers `ask` for every call, so an allow rule in the user's or the repository's settings does not approve on its own. `--permission-mode default` overrides a configured mode, and the driver checks the mode the session reports. |
+| `codex-app-server` | in a private home | Branchyard's permission profile is the default in the private `CODEX_HOME`. Its deny entry stops Codex running an approved command again outside the sandbox. The working tree is an untrusted project, so its rules and hooks do not load. Approvals go to the user under `untrusted`, web search is off unless the policy allows everything, and the driver checks the policy, reviewer and profile the thread reports. |
+| `gemini-cli-acp` | in a private home | `--approval-mode default`, and `--policy` naming one rule that sends every call to Branchyard at priority 360. `--policy` replaces the home's own policies. The driver refuses a session in another mode. |
+| `qwen-code-acp` | in a private home | `--approval-mode default` (its default, `auto`, lets a classifier approve), and `QWEN_CODE_SYSTEM_DEFAULTS_PATH` naming a file that asks about each tool it names. An ask rule outranks an allow rule in any settings file. The driver refuses a session in another mode. |
+| `antigravity-acp` | nowhere | In a home Branchyard prepares, `ask` rules in the project file `agy acp` reads, and `toolPermission` pinned to `request-review`, send commands, file writes, edits and reads to Branchyard; a native deny still refuses first. Web search, scheduling and subagent definitions run without asking, and a subagent's tools do not reach Branchyard, so a restricting policy is refused. |
+| every other profile | nowhere yet | Not verified. Its harness can approve a call without asking Branchyard. |
+
+A private home is one Branchyard prepares: `--isolated`, or any sandbox. In the user's own home their configuration is theirs, so Branchyard does not rewrite it, and a profile that needs a private home is refused there.
+
+The check comes after the one for an installed executable, so a harness that is not there says so first. `by fleet route` and `by fleet advise` judge each candidate under the configured `[defaults]` (permissions, isolation, provider), as a plain `by run --auto` would, and list one that cannot keep that policy as unavailable with the reason.
+
+The refusal is the error `unsupported` with the detail `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}`. The server answers it with 422. `by` names the ways on: `--isolated` when a private home would keep the policy, `--allow-unapproved-tools`, or another profile.
+
+**Opting out.** `--allow-unapproved-tools` (`TaskOptions::unapproved_tools`) lets the harness's own permissions decide what the profile cannot bind. Branchyard still answers every request the harness sends. The branch's log then carries a warning on every turn naming the profile and what was given up. A server operator can forbid the flag, as before (`unapproved_tools_not_allowed`). The branch remembers it: its sends, forks, reincarnations and delegated children keep it, since the person chose it for that work. A harness judge, a distiller and a goal's judge deny every tool and never take it; on a profile that needs a private home they need an isolated branch, or they fall back as any judge that cannot run does.
+
+**Claude Code's permission modes.** The session runs in `default`, and the driver refuses one that reports another. Claude Code 2.1.318, run against a stand-in model API on 4 November 2026, showed why the other modes are not passed through. With Branchyard's hook, every call still reached Branchyard in `plan`, `acceptEdits`, `dontAsk` and `auto`, so none of them adds a guarantee. `plan` did not refuse a write in print mode even without the hook. `dontAsk` refuses calls itself, but the hook's `ask` overrides that refusal. Branchyard's own policies give the same postures and are enforced on every harness:
+
+| Claude Code mode | Branchyard |
+|---|---|
+| `plan` | `--permissions read-only`, the policy a [planning turn](plans-and-goals.md) runs under |
+| `acceptEdits` | `--permissions edit-worktree`, or `Edit(src/**)`-style [rules](egress.md#rules-that-name-arguments-and-paths) |
+| `dontAsk` | the default policy, which denies what no rule allows |
+| `auto` | no equivalent: Branchyard does not let a classifier approve |
+| `bypassPermissions` | never: Claude Code itself refuses it as root, and Branchyard never passes it |
+
+Branchyard answers an allowed call with the input Claude Code sent (`updatedInput`), unchanged. A rule that names arguments or paths decides on that input.
+
+**Claude Code's own layers.** Claude Code 2.1.318, run against a stand-in model API on 4 November 2026, showed which of its layers a Branchyard turn keeps:
+
+- **Hooks.** Hooks in the user's or the repository's `settings.json`, and in a plugin passed with `--plugin-dir`, run in a Branchyard turn. A hook that denies (exit code 2, or `permissionDecision: "deny"`) refuses the call before it reaches Branchyard; one that allows does not skip Branchyard. Branchyard's own plugin is projected without its `hooks/hooks.json`: those hooks report branch status to a session a person started, which a turn Branchyard runs already reports through its stream.
+- **`CLAUDE.md` and rules.** The repository's `CLAUDE.md` and `.claude/rules/*.md`, and the user's `~/.claude/CLAUDE.md` and `~/.claude/rules/*.md`, reach the model in print mode, even in a repository not yet trusted. Branchyard's instructions and [knowledge](knowledge.md) go in `--append-system-prompt` beside them; they replace nothing.
+- **Structured output.** A turn whose [result contract](artifact-capture.md) Branchyard reads from the final answer (a top-level branch, or a deliverable) passes the contract's schema as `--json-schema`. Claude Code adds a `StructuredOutput` tool the model must call with a matching answer. The driver lets that tool through without asking the policy, since it records the answer and touches nothing, and reports `structured_output` as the turn's last fenced JSON block, which the contract then validates as before. An answer the model never makes valid ends the turn as failed (`error_max_structured_output_retries`). A delegated child still reports with `by report`.
+- **Isolation.** `--isolated` gives Claude Code a home of its own, so the user's `~/.claude` (hooks, settings, `CLAUDE.md`, login) is left out by design. The repository's `.claude/` settings, hooks and rules still apply, and `CLAUDE_CONFIG_DIR` is not passed through, since it would point back at the user's own. Claude Code's provider selectors and model pins are kept ([setup](setup.md)).
+- **Subprocess isolation.** Where the host has `bwrap` and `socat`, an OAuth token turn sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` ([provisioning](provisioning.md)). A Bash call that asks to run outside the sandbox reaches the policy as `Bash:unsandboxed` ([egress](egress.md#rules-that-name-arguments-and-paths)).
+
+**What is still the harness's.**
+
+- An administrator's rules decide first on every harness: Claude Code's managed settings, Codex's `requirements.toml`, Gemini CLI's system policies. Codex's `requirements.toml` can lower the approval policy; the driver then sees the reported policy differ and refuses the thread.
+- Codex runs read-only commands it knows as safe without asking, inside its sandbox.
+- Qwen Code has no rule for every tool. A tool a later release adds is not on the list.
+- In a sandbox image that ships its own `/etc/qwen-code/system-defaults.json`, the variable replaces that file.
+
+**Evidence, 3 and 4 November 2026.** Run against the real binaries with a scripted stand-in for the model API, no model call: Claude Code 2.1.317, codex-cli 0.166.0, Gemini CLI 0.66.0 and Qwen Code 0.26.6. For each, an allow rule in the user's or the project's configuration was shown to approve a call without asking before the change, and to reach Branchyard after it; a native deny still refused. Antigravity CLI 1.4.12 was run the same way on 4 November: over ACP, an allow in the project file `agy acp` reads ran a command without asking, the `permissions` lists in `settings.json` had no effect, and the `ask` rules above sent commands, writes, edits and reads to the client while a project or hook deny still refused; web search, scheduling and subagent definitions never asked. The Claude Code run is committed as a replayed record, `crates/branchyard-harness/tests/fixtures/claude-code-2.1.317-hook-routes-allowed-call.jsonl`; the other runs were not committed. The drivers, provisioners and refusals are tested hermetically with fakes. Live, 4 November 2026: `branchyard-qualify` passed 9 of 9 with this driver on Claude Code 2.1.318 and `claude-sonnet-5-5` ([report](qualification/claude-code-stream-json.json)). Not done: a run with a model on the other harnesses since these changes; qualification scenarios that check both rules on a real harness; a sandbox image with an administrator's policy; OpenCode, Copilot, Goose, Cursor, Kimi, DeepSeek Harness, Hermes, Pi, Oh My Pi, Amp, Antigravity's stream, the read_url, execute_url and mcp rules of Antigravity's ACP profile, and the ACP profiles of Claude Code and Codex.
+
 ## Packaging and extension
 
 Build one immutable image per harness profile or a deliberately chosen small bundle. Include executable, adapter/helper, runtime libraries, verified version output, and configuration templates. Pin image digest, executable version, adapter version, schema revision, and conformance result. Resolve packages during image build, never through `npx latest` on the spawn path.

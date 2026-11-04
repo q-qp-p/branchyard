@@ -230,8 +230,8 @@
         "passed": 9,
         "total": 9,
         "report": "qualification/claude-code-stream-json.json",
-        "date": "2026-11-01",
-        "version": "2.1.316 (Claude Code)"
+        "date": "2026-11-04",
+        "version": "2.1.318 (Claude Code)"
       },
       "status": "live-qualified"
     },

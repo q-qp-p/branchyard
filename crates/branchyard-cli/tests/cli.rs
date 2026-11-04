@@ -264,7 +264,9 @@ fn by_cancel_stops_a_turn_that_another_by_runs() {
     let running = repo
         .command(env!("CARGO_BIN_EXE_by"))
         .args(["run", "HANG", "--name", "held", "--harness", "gemini-cli"])
-        .args(["--command", &agent])
+        // The fake agent has no permission system of its own for the
+        // policy to compose with.
+        .args(["--command", &agent, "--allow-unapproved-tools"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -327,6 +329,7 @@ fn errors_exit_nonzero() {
         "gemini-cli",
         "--command",
         "/nonexistent/agent",
+        "--allow-unapproved-tools",
     ]);
     assert_eq!(absent.status.code(), Some(3));
     assert!(
@@ -2319,7 +2322,18 @@ fn a_rig_runs_its_root_which_fills_seats_with_by_and_python() {
     .join("\n");
     let agent = fake_agent!().display().to_string();
     let spec = spec.display().to_string();
-    let out = repo.by(&["rig", "run", &spec, &prompt, "--command", &agent, "--json"]);
+    // The fake agent has no permission system of its own for the policy to
+    // compose with; the root's seats inherit the opt-out.
+    let out = repo.by(&[
+        "rig",
+        "run",
+        &spec,
+        &prompt,
+        "--command",
+        &agent,
+        "--allow-unapproved-tools",
+        "--json",
+    ]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
     assert!(
         stderr(&out).contains(
@@ -4518,7 +4532,18 @@ harness = "goose"
     ]
     .join("\n");
     let spec = spec.display().to_string();
-    let out = repo.by(&["rig", "run", &spec, &prompt, "--command", &agent, "--json"]);
+    // The fake agent has no permission system of its own for the policy to
+    // compose with; the root's seats inherit the opt-out.
+    let out = repo.by(&[
+        "rig",
+        "run",
+        &spec,
+        &prompt,
+        "--command",
+        &agent,
+        "--allow-unapproved-tools",
+        "--json",
+    ]);
     assert!(out.status.success(), "{}\n{}", stdout(&out), stderr(&out));
     let said = reply(&repo, "models");
     let (code, same) = sh_json(&said, 0);

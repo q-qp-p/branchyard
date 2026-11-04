@@ -186,11 +186,26 @@ A preset is a named permission policy that stands for explicit rules. It is usab
 
 An ACP agent's request is matched by the tool name the agent gives (in the request, or in the call's earlier `tool_call` update), else by the call's kind under the names `acp:read`, `acp:search`, `acp:edit`, `acp:delete`, `acp:move`, `acp:execute` and `acp:fetch`, which the presets list; a request that carries only a title, such as Gemini CLI's "Writing to notes/x.md", used to match nothing and so was denied by every preset. A call of kind `other` (or none) whose title is one word (letters, digits, `_`, `-`, `:`) is named by that title, which is then the tool's own name: DeepSeek Harness titles its calls `bash` and `write` with kind `other`, so `read-only` and `edit-worktree` deny its `bash` by name; any other call of kind `other` is `acp:other`, which no preset allows. A request that names only its call's id is read with what the call's updates said of it (its title, kind and input), so the rule, `--ask` and the log see `bash: touch marker.txt`, not `acp:other` and an id.
 
-`read-only` is the policy a [planning turn](plans-and-goals.md) runs under. A sandboxed Claude Code turn also writes the denials of its preset that Claude Code has names for into managed settings, which its own settings cannot override ([managed settings](provisioning.md#managed-settings)).
+`read-only` is the policy a [planning turn](plans-and-goals.md) runs under. A harness's own allow rules cannot approve what it refuses ([composing with a harness's own permissions](harness-integration.md#composing-with-a-harnesss-own-permissions)).
 
-A preset is also the last layer of [approvals](effects.md#approvals) for connector operations (`PolicyPreset::approvals`): `read-only` and `edit-worktree` block every reversible, compensable and irreversible operation, since they change nothing outside the machine; `full` keeps the class defaults (reversible allowed, compensable asked, irreversible staged, deletions asked). Approvals that name a tool only tighten what the preset allowed. Rules match tool names only: `edit-worktree` says a harness may edit, not where; the harness's own tools decide what path an edit touches.
+A preset is also the last layer of [approvals](effects.md#approvals) for connector operations (`PolicyPreset::approvals`): `read-only` and `edit-worktree` block every reversible, compensable and irreversible operation, since they change nothing outside the machine; `full` keeps the class defaults (reversible allowed, compensable asked, irreversible staged, deletions asked). Approvals that name a tool only tighten what the preset allowed. A preset's rules name tools only: `edit-worktree` says a harness may edit, not where. A rule of your own can say where ([below](#rules-that-name-arguments-and-paths)).
 
 Below the rules, on Linux, a local harness under `read-only` or `edit-worktree` also runs under the [file guard](modes.md#the-file-guard): Landlock holds it, and everything it starts, to the preset's write scope (`edit-worktree`: the worktree, its git directory, `HOME`, its temporary directory, `/dev`; `read-only`: the same without the worktree and the git directory), whether or not the harness asks Branchyard before a write. That is what makes the presets hold for a harness that runs a shell write without asking (Pi, Antigravity, DeepSeek Harness, Hermes, OpenCode on its defaults). It does not limit reads or the network (the policy above does that when it is set), and `full`, `--yes` and `--ask` run without it. The run prints `by: guard: landlock (PRESET): …`; a host without Landlock prints one `by: note: no file guard on this host (…)` and runs unguarded.
+
+### Rules that name arguments and paths
+
+A rule may name what a call touches as well as the tool: `Tool(spec)`. It matches a call to that tool whose input fits `spec`; a call without the input the rule speaks of does not match it.
+
+| Rule | Matches | Notes |
+|---|---|---|
+| `Bash(git *)` | a shell command: `git status`, `git` | A glob over the whole command. `Bash(npm run test:*)`, Claude Code's prefix form, is `npm run test` and anything after it. |
+| `Edit(src/**)` | a file path relative to the harness's working directory | `*` stays within one path part; `**` crosses them. `..` is resolved first, so a path that climbs out of the working directory matches no relative rule. |
+| `Write(/var/out/*)` | an absolute file path | Matched against the absolute path. |
+| `WebFetch(domain:example.com)` | a URL on that host or a subdomain | Any other spec is a glob over the whole URL. |
+
+A compound shell command is split on `&&`, `||`, `;`, `|` and newlines. An allowing rule matches only when every part matches and nothing is substituted (`$(…)`, backticks), so `Bash(git *)` does not allow `git status && rm -rf x`. A denying rule matches when any part does. A redirection such as `2>&1` splits too, so an allowing rule refuses it unless that part matches. The command is read from the call's `command` input; the path from `file_path`, `path`, `notebook_path` or `filePath`; the URL from `url`.
+
+A Claude Code Bash call that asks to run outside its sandbox (`dangerouslyDisableSandbox`) reaches the policy as `Bash:unsandboxed`, so `Bash` and `Bash(git *)` do not allow it. The presets that deny the shell deny it by name.
 
 How a preset combines:
 

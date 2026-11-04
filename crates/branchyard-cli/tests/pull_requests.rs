@@ -126,11 +126,13 @@ impl Repo {
             .unwrap()
     }
 
-    /// `by <args>` with the fake agent as the gemini-cli harness.
+    /// `by <args>` with the fake agent as the gemini-cli harness. The fake
+    /// has no permission system of its own for the policy to compose with,
+    /// so its permissions decide (`--allow-unapproved-tools`).
     fn by_agent(&self, args: &[&str]) -> Output {
         let agent = fake_agent!().display().to_string();
         let mut all: Vec<&str> = args.to_vec();
-        all.extend(["--command", &agent]);
+        all.extend(["--command", &agent, "--allow-unapproved-tools"]);
         if !matches!(args[0], "send" | "pr") && !args.contains(&"--harness") {
             all.extend(["--harness", "gemini-cli"]);
         }

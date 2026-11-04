@@ -305,6 +305,8 @@ impl Run<'_> {
             instructions: None,
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
+            permission_profile: None,
+            json_schema: None,
         };
         let transcript = self
             .config
@@ -633,6 +635,8 @@ fn scenarios(run: &mut Run) {
                 instructions: None,
                 mcp_config_file: None,
                 remote_mcp_servers: Vec::new(),
+                permission_profile: None,
+                json_schema: None,
             });
             let result = match rejected {
                 Err(error) => Ok(format!("rejected before launch as declared: {error}")),

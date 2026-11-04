@@ -33,6 +33,8 @@ fn fresh() -> Open {
         instructions: None,
         mcp_config_file: None,
         remote_mcp_servers: Vec::new(),
+        permission_profile: None,
+        json_schema: None,
     }
 }
 
@@ -295,6 +297,8 @@ fn fork_and_model_selection_are_rejected_before_launch() {
         instructions: None,
         mcp_config_file: None,
         remote_mcp_servers: Vec::new(),
+        permission_profile: None,
+        json_schema: None,
     };
     assert!(matches!(
         driver.open(open(SessionMode::Fork(session("p")), None)),
@@ -514,6 +518,8 @@ fn the_claude_acp_profile_keeps_permission_bypass_unavailable() {
             instructions: None,
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
+            permission_profile: None,
+            json_schema: None,
         })
         .unwrap();
     let initialize = decode(&opened.frames[0]);
@@ -538,6 +544,8 @@ fn the_claude_acp_profile_keeps_permission_bypass_unavailable() {
             instructions: None,
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
+            permission_profile: None,
+            json_schema: None,
         })
         .unwrap();
     let initialize = decode(&opened.frames[0]);
@@ -1825,4 +1833,77 @@ fn deepseek_harness_acp_pins_the_model_through_its_config_option() {
     let events = replayed.events;
     let ready = events.iter().position(|e| *e == Event::Ready).unwrap();
     assert!(matches!(&events[ready + 1], Event::SessionStarted { .. }));
+}
+
+/// Open a fresh session with a driver that keeps the session in `default`,
+/// the agent answering `session/new` with `modes` (`None`: no modes).
+fn open_in_mode(modes: Option<Value>) -> (Acp, Vec<Event>) {
+    let mut driver = Acp::new(vec!["gemini".into(), "--acp".into()]).with_modes(&["default"]);
+    let opened = driver.open(fresh()).unwrap();
+    let events = handshake(&mut driver, &opened.frames, |frame| {
+        match frame["method"].as_str() {
+            Some("session/new") => {
+                let mut result = json!({"sessionId": "s1"});
+                if let Some(modes) = &modes {
+                    result["modes"] = modes.clone();
+                }
+                vec![json!({"jsonrpc": "2.0", "id": frame["id"], "result": result})]
+            }
+            _ => answer(frame),
+        }
+    });
+    (driver, events)
+}
+
+fn open_failure(events: &[Event]) -> Option<&str> {
+    events.iter().find_map(|e| match e {
+        Event::OpenFailed { reason } => Some(reason.as_str()),
+        _ => None,
+    })
+}
+
+/// Gemini CLI's `autoEdit` and `yolo` and Qwen Code's `auto` approve calls
+/// without asking the client: a session that names one of them, or no mode
+/// at all, is refused before the first turn.
+#[test]
+fn a_session_in_a_mode_that_does_not_ask_is_refused() {
+    let (_, events) = open_in_mode(Some(json!({"currentModeId": "default"})));
+    assert_eq!(open_failure(&events), None, "{events:?}");
+    assert!(events.contains(&Event::Ready));
+
+    let (_, events) = open_in_mode(Some(json!({"currentModeId": "yolo"})));
+    let reason = open_failure(&events).unwrap();
+    assert!(reason.contains("mode \"yolo\""), "{reason}");
+    assert!(!events.contains(&Event::Ready));
+
+    let (_, events) = open_in_mode(None);
+    let reason = open_failure(&events).unwrap();
+    assert!(reason.contains("names no current mode"), "{reason}");
+}
+
+/// A switch to another mode while the session runs is a protocol
+/// violation; a switch back to a kept mode is not.
+#[test]
+fn a_switch_to_a_mode_that_does_not_ask_is_a_violation() {
+    let (mut driver, _) = open_in_mode(Some(json!({"currentModeId": "default"})));
+    let switch = |mode: &str| {
+        json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1",
+            "update": {"sessionUpdate": "current_mode_update", "currentModeId": mode}}})
+    };
+    let (events, _) = feed(&mut driver, &switch("autoEdit"));
+    assert!(
+        matches!(&events[..], [Event::ProtocolViolation { detail }] if detail.contains("autoEdit")),
+        "{events:?}"
+    );
+    let (events, _) = feed(&mut driver, &switch("default"));
+    assert!(events.is_empty(), "{events:?}");
+}
+
+/// A driver with no modes pinned does not look at them.
+#[test]
+fn modes_are_not_checked_unless_the_profile_pins_them() {
+    let mut driver = Acp::new(vec!["agent".into()]);
+    let opened = driver.open(fresh()).unwrap();
+    let events = handshake(&mut driver, &opened.frames, answer);
+    assert!(events.contains(&Event::Ready), "{events:?}");
 }

@@ -835,6 +835,9 @@ fn antigravity_over_acp_takes_mcp_servers_on_the_session_without_a_private_home(
                 mcp_servers: vec![McpServerSpec::parse("docs=/usr/bin/docs-mcp").unwrap()],
                 ..Provisioning::default()
             }),
+            // Antigravity is not verified to keep the policy: the stand-in
+            // has no permissions of its own to decide.
+            unapproved_tools: true,
             ..TaskOptions::default()
         })
         .name("agy-acp-local")

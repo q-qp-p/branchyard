@@ -2965,7 +2965,7 @@
   // environment's when it sent none.
   const environmentOf = (v, s) => v.environments.list.find((env) => env.preset === (s.preset || null)) || null;
 
-  const WRITER_CANNOT = 'it cannot ask before each tool, and this server does not accept that for writers';
+  const WRITER_CANNOT = 'it can run tools without asking Branchyard, and this server does not accept that for writers';
   const REVIEWER_CANNOT = 'reviewers need a harness that routes each tool request for approval';
   // Why each access is closed for a harness and the caller's role, or null.
   const accessWhy = (x, roles) => ({
@@ -4143,7 +4143,7 @@
         c.harness && c.harness.readiness.length ? readinessList(c.harness.readiness, 'sf-harness-ready', v.environments.at) : null,
         c.acknowledgement ? h('div', { class: 'ack' },
           toggle('sf-ack', 'I accept tools without per-tool approval', v.draft.ack, (on) => { v.draft.ack = on; syncForm(); }, 'sf-ack-why'),
-          h('p', { class: 'hint', id: 'sf-ack-why', text: `${c.harness.id} cannot ask before each tool it uses, so as a writer it runs them without asking. Tick this only if you accept that.` })) : null,
+          h('p', { class: 'hint', id: 'sf-ack-why', text: `${c.harness.id} can run some tools without asking Branchyard, so as a writer your per-tool approvals do not hold for them. Tick this only if you accept that.` })) : null,
       ];
     };
 

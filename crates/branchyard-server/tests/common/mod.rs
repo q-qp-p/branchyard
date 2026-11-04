@@ -273,7 +273,7 @@ session=costly-session; previous=
 for a in "$@"; do [ "$previous" = --resume ] && session=$a; previous=$a; done
 read -r line; reply "$line"
 read -r prompt
-printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
+printf '{"type":"system","subtype":"init","session_id":"%s","permissionMode":"default"}\n' "$session"
 spend=$(printf '%s' "$prompt" | sed -n 's/.*SPEND=\([0-9.]*\).*/\1/p')
 before=$(cat "$TMPDIR/spent" 2>/dev/null || echo 0)
 total=$(awk -v spend="${spend:-0}" -v before="$before" 'BEGIN { print before + spend }')

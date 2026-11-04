@@ -104,6 +104,9 @@ impl World {
                 "gemini-cli",
                 "--command",
                 &agent,
+                // The fake agent has no permission system of its own for
+                // the policy to compose with.
+                "--allow-unapproved-tools",
             ],
             env,
         );

@@ -28,7 +28,7 @@
 //! runs; what became of each is recorded in the store and the event log.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use branchyard_harness::profiles::Profile;
@@ -821,8 +821,8 @@ fn run(
         }
     };
     // Declared before the session so a sandbox outlives it. The turn's
-    // provisioning is recorded once the sandbox exists, so its activity can
-    // say what the sandbox took: see the managed settings below.
+    // provisioning is recorded once the sandbox exists, so its activity
+    // names the placement the turn ran in.
     let mut placement = match Placement::prepare(turn.yard, record, fence, &turn.sandbox) {
         Ok(placement) => placement,
         Err(reason) => {
@@ -834,33 +834,29 @@ fn run(
             return Ok(driven);
         }
     };
-    // Claude Code's managed settings, written into a sandbox before the
-    // harness starts (`provisioning::write_managed`). A write that fails is
-    // a warning, and the turn goes on with the home's settings alone.
-    let managed = crate::provisioning::write_managed(
-        turn.profile.harness,
-        record,
-        &placement,
-        &crate::policy::denied_tools(&bounds.policy),
-        &|| {
-            lease
-                .lost()
-                .then(|| "the turn's lease was taken over".to_owned())
-        },
-    );
-    let (managed, managed_failure) = match managed {
-        Ok(managed) => (managed, None),
-        Err(why) => (None, Some(why)),
-    };
-    recorder.record(crate::provisioning::with_managed(
-        provisioned.activity,
-        managed,
-    ))?;
+    // Branchyard writes no administrator file: a harness's own managed
+    // policy is the administrator's, and what Branchyard requires reaches
+    // the harness through its session (flags, a hook, a private home's
+    // files) instead (`docs/harness-integration.md`).
+    recorder.record(provisioned.activity)?;
     for warning in provisioned.warnings {
         recorder.record(Activity::Warning(warning))?;
     }
-    if let Some(why) = managed_failure {
-        recorder.record(Activity::Warning(why))?;
+    // A task that let the harness's own permissions decide what this
+    // profile cannot bind says so on the branch, every turn.
+    // The branch's own opt-out and home, as admission and provisioning
+    // read them.
+    let composing = TaskOptions {
+        unapproved_tools: turn.options.unapproved_tools || record.unapproved_tools,
+        ..turn.options.clone()
+    };
+    if let Some(note) = crate::harness::unbound_note(
+        turn.profile,
+        &composing,
+        record.home.is_some(),
+        &turn.yard.approval_settings(),
+    ) {
+        recorder.record(Activity::Warning(note))?;
     }
     if let Some(started) = placement.started() {
         recorder.record(crate::snapshots::event(started.clone()))?;
@@ -1069,7 +1065,11 @@ fn run(
     // A per-turn MCP file lives until this function returns, after the
     // harness is gone.
     let _turn_file = provisioned.turn_file;
-    let driver = turn.profile.driver_with(turn.command.clone());
+    // The provisioner's arguments keep the harness asking Branchyard
+    // (Gemini CLI's and Qwen Code's approval mode), after an override too.
+    let mut command = turn.command.clone();
+    command.extend(provisioned.session.args.iter().cloned());
+    let driver = turn.profile.driver_with(command);
     // A harness that can hold a spending limit itself is given what is
     // left of the branch's, so it stops before it goes over rather than
     // after it reports; the engine's own check below still holds. Not on
@@ -1090,6 +1090,15 @@ fn run(
         model: provisioned.session.model,
         mcp_config_file: provisioned.mcp_config_file,
         remote_mcp_servers: provisioned.session.remote_mcp_servers,
+        permission_profile: provisioned.session.permission_profile,
+        // Where the turn's final answer is what the contract reads (see
+        // `contract::capture_native`), a harness that can constrain it
+        // natively is given the schema.
+        json_schema: record
+            .result_contract
+            .as_ref()
+            .filter(|c| c.is_deliverable() || record.info.depth == 0)
+            .map(|c| c.schema.clone()),
         ..Open::new(turn.mode.clone(), placement.cwd())
     };
     let mut steering = Steering::new(
@@ -1613,7 +1622,7 @@ fn run(
                     recorder,
                     &mut session,
                     turn,
-                    &bounds.policy,
+                    (&bounds.policy, Path::new(&placement.cwd())),
                     &request,
                     stopping,
                     (deadline_ms, &cancelled),
@@ -2065,7 +2074,7 @@ fn answer(
     recorder: &mut Recorder,
     session: &mut Session,
     turn: &Turn<'_>,
-    policy: &Policy,
+    (policy, root): (&Policy, &Path),
     request: &PermissionRequest,
     stopping: bool,
     (deadline_ms, cancelled): (Option<u64>, &dyn Fn() -> bool),
@@ -2076,7 +2085,7 @@ fn answer(
         };
         (decision, DecisionSource::Engine)
     } else {
-        let decided = policy.decide_with_source(&turn.record.info.name, request);
+        let decided = policy.decide_in(&turn.record.info.name, request, root);
         // Approvals only tighten what the policy allowed.
         match decided {
             (PermissionDecision::Allow, source) => crate::effects::tool::decide(

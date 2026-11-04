@@ -47,6 +47,9 @@ impl Repo {
         command.args(args).output().unwrap()
     }
 
+    /// The fake agent. It has no permission system of its own for the
+    /// policy to compose with, so its runs pass `--allow-unapproved-tools`
+    /// (which the branch remembers for the review's sends).
     fn agent(&self) -> String {
         fake_agent!().display().to_string()
     }
@@ -115,6 +118,7 @@ fn comments_written_on_the_diff_go_to_the_branch_as_one_prompt() {
             "gemini-cli",
             "--command",
             &agent,
+            "--allow-unapproved-tools",
         ],
     ));
     let commenting = repo.editor("comment.sh", COMMENT);
@@ -213,6 +217,7 @@ fn an_edited_diff_is_refused_and_kept_and_a_file_can_be_given() {
             "gemini-cli",
             "--command",
             &agent,
+            "--allow-unapproved-tools",
         ],
     ));
     let breaking = repo.editor(
@@ -261,6 +266,7 @@ fn an_edited_diff_is_refused_and_kept_and_a_file_can_be_given() {
             "gemini-cli",
             "--command",
             &agent,
+            "--allow-unapproved-tools",
         ],
     ));
     let out = repo.by(Some("true"), &["review", "idle"]);
@@ -286,6 +292,7 @@ fn detach_sends_in_the_background() {
             "gemini-cli",
             "--command",
             &agent,
+            "--allow-unapproved-tools",
         ],
     ));
     let commenting = repo.editor("comment.sh", COMMENT);
@@ -329,6 +336,7 @@ fn review_prints_json_for_the_prompt_the_send_and_no_comments() {
             "gemini-cli",
             "--command",
             &agent,
+            "--allow-unapproved-tools",
         ],
     ));
     let commenting = repo.editor("comment.sh", COMMENT);

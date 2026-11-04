@@ -268,6 +268,9 @@ pub struct Acp {
     /// Why the agent's approvals are partial: it asks its client about
     /// some tools and runs others, so a policy cannot deny the latter.
     approvals_caveat: Option<&'static str>,
+    /// The session modes the agent asks its client in, when the profile
+    /// pins them ([`Acp::with_modes`]).
+    modes: Option<&'static [&'static str]>,
     /// A `session/cancel` was sent for the running turn and the prompt has
     /// not been answered since: an error answer is then the turn ending
     /// interrupted, not a failure (Hermes 0.19.0 answers a cancelled
@@ -302,6 +305,7 @@ impl Acp {
             config_model: false,
             model: None,
             approvals_caveat: None,
+            modes: None,
             cancelling: false,
         }
     }
@@ -343,6 +347,34 @@ impl Acp {
     pub fn with_approvals_caveat(mut self, reason: &'static str) -> Self {
         self.approvals_caveat = Some(reason);
         self
+    }
+
+    /// Keep the session in one of `modes`: a new session whose answer names
+    /// another current mode, or none, fails to open, and a
+    /// `current_mode_update` to another mode is a protocol violation. An
+    /// agent's other modes approve calls without asking its client (Gemini
+    /// CLI's `autoEdit` and `yolo`, Qwen Code's `auto`).
+    pub fn with_modes(mut self, modes: &'static [&'static str]) -> Self {
+        self.modes = Some(modes);
+        self
+    }
+
+    /// Why `mode` is not one the profile keeps the session in, if it is not.
+    fn unkept_mode(&self, mode: Option<&str>) -> Option<String> {
+        let modes = self.modes?;
+        match mode {
+            Some(mode) if modes.contains(&mode) => None,
+            Some(mode) => Some(format!(
+                "the agent runs the session in mode {mode:?}, which approves calls without asking \
+                 Branchyard (it keeps the policy in {})",
+                modes.join(", ")
+            )),
+            None => Some(format!(
+                "the agent's session answer names no current mode, so Branchyard cannot tell it \
+                 asks in {}",
+                modes.join(", ")
+            )),
+        }
     }
 
     /// Authenticate with the `authMethods` entry `id` when a resume is
@@ -477,6 +509,15 @@ impl Acp {
     fn session_opened(&mut self, result: &Value) -> Output {
         self.loading = false;
         let mode = self.open.as_ref().map(|open| open.mode.clone());
+        // A resumed session's answer need not carry its modes; the launch
+        // pins the mode for every session the process opens.
+        let reported = result["modes"]["currentModeId"].as_str();
+        let fresh = !matches!(mode, Some(SessionMode::Resume(_)));
+        if fresh || reported.is_some() {
+            if let Some(reason) = self.unkept_mode(reported) {
+                return Output::event(Event::OpenFailed { reason });
+            }
+        }
         let session = match mode {
             Some(SessionMode::Resume(session)) => session,
             _ => match result["sessionId"].as_str().and_then(NativeSession::new) {
@@ -750,6 +791,11 @@ impl Acp {
                 return Output::event(Event::ProtocolViolation {
                     detail: format!("session/update for session {actual}, not {expected}"),
                 });
+            }
+        }
+        if let SessionUpdate::CurrentModeUpdate(update) = &notification.update {
+            if let Some(detail) = self.unkept_mode(Some(&update.current_mode_id.to_string())) {
+                return Output::event(Event::ProtocolViolation { detail });
             }
         }
         // History replayed by session/load belongs to earlier turns.
