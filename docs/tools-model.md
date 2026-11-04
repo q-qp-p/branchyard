@@ -76,7 +76,7 @@ A turn sees only what was chosen. Everything it sees, past one line, is on disk 
 
 - **The prompt gets one line:** "Your tools are under /tools: read /tools/INDEX.md, and search with `tools search` before reading a skill." Unchosen tools cost nothing.
 - **Connectors are code.** The harness calls Anvil's CLI (`bin/<id> --schema`, `--dry-run`) or its Python and TypeScript SDK through the gateway, as Anvil intends (its `harness-package.ts`). No MCP server is added per connector.
-- **Operations are found, not listed.** Anvil's SKILL.md tables every operation, which grows large. `tools search` ranks with BM25 over the frontmatter of the chosen skills, each connector's operations (Anvil's `reference/` and `compose.json`) and each helper. `tools schema` prints one operation's schema. A skill named `find-tools` teaches the habit in about 600 characters. This is the skill-search skill.
+- **Operations are found, not listed.** Anvil's SKILL.md lists capabilities with operation counts; the full table is `reference/operations.md`. `tools search` ranks with BM25 over the frontmatter of the chosen skills, each connector's operations (Anvil's `reference/` and `compose.json`) and each helper. `tools schema` prints one operation's schema. A skill named `find-tools` teaches the habit in about 600 characters. This is the skill-search skill.
 - **Native discovery too.** The chosen skills are also linked where a harness discovers skills itself (Claude Code's `.claude/skills/`, Codex's skills directory), so a harness that loads only frontmatter loads only these.
 - **Branchyard's own surface follows the choice:**
   - Without helpers, the turn gets `leaf.md` (6.6 KB) instead of the delegate skill (38.5 KB), and the MCP server lists no spawn, delegate or graph tools.
@@ -135,7 +135,7 @@ Admission resolves everything once, and the turn carries the result. A worker ru
 - **Shared store:** tool bundles are OCI artifacts in **Artifact Registry**, mirrored to a GCS bucket and mounted read-only with **Cloud Storage FUSE**.
 - **Manifest:** every session or conversation starts by resolving its turn manifest (section 4). Every turn of it carries that manifest, renewed only when the person changes the session's tools.
 - **Host setup:** connector bundles, Anvil's CLI and SDKs, and the compose SDK are installed on each host when it is set up (`by setup`, `by compute gce`, the worker image), not packaged per turn.
-- **Anvil:** it evolves to the contract in Anvil contract v2 (`docs/anvil-contract-v2.md`, being written); Branchyard builds against that contract, with a mock until Anvil ships each part.
+- **Anvil:** it evolves to the contract in [Anvil contract v2](anvil-contract-v2.md); Branchyard builds against that contract, with a mock until Anvil ships each part.
 
 ## 6. Order of work
 
