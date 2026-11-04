@@ -145,6 +145,12 @@ pub struct Open {
     /// one by name (Codex's `default_permissions`). The driver then lets the
     /// profile set the sandbox and checks that the session reports it.
     pub permission_profile: Option<String>,
+    /// A JSON Schema the session's final answer must match, for a driver
+    /// whose harness can constrain it natively (Claude Code's
+    /// `--json-schema`); the driver reports the structured answer as the
+    /// turn's last fenced JSON block. Other drivers ignore it, and the
+    /// prompt still asks for the block.
+    pub json_schema: Option<serde_json::Value>,
 }
 
 impl Open {
@@ -160,6 +166,7 @@ impl Open {
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
             permission_profile: None,
+            json_schema: None,
         }
     }
 }

@@ -313,6 +313,14 @@ The refusal is the error `unsupported` with the detail `{"unsupported": "unbound
 
 Branchyard answers an allowed call with the input Claude Code sent (`updatedInput`), unchanged. A rule that names arguments or paths decides on that input.
 
+**Claude Code's own layers.** Claude Code 2.1.318, run against a stand-in model API on 4 November 2026, showed which of its layers a Branchyard turn keeps:
+
+- **Hooks.** Hooks in the user's or the repository's `settings.json`, and in a plugin passed with `--plugin-dir`, run in a Branchyard turn. A hook that denies (exit code 2, or `permissionDecision: "deny"`) refuses the call before it reaches Branchyard; one that allows does not skip Branchyard. Branchyard's own plugin is projected without its `hooks/hooks.json`: those hooks report branch status to a session a person started, which a turn Branchyard runs already reports through its stream.
+- **`CLAUDE.md` and rules.** The repository's `CLAUDE.md` and `.claude/rules/*.md`, and the user's `~/.claude/CLAUDE.md` and `~/.claude/rules/*.md`, reach the model in print mode, even in a repository not yet trusted. Branchyard's instructions and [knowledge](knowledge.md) go in `--append-system-prompt` beside them; they replace nothing.
+- **Structured output.** A turn whose [result contract](artifact-capture.md) Branchyard reads from the final answer (a top-level branch, or a deliverable) passes the contract's schema as `--json-schema`. Claude Code adds a `StructuredOutput` tool the model must call with a matching answer. The driver lets that tool through without asking the policy, since it records the answer and touches nothing, and reports `structured_output` as the turn's last fenced JSON block, which the contract then validates as before. An answer the model never makes valid ends the turn as failed (`error_max_structured_output_retries`). A delegated child still reports with `by report`.
+- **Isolation.** `--isolated` gives Claude Code a home of its own, so the user's `~/.claude` (hooks, settings, `CLAUDE.md`, login) is left out by design. The repository's `.claude/` settings, hooks and rules still apply, and `CLAUDE_CONFIG_DIR` is not passed through, since it would point back at the user's own. Claude Code's provider selectors and model pins are kept ([setup](setup.md)).
+- **Subprocess isolation.** Where the host has `bwrap` and `socat`, an OAuth token turn sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` ([provisioning](provisioning.md)). A Bash call that asks to run outside the sandbox reaches the policy as `Bash:unsandboxed` ([egress](egress.md#rules-that-name-arguments-and-paths)).
+
 **What is still the harness's.**
 
 - An administrator's rules decide first on every harness: Claude Code's managed settings, Codex's `requirements.toml`, Gemini CLI's system policies. Codex's `requirements.toml` can lower the approval policy; the driver then sees the reported policy differ and refuses the thread.

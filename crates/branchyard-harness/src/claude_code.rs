@@ -185,6 +185,9 @@ fn reported_tool(request: &Value) -> String {
     }
 }
 
+/// The tool `--json-schema` adds, which the model calls with its answer.
+const STRUCTURED_OUTPUT: &str = "StructuredOutput";
+
 /// The callback ID of the `PreToolUse` hook registered at `initialize`.
 /// Hooks run before a settings file's allow rules and before the permission
 /// mode, so every tool call reaches it, including the ones an allow rule in
@@ -213,6 +216,9 @@ fn pre_tool_use_answer(request_id: &str) -> Value {
 #[derive(Debug)]
 pub struct ClaudeCode {
     command: Vec<String>,
+    /// The session asked for a structured answer (`Open::json_schema`), so
+    /// the CLI's `StructuredOutput` tool is allowed without the policy.
+    structured: bool,
     mode: Option<SessionMode>,
     ready: bool,
     session: Option<NativeSession>,
@@ -321,6 +327,7 @@ impl ClaudeCode {
             answering: None,
             sent: HashSet::new(),
             names_messages: false,
+            structured: false,
             interrupting: false,
             steers: Vec::new(),
             next_steer: 0,
@@ -662,6 +669,24 @@ impl ClaudeCode {
             .to_owned();
         let request = &message["request"];
         let subtype = request["subtype"].as_str().unwrap_or_default();
+        // The schema's own tool records the answer and touches nothing:
+        // allowed without asking the policy, as it exists only when this
+        // session asked for a structured answer.
+        if subtype == "can_use_tool"
+            && !id.is_empty()
+            && request["tool_name"] == STRUCTURED_OUTPUT
+            && self.structured
+        {
+            let reply = json!({
+                "type": "control_response",
+                "response": {"subtype": "success", "request_id": id,
+                    "response": {"behavior": "allow", "updatedInput": request["input"]}},
+            });
+            return Output {
+                events: Vec::new(),
+                frames: vec![frame(&reply)],
+            };
+        }
         if subtype == "can_use_tool" && !id.is_empty() {
             let input = request["input"].clone();
             self.permissions.insert(id.clone(), input.clone());
@@ -1060,6 +1085,14 @@ impl ClaudeCode {
             turn: Some(turn),
             usage: usage(message),
         });
+        // A structured answer becomes the turn's last fenced JSON block,
+        // where a result contract reads the final answer from.
+        if let Some(answer) = message.get("structured_output").filter(|v| !v.is_null()) {
+            events.push(Event::MessageDelta {
+                turn,
+                text: format!("\n\n```json\n{answer}\n```\n"),
+            });
+        }
         let outcome = outcome(message, false);
         // Queued steered messages run as a follow-up the CLI starts itself:
         // the turn goes on until a result answers them, or the CLI drops
@@ -1371,6 +1404,7 @@ impl Driver for ClaudeCode {
         if self.mode.is_some() {
             return Err(Rejected::InvalidOpen("the session is already open".into()));
         }
+        self.structured = open.json_schema.is_some();
         let mut argv = self.command.clone();
         argv.extend(
             [
@@ -1393,6 +1427,12 @@ impl Driver for ClaudeCode {
         );
         if let Some(model) = &open.model {
             argv.extend(["--model".into(), model.clone()]);
+        }
+        // The CLI adds a `StructuredOutput` tool the model must call with
+        // an answer matching the schema; its `result` then carries it as
+        // `structured_output` (Claude Code 2.1.318, 4 November 2026).
+        if let Some(schema) = &open.json_schema {
+            argv.extend(["--json-schema".into(), schema.to_string()]);
         }
         // Claude Code stops the turn with `error_max_budget_usd` once the
         // process's own spend reaches it; a resumed session's earlier cost

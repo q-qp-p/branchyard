@@ -1091,6 +1091,14 @@ fn run(
         mcp_config_file: provisioned.mcp_config_file,
         remote_mcp_servers: provisioned.session.remote_mcp_servers,
         permission_profile: provisioned.session.permission_profile,
+        // Where the turn's final answer is what the contract reads (see
+        // `contract::capture_native`), a harness that can constrain it
+        // natively is given the schema.
+        json_schema: record
+            .result_contract
+            .as_ref()
+            .filter(|c| c.is_deliverable() || record.info.depth == 0)
+            .map(|c| c.schema.clone()),
         ..Open::new(turn.mode.clone(), placement.cwd())
     };
     let mut steering = Steering::new(

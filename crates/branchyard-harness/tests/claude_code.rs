@@ -28,6 +28,7 @@ fn open_with(mode: SessionMode) -> (ClaudeCode, Opened) {
             mcp_config_file: None,
             remote_mcp_servers: Vec::new(),
             permission_profile: None,
+            json_schema: None,
         })
         .unwrap();
     assert_eq!(opened.launch.cwd, "/workspace");
@@ -2359,5 +2360,80 @@ fn a_call_a_repositorys_allow_rule_would_approve_still_reaches_branchyard() {
             .any(|e| matches!(e, Event::TurnEnded { .. })),
         "{:?}",
         replayed.events
+    );
+}
+
+/// A session given a schema passes it as `--json-schema`, lets the CLI's
+/// `StructuredOutput` tool record the answer without asking the policy,
+/// and reports the structured answer as the turn's last fenced JSON block.
+#[test]
+fn a_schema_constrains_the_final_answer_natively() {
+    let schema = json!({"type": "object", "required": ["summary"]});
+    let mut driver = ClaudeCode::new(vec!["claude".into()]);
+    let opened = driver
+        .open(Open {
+            json_schema: Some(schema.clone()),
+            ..Open::new(SessionMode::Fresh, "/workspace")
+        })
+        .unwrap();
+    let argv = &opened.launch.argv;
+    let at = argv.iter().position(|a| a == "--json-schema").unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&argv[at + 1]).unwrap(),
+        schema
+    );
+    assert_eq!(
+        handshake(&mut driver, &opened.frames, answer),
+        vec![Event::Ready]
+    );
+    let turn = driver.submit("summarise").unwrap().turn;
+
+    let (events, frames) = feed(
+        &mut driver,
+        &json!({"type": "control_request", "request_id": "so-1", "request": {
+            "subtype": "can_use_tool", "tool_name": "StructuredOutput",
+            "input": {"summary": "done"}}}),
+    );
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(
+        frames[0]["response"]["response"],
+        json!({"behavior": "allow", "updatedInput": {"summary": "done"}})
+    );
+
+    let (events, _) = feed(
+        &mut driver,
+        &json!({"type": "result", "subtype": "success", "is_error": false,
+            "result": "{\"summary\":\"done\"}", "structured_output": {"summary": "done"}}),
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::MessageDelta { turn: t, text }
+            if *t == turn && text.contains("```json\n{\"summary\":\"done\"}\n```"))),
+        "{events:?}"
+    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::TurnEnded {
+            outcome: TurnOutcome::Completed,
+            ..
+        }
+    )));
+}
+
+/// Without a schema, a `StructuredOutput` call is any tool's: it goes to
+/// the policy.
+#[test]
+fn structured_output_goes_to_the_policy_without_a_schema() {
+    let mut driver = ready(SessionMode::Fresh);
+    driver.submit("go").unwrap();
+    let (events, frames) = feed(
+        &mut driver,
+        &json!({"type": "control_request", "request_id": "so-2", "request": {
+            "subtype": "can_use_tool", "tool_name": "StructuredOutput", "input": {}}}),
+    );
+    assert!(frames.is_empty(), "{frames:?}");
+    assert!(
+        matches!(&events[0], Event::PermissionRequested { request, .. } if request.tool == "StructuredOutput")
     );
 }
