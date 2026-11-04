@@ -40,6 +40,7 @@ Task-focused guides for daily workflows.
 | [Wide map](map.md) | Run a prompt across a list of inputs in parallel (`by map`), validate each branch's output against a JSON schema, and collect results into a table. |
 | [Triggers and schedules](triggers.md) | Start tasks on cron schedules, intervals, or signed webhooks from GitHub, Slack, and Linear with deduplication and failure circuit-breakers. |
 | [Connectors](connectors.md) | Give branches scoped access to GitHub, Slack, and internal APIs through a local connector gateway without exposing raw credentials. |
+| [Tools: one model](tools-model.md) | Design, not built: how connectors, skills and helpers are made available, allowed, readied, defaulted and chosen per query; the mounted tool tree that saves context; identity to the gateway; and one turn's lifecycle on GCE, GKE and Substrate. |
 | [Usage and adopting sessions](usage.md) | Check 5-hour and weekly usage limits for Claude Code and Codex (`by usage`), avoid rate-limited logins, and adopt existing local sessions into branches (`by adopt`). |
 | [Web companion](companion.md) | Monitor, steer, approve, and merge branches or manage knowledge workspaces from a desktop or mobile browser with `by serve --app`. |
 | [Harness hooks](harness-hooks.md) | Notify interactive agent sessions about branch completions, questions, and failures through harness hooks and status lines. |

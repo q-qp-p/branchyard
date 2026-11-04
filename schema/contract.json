@@ -30978,6 +30978,13 @@
           ],
           "description": "What it gives a session access to."
         },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The symbol in the console's `connector-icons.svg` that draws its\nmark (`ci-<id>`), when there is one."
+        },
         "state": {
           "$ref": "#/$defs/ConnectionState",
           "description": "The caller's overall state with it."
@@ -31157,6 +31164,13 @@
                 "null"
               ],
               "description": "What it gives a session access to."
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The symbol in the console's `connector-icons.svg` that draws its\nmark (`ci-<id>`), when there is one."
             },
             "state": {
               "$ref": "#/$defs/ConnectionState",
@@ -31509,6 +31523,13 @@
                 "null"
               ],
               "description": "What it gives a session access to."
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The symbol in the console's `connector-icons.svg` that draws its\nmark (`ci-<id>`), when there is one."
             },
             "state": {
               "$ref": "#/$defs/ConnectionState",

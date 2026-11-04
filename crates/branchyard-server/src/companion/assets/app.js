@@ -3377,6 +3377,23 @@
     })();
   }
 
+  // A connector's mark: its icon from the sprite, drawn in the page's ink,
+  // or its initial when the sprite has none.
+  function connectorMark(x, small) {
+    const mark = h('span', { class: small ? 'conn-mark small' : 'conn-mark', 'aria-hidden': 'true' });
+    if (!x.icon) {
+      mark.textContent = x.name.charAt(0).toUpperCase();
+      return mark;
+    }
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    const use = document.createElementNS(SVG, 'use');
+    use.setAttribute('href', `connector-icons.svg#${x.icon}`);
+    svg.append(use);
+    mark.append(svg);
+    return mark;
+  }
+
   // One connection as a card: what it is, where the person stands, and the
   // one thing to do next.
   function connectionCard(x, refresh) {
@@ -3403,7 +3420,7 @@
     }) : null;
     return h('li', { class: 'conn-card', 'data-state': x.state, id },
       h('div', { class: 'conn-head' },
-        h('span', { class: 'conn-mark', 'aria-hidden': 'true', text: x.name.charAt(0).toUpperCase() }),
+        connectorMark(x),
         h('h3', { text: x.name }),
         h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label)),
       x.description ? h('p', { class: 'hint conn-about', text: x.description }) : null,
@@ -4570,7 +4587,7 @@
         },
       }) : null;
       return h('li', { class: 'conn-row', 'data-state': r.x.state },
-        h('label', { class: 'conn-pick', for: id }, box, h('span', { class: 'conn-name', text: r.x.name })),
+        h('label', { class: 'conn-pick', for: id }, box, connectorMark(r.x, true), h('span', { class: 'conn-name', text: r.x.name })),
         h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label),
         r.x.description ? h('p', { class: 'hint conn-about', text: r.x.description }) : null,
         r.why ? h('p', { class: 'hint conn-why', id: `${id}-why`, text: r.why }) : null,

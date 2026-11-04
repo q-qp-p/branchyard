@@ -1418,6 +1418,9 @@ details.board-done .board-row:not(.board-done-head):hover { background: var(--wa
 .conn-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
 .conn-head h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .conn-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-2); background: var(--wash-2); color: var(--ink-2); font-weight: 700; }
+.conn-mark svg { width: 18px; height: 18px; }
+.conn-mark.small { width: 20px; height: 20px; border-radius: var(--r-1); font-size: 11px; }
+.conn-mark.small svg { width: 12px; height: 12px; }
 .conn-card[data-state="connected"] .conn-mark { background: var(--green-tint); color: var(--green-text); }
 .conn-facts, .conn-card .conn-why { margin: 0; font-size: 12px; color: var(--ink-2); }
 .conn-card[data-state="needs_reconnect"] .conn-why { color: var(--amber-text); }

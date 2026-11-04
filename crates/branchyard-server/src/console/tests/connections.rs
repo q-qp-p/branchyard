@@ -183,6 +183,11 @@ async fn connections_report_each_state_and_sign_as_the_caller() {
     let atlassian = by_id("atlassian");
     assert_eq!(atlassian["state"], "connected");
     assert_eq!(atlassian["name"], "Atlassian");
+    assert_eq!(atlassian["icon"], "ci-atlassian");
+    assert!(
+        by_id("slack").get("icon").is_none(),
+        "a mark the sprite lacks has no icon"
+    );
     assert_eq!(atlassian["max_mode"], "write");
     assert_eq!(atlassian["accounts"][0]["account"], "default");
     let github = by_id("github");

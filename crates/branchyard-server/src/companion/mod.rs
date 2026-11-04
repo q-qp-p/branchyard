@@ -106,6 +106,11 @@ const ASSETS: &[(&str, &str, &str)] = &[
         include_str!("assets/manifest.webmanifest"),
     ),
     ("icon.svg", "image/svg+xml", include_str!("assets/icon.svg")),
+    (
+        "connector-icons.svg",
+        "image/svg+xml",
+        include_str!("assets/connector-icons.svg"),
+    ),
 ];
 
 /// The companion's state in a running server.

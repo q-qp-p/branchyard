@@ -347,6 +347,10 @@ pub struct Connection {
     /// What it gives a session access to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The symbol in the console's `connector-icons.svg` that draws its
+    /// mark (`ci-<id>`), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// The caller's overall state with it.
     pub state: ConnectionState,
     /// The caller's accounts.

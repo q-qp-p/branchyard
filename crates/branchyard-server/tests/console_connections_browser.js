@@ -48,24 +48,24 @@ const same = (got, want, what) => {
   await page.getByRole('heading', { level: 1, name: 'Connections', exact: true }).waitFor();
   const card = (name) => page.locator('li.conn-card').filter({ has: page.getByRole('heading', { level: 3, name, exact: true }) });
   await card('Atlassian').locator('.conn-state', { hasText: 'Connected' }).waitFor();
-  await card('Github').locator('.conn-state', { hasText: 'Not connected' }).waitFor();
+  await card('GitHub').locator('.conn-state', { hasText: 'Not connected' }).waitFor();
   await card('Linear').locator('.conn-state', { hasText: 'Not connected' }).waitFor();
   await page.locator('.conn-status', { hasText: '1 connection ready of 3 this server offers.' }).waitFor();
   if (await card('Atlassian').getByRole('button').count()) throw new Error('a connected connection offers an action');
   if (shots) await page.screenshot({ path: `${shots}/connections.png` });
   say('CONNECTIONS');
 
-  // GitHub (no catalogue entry, so named from its ID) signs in in a new tab; the page sees it finish.
+  // GitHub (no catalogue entry, so named by its icon's title) signs in in a new tab; the page sees it finish.
   const [signin] = await Promise.all([
     context.waitForEvent('page'),
-    card('Github').getByRole('button', { name: 'Connect', exact: true }).click(),
+    card('GitHub').getByRole('button', { name: 'Connect', exact: true }).click(),
   ]);
-  await card('Github').getByText('Finish signing in to Github in the new tab.', { exact: false }).waitFor();
+  await card('GitHub').getByText('Finish signing in to GitHub in the new tab.', { exact: false }).waitFor();
   await signin.waitForLoadState();
   if (!(await signin.content()).includes('Connected github')) throw new Error('the sign-in tab did not reach the gateway');
   await signin.close();
-  await toast('Github connected.');
-  await card('Github').locator('.conn-state', { hasText: 'Connected' }).waitFor(TURN);
+  await toast('GitHub connected.');
+  await card('GitHub').locator('.conn-state', { hasText: 'Connected' }).waitFor(TURN);
   say('OAUTH');
 
   // Linear takes a key, typed here and never shown again.
@@ -116,7 +116,7 @@ const same = (got, want, what) => {
   await panel.getByRole('checkbox', { name: 'Atlassian', exact: true }).check();
   await panel.getByRole('radio', { name: 'Can make changes', exact: true }).check();
   await panel.getByText('It may change things in Atlassian.', { exact: false }).waitFor();
-  await panel.getByRole('checkbox', { name: 'Github', exact: true }).check();
+  await panel.getByRole('checkbox', { name: 'GitHub', exact: true }).check();
   await panel.getByRole('radio', { name: 'Only the ones I choose', exact: true }).check();
   await panel.getByRole('checkbox', { name: 'docx', exact: true }).check();
   await panel.getByRole('checkbox', { name: 'Let it hand parts of the work to helpers', exact: true }).check();
@@ -124,7 +124,7 @@ const same = (got, want, what) => {
   await panel.getByLabel('At most at once', { exact: true }).fill('2');
   await panel.getByLabel('At most at once', { exact: true }).press('Tab');
   await tools.locator('#sf-chip-atlassian', { hasText: 'Atlassian · can make changes' }).waitFor();
-  await tools.locator('#sf-chip-github', { hasText: 'Github · read only' }).waitFor();
+  await tools.locator('#sf-chip-github', { hasText: 'GitHub · read only' }).waitFor();
   await tools.getByText('1 how-to', { exact: true }).waitFor();
   if (shots) await form.screenshot({ path: `${shots}/session-tools.png` });
   await tools.getByRole('button', { name: 'Done', exact: true }).click();
@@ -146,7 +146,7 @@ const same = (got, want, what) => {
   await toast('Session started.');
   const facts = page.locator('#session-facts');
   await facts.getByText('Atlassian (can make changes)', { exact: true }).waitFor(TURN);
-  await facts.getByText('Github (read only)', { exact: true }).waitFor();
+  await facts.getByText('GitHub (read only)', { exact: true }).waitFor();
   await facts.getByText('1 how-to', { exact: true }).waitFor();
   await facts.getByText('helpers: gemini-cli', { exact: true }).waitFor();
   // The next draft remembers the connections and the how-tos.
@@ -161,7 +161,7 @@ const same = (got, want, what) => {
   await noOverflow('the Tools step');
   await go('#/connections');
   await page.getByRole('heading', { level: 1, name: 'Connections', exact: true }).waitFor();
-  await card('Github').locator('.conn-state', { hasText: 'Connected' }).waitFor();
+  await card('GitHub').locator('.conn-state', { hasText: 'Connected' }).waitFor();
   await noOverflow('the Connections page');
   if (shots) await page.screenshot({ path: `${shots}/connections-phone.png` });
   say('PHONE');
