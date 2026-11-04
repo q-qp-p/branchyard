@@ -79,7 +79,11 @@ pub use branchyard_harness::profiles::Protocol;
 pub use branchyard_harness::{Instructions, McpServer, RemoteMcpServer, RemoteTransport};
 use serde::{Deserialize, Serialize};
 
-pub use claude::{ENV_SCRUB as CLAUDE_ENV_SCRUB, MANAGED_SETTINGS};
+/// Claude Code's switch that hides its credentials from the commands its
+/// tools run (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`); see
+/// [`Context::subprocess_isolation`].
+pub use claude::ENV_SCRUB as CLAUDE_ENV_SCRUB;
+pub use claude::MANAGED_SETTINGS;
 pub use edit::{Edit, JsonEdit, TomlEdit};
 pub use permissions::{Permissions, PermissionsWritten};
 

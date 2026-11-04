@@ -169,8 +169,6 @@ pub fn resolve_model_alias(raw: &str, aliases: &[(&str, &str)]) -> String {
         .map_or(normalized.clone(), |(_, model)| (*model).to_owned())
 }
 
-/// Where Claude Code reads its managed settings on Linux and WSL, and where
-/// a sandboxed turn's are written; see `docs/provisioning.md#managed-settings`.
 /// Claude Code's switch that hides its own credentials from the commands
 /// its tools run, and sandboxes Bash.
 pub const ENV_SCRUB: &str = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB";
@@ -182,6 +180,9 @@ pub const OAUTH_IN_TOOLS: &str = "the Claude Code OAuth token is in the harness'
      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, which needs bwrap and socat on this host; install both, \
      or give an API key, which reaches Claude Code through a file";
 
+/// Where Claude Code reads its managed settings on Linux and WSL: the
+/// administrator's file, which Branchyard reads nothing from and never
+/// writes; see `docs/provisioning.md#managed-settings`.
 pub const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
 
 /// The variables [`plan`] sets to turn Claude Code's telemetry export off.
