@@ -186,6 +186,12 @@ pub(crate) struct Record {
     /// A delegated child's own come from its parent, in its grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
+    /// The person let the harness's own permissions decide what its profile
+    /// cannot keep from the policy ([`crate::TaskOptions::unapproved_tools`])
+    /// when this branch, or the branch it came from, was started. Its sends,
+    /// forks and delegated children keep it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unapproved_tools: bool,
     /// What the branch's parent asked of the answer it reports with
     /// `report`, given at spawn: a schema and whether a result is required.
     /// Kept for the branch's life; see `crate::contract`.

@@ -43,14 +43,15 @@ from branchyard_client import BranchFailedError, BranchyardError, Client
 
 
 def serve_args(harness: str, command: str | None) -> list[str]:
-    """`by serve` flags: run `harness` as `command` when one is given. The server runs in the repository, so a
-    relative path to the program is made absolute here, where the user typed it."""
+    """`by serve` flags: run `harness` as `command` when one is given, and let a task opt out of composing the
+    policy with a stand-in that has no permissions of its own. The server runs in the repository, so a relative
+    path to the program is made absolute here, where the user typed it."""
     if not command:
         return []
     program, *rest = command.split()
     if os.path.exists(program):
         program = os.path.abspath(program)
-    return ["--harness-command", f"{harness}={' '.join([program, *rest])}"]
+    return ["--harness-command", f"{harness}={' '.join([program, *rest])}", "--allow-unapproved-tools"]
 
 
 def changed_files(diff: str) -> list[str]:
@@ -67,7 +68,10 @@ def run(args: argparse.Namespace) -> int:
 
     with Client.local(args.repo, args=serve_args(harness or "gemini-cli", args.command)) as client:
         app = client.repo("app")
-        op = app.task(args.prompt, name=name, harness=harness, budget_usd=args.budget_usd, policy=policy)
+        # A stand-in command has no permission system of its own for the policy to compose with
+        # (docs/harness-integration.md#composing-with-a-harnesss-own-permissions); a real harness keeps the default.
+        stand_in = {"unapproved_tools": True} if args.command else {}
+        op = app.task(args.prompt, name=name, harness=harness, budget_usd=args.budget_usd, policy=policy, **stand_in)
         # Raises BranchFailedError when the request ran but the harness's turn did not do the work.
         op = client.wait(op, timeout=args.timeout, check=True)
 

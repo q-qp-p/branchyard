@@ -1171,9 +1171,11 @@ fn profiles_that_route_no_tool_approvals_need_an_explicit_opt_in() {
             "{profile}: {admitted:?}"
         );
     }
+    // Isolated, Gemini CLI keeps the policy, so Pi's refusal is the one.
     let fan = f
         .task("go")
         .unapproved_tools(false)
+        .isolated(true)
         .run_on(&["gemini-cli", "pi"]);
     assert!(
         matches!(&fan, Err(Error::UnroutedApprovals { profile }) if profile == "pi-rpc"),
@@ -1258,6 +1260,23 @@ fn a_restricting_policy_runs_only_where_the_profile_keeps_it() {
         events.iter().any(|e| matches!(&e.activity,
             Activity::Warning(w) if w.contains("gemini-cli-acp decides some tool calls itself"))),
         "{events:?}"
+    );
+
+    // The branch remembers the opt-out: a send that does not repeat it runs.
+    let again = opted
+        .send(
+            "again",
+            TaskOptions {
+                unapproved_tools: false,
+                ..f.options()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        again.info().status,
+        BranchStatus::Ready,
+        "{:?}",
+        again.events()
     );
 
     // A profile verified nowhere is refused in a private home too.

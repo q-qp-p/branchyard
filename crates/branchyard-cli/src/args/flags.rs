@@ -248,8 +248,10 @@ pub struct Perms {
         conflicts_with_all = ["yes", "ask"]
     )]
     permissions: Option<branchyard::PolicyPreset>,
-    /// Run a profile that does not route tool permission requests to Branchyard (Antigravity,
-    /// Pi, Amp); its tools run under the harness's own configuration
+    /// Let the harness's own permissions decide what its profile cannot keep from your policy: a
+    /// profile that routes no tool permission requests to Branchyard (Antigravity's stream, Pi,
+    /// Amp), or one that keeps the policy only in a home Branchyard prepares, run in yours; see
+    /// docs/harness-integration.md#composing-with-a-harnesss-own-permissions
     #[arg(long)]
     allow_unapproved_tools: bool,
 }

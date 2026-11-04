@@ -9,7 +9,7 @@ starts only on a profile that keeps both rules where it runs, and is refused
 with `unsupported` (detail `unbound_policy`, 422 from the server) otherwise.
 `by` names `--isolated` when a home Branchyard prepares would keep the policy,
 `--allow-unapproved-tools` to let the harness's permissions decide, and another
-profile. Claude Code's stream-json profile keeps both rules anywhere: a
+profile. A branch remembers the opt-out for its sends, forks and children. Claude Code's stream-json profile keeps both rules anywhere: a
 `PreToolUse` hook sends every call to Branchyard, so an allow rule in the user's
 or the repository's settings no longer approves on its own, and the session must
 report `--permission-mode default`. Codex's app-server profile, Gemini CLI and

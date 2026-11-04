@@ -255,6 +255,8 @@ class Examples(unittest.TestCase):
                 "WRITE lead.txt=1",
                 name="lead",
                 harness="gemini-cli",
+                # A home of its own, which its children share: there Gemini CLI keeps the policy.
+                isolated=True,
                 budget_usd=1.0,
                 allow_delegation=True,
                 delegation={"max_depth": 1, "max_children": 2, "harnesses": []},

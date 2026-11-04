@@ -505,8 +505,13 @@ fn a_judge_harness_verdict_is_used_and_an_invalid_one_falls_back() {
             }),
             ..Goal::new("a.txt holds the value")
         };
+        // The goal's judge denies every tool and never takes the opt-out, so
+        // Gemini CLI runs it in a home of its own, where it keeps that.
         f.task("WRITE a.txt=value")
-            .options(with_goal(&f, goal))
+            .options(TaskOptions {
+                isolated: true,
+                ..with_goal(&f, goal)
+            })
             .name(name)
             .run()
             .unwrap()

@@ -3384,9 +3384,14 @@ impl Local {
         let launch = harness::command(profile, command.as_deref());
         self.yard
             .admit_provider(caller.provider.as_ref(), &self.options)?;
+        // A child keeps its parent's opt-out, never one of its own.
+        let composing = TaskOptions {
+            unapproved_tools: self.options.unapproved_tools || caller.unapproved_tools,
+            ..self.options.clone()
+        };
         harness::check_composition(
             profile,
-            &self.options,
+            &composing,
             isolated || crate::placement::sandboxed(caller.provider.as_ref()),
             &self.yard.approval_settings(),
         )?;
@@ -3530,6 +3535,7 @@ impl Local {
                 depth: caller.info.depth + 1,
                 // Its denials are in its grant.
                 deny: Vec::new(),
+                unapproved_tools: caller.unapproved_tools,
                 // Its parent's, fixed when the parent was created: never
                 // read from a base its parent's turns may have changed.
                 skills: caller.skills.clone(),

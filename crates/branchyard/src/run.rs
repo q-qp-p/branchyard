@@ -105,6 +105,9 @@ pub(crate) struct NewBranch<'a> {
     pub task: Option<crate::tasks::Joining>,
     /// Tools it is denied outright, stored with it; see [`Record::deny`].
     pub deny: Vec<String>,
+    /// The run lets the harness's own permissions decide what its profile
+    /// cannot keep from the policy; kept on the record for later turns.
+    pub unapproved_tools: bool,
     /// The repository skills it runs with: fixed from its base for a branch
     /// created from a revision, its parent's otherwise; see
     /// `crate::skills`.
@@ -200,6 +203,7 @@ pub(crate) fn new_record(store: &crate::state::Store, new: NewBranch<'_>) -> Res
         plan: None,
         goal: None,
         deny: new.deny,
+        unapproved_tools: new.unapproved_tools,
         removed: Vec::new(),
         metered_from: None,
 
@@ -483,6 +487,7 @@ pub(crate) fn run(yard: &Yard, prompt: &str, options: &TaskOptions) -> Result<Br
             grant,
             depth: 0,
             deny: options.deny.clone(),
+            unapproved_tools: options.unapproved_tools,
             skills,
             provision: options.provision.clone(),
             workspace: options.workspace.clone(),
@@ -572,6 +577,7 @@ pub(crate) fn run_on(
                 grant: grant.clone(),
                 depth: 0,
                 deny: options.deny.clone(),
+                unapproved_tools: options.unapproved_tools,
                 skills: skills.clone(),
                 provision: options.provision.clone(),
                 workspace: options.workspace.clone(),
@@ -732,6 +738,7 @@ pub(crate) fn run_attempts(
                 grant: grant.clone(),
                 depth: 0,
                 deny: options.deny.clone(),
+                unapproved_tools: options.unapproved_tools,
                 skills: skills.clone(),
                 provision: o.provision.clone(),
                 workspace: options.workspace.clone(),
@@ -1221,10 +1228,23 @@ fn prepare(
         record.provider = options.provider.clone();
     }
     yard.admit_provider(record.provider.as_ref(), options)?;
+    // A branch started with the opt-out keeps it for its later turns.
+    let inherited;
+    let options = match record.unapproved_tools && !options.unapproved_tools {
+        true => {
+            inherited = TaskOptions {
+                unapproved_tools: true,
+                ..options.clone()
+            };
+            &inherited
+        }
+        false => options,
+    };
+    // The branch's own home, as provisioning decides it, not this request's.
     harness::check_composition(
         profile,
         options,
-        options.isolated || placement::sandboxed(record.provider.as_ref()),
+        record.home.is_some(),
         &yard.approval_settings(),
     )?;
     let command = harness::command(profile, record.command.as_deref());
@@ -1519,13 +1539,24 @@ pub(crate) fn fork(
         (None, true) => parent.command.clone(),
         (None, false) => None,
     };
+    // A branch started with the opt-out passes it on.
+    let inherited;
+    let options = match parent.unapproved_tools && !options.unapproved_tools {
+        true => {
+            inherited = TaskOptions {
+                unapproved_tools: true,
+                ..options.clone()
+            };
+            &inherited
+        }
+        false => options,
+    };
     let provider = options.provider.clone().or(parent.provider.clone());
-    harness::check_composition(
-        profile,
-        options,
-        options.isolated || placement::sandboxed(provider.as_ref()),
-        &yard.approval_settings(),
-    )?;
+    // A forked session shares its parent's home.
+    let private_home = options.isolated
+        || placement::sandboxed(provider.as_ref())
+        || (forking && parent.home.is_some());
+    harness::check_composition(profile, options, private_home, &yard.approval_settings())?;
     let launch_command = harness::command(profile, command.as_deref());
     yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
@@ -1579,6 +1610,7 @@ pub(crate) fn fork(
             grant,
             depth: 0,
             deny: with_denials(&parent.deny, &options.deny),
+            unapproved_tools: options.unapproved_tools || parent.unapproved_tools,
             skills: parent.skills.clone(),
             provision,
             workspace: options
@@ -1687,6 +1719,18 @@ pub(crate) fn reincarnate_with(
         (None, true) => parent.command.clone(),
         (None, false) => None,
     };
+    // A branch started with the opt-out passes it on.
+    let inherited;
+    let options = match parent.unapproved_tools && !options.unapproved_tools {
+        true => {
+            inherited = TaskOptions {
+                unapproved_tools: true,
+                ..options.clone()
+            };
+            &inherited
+        }
+        false => options,
+    };
     let provider = options.provider.clone().or(parent.provider.clone());
     harness::check_composition(
         profile,
@@ -1751,6 +1795,7 @@ pub(crate) fn reincarnate_with(
             grant,
             depth: 0,
             deny: with_denials(&parent.deny, &options.deny),
+            unapproved_tools: options.unapproved_tools || parent.unapproved_tools,
             skills: parent.skills.clone(),
             provision,
             workspace: options

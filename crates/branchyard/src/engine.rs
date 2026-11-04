@@ -844,10 +844,16 @@ fn run(
     }
     // A task that let the harness's own permissions decide what this
     // profile cannot bind says so on the branch, every turn.
+    // The branch's own opt-out and home, as admission and provisioning
+    // read them.
+    let composing = TaskOptions {
+        unapproved_tools: turn.options.unapproved_tools || record.unapproved_tools,
+        ..turn.options.clone()
+    };
     if let Some(note) = crate::harness::unbound_note(
         turn.profile,
-        turn.options,
-        turn.options.isolated || placement.is_sandbox(),
+        &composing,
+        record.home.is_some(),
         &turn.yard.approval_settings(),
     ) {
         recorder.record(Activity::Warning(note))?;

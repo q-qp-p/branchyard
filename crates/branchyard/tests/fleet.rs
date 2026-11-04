@@ -571,7 +571,13 @@ fn a_judge_harness_answers_a_verdict_on_a_read_only_scratch_branch() {
         command: Some(vec![fake_agent().display().to_string()]),
         rubric: Some(format!("REPLY_FILE {}", verdict.display())),
     };
-    let judge = branchyard::harness_judge(&spec, &f.options());
+    // A judge denies every tool and never takes the opt-out, so Gemini CLI
+    // runs it in a home of its own, where it keeps that.
+    let isolated = TaskOptions {
+        isolated: true,
+        ..f.options()
+    };
+    let judge = branchyard::harness_judge(&spec, &isolated);
     let judgement = f
         .yard
         .judge(

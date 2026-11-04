@@ -296,7 +296,7 @@ A private home is one Branchyard prepares: `--isolated`, or any sandbox. In the 
 
 The refusal is the error `unsupported` with the detail `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}`. The server answers it with 422. `by` names the ways on: `--isolated` when a private home would keep the policy, `--allow-unapproved-tools`, or another profile.
 
-**Opting out.** `--allow-unapproved-tools` (`TaskOptions::unapproved_tools`) lets the harness's own permissions decide what the profile cannot bind. Branchyard still answers every request the harness sends. The branch's log then carries a warning on every turn naming the profile and what was given up. A server operator can forbid the flag, as before (`unapproved_tools_not_allowed`).
+**Opting out.** `--allow-unapproved-tools` (`TaskOptions::unapproved_tools`) lets the harness's own permissions decide what the profile cannot bind. Branchyard still answers every request the harness sends. The branch's log then carries a warning on every turn naming the profile and what was given up. A server operator can forbid the flag, as before (`unapproved_tools_not_allowed`). The branch remembers it: its sends, forks, reincarnations and delegated children keep it, since the person chose it for that work. A harness judge, a distiller and a goal's judge deny every tool and never take it; on a profile that needs a private home they need an isolated branch, or they fall back as any judge that cannot run does.
 
 **What is still the harness's.**
 

@@ -519,6 +519,8 @@ fn workspace_child() {
     yard.task("WRITE done.txt=1")
         .options(TaskOptions {
             harness: Some("gemini-cli".into()),
+            // The fake agent has no permissions of its own to decide.
+            unapproved_tools: true,
             command: Some(vec![agent]),
             workspace: Some(WorkspaceSpec {
                 setup: vec![setup],
