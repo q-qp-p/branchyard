@@ -83,7 +83,7 @@ fn a_provider_login_runs_isolated_inside_the_file_guard() {
         &bin,
         "qwen",
         &format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.26.0; exit 0; fi\nexec {agent}\n"
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.26.0; exit 0; fi\nexec {agent} \"$@\"\n"
         ),
     );
     repo.set_env("HOME", home.to_str().unwrap());
@@ -202,8 +202,18 @@ fn each_refusal_before_a_run_has_its_status_and_leaves_no_yard() {
     assert_eq!(error["kind"], "unknown_harness", "{error}");
     assert_eq!(error["exit"], 2, "{error}");
 
-    // A profile whose tools would bypass the policy: refused.
-    let pi = repo.by_agent(&["run", "WRITE a.txt=1", "--harness", "pi", "--json"]);
+    // A profile whose tools would bypass the policy: refused. (Not
+    // `by_agent`: its `--allow-unapproved-tools` would allow it.)
+    let agent = branchyard_testkit::fake_agent!().display().to_string();
+    let pi = repo.by(&[
+        "run",
+        "WRITE a.txt=1",
+        "--harness",
+        "pi",
+        "--command",
+        &agent,
+        "--json",
+    ]);
     let error = envelope(&pi);
     assert_eq!(pi.status.code(), Some(4), "{error}");
     assert_eq!(error["kind"], "unsupported", "{error}");
@@ -214,7 +224,16 @@ fn each_refusal_before_a_run_has_its_status_and_leaves_no_yard() {
     assert_eq!(error["exit"], 4, "{error}");
 
     // A harness this machine does not have: the environment.
-    let missing = repo.by(&["run", "WRITE a.txt=1", "--harness", "codex", "--json"]);
+    // (In this home codex-app-server cannot keep the default policy, and
+    // that refusal comes before the PATH lookup.)
+    let missing = repo.by(&[
+        "run",
+        "WRITE a.txt=1",
+        "--harness",
+        "codex",
+        "--allow-unapproved-tools",
+        "--json",
+    ]);
     let error = envelope(&missing);
     assert_eq!(missing.status.code(), Some(3), "{error}");
     assert_eq!(error["kind"], "harness_unavailable", "{error}");

@@ -562,6 +562,20 @@ pub fn stats_table(stats: &[CandidateStats], style: Style) -> String {
 /// engine running it (its task's fleet entry or the harnesses it may run,
 /// and its budget); outside, with the configuration's fleet or the
 /// inventory default and what this machine has of each harness.
+/// The options a plain `by run --auto` here would start with: the
+/// configured `[defaults]` (permissions, isolation, provider), so a
+/// candidate is judged available as that run would judge it, its policy
+/// against the harness's own permissions included.
+fn preview_options() -> Result<TaskOptions, Failure> {
+    let cwd = std::env::current_dir()?;
+    let config = crate::defaults::config_at(&cwd, &|name| std::env::var(name).ok())
+        .map_err(|why| crate::errors::config(&why))?;
+    match config {
+        Some(config) => branchyard::configure::task_options(&config).map_err(Failure::from),
+        None => Ok(TaskOptions::default()),
+    }
+}
+
 pub fn advise(
     env: &Env,
     target: &Target,
@@ -581,19 +595,15 @@ pub fn advise(
         };
     }
     // No [fleet]: the inventory default, as --auto would route.
+    let options = preview_options()?;
     let (fleet, excluded) = match fleet {
         Some(fleet) => (fleet.clone(), Vec::new()),
         None => {
-            let cwd = std::env::current_dir()?;
-            let isolated = crate::defaults::config_at(&cwd, &|name| std::env::var(name).ok())
-                .map_err(|why| crate::errors::config(&why))?
-                .is_some_and(|c| c.defaults.isolated == Some(true));
-            let built = inventory_default(isolated)?;
+            let built = inventory_default(options.isolated)?;
             (built.fleet(), built.excluded)
         }
     };
     let yard = open()?;
-    let options = TaskOptions::default();
     // What this machine has of each harness, installing nothing.
     let gate = crate::harness_cmd::route_gate(&fleet, &options, true);
     let scope = AdviceScope {
@@ -710,19 +720,15 @@ pub fn route(
         return Err(local_only());
     }
     // No [fleet]: the inventory default, as --auto would route.
+    let options = preview_options()?;
     let (fleet, excluded) = match fleet {
         Some(fleet) => (fleet.clone(), Vec::new()),
         None => {
-            let cwd = std::env::current_dir()?;
-            let isolated = crate::defaults::config_at(&cwd, &|name| std::env::var(name).ok())
-                .map_err(|why| crate::errors::config(&why))?
-                .is_some_and(|c| c.defaults.isolated == Some(true));
-            let built = inventory_default(isolated)?;
+            let built = inventory_default(options.isolated)?;
             (built.fleet(), built.excluded)
         }
     };
     let yard = open()?;
-    let options = TaskOptions::default();
     let how = RouteOptions {
         seed: Some(how.seed.unwrap_or_else(branchyard::fleet_seed)),
         // What this machine has of each harness, installing nothing.

@@ -159,7 +159,16 @@ fn a_refused_run_leaves_no_yard_and_keeps_the_local_note_for_a_real_one() {
         stderr(&typo)
     );
     assert!(!yard.exists(), "an unknown harness created .branchyard/");
-    let unapproved = repo.by_agent(&["run", "WRITE a.txt=1", "--harness", "pi"]);
+    // Not `by_agent`: its `--allow-unapproved-tools` would allow pi.
+    let agent = branchyard_testkit::fake_agent!().display().to_string();
+    let unapproved = repo.by(&[
+        "run",
+        "WRITE a.txt=1",
+        "--harness",
+        "pi",
+        "--command",
+        &agent,
+    ]);
     assert!(!unapproved.status.success());
     assert!(
         stderr(&unapproved).contains("does not route tool permission requests"),

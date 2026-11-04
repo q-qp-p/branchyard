@@ -55,17 +55,20 @@ pub(crate) fn launch(
 ) -> Result<Launch, Error> {
     yard.admit_provider(provider, options)?;
     let profile = harness::select(id)?;
+    // Unrouted approvals first, as before; the composition check after
+    // installation, so a harness that is not there says so first.
+    harness::check_approvals(profile, options.unapproved_tools)?;
+    let command = harness::command(profile, command);
+    placement::check(yard, provider)?;
+    if !placement::sandboxed(provider) {
+        harness::check_available(id.unwrap_or(profile.harness), &command)?;
+    }
     harness::check_composition(
         profile,
         options,
         options.isolated || placement::sandboxed(provider),
         &yard.approval_settings(),
     )?;
-    let command = harness::command(profile, command);
-    placement::check(yard, provider)?;
-    if !placement::sandboxed(provider) {
-        harness::check_available(id.unwrap_or(profile.harness), &command)?;
-    }
     Ok(Launch { profile, command })
 }
 

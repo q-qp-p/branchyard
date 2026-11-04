@@ -40,6 +40,9 @@ impl Repo {
                 &agent,
                 "--harness",
                 "gemini-cli",
+                // The fake agent has no permission system of its own for
+                // the policy to compose with.
+                "--allow-unapproved-tools",
             ])
             .stdout(stdout)
             .stderr(Stdio::piped())
@@ -165,6 +168,7 @@ fn a_run_into_a_closed_pipe_keeps_its_completed_turn() {
             &agent,
             "--harness",
             "gemini-cli",
+            "--allow-unapproved-tools",
         ])
         .stdout(writer.try_clone().unwrap())
         .stderr(writer)

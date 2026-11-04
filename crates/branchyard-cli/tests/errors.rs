@@ -138,7 +138,9 @@ fn a_running_branch_says_to_wait_for_it_or_cancel_it() {
     let running = repo
         .command(env!("CARGO_BIN_EXE_by"))
         .args(["run", "HANG", "--name", "stuck", "--harness", "gemini-cli"])
-        .args(["--command", &agent])
+        // The fake agent has no permission system of its own for the
+        // policy to compose with.
+        .args(["--command", &agent, "--allow-unapproved-tools"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -288,7 +290,15 @@ fn a_missing_harness_says_how_to_install_or_pick_one() {
     }
     let run = |extra: &[&str]| {
         repo.command(env!("CARGO_BIN_EXE_by"))
-            .args(["run", "x", "--harness", "gemini-cli"])
+            // In the user's own home gemini-cli cannot keep the default
+            // policy, and that refusal comes before the PATH lookup.
+            .args([
+                "run",
+                "x",
+                "--harness",
+                "gemini-cli",
+                "--allow-unapproved-tools",
+            ])
             .args(extra)
             .env("PATH", &bin)
             .output()
@@ -525,6 +535,7 @@ fn run_fan_merge_and_rm_print_json() {
         "gemini-cli,qwen-code",
         "--command",
         &agent,
+        "--allow-unapproved-tools",
         "--json",
     ]);
     assert!(fan.status.success(), "{}\n{}", stdout(&fan), stderr(&fan));

@@ -230,7 +230,7 @@ impl World {
         let agent = fake_agent!().display().to_string();
         self.script(
             "gemini",
-            &format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.65.0; exit 0; fi\nexec {agent}\n"),
+            &format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.65.0; exit 0; fi\nexec {agent} \"$@\"\n"),
         );
     }
 
@@ -274,7 +274,7 @@ case $name in
     printf '%s' {codex} | sed "s/@VERSION@/${{version:-0.150.0}}/" > "$HOME/.local/bin/codex"
     chmod +x "$HOME/.local/bin/codex";;
   @qwen-code/qwen-code)
-    printf '#!/bin/sh\nif [ "$1" = --version ]; then echo 0.5.0; exit 0; fi\nexec %s\n' '{agent}' > "$HOME/.local/bin/qwen"
+    printf '#!/bin/sh\nif [ "$1" = --version ]; then echo 0.5.0; exit 0; fi\nexec %s "$@"\n' '{agent}' > "$HOME/.local/bin/qwen"
     chmod +x "$HOME/.local/bin/qwen";;
   *) echo "no such package $name" >&2; exit 1;;
 esac
@@ -1361,7 +1361,7 @@ fn an_isolated_run_gets_the_provider_login_in_its_environment() {
     w.script(
         "qwen",
         &format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.26.0; exit 0; fi\nexec {agent}\n"
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 0.26.0; exit 0; fi\nexec {agent} \"$@\"\n"
         ),
     );
     let key = "zai-test-0123456789abcdef";
@@ -1397,6 +1397,9 @@ fn an_isolated_run_gets_the_provider_login_in_its_environment() {
         "qwen-code",
         "-n",
         "mine",
+        // In its own home qwen-code cannot keep the default policy; the
+        // fake agent has no permission system of its own to compose with.
+        "--allow-unapproved-tools",
     ]);
     let log = text(&w.ok(&["log", "mine"]).stdout);
     assert!(
@@ -1753,9 +1756,13 @@ fn the_router_skips_what_cannot_run_and_installs_on_demand_under_auto() {
     // Codex installed but logged out (verified by its status command).
     w.fake_codex(&w.bin, "0.157.1");
     let agent = fake_agent!().display().to_string();
+    // `by fleet route` judges candidates under `[defaults]`: allowing every
+    // call, as the `--auto --yes` runs below do, so only what this machine
+    // has of each harness decides.
     let fleet = format!(
-        "[fleet.default]\ncandidates = [\n  {{ harness = \"codex\" }},\n  {{ harness = \
-         \"qwen-code\" }},\n  {{ harness = \"gemini-cli\", command = \"{agent}\" }},\n]\n"
+        "[defaults]\npermissions = \"yes\"\n\n[fleet.default]\ncandidates = [\n  {{ harness = \
+         \"codex\" }},\n  {{ harness = \"qwen-code\" }},\n  {{ harness = \"gemini-cli\", command \
+         = \"{agent}\" }},\n]\n"
     );
     fs::write(w.repo.join("branchyard.toml"), &fleet).unwrap();
     let route = w.json(&["fleet", "route", "fix the bug", "--seed", "1", "--json"]);

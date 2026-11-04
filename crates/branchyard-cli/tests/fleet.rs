@@ -100,6 +100,12 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// `[defaults] permissions = "yes"`: what `by fleet route` and `by fleet
+/// advise` judge candidates under, as the `--yes` runs they stand in for
+/// do. Under the default policy, Gemini CLI and Qwen Code keep it only in a
+/// private home, so a preview here would list them as unavailable.
+const ALLOW: &str = "[defaults]\npermissions = \"yes\"\n";
+
 const TWO: &str = r#"
 [fleet.default]
 candidates = [
@@ -174,6 +180,9 @@ fn auto_fails_over_when_a_harness_exits() {
     let repo = Repo::new();
     repo.config(
         r#"
+[defaults]
+permissions = "yes"
+
 [fleet.default]
 candidates = [
   { harness = "gemini-cli", command = "/bin/false" },
@@ -219,8 +228,13 @@ fn a_routed_fan_is_judged_by_a_harness_and_the_pick_merges() {
             "reasons": {"trio-qwen-code": "clean", "trio-gemini-cli": "fine"}}"#,
     )
     .unwrap();
+    // Isolated by default, for the fan and for `by judge`: the judge denies
+    // every tool and never takes the opt-out, and gemini-cli keeps that
+    // only in a private home.
     repo.config(&format!(
-        r#"{TWO}attempts = 2
+        r#"[defaults]
+isolated = true
+{TWO}attempts = 2
 judge = {{ harness = "gemini-cli", command = "AGENT", rubric = "REPLY_FILE {}" }}
 "#,
         verdict.display()
@@ -350,10 +364,11 @@ fn without_a_fleet_auto_routes_among_the_harnesses_logged_in_here() {
     );
     repo.fake(
         "gemini",
-        &format!("[ \"$1\" = --version ] && {{ echo 0.63.0; exit 0; }}\nexec '{agent}'"),
+        &format!("[ \"$1\" = --version ] && {{ echo 0.63.0; exit 0; }}\nexec '{agent}' \"$@\""),
     );
     repo.fake("goose", "echo 'goose 1.0.0'");
     repo.0.set_env("GEMINI_API_KEY", "not-a-key");
+    repo.config(ALLOW);
 
     let route = repo.json(&["fleet", "route", "Fix the bug", "--seed", "1", "--json"]);
     assert_eq!(route["entry"], "inventory", "{route}");
@@ -430,13 +445,13 @@ fn without_a_fleet_auto_routes_among_the_harnesses_logged_in_here() {
     );
 
     // [defaults] harness goes first; a [fleet] is the configuration's.
-    repo.config("[defaults]\nharness = \"gemini-cli\"\n");
+    repo.config(&format!("{ALLOW}harness = \"gemini-cli\"\n"));
     let text = stdout(&repo.ok(&["fleet", "route", "Fix the bug", "--seed", "1"]));
     assert!(
         text.contains("candidates gemini-cli, codex; seed 1"),
         "{text}"
     );
-    repo.config(TWO);
+    repo.config(&format!("{ALLOW}{TWO}"));
     let route = repo.json(&["fleet", "route", "Fix the bug", "--seed", "1", "--json"]);
     assert_eq!(route["entry"], "default", "{route}");
     assert!(route["excluded"].as_array().unwrap().is_empty(), "{route}");
@@ -472,7 +487,7 @@ fn reply(repo: &Repo, branch: &str) -> String {
 #[test]
 fn fleet_advise_informs_a_choice_that_is_recorded_and_learned() {
     let repo = Repo::new();
-    repo.config(TWO);
+    repo.config(&format!("{ALLOW}{TWO}"));
     let advice = repo.json(&[
         "fleet",
         "advise",

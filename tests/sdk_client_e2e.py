@@ -279,7 +279,12 @@ def rest(client: bc.Client, app: bc.Repo, repo_name: str, branch: str) -> None:
 
     # A map over two items, waited for, shown, listed, resumed and forgotten.
     items = [{"id": "a", "word": "alpha"}, {"id": "b", "word": "beta"}]
-    mapped = client.wait(app.map("SH echo {{item.word}}", items, name="words", harness="gemini-cli"), timeout=180)
+    # Isolated: in the server's own home gemini-cli cannot keep the default
+    # policy, and the fake agent has no permission system to compose with.
+    mapped = client.wait(
+        app.map("SH echo {{item.word}}", items, name="words", harness="gemini-cli", isolated=True),
+        timeout=180,
+    )
     check(mapped.kind == "map" and mapped.state == "succeeded", "map:", mapped.raw)
     report = app.map_report("words")
     check(report.total == 2 and report.done == 2, "map report:", report)

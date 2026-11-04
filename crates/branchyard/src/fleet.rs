@@ -1233,13 +1233,6 @@ pub(crate) fn availability(
     harnesses: Option<&dyn crate::inventory::HarnessGate>,
 ) -> Result<(), String> {
     let profile = harness::select(Some(&candidate.harness)).map_err(|e| e.to_string())?;
-    harness::check_composition(
-        profile,
-        options,
-        crate::configure::private_home(options),
-        &yard.approval_settings(),
-    )
-    .map_err(|e| e.to_string())?;
     placement::check(yard, options.provider.as_ref()).map_err(|e| e.to_string())?;
     if !placement::sandboxed(options.provider.as_ref()) {
         let replaced = candidate.command.as_deref().or(options.command.as_deref());
@@ -1251,7 +1244,14 @@ pub(crate) fn availability(
         let command = harness::command(profile, replaced);
         harness::check_available(&candidate.harness, &command).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    // After installation: a harness that is not there says so first.
+    harness::check_composition(
+        profile,
+        options,
+        crate::configure::private_home(options),
+        &yard.approval_settings(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// How to route a task.

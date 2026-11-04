@@ -123,7 +123,9 @@ fn a_turn_parked_on_an_approval_is_named_with_its_ask() {
     .unwrap();
     repo.git(&["add", "."]);
     repo.git(&["commit", "-q", "-m", "ask before writes"]);
-    let parked = spawn_run(&repo, "PERMISSION WRITE p.txt=1", "parked", &[]);
+    // A private home, where gemini-cli keeps the approval rule (asks reach
+    // Branchyard); in the test's own home the run is refused.
+    let parked = spawn_run(&repo, "PERMISSION WRITE p.txt=1", "parked", &["--isolated"]);
     let id = wait::until("an ask", || {
         let asks = repo.json(&["approvals", "--json"]);
         asks[0]["id"].as_str().map(str::to_owned)

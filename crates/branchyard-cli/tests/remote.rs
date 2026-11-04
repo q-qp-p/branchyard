@@ -81,7 +81,19 @@ struct Served {
 }
 
 impl Served {
+    /// A server that accepts the opt-out [`with_agent`] sends: the fake
+    /// agent has no permission system of its own for the policy to
+    /// compose with.
     fn start(dir: &Path, repos: &[(&str, &Path)], extra: &[&str]) -> Served {
+        let mut all = extra.to_vec();
+        if !all.contains(&"--allow-unapproved-tools") {
+            all.push("--allow-unapproved-tools");
+        }
+        Served::launch(dir, repos, &all)
+    }
+
+    /// A server with exactly the flags `extra`.
+    fn launch(dir: &Path, repos: &[(&str, &Path)], extra: &[&str]) -> Served {
         let data = dir.join(format!("data-{}", COUNTER.fetch_add(1, Ordering::Relaxed)));
         let mut serve = command(BY, dir);
         serve.args([
@@ -162,11 +174,16 @@ impl Drop for Served {
 }
 
 /// `args` with the fake agent as the harness command, and `gemini-cli` as
-/// the harness where the command takes one and names none.
+/// the harness where the command takes one and names none. The fake has no
+/// permission system of its own for the policy to compose with, so its
+/// permissions decide (`--allow-unapproved-tools`).
 fn with_agent(args: &[&str]) -> Vec<String> {
     let mut all: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     if matches!(args[0], "run" | "fan" | "send" | "fork") {
         all.extend(["--command".into(), fake_agent!().display().to_string()]);
+        if !args.contains(&"--allow-unapproved-tools") {
+            all.push("--allow-unapproved-tools".into());
+        }
         if args[0] == "run" && !args.contains(&"--harness") {
             all.extend(["--harness".into(), "gemini-cli".into()]);
         }
@@ -389,6 +406,9 @@ fn remote_contracted_fan_accepts_one_complete_answer_and_uses_remote_hints() {
             "--result-schema",
             ANSWER_SCHEMA,
             "--result-deliverable",
+            // The server's fake agent has no permission system of its own
+            // for the policy to compose with.
+            "--allow-unapproved-tools",
             "--json",
         ],
     );
@@ -430,6 +450,7 @@ fn remote_contracted_fan_accepts_one_complete_answer_and_uses_remote_hints() {
             "--result-schema",
             ANSWER_SCHEMA,
             "--result-deliverable",
+            "--allow-unapproved-tools",
         ],
     );
     assert!(
@@ -1542,7 +1563,7 @@ fn unapproved_tools_need_the_operators_consent() {
         "--yes",
     ]);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let plain = Served::start(&dir.0, &[("app", &there)], &["--allow-client-commands"]);
+    let plain = Served::launch(&dir.0, &[("app", &there)], &["--allow-client-commands"]);
     let refused = plain.by(&dir.0, &args);
     assert_eq!(refused.status.code(), Some(4));
     assert!(
@@ -2654,6 +2675,8 @@ fn serve_unix(dir: &Path, socket: &Path, data: &Path, root: &Path, extra: &[&str
             "--quiet",
             "--no-inventory",
             "--allow-client-commands",
+            // Accepts the opt-out `with_agent` sends.
+            "--allow-unapproved-tools",
         ])
         .arg("--listen-unix")
         .arg(socket)
