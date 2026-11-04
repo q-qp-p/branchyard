@@ -541,4 +541,17 @@ mod tests {
             assert_eq!(set.map(|var| var.value.as_str()), Some(*value), "{name}");
         }
     }
+
+    /// A pinned Vertex AI version passes through the alias table as given;
+    /// only the size aliases are mapped.
+    #[test]
+    fn a_pinned_model_version_is_passed_as_given() {
+        for pinned in ["claude-sonnet-4-5@20250929", "claude-haiku-4-5@20251001"] {
+            assert_eq!(resolve_model_alias(pinned, MODEL_ALIASES), pinned);
+        }
+        assert_eq!(
+            resolve_model_alias("large", MODEL_ALIASES),
+            "claude-opus-5-5"
+        );
+    }
 }

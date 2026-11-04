@@ -34,18 +34,45 @@ pub(crate) const CLAUDE_CONFIGURATION: &[&str] = &[
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ];
 
-/// Claude Code's Vertex AI selectors, which an isolated harness keeps from
-/// this process's environment though it loses every other `CLAUDE*` and
-/// `ANTHROPIC*` variable: like the `GOOGLE_*` variables Gemini CLI and
-/// OpenCode select Vertex AI with, which isolation keeps too, they name a
-/// switch, a project and a region, and the credential is Application
-/// Default Credentials. A Claude Code credential given as a secret turns the
-/// switch off (`branchyard_provision`'s Claude provisioner).
-pub(crate) const CLAUDE_VERTEX: &[&str] = &[
+/// Claude Code's provider selectors and model pins, which an isolated
+/// harness keeps from this process's environment though it loses every
+/// other `CLAUDE*` and `ANTHROPIC*` variable. None is a credential: they
+/// name a provider (Vertex AI, Bedrock, Foundry), a project and a region,
+/// the per-tier models an enterprise pins (`claude-sonnet-4-5@20250929`),
+/// and output and traffic limits, like the `GOOGLE_*` variables Gemini CLI
+/// and OpenCode select Vertex AI with, which isolation keeps too. The
+/// credential is the provider's own (Application Default Credentials for
+/// Vertex AI); a Claude Code credential given as a secret turns the
+/// Vertex switch off (`branchyard_provision`'s Claude provisioner).
+/// `CLAUDE_CONFIG_DIR` is not kept: it would point an isolated harness at
+/// the user's own settings, hooks and login, which isolation leaves out,
+/// and neither are the OAuth token or the client certificate's key.
+pub(crate) const CLAUDE_ISOLATED: &[&str] = &[
     "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
+    "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "CLOUD_ML_REGION",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ];
+
+/// The prefix of Claude Code's per-model Vertex AI regions
+/// (`VERTEX_REGION_CLAUDE_4_5_SONNET`), which an isolated harness keeps too.
+pub(crate) const CLAUDE_VERTEX_REGION_PREFIX: &str = "VERTEX_REGION_CLAUDE_";
+
+/// Whether an isolated harness keeps the inherited variable `name`
+/// ([`CLAUDE_ISOLATED`], [`CLAUDE_VERTEX_REGION_PREFIX`]).
+pub(crate) fn kept_when_isolated(name: &str) -> bool {
+    CLAUDE_ISOLATED.contains(&name) || name.starts_with(CLAUDE_VERTEX_REGION_PREFIX)
+}
 
 /// Whether an inherited variable belongs to the running Claude Code process
 /// or its host rather than to the developer's configuration.
@@ -375,19 +402,34 @@ pub(crate) fn is_branchyard_variable(name: &str) -> bool {
 
 /// The harness's environment: this process's, minus the parent Claude Code
 /// session's variables and Branchyard's own; or, isolated, the runtime's
-/// scrubbed environment with `home`, keeping [`CLAUDE_VERTEX`].
+/// scrubbed environment with `home`, keeping what [`kept_when_isolated`]
+/// names.
 pub(crate) fn environment(isolated_home: Option<&Path>) -> Environment {
     match isolated_home {
-        Some(home) => CLAUDE_VERTEX
-            .iter()
-            .fold(Environment::new(home).strip("BRANCHYARD_"), |env, name| {
-                env.keep(*name)
-            }),
+        Some(home) => isolated(
+            home,
+            std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()),
+        ),
         None => std::env::vars_os()
             .filter_map(|(name, _)| name.into_string().ok())
             .filter(|name| is_parent_session_variable(name) || is_branchyard_variable(name))
             .fold(Environment::inherit(), |env, name| env.remove(name)),
     }
+}
+
+/// The isolated environment with `home`, keeping each of `inherited` that
+/// [`kept_when_isolated`] names.
+fn isolated(home: &Path, inherited: impl Iterator<Item = String>) -> Environment {
+    let names: std::collections::BTreeSet<String> = CLAUDE_ISOLATED
+        .iter()
+        .map(|name| (*name).to_owned())
+        .chain(inherited.filter(|name| kept_when_isolated(name)))
+        .collect();
+    names
+        .into_iter()
+        .fold(Environment::new(home).strip("BRANCHYARD_"), |env, name| {
+            env.keep(name)
+        })
 }
 
 pub(crate) fn list() -> Vec<HarnessInfo> {
@@ -637,7 +679,7 @@ mod tests {
         );
         let isolated = environment(Some(Path::new("/h")));
         assert_eq!(isolated.home(), Path::new("/h"));
-        for name in CLAUDE_VERTEX
+        for name in CLAUDE_ISOLATED
             .iter()
             .chain(&["GOOGLE_CLOUD_PROJECT", "PATH"])
         {
@@ -646,11 +688,24 @@ mod tests {
                 "{name} must reach an isolated harness"
             );
         }
+        // A per-model Vertex AI region is kept when this process has one.
+        let regional = super::isolated(
+            Path::new("/h"),
+            [
+                "VERTEX_REGION_CLAUDE_4_5_SONNET".to_owned(),
+                "PATH".to_owned(),
+            ]
+            .into_iter(),
+        );
+        assert!(regional.admits("VERTEX_REGION_CLAUDE_4_5_SONNET"));
         for name in [
             "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "CLAUDE_CODE_OAUTH_TOKEN",
-            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_CLIENT_KEY",
+            "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE",
+            "CLAUDE_CONFIG_DIR",
             "CLAUDECODE",
             "OPENAI_API_KEY",
             "BRANCHYARD_REMOTE",
