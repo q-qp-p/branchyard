@@ -239,6 +239,34 @@ fn claude_api_key_model_and_telemetry_keep_the_users_claude_json() {
     assert_eq!(settings, serde_json::json!({"theme": "dark"}));
     assert_eq!(plan.tool_env_secrets(), ["CLAUDE_CODE_OAUTH_TOKEN"]);
     assert!(installed(&temp.home()).credentials.is_empty());
+    // Without the subprocess isolation Claude Code needs, the turn says the
+    // token reaches tool commands.
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB")),
+        "{:?}",
+        plan.warnings
+    );
+    assert!(plan
+        .env
+        .iter()
+        .all(|v| v.name != branchyard_provision::CLAUDE_ENV_SCRUB));
+
+    // With it, Claude Code scrubs its tools' environment: the token no
+    // longer reaches them, and nothing is warned.
+    context.subprocess_isolation = true;
+    let plan = provision(&temp, &context);
+    assert!(
+        plan.tool_env_secrets().is_empty(),
+        "{:?}",
+        plan.tool_env_secrets()
+    );
+    assert!(plan
+        .env
+        .iter()
+        .any(|v| v.name == branchyard_provision::CLAUDE_ENV_SCRUB && v.value == "1"));
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
 }
 
 #[test]

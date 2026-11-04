@@ -121,6 +121,17 @@ impl Drop for TurnFile {
 /// Refuse a provisioning request before anything is created: servers the
 /// drivers would refuse, a malformed telemetry endpoint, repeated secrets,
 /// and secrets without a private home.
+/// Whether this host has what Claude Code's subprocess isolation needs
+/// (`bwrap` and `socat` on `PATH`, on Linux) and the user has not chosen
+/// for it themselves by setting `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`.
+fn subprocess_isolation() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var_os(branchyard_provision::CLAUDE_ENV_SCRUB).is_none()
+        && ["bwrap", "socat"]
+            .iter()
+            .all(|tool| crate::harness::find_on_path(tool).is_some())
+}
+
 pub(crate) fn check(spec: Option<&Provisioning>, private_home: bool) -> Result<(), Error> {
     let Some(spec) = spec else {
         return Ok(());
@@ -434,6 +445,8 @@ pub(crate) fn prepare(
         telemetry: spec.telemetry.clone(),
         permissions: Some(crate::policy::permissions(policy, by)),
         installed: private.map(apply::installed).unwrap_or_default(),
+        subprocess_isolation: !placement::sandboxed(record.provider.as_ref())
+            && subprocess_isolation(),
         model_gateway,
     };
     let plan = branchyard_provision::plan(&context).map_err(|r| r.to_string())?;

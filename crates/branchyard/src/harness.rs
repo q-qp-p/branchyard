@@ -62,6 +62,7 @@ pub(crate) const CLAUDE_ISOLATED: &[&str] = &[
     "ANTHROPIC_SMALL_FAST_MODEL",
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
 ];
 
 /// The prefix of Claude Code's per-model Vertex AI regions

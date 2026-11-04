@@ -79,7 +79,7 @@ pub use branchyard_harness::profiles::Protocol;
 pub use branchyard_harness::{Instructions, McpServer, RemoteMcpServer, RemoteTransport};
 use serde::{Deserialize, Serialize};
 
-pub use claude::MANAGED_SETTINGS;
+pub use claude::{ENV_SCRUB as CLAUDE_ENV_SCRUB, MANAGED_SETTINGS};
 pub use edit::{Edit, JsonEdit, TomlEdit};
 pub use permissions::{Permissions, PermissionsWritten};
 
@@ -644,6 +644,13 @@ pub struct Context {
     /// What an earlier provisioning of this home installed in native
     /// configuration, from [`apply::installed`].
     pub installed: Installed,
+    /// Whether the host the harness runs on has what Claude Code's
+    /// subprocess isolation needs: `bwrap` and `socat` on `PATH` (Linux).
+    /// With it, a credential in Claude Code's environment is hidden from
+    /// the commands its tools run (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
+    /// `false` when unknown, as in a sandbox, or when the user set the
+    /// variable themselves.
+    pub subprocess_isolation: bool,
     /// The turn's model gateway, when the branch is on one, for a harness
     /// whose provider endpoint is a file in its home rather than the
     /// environment's base URL variables ([`models::ModelGateway`]).
@@ -677,6 +684,7 @@ impl Context {
             telemetry: None,
             permissions: None,
             installed: Installed::default(),
+            subprocess_isolation: false,
             model_gateway: None,
         }
     }

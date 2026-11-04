@@ -35,11 +35,13 @@
 //! environment key needs, and the key never enters the environment its
 //! Bash tool and MCP servers inherit. With a helper,
 //! `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` is not set: 2.1.283 ignores
-//! `apiKeyHelper` when it is. An OAuth token and the Vertex
-//! variables have no such setting and stay in the environment, visible to
-//! tool commands: Claude Code does not filter its Bash tool's environment
-//! unless `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is on, which on Linux needs
-//! bubblewrap and is not set here.
+//! `apiKeyHelper` when it is. An OAuth token has no such setting and goes
+//! in the environment. Where the host has bwrap and socat, the plan sets
+//! `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, and Claude Code hides the token
+//! from its Bash commands and MCP servers (and sandboxes Bash); elsewhere
+//! the turn warns that they can read it (Claude Code 2.1.318, 4 November
+//! 2026). The Vertex AI project and region are not credentials and stay
+//! visible either way.
 //!
 //! An isolated harness keeps Claude Code's Vertex AI switch from the
 //! engine's environment, so every method but `vertex-ai` sets
@@ -169,6 +171,17 @@ pub fn resolve_model_alias(raw: &str, aliases: &[(&str, &str)]) -> String {
 
 /// Where Claude Code reads its managed settings on Linux and WSL, and where
 /// a sandboxed turn's are written; see `docs/provisioning.md#managed-settings`.
+/// Claude Code's switch that hides its own credentials from the commands
+/// its tools run, and sandboxes Bash.
+pub const ENV_SCRUB: &str = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB";
+
+/// The warning a turn records when the OAuth token stays visible to tool
+/// commands.
+pub const OAUTH_IN_TOOLS: &str = "the Claude Code OAuth token is in the harness's environment, so \
+     its Bash commands and MCP servers can read it: Claude Code hides it only with \
+     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, which needs bwrap and socat on this host; install both, \
+     or give an API key, which reaches Claude Code through a file";
+
 pub const MANAGED_SETTINGS: &str = "/etc/claude-code/managed-settings.json";
 
 /// The variables [`plan`] sets to turn Claude Code's telemetry export off.
@@ -235,12 +248,27 @@ impl Provisioner for Claude {
                 // Claude Code has no file or helper for a token from
                 // `claude setup-token`: `.credentials.json` holds a whole
                 // claude.ai login (CLAUDE_AUTH).
-                "oauth-token" => plan.secret_env(
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                    "CLAUDE_CODE_OAUTH_TOKEN",
-                    &secret("CLAUDE_CODE_OAUTH_TOKEN"),
-                    true,
-                ),
+                //
+                // In its environment the token reaches every command the
+                // Bash tool and MCP servers run, unless Claude Code scrubs
+                // their environment, which on Linux needs bwrap and socat
+                // and also sandboxes Bash: writes outside the working tree
+                // and its temporary directory are refused (Claude Code
+                // 2.1.318, 4 November 2026).
+                "oauth-token" => {
+                    let scrubbed = context.subprocess_isolation;
+                    plan.secret_env(
+                        "CLAUDE_CODE_OAUTH_TOKEN",
+                        "CLAUDE_CODE_OAUTH_TOKEN",
+                        &secret("CLAUDE_CODE_OAUTH_TOKEN"),
+                        !scrubbed,
+                    );
+                    if scrubbed {
+                        plan.set_env(EnvVar::plain(ENV_SCRUB, "1"));
+                    } else {
+                        plan.warnings.push(OAUTH_IN_TOOLS.into());
+                    }
+                }
                 "auth-file" => {
                     needs_private_home(context, "the credentials file")?;
                     let content = secret("CLAUDE_AUTH");
