@@ -172,7 +172,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         }
       }
     },
@@ -483,7 +483,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -2329,7 +2329,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -7113,7 +7113,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -8031,7 +8031,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -14623,7 +14623,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -15529,7 +15529,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -16890,7 +16890,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -18348,7 +18348,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "After": {
           "oneOf": [
@@ -19146,7 +19146,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         }
       }
     },
@@ -21489,7 +21489,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "CandidateInfo": {
           "type": "object",
@@ -22935,7 +22935,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Merged": {
           "type": "object",
@@ -25029,7 +25029,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Merged": {
           "type": "object",
@@ -27154,7 +27154,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Merged": {
           "type": "object",
@@ -30118,7 +30118,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Provisioning": {
           "type": "object",
@@ -31988,7 +31988,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Merged": {
           "type": "object",
@@ -46765,7 +46765,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         }
       }
     },
@@ -47720,7 +47720,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Merged": {
           "type": "object",
@@ -50520,7 +50520,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         }
       }
     },
@@ -51090,7 +51090,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "CandidateInfo": {
           "type": "object",
@@ -52248,7 +52248,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         }
       }
     },
@@ -59903,7 +59903,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -62119,7 +62119,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -64354,7 +64354,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -66585,7 +66585,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -69158,7 +69158,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -71514,7 +71514,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -73728,7 +73728,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
@@ -75955,7 +75955,7 @@
               "description": "Everything allowed, as `--yes`."
             }
           ],
-          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nRules match tool names only: a preset says which tools may run, not\nwhat they touch."
+          "description": "A named permission policy that stands for explicit rules: usable\nwherever explicit rules are (`by run --permissions`, a rig seat's\n`permission_policy`, a server request's `policy.preset`,\n`[defaults] permissions`). See `docs/egress.md#permission-presets`.\n\nA preset's rules name tools only: it says which tools may run, not\nwhat they touch. A rule of its own may name both\n(`docs/egress.md#rules-that-name-arguments-and-paths`)."
         },
         "Envelope": {
           "type": "object",
