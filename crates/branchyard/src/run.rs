@@ -1240,11 +1240,17 @@ fn prepare(
         }
         false => options,
     };
-    // The branch's own home, as provisioning decides it, not this request's.
+    // The policy the turn runs under, with the branch's stored and
+    // inherited denials, and the branch's own home as provisioning will
+    // have it: its home, or the one a sandbox gets below.
+    let composing = TaskOptions {
+        policy: crate::delegation::effective_policy(&record, &options.policy),
+        ..options.clone()
+    };
     harness::check_composition(
         profile,
-        options,
-        record.home.is_some(),
+        &composing,
+        record.home.is_some() || placement::sandboxed(record.provider.as_ref()),
         &yard.approval_settings(),
     )?;
     let command = harness::command(profile, record.command.as_deref());
@@ -1556,7 +1562,12 @@ pub(crate) fn fork(
     let private_home = options.isolated
         || placement::sandboxed(provider.as_ref())
         || (forking && parent.home.is_some());
-    harness::check_composition(profile, options, private_home, &yard.approval_settings())?;
+    // With the parent's stored and inherited denials, which the fork keeps.
+    let composing = TaskOptions {
+        policy: crate::delegation::effective_policy(&parent, &options.policy),
+        ..options.clone()
+    };
+    harness::check_composition(profile, &composing, private_home, &yard.approval_settings())?;
     let launch_command = harness::command(profile, command.as_deref());
     yard.admit_provider(provider.as_ref(), options)?;
     placement::check(yard, provider.as_ref())?;
@@ -1732,9 +1743,14 @@ pub(crate) fn reincarnate_with(
         false => options,
     };
     let provider = options.provider.clone().or(parent.provider.clone());
+    // With the parent's stored and inherited denials, which carry over.
+    let composing = TaskOptions {
+        policy: crate::delegation::effective_policy(&parent, &options.policy),
+        ..options.clone()
+    };
     harness::check_composition(
         profile,
-        options,
+        &composing,
         options.isolated || placement::sandboxed(provider.as_ref()),
         &yard.approval_settings(),
     )?;

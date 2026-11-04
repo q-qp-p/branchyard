@@ -227,6 +227,7 @@ pub(crate) fn restricts(
     approvals: &crate::effects::ApprovalSettings,
 ) -> bool {
     options.policy.restricts()
+        || !options.deny.is_empty()
         || approvals.restricts_tools()
         || options
             .provision

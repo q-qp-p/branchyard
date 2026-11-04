@@ -1282,6 +1282,69 @@ fn a_restricting_policy_runs_only_where_the_profile_keeps_it() {
         again.events()
     );
 
+    // A policy that allows everything but names a denial restricts: the
+    // denial is what the harness's own allow rules could approve.
+    let denied = f
+        .task("go")
+        .options(TaskOptions {
+            deny: vec!["shell".into()],
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .run();
+    assert!(
+        matches!(&denied, Err(Error::UnboundPolicy { .. })),
+        "{denied:?}"
+    );
+    // A branch's stored denial counts on a send under an allowing policy.
+    let stored = f
+        .task("go")
+        .options(TaskOptions {
+            deny: vec!["shell".into()],
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .name("stored-deny")
+        .isolated(true)
+        .run()
+        .unwrap();
+    // Isolated, it runs; the same send to a branch in the user's own home
+    // would be refused for the stored denial alone.
+    let send = TaskOptions {
+        policy: Policy::allow_all(),
+        unapproved_tools: false,
+        ..f.options()
+    };
+    stored.send("again", send).unwrap();
+    let local = f
+        .task("WRITE l.txt=1")
+        .options(TaskOptions {
+            policy: Policy::allow_all(),
+            unapproved_tools: false,
+            ..f.options()
+        })
+        .name("local-allowing")
+        .run()
+        .unwrap();
+    // Allowing everything, a local branch runs; a fork that adds a denial
+    // in the parent's home, the user's own, is refused.
+    let forked = local.fork(
+        "x",
+        true,
+        TaskOptions {
+            policy: Policy::allow_all(),
+            deny: vec!["shell".into()],
+            unapproved_tools: false,
+            ..f.options()
+        },
+    );
+    assert!(
+        matches!(&forked, Err(Error::UnboundPolicy { .. })),
+        "{forked:?}"
+    );
+
     // A profile verified nowhere is refused in a private home too.
     let goose = f
         .task("go")
