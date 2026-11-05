@@ -280,7 +280,7 @@ fn the_harness_sees_its_provisioned_home_and_the_secret_stays_there() {
             ".branchyard/manifest.json"
         ]
     );
-    assert_eq!(provisioned.2, ["CODEX_HOME"]);
+    assert_eq!(provisioned.2, ["CODEX_HOME", "BRANCHYARD_MANIFEST"]);
 
     // The secret is in the private home and nowhere else: not the
     // worktree, the candidate, the event log, the stored record, nor the
