@@ -19,8 +19,8 @@ mod native;
 mod substrate;
 
 pub use native::{
-    validate_sandbox_image, AgentSandbox, AgentSandboxRuntime, Container, ContainerRuntime,
-    SandboxNetwork,
+    validate_sandbox_image, AgentSandbox, AgentSandboxGateway, AgentSandboxRuntime, Container,
+    ContainerRuntime, SandboxNetwork,
 };
 pub use substrate::{Substrate, SubstrateEgress};
 
@@ -924,6 +924,13 @@ pub struct NetworkConfig {
     /// run there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enforce: Option<NetworkEnforceMode>,
+    /// Package mirror hosts (`"pypi.org"`, `"*.pythonhosted.org"`,
+    /// `"registry.npmjs.org:443"`) that every restricted policy allows, beside
+    /// the connector gateway and the model gateway a turn is given, so a
+    /// harness can install packages with nothing else open. Hosts only: no
+    /// method, path or address. Unused while `allow` is unset (open).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -936,6 +943,26 @@ pub enum NetworkEnforceMode {
 impl NetworkConfig {
     pub fn is_empty(&self) -> bool {
         self == &NetworkConfig::default()
+    }
+
+    /// The mirror hosts as rules, each checked: a host (and port) only.
+    pub fn mirror_rules(
+        &self,
+    ) -> Result<Vec<branchyard_provision::network::HostRule>, ConfigError> {
+        use branchyard_provision::network::HostRule;
+        self.mirrors
+            .iter()
+            .map(|mirror| {
+                let rule = HostRule::parse(mirror)
+                    .map_err(|e| ConfigError(format!("network.mirrors: {e}")))?;
+                if rule.inspects() || rule.names_address() {
+                    return Err(ConfigError(format!(
+                        "network.mirrors: {mirror:?} must be a host name (and port) only, with no method, path or address"
+                    )));
+                }
+                Ok(rule)
+            })
+            .collect()
     }
 
     /// The policy it describes, checked with the flag's parser; `None`
@@ -2302,6 +2329,7 @@ impl ProjectConfig {
         }
         self.approvals.policy()?;
         self.network.policy()?;
+        self.network.mirror_rules()?;
         self.models.check()?;
         if !self.connectors.grants.is_empty() && self.connectors.gateway.is_none() {
             return fail(
@@ -2986,6 +3014,10 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
             };
             out.push_str(&format!("enforce = {}\n", toml_string(name)));
         }
+        if !n.mirrors.is_empty() {
+            let hosts: Vec<String> = n.mirrors.iter().map(|m| toml_string(m)).collect();
+            out.push_str(&format!("mirrors = [{}]\n", hosts.join(", ")));
+        }
     }
     if !config.models.is_empty() {
         out.push_str(
@@ -3326,6 +3358,22 @@ classes = { compensable = "allow" }
             "github.com, *.npmjs.org:443 (required)"
         );
         assert_eq!(parse(&render(&config, "test")).unwrap(), config);
+        let mirrored = parse(
+            "version = 1\n\n[network]\nallow = []\nmirrors = [\"pypi.org\", \"*.pythonhosted.org\", \"registry.npmjs.org:443\"]\n",
+        )
+        .unwrap();
+        let rules: Vec<String> = mirrored
+            .network
+            .mirror_rules()
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rules,
+            ["pypi.org", "*.pythonhosted.org", "registry.npmjs.org:443"]
+        );
+        assert_eq!(parse(&render(&mirrored, "test")).unwrap(), mirrored);
         assert_eq!(
             parse("[network]\nallow = []\n")
                 .unwrap()
@@ -3344,6 +3392,16 @@ classes = { compensable = "allow" }
             ("[network]\nenforce = \"required\"\n", "nothing to enforce"),
             ("[network]\nenforce = \"always\"\n", "best_effort"),
             ("[network]\nports = [1]\n", "ports"),
+            (
+                "[network]\nmirrors = [\"GET pypi.org\"]\n",
+                "network.mirrors",
+            ),
+            (
+                "[network]\nmirrors = [\"pypi.org/simple\"]\n",
+                "network.mirrors",
+            ),
+            ("[network]\nmirrors = [\"10.0.0.1\"]\n", "network.mirrors"),
+            ("[network]\nmirrors = [\"*\"]\n", "network.mirrors"),
             ("[defaults]\npermissions = \"yolo\"\n", "edit-worktree"),
         ] {
             let error = parse(text).unwrap_err().to_string();

@@ -42,6 +42,8 @@ pub(crate) const LINE_BUDGET: usize = 300;
 /// The skill that carries the script, and the script's path in it.
 const FIND_TOOLS: &str = "find-tools";
 const SCRIPT: &str = "scripts/tools.py";
+/// Where skills are staged, relative to the home.
+const CAPABILITIES: &str = crate::capabilities::DIRECTORY;
 /// Where connector packages are placed, relative to the home.
 const CONNECTORS: &str = crate::connectors::HOME_DIR;
 /// The composite's directory under [`CONNECTORS`].
@@ -67,17 +69,29 @@ pub(crate) struct Mounted {
     pub written: Vec<String>,
 }
 
+/// Where a guest whose filesystem a provider controls also sees the tree.
+pub(crate) const GUEST_ROOT: &str = "/tools";
+/// The variable that names the tree to a harness and to `bin/tools`: the
+/// root a provider that controls the guest filesystem also exposes it at.
+pub(crate) const ENV_TOOLS: &str = "BRANCHYARD_TOOLS";
+
 /// Mount the tree in `host`, naming paths as the guest sees them under
 /// `guest`: `skills` are those staged (built-in, then the repository's),
 /// `connectors` the ids of the turn's grant, and `helpers` the turn's
 /// delegation envelope. A turn whose envelope has no helpers (a leaf) gets
 /// no `helpers/INDEX.md`, and one an earlier turn wrote is removed.
+///
+/// With `root` (`/tools`), the guest also sees the tree there, as a read-only
+/// mount or a copy a provider makes, and not only under the home. A relative
+/// link would then point out of the tree to the wrong place, so its two links
+/// name their targets by absolute guest path, and the line names `root`.
 pub(crate) fn mount(
     host: &Path,
     guest: &Path,
     skills: &[Tool],
     connectors: &[String],
     helpers: Option<&crate::Envelope>,
+    root: Option<&str>,
 ) -> Result<Mounted, String> {
     let helpers = helpers.filter(|e| e.max_depth > 0 && e.max_children > 0);
     let described = connector_tools(host, connectors)?;
@@ -108,15 +122,25 @@ pub(crate) fn mount(
     fs::set_permissions(host.join(&script_path), fs::Permissions::from_mode(0o755))
         .map_err(fail)?;
     let tree = host.join(DIRECTORY);
+    let (skills_to, connectors_to) = match root {
+        None => ("../capabilities".to_owned(), "../connectors".to_owned()),
+        Some(_) => (
+            guest.join(CAPABILITIES).display().to_string(),
+            guest.join(CONNECTORS).display().to_string(),
+        ),
+    };
     for (name, target, wanted) in [
-        ("skills", "../capabilities", true),
-        ("connectors", "../connectors", !connectors.is_empty()),
+        ("skills", skills_to.as_str(), true),
+        ("connectors", connectors_to.as_str(), !connectors.is_empty()),
     ] {
         if relink(&tree.join(name), target, wanted).map_err(fail)? {
             written.push(format!("{DIRECTORY}/{name}"));
         }
     }
-    let directory = guest.join(DIRECTORY).display().to_string();
+    let directory = match root {
+        Some(root) => root.trim_end_matches('/').to_owned(),
+        None => guest.join(DIRECTORY).display().to_string(),
+    };
     Ok(Mounted {
         line: one_line(&directory),
         written,
@@ -513,7 +537,7 @@ mod tests {
     fn mounting_writes_the_index_the_script_and_two_links_and_repeats_unchanged() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        let first = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        let first = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         let tree = host.path().join(DIRECTORY);
         assert!(first.line.contains("/g/.branchyard/tools/INDEX.md"));
         assert!(std::fs::read_to_string(tree.join("INDEX.md"))
@@ -531,15 +555,54 @@ mod tests {
         assert!(tree.join("skills/find-tools/SKILL.md").is_file());
         assert!(!tree.join("connectors").exists(), "no grant, no link");
         assert!(first.written.iter().any(|p| p.ends_with("bin/tools")));
-        let again = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        let again = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         assert!(again.written.is_empty(), "{:?}", again.written);
+    }
+
+    #[test]
+    fn a_tree_exposed_at_a_guest_root_links_by_absolute_guest_path_and_names_the_root() {
+        let host = tempfile::tempdir().unwrap();
+        let skills = staged(host.path());
+        let granted = vec!["github".to_owned()];
+        let mounted = mount(
+            host.path(),
+            Path::new("/branchyard/home"),
+            &skills,
+            &granted,
+            None,
+            Some("/tools"),
+        )
+        .unwrap();
+        // Read from /tools the links must not climb out of it.
+        let tree = host.path().join(DIRECTORY);
+        assert_eq!(
+            std::fs::read_link(tree.join("skills")).unwrap(),
+            Path::new("/branchyard/home/.branchyard/capabilities")
+        );
+        assert_eq!(
+            std::fs::read_link(tree.join("connectors")).unwrap(),
+            Path::new("/branchyard/home/.branchyard/connectors")
+        );
+        assert!(
+            mounted.line.contains("read /tools/INDEX.md"),
+            "{}",
+            mounted.line
+        );
+        assert!(mounted.line.contains("`/tools/bin/tools search WORDS`"));
+        assert!(mounted.line.chars().count() < LINE_BUDGET);
+        // Remounted for a local turn, the links are relative again.
+        mount(host.path(), Path::new("/g"), &skills, &granted, None, None).unwrap();
+        assert_eq!(
+            std::fs::read_link(tree.join("skills")).unwrap(),
+            Path::new("../capabilities")
+        );
     }
 
     #[test]
     fn the_script_runs_from_the_mounted_tree_and_finds_a_staged_skill() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         let output = std::process::Command::new("python3")
             .arg(host.path().join(DIRECTORY).join("bin/tools"))
             .args(["search", "arithmetic", "units"])
@@ -562,7 +625,7 @@ mod tests {
         .unwrap();
         let skills = staged(host.path());
         let granted = vec!["github".to_owned()];
-        let first = mount(host.path(), Path::new("/g"), &skills, &granted, None).unwrap();
+        let first = mount(host.path(), Path::new("/g"), &skills, &granted, None, None).unwrap();
         let tree = host.path().join(DIRECTORY);
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
         assert!(
@@ -573,7 +636,7 @@ mod tests {
         assert!(index.len() <= INDEX_BUDGET);
         assert!(tree.join("connectors/github/SKILL.md").is_file());
         assert!(first.written.contains(&format!("{DIRECTORY}/connectors")));
-        let none = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        let none = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         assert!(!tree.join("connectors").exists());
         assert!(none.written.contains(&format!("{DIRECTORY}/connectors")));
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
@@ -587,7 +650,7 @@ mod tests {
         let own = host.path().join(DIRECTORY).join("skills");
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("mine.md"), "x").unwrap();
-        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         assert!(own.join("mine.md").is_file());
     }
 
@@ -598,7 +661,7 @@ mod tests {
         std::fs::create_dir_all(host.path().join(".branchyard")).unwrap();
         std::os::unix::fs::symlink(outside.path(), host.path().join(DIRECTORY)).unwrap();
         let skills = staged(host.path());
-        assert!(mount(host.path(), Path::new("/g"), &skills, &[], None).is_err());
+        assert!(mount(host.path(), Path::new("/g"), &skills, &[], None, None).is_err());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
@@ -681,7 +744,15 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
         let grant = envelope(&["claude-code", "codex", "no-such-harness"], 3, 1);
-        mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        mount(
+            host.path(),
+            Path::new("/g"),
+            &skills,
+            &[],
+            Some(&grant),
+            None,
+        )
+        .unwrap();
         let tree = host.path().join(DIRECTORY);
         let text = std::fs::read_to_string(tree.join("helpers/INDEX.md")).unwrap();
         assert!(text.len() <= HELPERS_BUDGET, "{}", text.len());
@@ -718,17 +789,41 @@ mod tests {
             Some(envelope(&["codex"], 4, 0)),
             Some(envelope(&["codex"], 0, 1)),
         ] {
-            mount(host.path(), Path::new("/g"), &skills, &[], leaf.as_ref()).unwrap();
+            mount(
+                host.path(),
+                Path::new("/g"),
+                &skills,
+                &[],
+                leaf.as_ref(),
+                None,
+            )
+            .unwrap();
             assert!(!tree.join("helpers/INDEX.md").exists());
             let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
             assert!(!index.contains("## Helpers"));
         }
         let grant = envelope(&["codex"], 2, 1);
-        mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        mount(
+            host.path(),
+            Path::new("/g"),
+            &skills,
+            &[],
+            Some(&grant),
+            None,
+        )
+        .unwrap();
         assert!(tree.join("helpers/INDEX.md").is_file());
-        let again = mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        let again = mount(
+            host.path(),
+            Path::new("/g"),
+            &skills,
+            &[],
+            Some(&grant),
+            None,
+        )
+        .unwrap();
         assert!(again.written.is_empty(), "{:?}", again.written);
-        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
         assert!(
             !tree.join("helpers/INDEX.md").exists(),
             "the next turn is a leaf"

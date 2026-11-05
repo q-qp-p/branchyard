@@ -74,6 +74,9 @@ impl ProviderKind for SandboxOptions {
     fn guest_paths(&self, _: &Record) -> (String, String) {
         (WORKSPACE.into(), HOME.into())
     }
+    fn tools_root(&self) -> Option<&'static str> {
+        Some(crate::tooltree::GUEST_ROOT)
+    }
 
     /// A guest gets the runtime's default network, which routes to this
     /// host (at the address `[connectors] effects_sandbox_host` names).
@@ -133,9 +136,22 @@ pub(crate) fn spec(
         .ok_or("a sandboxed branch has no private home")?;
     let mut env = sandbox_env(HOME, &options.pass_env)?;
     let git_dir = git::common_dir(&yard.root).map_err(|e| e.to_string())?;
+    // The tool tree is also at /tools, read-only: the guest filesystem is ours,
+    // so the harness finds it without a path under its home. The directory
+    // is made now so the mount has a source before provisioning fills it.
+    let tree = home.join(crate::tooltree::DIRECTORY);
+    best_effort(
+        "create the tool tree's mount directory",
+        std::fs::create_dir_all(&tree),
+    );
+    env.insert(
+        crate::tooltree::ENV_TOOLS.into(),
+        crate::tooltree::GUEST_ROOT.into(),
+    );
     let mut mounts = vec![
         Mount::writable(&record.info.worktree, WORKSPACE),
         Mount::writable(home, HOME),
+        Mount::read_only(&tree, crate::tooltree::GUEST_ROOT),
         Mount::read_only(&git_dir, &git_dir),
     ];
     // The shared tool store, read-only at the same path, so the links a

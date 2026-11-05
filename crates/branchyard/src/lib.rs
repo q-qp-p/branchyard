@@ -533,6 +533,20 @@ impl Yard {
         *self.hub.tool_store.lock_recovering("tool store") = Some(Arc::new(store));
     }
 
+    /// Give this yard's restricted network policies the package mirror hosts
+    /// `mirrors` (`[network] mirrors`): every turn under a restricted policy
+    /// may reach them, beside the connector gateway and the model gateway it is
+    /// given; see `docs/egress.md`. Replaces any set before. Shared by every
+    /// clone of this `Yard`.
+    pub fn use_mirrors(&self, mirrors: Vec<branchyard_provision::network::HostRule>) {
+        *self.hub.mirrors.lock_recovering("mirrors") = mirrors;
+    }
+
+    /// The mirror hosts set with [`Yard::use_mirrors`].
+    pub fn mirrors(&self) -> Vec<branchyard_provision::network::HostRule> {
+        self.hub.mirrors.lock_recovering("mirrors").clone()
+    }
+
     /// The store set with [`Yard::use_tool_store`], if any.
     pub fn tool_store(&self) -> Option<Arc<toolstore::ToolStore>> {
         self.hub.tool_store.lock_recovering("tool store").clone()

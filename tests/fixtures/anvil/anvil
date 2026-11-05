@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""A mock of the `anvil` CLI, as docs/anvil-contract-v2.md defines it. Hermetic tests only.
+
+Anvil has not shipped contract v2, so Branchyard builds against this stand-in. It is
+not Anvil: it compiles nothing. A bundle is a directory with `air.json` (the mock's own
+small source, below) or `air.yaml` (only its `service:` line is read); the output is
+the package layout the contract describes.
+
+    anvil --version
+    anvil capabilities --json
+    anvil package harness BUNDLE --out DIR [--workspace ROOT] [--connector ID] [--skill-mode full|lean]
+    anvil connectors index --grants FILE --out FILE [--workspace ROOT] BUNDLE...
+    anvil connectors compose --out DIR [--skills-root DIR] [--workspace ROOT] BUNDLE...
+    anvil install [--help] --prefix DIR [--from DIR] [--prune]
+
+`air.json`: {"service": {"description": "...", "icon": "github"}, "operations": [{"id":
+"issues.list", "title": "...", "description": "...", "effect": "read", "risk": null,
+"confirm": false, "idempotency": "safe", "resource": "issues", "tags": [...],
+"input_schema": {...}}]}. A bundle without operations gets one, `status.get`.
+
+Environment: ANVIL_MOCK_LOG names a file that gets one `anvil ARGS` line per call;
+ANVIL_MOCK_ROOT re-roots an absolute `--prefix` under that directory, so a test can run
+`anvil install --prefix /opt/anvil` without touching /opt. Standard library only.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+VERSION = "0.0.0-mock"
+FEATURES = ["package.search", "skill.lean", "install.prefix"]
+SUMMARY_MAX = 160
+# What `anvil install` puts in a version directory when it is not given `--from`.
+TOOLCHAIN = {
+    "bin/anvil": '#!/bin/sh\necho "anvil __DIGEST__"\n',
+    "python/anvil_sdk/__init__.py": 'VERSION = "' + VERSION + '"\n',
+    "typescript/index.js": 'exports.VERSION = "' + VERSION + '";\n',
+    "compose/__init__.py": "",
+}
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(f"anvil: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def log(argv: list[str]) -> None:
+    target = os.environ.get("ANVIL_MOCK_LOG")
+    if target:
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write("anvil " + " ".join(argv) + "\n")
+
+
+def option(args: list[str], name: str) -> str | None:
+    for index, arg in enumerate(args):
+        if arg == name and index + 1 < len(args):
+            return args[index + 1]
+    return None
+
+
+def positionals(args: list[str], flags_with_values: set[str]) -> list[str]:
+    out, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg in flags_with_values:
+            skip = True
+        elif not arg.startswith("--"):
+            out.append(arg)
+    return out
+
+
+def digest_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def terms(*parts: object) -> list[str]:
+    seen: dict[str, None] = {}
+    for part in parts:
+        for word in re.findall(r"[a-z0-9]+", " ".join(map(str, part)).lower() if isinstance(part, list) else str(part).lower()):
+            seen.setdefault(word)
+    return sorted(seen)
+
+
+def read_bundle(bundle: Path) -> tuple[dict, str]:
+    """The bundle's source and its content hash."""
+    air_json, air_yaml = bundle / "air.json", bundle / "air.yaml"
+    if air_json.is_file():
+        text = air_json.read_text(encoding="utf-8")
+        try:
+            return json.loads(text), "sha256:" + digest_text(text)
+        except ValueError as error:
+            fail(f"{air_json} is not JSON: {error}")
+    if air_yaml.is_file():
+        text = air_yaml.read_text(encoding="utf-8")
+        return {"service": {}, "operations": []}, "sha256:" + digest_text(text)
+    fail(f"{bundle} has no air.json or air.yaml")
+    raise AssertionError("unreachable")
+
+
+def operations_of(source: dict, connector: str) -> list[dict]:
+    """The bundle's approved operations, each with its full id, sorted by id."""
+    raw = source.get("operations") or [
+        {"id": "status.get", "title": "Get status", "description": f"Get the status of {connector}.", "resource": "status"}
+    ]
+    out = []
+    for item in raw:
+        if item.get("approved", True) is False:
+            continue  # pending operations stay out of the search
+        short = str(item["id"]).removeprefix(connector + ".")
+        full = f"{connector}.{short}"
+        description = " ".join(str(item.get("description") or item.get("title") or full).split())
+        summary = re.split(r"(?<=[.!?])\s", description, maxsplit=1)[0]
+        if len(summary) > SUMMARY_MAX:
+            summary = summary[: SUMMARY_MAX - 3].rstrip() + "..."
+        title = str(item.get("title") or short.replace(".", " ").capitalize())
+        resource = str(item.get("resource") or short.split(".")[0])
+        tags = [str(tag) for tag in item.get("tags", [resource])]
+        schema = item.get("input_schema") or {"type": "object", "properties": {}}
+        out.append(
+            {
+                "id": full,
+                "title": title,
+                "summary": summary,
+                "description": description,
+                "effect": item.get("effect", "read"),
+                "risk": item.get("risk"),
+                "confirm": bool(item.get("confirm", False)),
+                "idempotency": item.get("idempotency", "safe"),
+                "resource": resource,
+                "tags": tags,
+                "terms": terms(full.replace(".", " "), title, tags, list(schema.get("properties", {}))),
+                "schema": f"schemas/{full}.input.json",
+                "cli": f"bin/{connector} " + short.replace(".", " "),
+                "input_schema": schema,
+            }
+        )
+    return sorted(out, key=lambda op: op["id"])
+
+
+def package_harness(args: list[str]) -> None:
+    given = positionals(args, {"--out", "--workspace", "--connector", "--skill-mode"})
+    out = option(args, "--out")
+    if len(given) != 1 or out is None:
+        fail("usage: anvil package harness BUNDLE --out DIR [--workspace ROOT] [--connector ID]", 2)
+    bundle = Path(given[0])
+    connector = option(args, "--connector") or bundle.name
+    mode = option(args, "--skill-mode") or "full"
+    if mode not in ("full", "lean"):
+        fail(f"--skill-mode is full or lean, not {mode!r}", 2)
+    source, bundle_hash = read_bundle(bundle)
+    service = source.get("service") or {}
+    if not isinstance(service, dict):
+        service = {}
+    description = str(service.get("description") or f"Operations of {connector} through the Anvil gateway.")
+    icon = service.get("icon")
+    ops = operations_of(source, connector)
+    root = Path(out)
+    root.mkdir(parents=True, exist_ok=True)
+    lines = [f"---\nname: {connector}\ndescription: {json.dumps(description)}\n---\n# {connector}\n"]
+    by_resource: dict[str, int] = {}
+    for op in ops:
+        by_resource[op["resource"]] = by_resource.get(op["resource"], 0) + 1
+    lines.append("Call it through `bin/" + connector + "`; it uses the gateway and the turn's token.\n")
+    lines += [f"- {name} ({count} operations)" for name, count in sorted(by_resource.items())]
+    if mode == "lean":
+        lines.append("\nFind an operation in `search.json`; the full table is `reference/operations.md`.")
+    else:
+        lines.append("\nWorkflow: list, then get, then change. See `reference/` for each operation.")
+    (root / "SKILL.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write_json(
+        root / "harness.json",
+        {
+            "connector": connector,
+            "bundle_hash": bundle_hash,
+            "operations": [{"id": op["id"], "description": op["description"]} for op in ops],
+        },
+    )
+    write_json(
+        root / "search.json",
+        {
+            "schema": "anvil.search/v1",
+            "connector": connector,
+            "bundle_hash": bundle_hash,
+            "icon": icon,
+            "operations": [{k: v for k, v in op.items() if k not in ("description", "input_schema")} for op in ops],
+        },
+    )
+    for op in ops:
+        write_json(root / op["schema"], op["input_schema"])
+    table = ["# Operations\n", "| id | summary |", "|---|---|"]
+    table += [f"| `{op['id']}` | {op['summary']} |" for op in ops]
+    (root / "reference").mkdir(exist_ok=True)
+    (root / "reference" / "operations.md").write_text("\n".join(table) + "\n", encoding="utf-8")
+    launcher = root / "bin" / connector
+    launcher.parent.mkdir(exist_ok=True)
+    launcher.write_text(f'#!/bin/sh\necho "anvil mock connector {connector}: $*"\n', encoding="utf-8")
+    launcher.chmod(0o755)
+    (root / "python").mkdir(exist_ok=True)
+    (root / "python" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "typescript").mkdir(exist_ok=True)
+    (root / "typescript" / "index.js").write_text("", encoding="utf-8")
+
+
+def connectors_index(args: list[str]) -> None:
+    bundles = positionals(args, {"--grants", "--out", "--workspace"})
+    grants, out = option(args, "--grants"), option(args, "--out")
+    if grants is None or out is None:
+        fail("usage: anvil connectors index --grants FILE --out FILE [--workspace ROOT] BUNDLE...", 2)
+    try:
+        entries = json.loads(Path(grants).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        fail(f"cannot read the grants file: {error}")
+    known = {Path(bundle).name for bundle in bundles}
+    lines = ["# Connectors\n"]
+    for entry in entries:
+        name = entry.get("connector") if isinstance(entry, dict) else str(entry)
+        if name in known:
+            lines.append(f"- {name} ({entry.get('mode', 'read')}): {name}/SKILL.md")
+    Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def connectors_compose(args: list[str]) -> None:
+    bundles = positionals(args, {"--out", "--skills-root", "--workspace"})
+    out = option(args, "--out")
+    if out is None or not bundles:
+        fail("usage: anvil connectors compose --out DIR [--skills-root DIR] BUNDLE...", 2)
+    root = Path(out)
+    root.mkdir(parents=True, exist_ok=True)
+    names = sorted(Path(bundle).name for bundle in bundles)
+    write_json(
+        root / "compose.json",
+        {
+            "connectors": names,
+            "operations": {
+                "flow.plan": {"description": "Plan a flow across " + ", ".join(names), "effect_class": "read"},
+                "flow.run": {"description": "Run a flow across connectors", "effect_class": "irreversible"},
+            },
+        },
+    )
+    (root / "SKILL.md").write_text(
+        "---\nname: _compose\ndescription: Compose calls across connectors into one flow.\n---\n# Compose\n",
+        encoding="utf-8",
+    )
+
+
+def rooted(prefix: str) -> Path:
+    mock_root = os.environ.get("ANVIL_MOCK_ROOT")
+    if mock_root and os.path.isabs(prefix):
+        return Path(mock_root) / prefix.lstrip("/")
+    return Path(prefix)
+
+
+def file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def install(args: list[str]) -> None:
+    if "--help" in args or "-h" in args:
+        print("usage: anvil install --prefix DIR [--from DIR] [--prune]")
+        return
+    prefix = option(args, "--prefix")
+    if prefix is None:
+        fail("usage: anvil install --prefix DIR [--from DIR] [--prune]", 2)
+    source = option(args, "--from")
+    files: dict[str, bytes]
+    if source is None:
+        files = {name: body.encode() for name, body in TOOLCHAIN.items()}
+        recorded = {name: hashlib.sha256(body).hexdigest() for name, body in files.items()}
+    else:
+        base = Path(source)
+        try:
+            manifest = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
+            recorded = dict(manifest["files"])
+        except (OSError, ValueError, KeyError) as error:
+            fail(f"{source} is not an Anvil toolchain (manifest.json): {error}")
+        files = {}
+        for name, expected in sorted(recorded.items()):
+            path = base / name
+            if not path.is_file() or file_digest(path) != expected:
+                fail(f"digest mismatch for {name}; nothing was written")
+            files[name] = path.read_bytes()
+    version = hashlib.sha256(json.dumps(recorded, sort_keys=True).encode()).hexdigest()
+    target = rooted(prefix)
+    versions = target / "versions"
+    destination = versions / version
+    if not (destination / "manifest.json").is_file():
+        versions.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=".install-", dir=versions))
+        try:
+            for name, body in files.items():
+                path = stage / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(body.replace(b"__DIGEST__", version.encode()))
+                if name.startswith("bin/"):
+                    path.chmod(0o755)
+            (stage / "env.sh").write_text(
+                f'export PATH="{destination}/bin:$PATH"\n'
+                f'export PYTHONPATH="{destination}/python:${{PYTHONPATH:-}}"\n',
+                encoding="utf-8",
+            )
+            write_json(
+                stage / "manifest.json",
+                {"digest": version, "version": VERSION, "source": source or "builtin", "files": recorded},
+            )
+            os.replace(stage, destination)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+    current = target / "current"
+    if not (current.is_symlink() and os.readlink(current) == f"versions/{version}"):
+        link = target / f".current-{os.getpid()}"
+        link.symlink_to(f"versions/{version}")
+        os.replace(link, current)
+    if "--prune" in args:
+        for entry in versions.iterdir():
+            if entry.name != version:
+                shutil.rmtree(entry, ignore_errors=True)
+    print(f"anvil installed {version} under {prefix}")
+
+
+def main(argv: list[str]) -> None:
+    log(argv)
+    if argv[:1] == ["--version"]:
+        print(f"anvil {VERSION}")
+    elif argv[:2] == ["capabilities", "--json"]:
+        print(json.dumps({"features": FEATURES}))
+    elif argv[:2] == ["package", "harness"]:
+        package_harness(argv[2:])
+    elif argv[:2] == ["connectors", "index"]:
+        connectors_index(argv[2:])
+    elif argv[:2] == ["connectors", "compose"]:
+        connectors_compose(argv[2:])
+    elif argv[:1] == ["install"]:
+        install(argv[1:])
+    else:
+        fail(f"the mock does not implement: {' '.join(argv)}", 2)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

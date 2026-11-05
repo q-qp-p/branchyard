@@ -19,6 +19,11 @@ struct Kit {
     registry: PathBuf,
 }
 
+/// The Anvil mock, the one `tests/test_anvil_mock.py` tests against the contract.
+fn anvil_mock() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/anvil/anvil")
+}
+
 fn script(dir: &Path, name: &str, body: &str) {
     let path = dir.join(name);
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -40,15 +45,14 @@ impl Kit {
             repo.dir.join("registry"),
             repo.dir.join("store"),
         );
+        // Anvil is the contract's mock (docs/anvil-contract-v2.md), which logs each call.
         script(
             &bin,
             "anvil",
             &format!(
-                r##"echo "anvil $*" >> '{log}'
-[ "$1 $2" = "package harness" ] || exit 2
-out=""; while [ $# -gt 0 ]; do [ "$1" = "--out" ] && out="$2"; shift; done
-mkdir -p "$out/bin"; echo "# packaged" > "$out/SKILL.md"; echo "#!/bin/sh" > "$out/bin/run""##,
-                log = log.display()
+                "ANVIL_MOCK_LOG='{log}' exec python3 '{mock}' \"$@\"",
+                log = log.display(),
+                mock = anvil_mock().display()
             ),
         );
         script(
@@ -85,9 +89,12 @@ esac"#,
         let bundles = repo.dir.join("bundles");
         for id in ["github", "linear"] {
             fs::create_dir_all(bundles.join(id)).unwrap();
-            fs::write(
-                bundles.join(id).join("air.yaml"),
-                format!("service: {id}\n"),
+            fs::copy(
+                anvil_mock()
+                    .with_file_name("bundles")
+                    .join(id)
+                    .join("air.json"),
+                bundles.join(id).join("air.json"),
             )
             .unwrap();
         }
@@ -149,6 +156,19 @@ fn publish_builds_skills_and_connector_packages_and_an_index() {
     let path = github["path"].as_str().unwrap();
     assert!(path.starts_with("connectors/github@"), "{path}");
     assert!(kit.store.join(path).join("SKILL.md").is_file());
+    // The package is the contract's: the search index travels into the store with it.
+    let search: Value = serde_json::from_str(
+        &fs::read_to_string(kit.store.join(path).join("search.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(search["schema"], "anvil.search/v1");
+    assert_eq!(search["connector"], "github");
+    assert!(kit.store.join(path).join("harness.json").is_file());
+    assert!(kit
+        .store
+        .join(path)
+        .join("reference/operations.md")
+        .is_file());
     assert!(github["size"].as_u64().unwrap() > 0);
     assert_eq!(github["digest"].as_str().unwrap().len(), 64);
     let skill = entries.iter().find(|e| e["id"] == "find-tools").unwrap();

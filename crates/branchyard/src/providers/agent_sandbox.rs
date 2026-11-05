@@ -21,6 +21,49 @@ fn store_volume(yard: &Yard) -> Option<branchyard_agent_sandbox::StoreVolume> {
     })
 }
 
+/// What an allocation under `deny` may reach besides DNS and Cloud Storage,
+/// from the worker's configuration (the branch carries none of it): the
+/// `[agent_sandbox]` section's `egress_hosts` (the model endpoint) and
+/// `gateway_service`, the package mirrors (`[network] mirrors`) and the
+/// gateway's host when it is named by DNS. A FQDN policy matches names on
+/// 443, so a mirror on another port, or one named by address, is not listed.
+pub(super) fn yard_egress(yard: &Yard) -> branchyard_agent_sandbox::Egress {
+    use branchyard_provision::network::Host;
+    let section = yard
+        .configured()
+        .and_then(|config| config.agent_sandbox.clone());
+    let gateway = yard
+        .connectors()
+        .and_then(|gateway| gateway.sandbox_url.clone())
+        .and_then(|url| crate::egress::gateway_rule(&url));
+    let named = yard
+        .mirrors()
+        .into_iter()
+        .chain(gateway)
+        .filter(|rule| rule.port.is_none_or(|port| port == 443) && !rule.names_address())
+        .map(|rule| match rule.host {
+            Host::Exact(name) => name,
+            Host::Subdomains(suffix) => format!("*.{suffix}"),
+        });
+    let mut hosts: Vec<String> = section
+        .as_ref()
+        .map(|section| section.egress_hosts.clone())
+        .unwrap_or_default();
+    hosts.extend(named);
+    hosts.sort();
+    hosts.dedup();
+    branchyard_agent_sandbox::Egress {
+        gateway: section
+            .and_then(|section| section.gateway_service)
+            .map(|gateway| branchyard_agent_sandbox::GatewayService {
+                namespace: gateway.namespace,
+                name: gateway.name,
+                port: gateway.port,
+            }),
+        hosts,
+    }
+}
+
 impl ProviderKind for AgentSandboxOptions {
     fn harness_location(&self) -> HarnessLocation<'_> {
         HarnessLocation::Image
@@ -58,6 +101,9 @@ impl ProviderKind for AgentSandboxOptions {
     fn guest_paths(&self, _record: &Record) -> (String, String) {
         (WORKSPACE.into(), HOME.into())
     }
+    fn tools_root(&self) -> Option<&'static str> {
+        Some(crate::tooltree::GUEST_ROOT)
+    }
     fn prepare(
         &self,
         yard: &Yard,
@@ -81,7 +127,7 @@ impl ProviderKind for AgentSandboxOptions {
     }
     fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         branchyard_agent_sandbox::AgentSandboxProvider::new(
-            self.config_with(store_volume(yard)),
+            self.config_with(store_volume(yard), yard_egress(yard)),
             native::state_dir(yard, &self.key()),
         )
         .map(|provider| Arc::new(provider) as Arc<dyn SandboxProvider>)

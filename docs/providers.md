@@ -124,6 +124,7 @@ Each turn gets a fresh microVM, destroyed when the turn ends, unless the branch 
 
 - The branch's worktree is mounted read-write at `/workspace`, and the harness runs there; the driver's `cwd` is `/workspace`.
 - The branch's private home, `.branchyard/homes/<name>`, is mounted at `/branchyard/home` and is `HOME`. Harness sessions persist there across sends; a forked session shares its parent's home, as under `--isolated`.
+- The turn's tool tree, `.branchyard/tools` of the home, is also mounted **read-only** at `/tools`, and the harness gets `BRANCHYARD_TOOLS=/tools` ([tools model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)); its links name absolute guest paths. Not run on a live runtime.
 - The repository's git directory is mounted **read-only** at its host path, so `git log` and `git diff` work in the sandbox but the harness cannot move refs. Candidates are still snapshotted on the host.
 - The harness gets `HOME`, the variables named by `--pass-env`, copied from your environment at each turn, and the variables its [provisioning](provisioning.md) sets. Nothing else from your environment crosses: not your login, not `PATH`. The names are stored with the branch; the values are not. A named variable that is unset fails the turn.
 - Before the sandbox is created, [provisioning](provisioning.md) writes the harness's native files into the private home on the host (credentials from `--secret` at mode 0600, settings, MCP configuration where the driver cannot pass it), so the mount carries them in.

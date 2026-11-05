@@ -14,7 +14,9 @@ mod provider;
 mod transport;
 mod verify;
 
-pub use config::{Config, Network, Runtime, StoreVolume};
+pub use config::{
+    Config, Egress, GatewayService, Network, Runtime, StoreVolume, GOOGLE_API_BLOCKS, STORAGE_HOST,
+};
 pub use provider::AgentSandboxProvider;
 
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // tests: a panic is the failure report

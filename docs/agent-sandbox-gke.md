@@ -161,9 +161,60 @@ What the cluster needs, none of which the setup helper does:
      --role roles/storage.objectViewer \
      --member "principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/PROJECT_ID.svc.id.goog/subject/ns/NAMESPACE/sa/default"
    ```
-3. A route to Cloud Storage from the pod. The sidecar runs in the pod's network, so with `network = "deny"` (the default) it cannot read the bucket. Use `network = "unrestricted"`, or add your own egress rule for Google APIs; the provider adds none.
+3. A route to Cloud Storage from the pod. The sidecar runs in the pod's network, so it needs one even under `network = "deny"` (the default). The provider now adds it: with `store_bucket` set, the allocation's egress always allows Cloud Storage, `deny` included, and nothing else. See [Egress](#egress) for what it generates. The subnet must have Private Google Access (the setup helper already requires it) for the IP ranges to be useful; the name rule works through Cloud NAT.
 
-Not done: no pod mounted a bucket on a live cluster. Whether the driver works in the gVisor and the Kata runtimes of this provider, and the NetworkPolicy above, are unverified. A bucket keeps no file modes, so the mount sets `file-mode=755` and `dir-mode=755` to keep connector launchers (`bin/<id>`) runnable; read-only, so nothing writes through it.
+Not done: no pod mounted a bucket on a live cluster. Whether the driver works in the gVisor and the Kata runtimes of this provider, and the policies below, are unverified. A bucket keeps no file modes, so the mount sets `file-mode=755` and `dir-mode=755` (already in the options above) to keep connector launchers (`bin/<id>`) runnable; read-only, so nothing writes through it.
+
+## Egress
+
+A sandbox may reach the gateway, the model endpoint, the package mirrors and, when the tool store is a bucket, Cloud Storage, and nothing else ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery), step 5). The namespace's default deny stays; the provider adds, per allocation, objects generated from the turn and owned by its Sandbox:
+
+| `network` | What the allocation gets |
+|---|---|
+| `deny`, nothing to reach | No policy of its own: DNS, metadata and the Internet are denied, as before |
+| `deny`, with something to reach | A `NetworkPolicy` (egress only) and, when it lists hosts, a GKE `FQDNNetworkPolicy` |
+| `unrestricted` | A `NetworkPolicy` for the IPv4 Internet except the GKE metadata addresses, plus cluster DNS, as before; no FQDN policy |
+
+Under `deny` with something to reach, the `NetworkPolicy` allows:
+
+- cluster DNS (`kube-dns` and `node-local-dns` in `kube-system`, port 53), which the FQDN policy needs to resolve names;
+- the gateway's pods, when `gateway_service` names an in-cluster Service: pods in `namespace` labelled `app.kubernetes.io/name=NAME`, on `port` (a `NetworkPolicy` selects pods, not a Service, so the Service's pods must carry that label);
+- with `store_bucket`, the Private Google Access ranges `199.36.153.4/30` (`restricted.googleapis.com`) and `199.36.153.8/30` (`private.googleapis.com`), TCP 443, as IP blocks. There is no `0.0.0.0/0`.
+
+The `FQDNNetworkPolicy` (`networking.gke.io/v1alpha1`, selecting the pod by its owner label) allows TCP 443 to:
+
+- `egress_hosts` of `[agent_sandbox]`: the model endpoint, for example `api.anthropic.com`;
+- `[network] mirrors` that are a name or `*.suffix` on 443 (a mirror on another port, or an address, is not listed);
+- the host of `[connectors] sandbox_gateway` when it is a name;
+- with `store_bucket`, `storage.googleapis.com`.
+
+```toml
+[agent_sandbox]
+context = "gke_my-project_us-central1-a_branchyard-sandbox"
+namespace = "branchyard-gvisor"
+image = "us-docker.pkg.dev/my-project/by/worker@sha256:..."
+network = "deny"
+egress_hosts = ["api.anthropic.com"]
+gateway_service = { namespace = "branchyard-system", name = "anvil-gateway", port = 8931 }
+
+[network]
+allow = []                                   # the branch's own policy: nothing
+mirrors = ["pypi.org", "*.pythonhosted.org"]
+
+[tools]
+store = "/opt/branchyard/store"
+store_bucket = "BUCKET/PREFIX"               # Cloud Storage is allowed because of this
+```
+
+`egress_hosts` and `gateway_service` are the worker's configuration (its `[agent_sandbox]` section, as `Yard::configure` reads it), not part of a branch's provider options: a yard that was not configured has neither, and then only the mirrors, if any, and Cloud Storage are listed. A server has no such keys yet. A change between two uses of one allocation fails the receipt check, and the allocation is destroyed and made again. Each object is bound to the receipt, as the Sandbox and the Pod are. Before every exec the provider reads the namespace's policies and refuses the allocation if its own `NetworkPolicy` or `FQDNNetworkPolicy` has drifted (a host, port, range or rule added or removed), if one is missing, or if another policy that could select the pod exists. The FQDN policies are read only when the allocation has one. Removing the allocation deletes both by UID.
+
+What the cluster needs, none of which the setup helper does: Dataplane V2 with FQDN network policy enabled (`gcloud container clusters update CLUSTER --enable-fqdn-network-policy`; check the GKE release notes for the minimum version, which this page has not verified) and the `FQDNNetworkPolicy` API. Hosts are limited to 32 per allocation.
+
+Not done: no pod ran under these policies on a live cluster. Whether Dataplane V2 enforces the FQDN list for a gVisor or a Kata pod, and whether the sidecar reads a bucket through the ranges, are unverified. Evidence: hermetic, the fake `kubectl` of `crates/branchyard-agent-sandbox/tests/fake_kubectl.py`.
+
+## The tool tree at `/tools`
+
+Each pod mounts an `emptyDir` volume `tools` at `/tools` (64 MiB). The pod copies its home in, so the engine copies the tree it wrote under the home (`.branchyard/tools`) into this volume once the home is in, and sets `BRANCHYARD_TOOLS=/tools` for the harness. The volume is not read-only: the root filesystem is, and the engine writes through the same container; what a harness writes there is dropped with the pod. Container sandboxes get the same, as a private volume. Not done: a turn on a live cluster reading the tree there.
 
 ## Evidence and limits
 

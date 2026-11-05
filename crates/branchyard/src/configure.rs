@@ -134,6 +134,10 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
         .approvals
         .policy()
         .map_err(|e| section("[approvals]", e))?;
+    let mirrors = config
+        .network
+        .mirror_rules()
+        .map_err(|e| section("[network]", e))?;
     // The model gateway signs with the connector gateway's keys: the one
     // found here, else the one the yard already has.
     let existing = yard.connectors();
@@ -153,6 +157,7 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
     if let Some(store) = tool_store(&config.tools) {
         yard.use_tool_store(store);
     }
+    yard.use_mirrors(mirrors);
     if person.is_some() {
         yard.use_approvals(ApprovalSettings {
             person,

@@ -7,7 +7,7 @@ use branchyard_sandbox::{
     SandboxState,
 };
 
-use crate::config::{runtime_error, Config, Network};
+use crate::config::{runtime_error, Config};
 use crate::control::Control;
 use crate::manifest;
 use crate::owned::{Locked, Receipt, Store};
@@ -67,7 +67,7 @@ impl AgentSandboxProvider {
             receipt.sandbox_uid = Some(uid.clone());
             locked.write(receipt)?;
         }
-        if receipt.target.network == Network::Unrestricted {
+        if receipt.target.has_policy() {
             if self.control.get_here("networkpolicy", &name)?.is_none() {
                 if receipt.policy_uid.is_some() {
                     return Err(runtime_error(
@@ -85,6 +85,34 @@ impl AgentSandboxProvider {
                 .get_here("networkpolicy", &name)?
                 .ok_or_else(|| runtime_error("allocation network policy disappeared"))?;
             receipt.policy_uid = Some(verify::policy(&policy, receipt, &uid)?);
+            locked.write(receipt)?;
+        }
+        if receipt.target.has_fqdn_policy() {
+            if self
+                .control
+                .get_here(manifest::FQDN_RESOURCE, &name)?
+                .is_none()
+            {
+                if receipt.fqdn_policy_uid.is_some() {
+                    return Err(runtime_error(
+                        "recorded allocation FQDN network policy disappeared",
+                    ));
+                }
+                if let Err(error) = self.control.create(&manifest::fqdn_policy(receipt, &uid)) {
+                    if self
+                        .control
+                        .get_here(manifest::FQDN_RESOURCE, &name)?
+                        .is_none()
+                    {
+                        return Err(error);
+                    }
+                }
+            }
+            let policy = self
+                .control
+                .get_here(manifest::FQDN_RESOURCE, &name)?
+                .ok_or_else(|| runtime_error("allocation FQDN network policy disappeared"))?;
+            receipt.fqdn_policy_uid = Some(verify::fqdn_policy(&policy, receipt, &uid)?);
             locked.write(receipt)?;
         }
         verify::network(&self.control, receipt, &uid)?;
@@ -165,13 +193,25 @@ impl AgentSandboxProvider {
             }
             if let Some(policy) = self.control.get_here("networkpolicy", &resource_name)? {
                 verify::check(
-                    receipt.target.network == Network::Unrestricted,
+                    receipt.target.has_policy(),
                     "unexpected allocation policy in deny mode; refusing cascading deletion",
                 )?;
                 let policy_uid = verify::policy(&policy, &receipt, &uid)?;
                 if receipt.policy_uid.is_none() {
                     receipt.policy_uid = Some(policy_uid);
                     locked.write(&receipt)?;
+                }
+            }
+            if receipt.target.has_fqdn_policy() {
+                if let Some(policy) = self
+                    .control
+                    .get_here(manifest::FQDN_RESOURCE, &resource_name)?
+                {
+                    let policy_uid = verify::fqdn_policy(&policy, &receipt, &uid)?;
+                    if receipt.fqdn_policy_uid.is_none() {
+                        receipt.fqdn_policy_uid = Some(policy_uid);
+                        locked.write(&receipt)?;
+                    }
                 }
             }
             let path = format!(
@@ -223,6 +263,25 @@ impl AgentSandboxProvider {
             self.control.delete_uid(&path, &policy_uid)?;
             self.control
                 .wait("networkpolicy", &resource_name, "--for=delete")?;
+        }
+        if receipt.target.has_fqdn_policy() {
+            if let Some(policy) = self
+                .control
+                .get_here(manifest::FQDN_RESOURCE, &resource_name)?
+            {
+                let sandbox_uid = receipt.sandbox_uid.as_deref().ok_or_else(|| {
+                    runtime_error("cannot clean FQDN policy without a recorded Sandbox UID")
+                })?;
+                let policy_uid = verify::fqdn_policy(&policy, &receipt, sandbox_uid)?;
+                let path = format!(
+                    "{}/{}/fqdnnetworkpolicies/{resource_name}",
+                    manifest::FQDN_COLLECTION,
+                    receipt.target.namespace
+                );
+                self.control.delete_uid(&path, &policy_uid)?;
+                self.control
+                    .wait(manifest::FQDN_RESOURCE, &resource_name, "--for=delete")?;
+            }
         }
         locked.remove()
     }

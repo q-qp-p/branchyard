@@ -57,7 +57,7 @@ elif args[:2] == ["container", "inspect"]:
 elif args[:2] == ["container", "create"]:
     assert "container" not in state
     labels = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label")
-    mounts = [{"Type": "volume", "Target": target} for target in ["/workspace", "/branchyard/home"]]
+    mounts = [{"Type": "volume", "Target": target} for target in ["/workspace", "/branchyard/home", "/tools"]]
     state["container"] = {
         "Id": "c" * 64, "Name": "/" + value("--name"), "Image": "sha256:" + "b" * 64,
         "Config": {"Labels": labels, "Image": args[-3], "User": value("--user"),
@@ -74,8 +74,8 @@ elif args[:2] == ["container", "create"]:
                        "Tmpfs": {"/tmp": value("--tmpfs").split(":", 1)[1]}},
         "Mounts": [{"Type": "volume", "Driver": "local", "RW": True,
                     "Name": letter * 64, "Destination": target}
-                   for letter, target in [("d", "/workspace"), ("e", "/branchyard/home")]]}
-    state["volumes"] = ["d" * 64, "e" * 64]
+                   for letter, target in [("d", "/workspace"), ("e", "/branchyard/home"), ("f", "/tools")]]}
+    state["volumes"] = ["d" * 64, "e" * 64, "f" * 64]
     save()
     if mode == "create-gap":
         sys.exit(1)

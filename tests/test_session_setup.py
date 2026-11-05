@@ -8,12 +8,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "session_setup.sh"
+ANVIL = ROOT / "tests" / "fixtures" / "anvil" / "anvil"
 
 
 class SessionSetup(unittest.TestCase):
@@ -82,7 +84,8 @@ class HostTools(unittest.TestCase):
     def test_the_store_is_pulled_from_a_bucket_or_a_registry_and_anvil_is_installed_under_its_prefix(self):
         log = shlex.quote(str(self.log))
         self.fake("by", f'echo "by $*" >> {log}')
-        self.fake("anvil", f'echo "anvil $*" >> {log}')
+        # The contract's mock, which logs each call and lays out a real install.
+        self.fake("anvil", f'ANVIL_MOCK_LOG={log} exec {shlex.quote(sys.executable)} {shlex.quote(str(ANVIL))} "$@"')
         self.fake("sudo", 'exec "$@"')
         prefix = str(self.root / "anvil-prefix")
         result = self.run_setup(BRANCHYARD_TOOLS_FROM="gs://acme-tools/store", BRANCHYARD_ANVIL_PREFIX=prefix)
@@ -96,6 +99,11 @@ class HostTools(unittest.TestCase):
             ],
         )
         self.assertTrue(self.store.is_dir())
+        # The install happened: a version directory, `current` switched to it, a manifest.
+        installed = Path(prefix) / "current"
+        self.assertTrue(installed.is_symlink())
+        self.assertTrue((installed / "manifest.json").is_file())
+        self.assertTrue((installed / "env.sh").is_file())
         self.log.unlink()
         result = self.run_setup(BRANCHYARD_TOOLS_OCI="us-docker.pkg.dev/acme/tools/store")
         self.assertEqual(result.returncode, 0, result.stderr)

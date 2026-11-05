@@ -783,7 +783,10 @@ fn run(
         }
     };
     let mut model_gateway = None;
-    let mut egress_extra = Vec::new();
+    let mut turn_hosts = crate::egress::TurnHosts {
+        mirrors: turn.yard.mirrors(),
+        ..crate::egress::TurnHosts::default()
+    };
     let mut model_env = Vec::new();
     let mut model_scrub = Vec::new();
     // The gateway as a provisioner sees it, for a harness whose provider
@@ -793,7 +796,7 @@ fn run(
         None => {}
         Some(crate::models::Prepared::Direct { hosts, activity }) => {
             recorder.record(Activity::Model(Box::new(activity)))?;
-            egress_extra.extend(hosts);
+            turn_hosts.model_endpoints.extend(hosts);
         }
         Some(crate::models::Prepared::Gateway {
             gateway,
@@ -810,7 +813,7 @@ fn run(
                 });
             }
             recorder.record(Activity::Model(Box::new(activity)))?;
-            egress_extra.extend(crate::egress::gateway_rule(&url));
+            turn_hosts.model_gateway = crate::egress::gateway_rule(&url);
             model_env = env;
             model_scrub = scrub;
             model_gateway = Some(*gateway);
@@ -1096,9 +1099,9 @@ fn run(
         .as_ref()
         .and_then(|c| crate::egress::gateway_rule(&c.gateway_url))
     {
-        egress_extra.push(gateway);
+        turn_hosts.connector_gateway = Some(gateway);
     }
-    match crate::egress::prepare(turn.yard, &scoped, egress_extra) {
+    match crate::egress::prepare(turn.yard, &scoped, turn_hosts) {
         Ok(None) => {}
         Ok(Some(egress)) => {
             recorder.record(egress.applied())?;

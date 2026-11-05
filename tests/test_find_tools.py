@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -237,6 +238,154 @@ class Command(Tree):
         self.assertIn("calculate", done.stdout)
         bad = subprocess.run([str(installed)], capture_output=True, text=True, check=False)
         self.assertEqual(bad.returncode, 2)
+
+
+ANVIL = ROOT / "tests/fixtures/anvil/anvil"
+BUNDLES = ROOT / "tests/fixtures/anvil/bundles"
+
+
+def package(connectors: Path, name: str) -> Path:
+    """`anvil package harness` of the fixture bundle `name`, by the mock, into `connectors/name`."""
+    out = connectors / name
+    done = subprocess.run(
+        [str(ANVIL), "package", "harness", str(BUNDLES / name), "--out", str(out), "--connector", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return out
+
+
+class Contract(unittest.TestCase):
+    """A package from the Anvil mock carries `search.json`, and `tools` reads that, strictly."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        self.tools = self.base / "tools"
+        write(self.tools / "INDEX.md", "# Your tools\n")
+        self.connectors = self.base / "connectors"
+        self.connectors.mkdir()
+        os.symlink("../connectors", self.tools / "connectors")
+        self.github = package(self.connectors, "github")
+        package(self.connectors, "linear")
+
+    def index(self) -> dict:
+        return json.loads((self.github / "search.json").read_text())
+
+    def put(self, data) -> None:
+        (self.github / "search.json").write_text(json.dumps(data))
+
+    def test_operations_are_found_from_the_index_by_title_terms_and_tags(self):
+        for words, want in [
+            (["list", "issues"], "github.issues.list"),
+            (["open", "issue"], "github.issues.create"),
+            (["merge", "pull"], "github.pulls.merge"),
+            (["tickets"], "linear.tickets.search"),
+        ]:
+            code, out, err = run(self.tools, "search", *words)
+            self.assertEqual((code, err), (0, ""), words)
+            self.assertIn(want, out.splitlines()[0], (words, out))
+
+    def test_a_pending_operation_is_not_in_the_index_so_it_is_not_found(self):
+        self.assertNotIn("drafts.publish", (self.github / "search.json").read_text())
+        code, out, _ = run(self.tools, "search", "publish", "draft")
+        self.assertNotIn("drafts", out)
+        self.assertEqual(code, 1)
+
+    def test_the_index_wins_over_the_tolerant_files_which_are_not_read_beside_it(self):
+        write(
+            self.github / "harness.json",
+            json.dumps({"operations": [{"id": "github.ghost.haunt", "description": "Haunt a repository"}]}),
+        )
+        code, out, _ = run(self.tools, "search", "haunt")
+        self.assertEqual((code, out), (1, ""))
+        code, out, _ = run(self.tools, "show", "github")
+        self.assertEqual(code, 0)
+        self.assertIn("issues.list: List issues in a repository, filtered by state.", out)
+        self.assertNotIn("ghost", out)
+
+    def test_a_package_without_an_index_is_still_read_tolerantly(self):
+        (self.github / "search.json").unlink()
+        code, out, _ = run(self.tools, "search", "list", "issues")
+        self.assertEqual(code, 0)
+        self.assertIn("github.issues.list", out)
+
+    def test_the_schema_is_the_file_the_index_names(self):
+        code, out, _ = run(self.tools, "schema", "github.issues.create")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["required"], ["title"])
+        code, _, err = run(self.tools, "schema", "github.issues.nothing")
+        self.assertEqual(code, 1)
+        self.assertIn("no such operation github.issues.nothing in github/search.json", err)
+
+    def test_a_malformed_index_is_refused_with_its_file_and_field_and_the_rest_still_answers(self):
+        cases = {
+            "wrong schema": (lambda d: d.update(schema="anvil.search/v2"), "github/search.json: schema:"),
+            "wrong connector": (lambda d: d.update(connector="gitlab"), "connector:"),
+            "bad hash": (lambda d: d.update(bundle_hash="abc"), "bundle_hash:"),
+            "no icon key": (lambda d: d.pop("icon"), "icon: is missing"),
+            "bad icon": (lambda d: d.update(icon="GitHub"), "icon:"),
+            "operations not a list": (lambda d: d.update(operations={}), "operations: must be a list"),
+            "missing field": (lambda d: d["operations"][0].pop("summary"), "operations[0].summary: is missing"),
+            "wrong type": (lambda d: d["operations"][0].update(confirm="no"), "operations[0].confirm:"),
+            "unknown effect": (lambda d: d["operations"][1].update(effect="destroy"), "operations[1].effect:"),
+            "unknown idempotency": (lambda d: d["operations"][0].update(idempotency="maybe"), "idempotency:"),
+            "id without the connector": (lambda d: d["operations"][0].update(id="issues.x"), "operations[0].id:"),
+            "unsorted": (lambda d: d["operations"].reverse(), "out of order"),
+            "long summary": (lambda d: d["operations"][0].update(summary="x" * 161), "summary:"),
+            "two-line summary": (lambda d: d["operations"][0].update(summary="a\nb"), "summary:"),
+            "upper-case term": (lambda d: d["operations"][0].update(terms=["Issue"]), "terms:"),
+            "schema escapes": (
+                lambda d: d["operations"][0].update(schema="../linear/search.json"),
+                "inside the package",
+            ),
+            "schema missing": (lambda d: d["operations"][0].update(schema="schemas/none.json"), "does not exist"),
+        }
+        for name, (change, want) in cases.items():
+            with self.subTest(name):
+                data = self.index()
+                change(data)
+                self.put(data)
+                code, out, err = run(self.tools, "search", "tickets")
+                self.assertEqual(code, 3, (name, err))
+                self.assertIn("linear.tickets.search", out)
+                self.assertIn(want, err)
+                self.assertIn("none of that connector's operations are searched", err)
+                self.assertNotIn("github.", out)
+                code, _, err = run(self.tools, "schema", "github.issues.list")
+                self.assertEqual(code, 3, name)
+                self.assertIn(want, err)
+                package(self.connectors, "github")  # the mock writes a good one again
+
+    def test_an_index_that_is_not_json_is_refused_not_read_as_a_tolerant_package(self):
+        (self.github / "search.json").write_text("{not json")
+        code, _, err = run(self.tools, "search", "issues")
+        self.assertEqual(code, 3)
+        self.assertIn("github/search.json: cannot be read as JSON", err)
+
+    def test_nothing_else_to_find_still_reports_the_refusal(self):
+        shutil.rmtree(self.connectors / "linear")
+        (self.github / "search.json").write_text("[]")
+        code, out, err = run(self.tools, "search", "zebra")
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("must be a JSON object", err)
+
+    def test_two_runs_of_the_mock_give_the_same_bytes(self):
+        first = (self.github / "search.json").read_bytes()
+        package(self.connectors, "github")
+        self.assertEqual((self.github / "search.json").read_bytes(), first)
+
+    def test_the_sandbox_root_variable_names_the_tree(self):
+        os.environ["BRANCHYARD_TOOLS"] = str(self.tools)
+        self.addCleanup(os.environ.pop, "BRANCHYARD_TOOLS", None)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = find_tools.main(["search", "tickets"])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("linear.tickets.search", out.getvalue())
 
 
 class Shipped(unittest.TestCase):

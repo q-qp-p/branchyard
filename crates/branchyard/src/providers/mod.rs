@@ -129,6 +129,15 @@ pub(crate) trait ProviderKind {
         !self.sandboxed()
     }
 
+    /// Where the guest also sees the tool tree (`docs/tools-model.md`), when
+    /// this provider controls the guest filesystem: `/tools`, as a read-only
+    /// mount of the host's tree or a copy made after the home. A guest then
+    /// gets `BRANCHYARD_TOOLS` set to it. `None` keeps the tree under the
+    /// home only, as for a local harness.
+    fn tools_root(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Whether a network policy can be enforced on this host for a
     /// harness run by this provider, rather than only for a local one.
     fn confines_egress(&self) -> bool {

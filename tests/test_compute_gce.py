@@ -651,18 +651,29 @@ class ComputeGceTests(unittest.TestCase):
             missing = run(empty)
             self.assertEqual(missing.returncode, 0, missing.stderr)
             self.assertIn("skipping the Anvil toolchain", missing.stderr)
+            # The contract's mock is `anvil`; ANVIL_MOCK_ROOT keeps its /opt/anvil under the test's directory.
+            mock = Path(__file__).resolve().parent / "fixtures" / "anvil" / "anvil"
             for name, body in {
                 "sudo": 'exec "$@"',
-                "anvil": f'echo "anvil $*" >> {shlex.quote(str(log))}',
+                "anvil": f'exec {shlex.quote(sys.executable)} {shlex.quote(str(mock))} "$@"',
             }.items():
                 tool = fakes / name
                 tool.write_text(f"#!/bin/sh\n{body}\n")
                 tool.chmod(0o755)
-            installed = run(fakes)
+            installed = subprocess.run(
+                ["/bin/bash", "-eu", "-c", gce.ANVIL_INSTALL],
+                env={"PATH": str(fakes), "ANVIL_MOCK_LOG": str(log), "ANVIL_MOCK_ROOT": str(Path(raw) / "root")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
             self.assertEqual(installed.returncode, 0, installed.stderr)
             self.assertEqual(
                 log.read_text().splitlines(), ["anvil install --help", "anvil install --prefix /opt/anvil"]
             )
+            current = Path(raw) / "root/opt/anvil/current"
+            self.assertTrue((current / "manifest.json").is_file(), "the mock laid out a version under the prefix")
+            self.assertTrue((current / "env.sh").is_file())
 
     def test_gvisor_is_explicit_pinned_prerequisites_for_either_backend(self):
         import install_container_runtime as runtime

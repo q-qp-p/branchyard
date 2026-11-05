@@ -739,12 +739,29 @@ fn only_a_provider_that_sees_the_store_at_its_path_is_given_links_to_it() {
     // The mount is read-only, at the same path, and only for a store that
     // exists.
     let mut record = record(&sandbox("microsandbox"));
-    record.home = Some("/h".into());
+    let home = branchyard_testkit::Scratch::new("provider-home");
+    record.home = Some(home.path().to_path_buf());
     let options = SandboxOptions {
         image: "i".into(),
         ..SandboxOptions::default()
     };
-    let (spec, _) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    let (spec, env) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    // The tool tree is also at /tools, read-only, and the guest is told so.
+    let tree = spec
+        .mounts
+        .iter()
+        .find(|m| m.guest == std::path::Path::new("/tools"))
+        .expect("the tool tree is mounted at /tools");
+    assert_eq!(tree.host, home.path().join(".branchyard/tools"));
+    assert!(!tree.writable);
+    assert!(
+        tree.host.is_dir(),
+        "made now, for the mount to have a source"
+    );
+    assert_eq!(
+        env.get(std::ffi::OsStr::new("BRANCHYARD_TOOLS")).unwrap(),
+        "/tools"
+    );
     let mount = spec
         .mounts
         .iter()
@@ -765,4 +782,72 @@ fn only_a_provider_that_sees_the_store_at_its_path_is_given_links_to_it() {
     assert!(sees(&sandbox("agent_sandbox")));
     assert!(!sees(&sandbox("container")));
     assert!(!sees(&sandbox("substrate")));
+}
+
+/// A provider that controls the guest filesystem exposes the tool tree at
+/// `/tools`; a local harness and the copies that cannot (a Substrate actor,
+/// a recipe's machine) keep it under the home.
+#[test]
+fn the_providers_that_control_the_guest_filesystem_expose_the_tool_tree_at_a_root() {
+    let f = fixture();
+    let usable = samples(&f);
+    let root = |name: &str| {
+        let provider = usable
+            .iter()
+            .map(|(ok, _)| ok)
+            .find(|p| p.name() == name)
+            .unwrap();
+        of(Some(provider)).tools_root()
+    };
+    for name in ["microsandbox", "container", "agent_sandbox"] {
+        assert_eq!(root(name), Some("/tools"), "{name}");
+    }
+    for name in ["substrate", "recipe"] {
+        assert_eq!(root(name), None, "{name}");
+    }
+    assert_eq!(of(None).tools_root(), None);
+}
+
+/// A `deny` Agent Sandbox may reach, by name, the worker's `egress_hosts`
+/// (`[agent_sandbox]`) and the package mirrors a name policy can hold (a name
+/// or `*.suffix` on 443), once each and sorted, and the gateway Service it
+/// names; a mirror on another port or at an address is left out. The branch
+/// carries none of it.
+#[test]
+fn an_agent_sandbox_may_reach_the_workers_hosts_and_mirrors_by_name() {
+    let f = fixture();
+    let text = format!(
+        "version = 1\n[network]\nallow = []\nmirrors = [\"pypi.org\", \"*.pythonhosted.org\", \
+         \"registry.npmjs.org:443\", \"mirror.internal:8080\", \"api.anthropic.com\"]\n\
+         [agent_sandbox]\ncontext = \"c\"\nnamespace = \"n\"\nimage = \"example.test/r@sha256:{}\"\n\
+         egress_hosts = [\"api.anthropic.com\", \"gateway.example.com\"]\n\
+         gateway_service = {{ namespace = \"branchyard-system\", name = \"anvil-gateway\", port = 8931 }}\n",
+        "a".repeat(64)
+    );
+    // No configuration, nothing to reach.
+    assert!(super::agent_sandbox::yard_egress(&f.yard).is_empty());
+    f.yard
+        .configure(&crate::config::parse(&text).unwrap())
+        .unwrap();
+    let egress = super::agent_sandbox::yard_egress(&f.yard);
+    assert_eq!(
+        egress.hosts,
+        [
+            "*.pythonhosted.org",
+            "api.anthropic.com",
+            "gateway.example.com",
+            "pypi.org",
+            "registry.npmjs.org"
+        ]
+    );
+    assert_eq!(egress.gateway.as_ref().unwrap().port, 8931);
+    let options = AgentSandboxOptions {
+        context: "c".into(),
+        namespace: "n".into(),
+        image: format!("example.test/r@sha256:{}", "a".repeat(64)),
+        ..AgentSandboxOptions::default()
+    };
+    let config = options.config_with(None, egress);
+    config.validate().unwrap();
+    assert_eq!(config.fqdn_hosts().len(), 5);
 }

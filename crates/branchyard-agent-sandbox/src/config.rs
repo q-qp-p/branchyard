@@ -42,6 +42,74 @@ pub enum Network {
     Unrestricted,
 }
 
+/// The Cloud Storage API host a Cloud Storage FUSE sidecar reads the tool
+/// store through. Always allowed when the allocation mounts a store, even
+/// under [`Network::Deny`]: the sidecar runs in the pod's network namespace.
+pub const STORAGE_HOST: &str = "storage.googleapis.com";
+
+/// The Private Google Access ranges (`restricted.googleapis.com` and
+/// `private.googleapis.com`), allowed as IP blocks on port 443 with the
+/// store, for a subnet that routes Google APIs to them.
+pub const GOOGLE_API_BLOCKS: [&str; 2] = ["199.36.153.4/30", "199.36.153.8/30"];
+
+/// An in-cluster Service an allocation may reach: the connector gateway.
+/// The `NetworkPolicy` selects the Service's pods by the label
+/// `app.kubernetes.io/name=NAME` in `namespace`, on `port`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GatewayService {
+    /// The namespace the Service is in.
+    pub namespace: String,
+    /// The Service's name, also the value of its pods' `app.kubernetes.io/name` label.
+    pub name: String,
+    /// The TCP port the pods listen on.
+    pub port: u16,
+}
+
+/// What a [`Network::Deny`] allocation may reach besides DNS, and nothing
+/// else: the gateway, and hosts by name (the model endpoint, package
+/// mirrors, the gateway's own host when it is not in the cluster). Hosts
+/// become a GKE `FQDNNetworkPolicy` (`networking.gke.io/v1alpha1`) on port
+/// 443. With a [`StoreVolume`] the Cloud Storage API is allowed too, whatever
+/// is listed here.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Egress {
+    /// The connector gateway, when it runs in this cluster.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<GatewayService>,
+    /// DNS names, or `*.suffix` patterns, reached on port 443.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
+}
+
+impl Egress {
+    /// Whether it allows nothing.
+    pub fn is_empty(&self) -> bool {
+        self.gateway.is_none() && self.hosts.is_empty()
+    }
+}
+
+/// A host name an `FQDNNetworkPolicy` can match: lower-case DNS labels with
+/// at least one dot, or such a name led by `*.`.
+fn fqdn(host: &str) -> bool {
+    let name = host.strip_prefix("*.").unwrap_or(host);
+    name.len() <= 253
+        && name.contains('.')
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+        && !name.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+}
+
 /// A Cloud Storage bucket that holds Branchyard's shared tool store, mounted
 /// read-only into the allocation with the Cloud Storage FUSE CSI driver
 /// (`docs/agent-sandbox-gke.md`).
@@ -129,9 +197,43 @@ pub struct Config {
     /// can read the bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreVolume>,
+    /// What a `deny` allocation may reach besides DNS (and Cloud Storage,
+    /// with a `store`); ignored under `unrestricted`.
+    #[serde(default, skip_serializing_if = "Egress::is_empty")]
+    pub egress: Egress,
 }
 
 impl Config {
+    /// The hosts the allocation's `FQDNNetworkPolicy` lists: `egress.hosts`
+    /// and, with a store, [`STORAGE_HOST`]; sorted, once each. Empty for
+    /// `unrestricted`, which needs no list.
+    pub fn fqdn_hosts(&self) -> Vec<String> {
+        if self.network != Network::Deny {
+            return Vec::new();
+        }
+        let mut hosts: Vec<String> = self.egress.hosts.clone();
+        if self.store.is_some() {
+            hosts.push(STORAGE_HOST.to_owned());
+        }
+        hosts.sort();
+        hosts.dedup();
+        hosts
+    }
+
+    /// Whether the allocation has a `NetworkPolicy` of its own: the open
+    /// one under `unrestricted`, and under `deny` the one that lets through
+    /// DNS, the gateway and Cloud Storage, when there is anything to let through.
+    pub(crate) fn has_policy(&self) -> bool {
+        self.network == Network::Unrestricted
+            || self.egress.gateway.is_some()
+            || self.has_fqdn_policy()
+    }
+
+    /// Whether the allocation has an `FQDNNetworkPolicy`.
+    pub(crate) fn has_fqdn_policy(&self) -> bool {
+        !self.fqdn_hosts().is_empty()
+    }
+
     /// Validate the target without invoking kubectl or touching local state.
     pub fn validate(&self) -> Result<(), ProviderError> {
         if self.context.is_empty()
@@ -145,6 +247,21 @@ impl Config {
         }
         if let Some(store) = &self.store {
             store.validate()?;
+        }
+        if let Some(gateway) = &self.egress.gateway {
+            if !dns_label(&gateway.namespace) || !dns_label(&gateway.name) || gateway.port == 0 {
+                return Err(invalid(
+                    "the gateway Service needs a namespace, a name (DNS labels) and a port",
+                ));
+            }
+        }
+        if self.egress.hosts.len() > 32 {
+            return Err(invalid("at most 32 egress hosts are allowed"));
+        }
+        if let Some(bad) = self.egress.hosts.iter().find(|host| !fqdn(host)) {
+            return Err(invalid(&format!(
+                "egress host {bad:?} must be a lower-case DNS name or *.suffix, without a scheme, port or path"
+            )));
         }
         Ok(())
     }

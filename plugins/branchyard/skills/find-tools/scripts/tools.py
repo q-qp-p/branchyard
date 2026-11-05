@@ -7,9 +7,18 @@
 
 The tree is the directory this script's `bin/` sits in: `INDEX.md`, `skills/`,
 `connectors/` and, when helpers were chosen, `helpers/INDEX.md`. Pass `--root DIR`
-or set BRANCHYARD_TOOLS_DIR to read another. Standard library only.
+or set BRANCHYARD_TOOLS_DIR (or BRANCHYARD_TOOLS, which a sandbox sets to /tools) to read
+another. Standard library only.
 
-Exit status: 0 found, 1 nothing found or nothing recorded, 2 bad usage.
+A connector package with a `search.json` (Anvil's operation search index,
+docs/anvil-contract-v2.md item 3) is read from it, and strictly: a malformed one is refused
+with a message that names the file and the field, none of that connector's operations are
+searched, and the command exits 3 after answering with everything else. Only a package
+without `search.json` is read tolerantly, from `harness.json`, `compose.json`, `schemas/`
+and `reference/`.
+
+Exit status: 0 found, 1 nothing found or nothing recorded, 2 bad usage, 3 a `search.json`
+was refused.
 """
 
 from __future__ import annotations
@@ -31,6 +40,34 @@ HEADING_OP = re.compile(r"^#{2,5}\s+`?(" + OP_ID.pattern + r")`?\s*(?:[-:—]\s*
 TABLE_OP = re.compile(r"^\|\s*`?(" + OP_ID.pattern + r")`?\s*\|\s*([^|]*)\|")
 LIST_ITEM = re.compile(r"^[-*]\s+`?([^`:]+?)`?\s*(?:\([^)]*\))?\s*:\s*(.+)$")
 SCHEMA_KEYS = ("input_schema", "inputSchema", "schema", "parameters")
+
+# The operation search index of docs/anvil-contract-v2.md, item 3 ("anvil.search/v1").
+SEARCH_FILE = "search.json"
+SEARCH_SCHEMA = "anvil.search/v1"
+EFFECTS = ("read", "reversible", "compensable", "irreversible")
+IDEMPOTENCY = ("safe", "keyed", "none")
+SUMMARY_MAX = 160
+SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+BUNDLE_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+SEGMENT = r"[A-Za-z0-9_-]+"
+OPERATION_FIELDS: dict[str, Any] = {
+    "id": str,
+    "title": str,
+    "summary": str,
+    "effect": str,
+    "risk": (str, type(None)),
+    "confirm": bool,
+    "idempotency": str,
+    "resource": str,
+    "tags": list,
+    "terms": list,
+    "schema": str,
+    "cli": str,
+}
+
+
+class SearchIndexError(Exception):
+    """A package's `search.json` is not the contract's: the message says which file and field."""
 
 
 class Doc(NamedTuple):
@@ -160,6 +197,89 @@ def operations_from_mapping(data: Any) -> list[tuple[str, str, Any]]:
     return operations_from_json(data)
 
 
+def validate_search(data: Any, package: Path, connector: str) -> list[dict[str, Any]]:
+    """The operations of a `search.json`, or SearchIndexError naming the first field that is wrong.
+
+    Unknown fields are ignored (a later Anvil may add some); every field the contract lists
+    must be there, of its type and in its range. Operations are unique and sorted by id.
+    """
+    label = f"{package.name}/{SEARCH_FILE}"
+
+    def bad(where: str, why: str) -> SearchIndexError:
+        return SearchIndexError(f"{label}: {where}: {why}")
+
+    if not isinstance(data, dict):
+        raise bad("the file", "must be a JSON object")
+    if data.get("schema") != SEARCH_SCHEMA:
+        raise bad("schema", f"is {data.get('schema')!r}; this reader understands {SEARCH_SCHEMA!r}")
+    if data.get("connector") != connector:
+        raise bad("connector", f"is {data.get('connector')!r} but the package directory is {connector!r}")
+    if not isinstance(data.get("bundle_hash"), str) or not BUNDLE_HASH.match(data["bundle_hash"]):
+        raise bad("bundle_hash", "must be 'sha256:' and 64 lower-case hex digits")
+    if "icon" not in data:
+        raise bad("icon", "is missing (use null for none)")
+    icon = data["icon"]
+    if icon is not None and (not isinstance(icon, str) or len(icon) > 64 or not SLUG.match(icon)):
+        raise bad("icon", "must be null or a lower-case slug of at most 64 characters")
+    listed = data.get("operations")
+    if not isinstance(listed, list):
+        raise bad("operations", "must be a list")
+    inside = package.resolve()
+    id_pattern = re.compile(rf"^{re.escape(connector)}(\.{SEGMENT})+$")
+    previous = ""
+    out: list[dict[str, Any]] = []
+    for index, op in enumerate(listed):
+        at = f"operations[{index}]"
+        if not isinstance(op, dict):
+            raise bad(at, "must be an object")
+        for field, kind in OPERATION_FIELDS.items():
+            if field not in op:
+                raise bad(f"{at}.{field}", "is missing")
+            value = op[field]
+            if not isinstance(value, kind) or (kind is str and not value.strip()):
+                what = "a non-empty string" if kind is str else "of the type the contract gives it"
+                raise bad(f"{at}.{field}", f"must be {what}")
+        ident = op["id"]
+        if not id_pattern.match(ident):
+            raise bad(f"{at}.id", f"{ident!r} must be '{connector}.' and dotted names of letters, digits, _ and -")
+        if ident <= previous:
+            raise bad(f"{at}.id", f"{ident!r} is repeated or out of order; operations are unique and sorted by id")
+        previous = ident
+        if "\n" in op["summary"] or len(op["summary"]) > SUMMARY_MAX:
+            raise bad(f"{at}.summary", f"must be one line of at most {SUMMARY_MAX} characters")
+        if op["effect"] not in EFFECTS:
+            raise bad(f"{at}.effect", f"{op['effect']!r} is not one of {', '.join(EFFECTS)}")
+        if op["idempotency"] not in IDEMPOTENCY:
+            raise bad(f"{at}.idempotency", f"{op['idempotency']!r} is not one of {', '.join(IDEMPOTENCY)}")
+        if op["risk"] is not None and not op["risk"].strip():
+            raise bad(f"{at}.risk", "must be null or a non-empty string")
+        for field in ("tags", "terms"):
+            if not all(isinstance(item, str) and item.strip() for item in op[field]):
+                raise bad(f"{at}.{field}", "must be a list of non-empty strings")
+        if not all(re.fullmatch(r"[a-z0-9]+", item) for item in op["terms"]):
+            raise bad(f"{at}.terms", "must be lower-case words of letters and digits")
+        relative = Path(op["schema"])
+        target = (inside / relative).resolve()
+        if relative.is_absolute() or ".." in relative.parts or inside not in target.parents:
+            raise bad(f"{at}.schema", f"{op['schema']!r} must be a path inside the package")
+        if not target.is_file():
+            raise bad(f"{at}.schema", f"{op['schema']!r} does not exist in the package")
+        out.append(op)
+    return out
+
+
+def search_index(package: Path, connector: str) -> list[dict[str, Any]] | None:
+    """The package's validated `search.json` operations, or None when it has no such file."""
+    path = package / SEARCH_FILE
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SearchIndexError(f"{package.name}/{SEARCH_FILE}: cannot be read as JSON: {error}") from error
+    return validate_search(data, package, connector)
+
+
 def operations(package: Path, connector: str) -> list[tuple[str, str, Any, str]]:
     """Every operation a connector package declares: (id, description, schema, where found)."""
     found: dict[str, tuple[str, Any, str]] = {}
@@ -197,7 +317,7 @@ def operations(package: Path, connector: str) -> list[tuple[str, str, Any, str]]
     return [(ident, d, s, src) for ident, (d, s, src) in sorted(found.items())]
 
 
-def connector_docs(root: Path) -> list[Doc]:
+def connector_docs(root: Path, refused: list[str] | None = None) -> list[Doc]:
     base = directory(root, "connectors", "connectors")
     docs: list[Doc] = []
     if not base.is_dir():
@@ -222,6 +342,22 @@ def connector_docs(root: Path) -> list[Doc]:
                 connector=name,
             )
         )
+        try:
+            indexed = search_index(package, name)
+        except SearchIndexError as error:
+            if refused is not None:
+                refused.append(str(error))
+            continue
+        if indexed is not None:
+            for op in indexed:
+                ident = op["id"].removeprefix(name + ".")
+                text = " ".join(
+                    [op["id"], ident.replace(".", " "), op["title"], op["summary"], op["resource"], op["effect"]]
+                    + op["tags"]
+                    + op["terms"]
+                )
+                docs.append(Doc("operation", op["id"], op["summary"], package, text, connector=name, op=ident))
+            continue
         for ident, op_description, _, _ in operations(package, name):
             full = f"{name}.{ident}"
             docs.append(
@@ -252,8 +388,9 @@ def helper_docs(root: Path) -> list[Doc]:
     return docs
 
 
-def documents(root: Path) -> list[Doc]:
-    return skill_docs(root) + connector_docs(root) + helper_docs(root)
+def documents(root: Path, refused: list[str] | None = None) -> list[Doc]:
+    """Everything findable in the tree; `refused` collects the messages of refused `search.json` files."""
+    return skill_docs(root) + connector_docs(root, refused) + helper_docs(root)
 
 
 def tokens(text: str) -> list[str]:
@@ -290,18 +427,26 @@ def line(doc: Doc) -> str:
     return f"{doc.kind:<10} {doc.id}" + (f": {description}" if description else "")
 
 
+def report(refused: list[str]) -> int:
+    """Say each refused `search.json` on stderr; the exit status when there were any, else 0."""
+    for message in refused:
+        print(f"tools: refused {message}; none of that connector's operations are searched", file=sys.stderr)
+    return 3 if refused else 0
+
+
 def search(root: Path, words: list[str], limit: int, kind: str | None) -> int:
-    docs = [d for d in documents(root) if kind in (None, d.kind)]
+    refused: list[str] = []
+    docs = [d for d in documents(root, refused) if kind in (None, d.kind)]
     if not docs:
         print(f"nothing to search: {root} holds no skills, connectors or helpers", file=sys.stderr)
-        return 1
+        return report(refused) or 1
     hits = rank(docs, words)[:limit]
     if not hits:
         print(f"no tool matches {' '.join(words)!r}; read {root / 'INDEX.md'} for the whole list", file=sys.stderr)
-        return 1
+        return report(refused) or 1
     for _, doc in hits:
         print(line(doc))
-    return 0
+    return report(refused)
 
 
 def find(docs: list[Doc], ident: str) -> Doc | None:
@@ -318,13 +463,14 @@ def find(docs: list[Doc], ident: str) -> Doc | None:
 
 
 def show(root: Path, ident: str) -> int:
-    docs = documents(root)
+    refused: list[str] = []
+    docs = documents(root, refused)
     doc = find(docs, ident)
     if doc is None:
         near = [d.id for _, d in rank(docs, [ident])[:5]]
         hint = f"; closest: {', '.join(near)}" if near else ""
         print(f"no tool {ident!r} here{hint}", file=sys.stderr)
-        return 1
+        return report(refused) or 1
     if doc.kind == "skill" and doc.path is not None:
         print(f"# {doc.path}\n")
         print(read(doc.path).rstrip())
@@ -345,7 +491,7 @@ def show(root: Path, ident: str) -> int:
         print(f"schema: tools schema {doc.id}")
     else:
         print(f"helper {doc.id}: {doc.description}")
-    return 0
+    return report(refused)
 
 
 def schema(root: Path, spec: str) -> int:
@@ -360,6 +506,24 @@ def schema(root: Path, spec: str) -> int:
             f"usage: tools schema CONNECTOR.OPERATION; connectors here: {', '.join(known) or 'none'}", file=sys.stderr
         )
         return 1
+    try:
+        indexed = search_index(package, connector)
+    except SearchIndexError as error:
+        return report([str(error)])
+    if indexed is not None:
+        entry = next((o for o in indexed if o["id"] == f"{connector}.{op}"), None)
+        if entry is None:
+            print(
+                f"no such operation {connector}.{op} in {package.name}/{SEARCH_FILE}; "
+                f"`tools search {connector} WORDS` finds one",
+                file=sys.stderr,
+            )
+            return 1
+        data = load_json(package / entry["schema"])
+        if data is None:
+            return report([f"{package.name}/{entry['schema']}: is not JSON"])
+        print(json.dumps(data, indent=2))
+        return 0
     for ident, _, value, _source in operations(package, connector):
         if ident == op and value is not None:
             print(json.dumps(value, indent=2))
@@ -397,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
     schemer = sub.add_parser("schema", help="print one operation's input schema")
     schemer.add_argument("operation", metavar="CONNECTOR.OP")
     args = parser.parse_args(argv)
-    chosen = args.root or os.environ.get("BRANCHYARD_TOOLS_DIR")
+    chosen = args.root or os.environ.get("BRANCHYARD_TOOLS_DIR") or os.environ.get("BRANCHYARD_TOOLS")
     root = Path(chosen) if chosen else Path(__file__).resolve().parent.parent
     if args.command == "search":
         return search(root, args.words, max(1, args.limit), args.kind)

@@ -22,6 +22,8 @@ pub(crate) struct Receipt {
     pub sandbox_uid: Option<String>,
     pub pod_uid: Option<String>,
     pub policy_uid: Option<String>,
+    #[serde(default)]
+    pub fqdn_policy_uid: Option<String>,
     pub node: Option<NodeEvidence>,
 }
 
@@ -64,6 +66,7 @@ impl Receipt {
             sandbox_uid: None,
             pod_uid: None,
             policy_uid: None,
+            fqdn_policy_uid: None,
             node: None,
         })
     }
