@@ -1,18 +1,22 @@
-//! Connections and a session's tools in headless Chromium, against a real
-//! server whose connector gateway is a mock of Anvil's connect routes: a
-//! paired person sees each connection's state on the Connections page,
-//! connects GitHub through a sign-in tab and Linear with a key (which the
-//! page never shows again), then starts a Work session that may use
-//! Atlassian with changes and GitHub read only, one how-to and one helper,
-//! named from its prompt; the session's facts list them, and the next
-//! session's draft remembers the connections. The page and the form fit
-//! 390 pixels. Driven by Playwright (`console_connections_browser.js`);
-//! skipped, saying so, when Node or Playwright's module is not installed.
+//! The Tools page and the composer's Tools control in headless Chromium,
+//! against a real server whose connector gateway is a mock of Anvil's
+//! connect routes: a paired administrator sees every connector, skill and
+//! helper on Settings > Tools, filters and searches the table, connects
+//! GitHub through a sign-in tab and Linear with a key (which the page never
+//! shows again), edits the tenant policy (and meets a stale revision), then
+//! starts a Work session from the one Tools button, with Atlassian able to
+//! make changes, GitHub read only, one skill and one helper sent as the
+//! single `tools` field, and saves that choice as the workspace's default,
+//! which a browser with empty local storage reads back from the server (a
+//! stale save is refused). The menu is a popover wide and a modal bottom
+//! sheet at 390 pixels, where Tab stays inside it and Escape closes it.
+//! Driven by Playwright (`console_connections_browser.js`); skipped, saying
+//! so, when Node or Playwright's module is not installed.
 //! `BY_TEST_PLAYWRIGHT` names the module's directory; otherwise
 //! `$(npm root -g)/playwright` is tried, with `PLAYWRIGHT_BROWSERS_PATH`
 //! (default `/opt/pw-browsers` when present). `BY_SCREENSHOTS=DIR` saves the
-//! Connections page and the Tools step. Hermetic: the gateway is a mock
-//! shaped after Anvil's `serve-fleet-http.ts`; no model is called.
+//! Tools page, the policy editor and the Tools menu. Hermetic: the gateway
+//! is a mock shaped after Anvil's `serve-fleet-http.ts`; no model is called.
 #![cfg(unix)]
 
 mod common;
@@ -97,7 +101,7 @@ fn gateway() -> (MockHttp, Arc<AtomicBool>) {
 }
 
 #[test]
-fn connections_and_session_tools_in_the_browser() {
+fn tools_page_and_composer_control_in_the_browser() {
     let Some(module) = playwright() else {
         eprintln!("skipped: no Playwright module (set BY_TEST_PLAYWRIGHT)");
         return;
@@ -185,6 +189,7 @@ fn connections_and_session_tools_in_the_browser() {
         .env("PLAYWRIGHT", &module)
         .env("BY_URL", server.url())
         .env("BY_CODE", &code)
+        .env("BY_TOKEN", TOKEN)
         .env("BY_LINEAR_KEY", LINEAR_KEY)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -210,11 +215,13 @@ fn connections_and_session_tools_in_the_browser() {
     };
     for step in [
         "LOADED",
-        "CONNECTIONS",
+        "TOOLS_PAGE",
         "OAUTH",
         "KEY",
-        "TOOLS",
+        "POLICY",
+        "CONTROL",
         "STARTED",
+        "DEFAULTS",
         "PHONE",
         "DONE",
     ] {

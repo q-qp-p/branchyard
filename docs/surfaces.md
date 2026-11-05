@@ -459,11 +459,11 @@ A branch's harness calls GitHub, Slack or an internal API through Anvil's gatewa
 
 ## Added with console connections
 
-A person connects accounts and chooses, per session, its connectors, how-tos and helpers from the console; see [connecting from the console](server.md#connecting-from-the-console).
+A person connects accounts and chooses, per session, its connectors, skills and helpers from the console; see [connecting from the console](server.md#connecting-from-the-console).
 
 | Surface | Before | Now |
 |---|---|---|
-| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | `by connect` on the server's host only | the caller's connections and connecting one through the server (`ConnectionList`, `ConnectStart`, `ApiKeyRequest`); the console's Connections page; `Client::connections`, `connect`, `connect_key`; Python `connections()`, `connect()`, `connect_key()` |
+| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | `by connect` on the server's host only | the caller's connections and connecting one through the server (`ConnectionList`, `ConnectStart`, `ApiKeyRequest`); the console's Tools page; `Client::connections`, `connect`, `connect_key`; Python `connections()`, `connect()`, `connect_key()` |
 | `GET /v1/workspaces/{workspace}/tools` (`SessionTools`) | none | what a session may choose; `Client::session_tools`; Python `session_tools()` |
 | `StartSessionRequest::connectors`, `skills`, `helpers` (`Helpers`) | `provision.connectors`, refused beside a preset | per-session connectors beside a preset, checked at admission (`connector_not_connected`, `connector_over_ceiling`, `connector_not_served`, `connectors_conflict`, `reviewer_read_only`); built-in skills; helpers as a one-level envelope; the console's Tools step; Python `start_workspace_session(connectors=, skills=, helpers=, max_helpers=)`; a session's `tools` |
 | `GET /v1/tools`, `StartSessionRequest::tools` (`ToolChoice`), `PUT /v1/workspaces/{workspace}/tools` (`PutToolDefaults`, `ToolDefaults`) | connectors, skills and helpers each on their own route and field | one catalogue (`ToolCatalogue`: `state`, `allowed`, `ready`, `default`, `action`), one start field and workspace defaults, stored by revision; `Client::tools`, `workspace_tool_defaults`; Python `tools()`, `workspace_tool_defaults()`, `start_workspace_session(tools=)`; `tool_not_allowed`, `tools_conflict` |
