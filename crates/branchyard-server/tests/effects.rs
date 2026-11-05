@@ -87,6 +87,7 @@ fn connectors(f: &Fixture, mock: &MockGateway) -> ConnectorsConfig {
         sandbox_gateway: None,
         issuer: Some("https://by.example".into()),
         signing_key: None,
+        signing_kms: None,
         audit_file: None,
         bundles,
         anvil: vec![anvil.display().to_string()],

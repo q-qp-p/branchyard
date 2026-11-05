@@ -26,6 +26,7 @@ pub(super) fn connectors(
         sandbox_gateway: None,
         issuer: Some("https://by.example".into()),
         signing_key: None,
+        signing_kms: None,
         audit_file: None,
         bundles: dir,
         anvil: vec!["/bin/false".into()],

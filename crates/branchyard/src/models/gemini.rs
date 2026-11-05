@@ -715,6 +715,7 @@ mod tests {
             issuer: "branchyard:test".into(),
             key_file: dir.join("key"),
             jwks_file: None,
+            signer: None,
             subject: PERSON.into(),
             tenant: "local".into(),
         }

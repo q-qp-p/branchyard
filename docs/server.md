@@ -204,13 +204,49 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 |---|---|
 | `gateway` | The gateway's `/mcp` URL: every token's audience, and what a harness on this host is given. Required |
 | `sandbox_gateway` | The gateway as a sandboxed harness reaches it; without it a sandboxed branch with a grant fails its turn |
-| `issuer` | Every token's `iss`. Default `http(s)://<listen>`; set it to the server's public URL |
-| `signing_key` | The private key set, made on first use. Default `<data_dir>/gateway/key`. Its public half is `GET /.well-known/jwks.json` and `<data_dir>/gateway/jwks.json` |
+| `issuer` | Every token's `iss`. Default `http(s)://<listen>` when the gateway is on loopback; set it to the server's public URL. **Required** when `gateway` is not on loopback, and on a worker (see [signing on workers](#signing-on-workers)) |
+| `signing_key` | The private key set, made on first use by a server (never by a worker). Default `<data_dir>/gateway/key`. Its public half is `GET /.well-known/jwks.json` and `<data_dir>/gateway/jwks.json`. Not with `signing` |
+| `signing` | `{"kms_key_versions": [...], "kms_base_url": "..."}`: sign with [Cloud KMS](#signing-with-cloud-kms) instead of a key file. Not with `signing_key` |
 | `audit_file` | The gateway's audit log, read into `connector_call` events by each repository's poller. Default `<data_dir>/gateway/audit.jsonl` |
 | `bundles`, `anvil` | The bundle root the gateway serves, and Anvil's command (default `["anvil"]`), for packaging and for `run_gateway` |
 | `run_gateway` | Run `anvil serve mcp <bundles> --fleet --http <port>` in branchyard mode beside the server, supervised and restarted, reading the public keys from the file above; stopped with the server. A worker (`by worker`) never runs it |
 | `listen`, `vault_key` | The address the gateway run here binds when not loopback, and its vault key (default `<data_dir>/gateway/vault.key`, made 0600) |
 | `effects_proxy`, `effects_listen`, `effects_sandbox_host` | Each turn's effect-ledger proxy in front of the gateway (default on, on `127.0.0.1`), and how a sandboxed harness reaches it ([effects](effects.md#begun-before-the-call)) |
+
+### Signing on workers
+
+A worker (`by worker`, `by serve --worker`) signs the turn tokens of the operations it runs, so the gateway must trust the worker's signature as it trusts the server's. A worker therefore never invents a signing key and never guesses an issuer:
+
+- `connectors.issuer` is required on a worker, and on any server whose `gateway` is not on loopback. A default taken from each process's own `listen` address would give the server and its workers different issuers, and the gateway checks one.
+- A worker needs `connectors.signing` (Cloud KMS, below) or an explicit `connectors.signing_key`. With a key file it must be the server's own file, copied or mounted (a secret volume on GKE); the worker reads it and refuses to start if it is missing, instead of making a second key. Prefer KMS: nothing is copied, and a rotation reaches every process at once.
+
+### Signing with Cloud KMS
+
+With `connectors.signing`, the private key never leaves Cloud KMS. Make an asymmetric signing key with the algorithm `EC_SIGN_ED25519` and name its version:
+
+```json
+"connectors": {
+  "gateway": "https://gateway.example/mcp",
+  "issuer": "https://branchyard.example:8421",
+  "bundles": "/srv/connectors",
+  "signing": {
+    "kms_key_versions": [
+      "projects/my-project/locations/europe-west1/keyRings/branchyard/cryptoKeys/gateway/cryptoKeyVersions/2",
+      "projects/my-project/locations/europe-west1/keyRings/branchyard/cryptoKeys/gateway/cryptoKeyVersions/1"
+    ]
+  }
+}
+```
+
+- **Signing.** For each token the server posts its signing input to `https://cloudkms.googleapis.com/v1/{version}:asymmetricSign` as `{"data": base64(input)}` (Ed25519 signs the data itself, not a digest) and joins the answer into the compact JWS. The `kid` is `kms-<keyRing>-<cryptoKey>-<version>`.
+- **Public keys.** `GET /.well-known/jwks.json` serves the public key of every listed version, read once from `{version}/publicKey` (PEM) and kept for the process. The gateway reads that URL (`jwks_uri`) to verify tokens.
+- **Rotation.** The first version signs; all are published. To rotate, create a new version, list it first, and restart the server and its workers. Drop the old version from the list once the tokens it signed have expired (an hour at most).
+- **Credentials.** Requests carry an access token of the service account the process runs as, from the metadata server (`GCE_METADATA_HOST`, else `metadata.google.internal`), with the `cloud-platform` scope: GKE with Workload Identity, Compute Engine and Cloud Run provide it. Grant that account, for the server and for every worker, `roles/cloudkms.signerVerifier` on the key (it signs and reads the public key). An account that only publishes keys, such as a gateway host that reads the JWKS some other way, needs only `roles/cloudkms.publicKeyViewer`.
+- **Refused.** `signing` together with `signing_key`, an empty list, a name that is not a key version name, and the same version twice. A key that is not `EC_SIGN_ED25519` fails when the public key is first read, naming its algorithm.
+- **`kms_base_url`** replaces `https://cloudkms.googleapis.com`; it exists for tests.
+- **The model gateway** signs its turns' tokens with the same keys when `connectors` is set.
+
+Status: hermetic. The signer runs against a fake Cloud KMS (a mock HTTP server holding Ed25519 keys): the sign request's body and headers, the PEM to JWK conversion, several versions, the cache, error answers, and a token verified against the JWKS. Not done: a run against real Cloud KMS, with a real `EC_SIGN_ED25519` key, the metadata server's token and the two IAM roles; a gateway verifying a KMS-signed token end to end.
 
 A branch's token names the principal that created it (`sub` its name, `by_tenant` its tenant; forks and delegated children keep their parent's) and the branch as `<repo>/<branch>`, so one gateway and one audit log can serve every repository; each repository's poller records only its own lines. A request naming connectors on a server without `connectors` is `403 connectors_not_configured`. Requests choose grants freely within what they ask for: the gateway enforces each grant against the person's own connected accounts, and a delegated child's is narrowed to its parent's. `by connect` and `by gateway` act locally only.
 

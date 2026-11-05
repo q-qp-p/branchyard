@@ -475,7 +475,7 @@ fn issue(
     let (issuer, ring, actor, by_branch) = match yard.connectors() {
         Some(gateway) => (
             gateway.issuer.clone(),
-            gateway.keys(),
+            gateway.token_signer(),
             Actor {
                 subject: gateway.subject.clone(),
                 tenant: gateway.tenant.clone(),
@@ -486,7 +486,8 @@ fn issue(
             let dir = crate::connectors::local_dir(yard.root());
             (
                 crate::connectors::local_issuer(yard.root()).map_err(|e| e.to_string())?,
-                keys::KeyRing::load_or_create(&dir.join("key"), Some(&dir.join("jwks.json"))),
+                keys::KeyRing::load_or_create(&dir.join("key"), Some(&dir.join("jwks.json")))
+                    .map(|ring| Arc::new(ring) as Arc<dyn keys::TokenSigner>),
                 Actor {
                     subject: crate::connectors::local_subject(),
                     tenant: "local".to_owned(),

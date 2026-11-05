@@ -34,7 +34,7 @@ use branchyard_provision::EnvVar;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use keys::{Claims, KeyRing};
+pub use keys::{jws_finish, jws_input, Claims, KeyFileSigner, KeyRing, TokenSigner};
 pub use packager::{AnvilPackager, Bundle, Packager};
 
 use crate::state::Record;
@@ -77,6 +77,10 @@ pub struct Gateway {
     /// Where to keep the public set in step with the key file, for a
     /// gateway that reads it as a `file:` URL.
     pub jwks_file: Option<PathBuf>,
+    /// What signs tokens, when not the key file: a server's Cloud KMS key,
+    /// or a worker's existing key file. `None` signs with `key_file`,
+    /// made on first use.
+    pub signer: Option<Arc<dyn TokenSigner>>,
     /// The gateway's audit log (JSON lines), which [`ingest`] reads.
     pub audit_file: Option<PathBuf>,
     /// The subject of a branch that records none (`local:<user>` locally).
@@ -133,6 +137,7 @@ impl Gateway {
             issuer: local_issuer(yard.root())?,
             key_file: dir.join("key"),
             jwks_file: Some(dir.join("jwks.json")),
+            signer: None,
             audit_file: Some(dir.join("audit.jsonl")),
             subject: local_subject(),
             tenant: "local".to_owned(),
@@ -148,9 +153,18 @@ impl Gateway {
         KeyRing::load_or_create(&self.key_file, self.jwks_file.as_deref())
     }
 
+    /// What signs this gateway's tokens: its [`Gateway::signer`], else
+    /// the key file.
+    pub fn token_signer(&self) -> Result<Arc<dyn TokenSigner>, Error> {
+        match &self.signer {
+            Some(signer) => Ok(Arc::clone(signer)),
+            None => Ok(Arc::new(self.keys()?)),
+        }
+    }
+
     /// The public key set the gateway verifies against.
     pub fn jwks(&self) -> Result<Value, Error> {
-        self.keys()?.jwks()
+        self.token_signer()?.jwks()
     }
 
     pub(crate) fn by_branch(&self, branch: &str) -> String {
@@ -168,7 +182,8 @@ impl Gateway {
     /// credential; and the gateway refuses it for tools. Lives `ttl`, at most
     /// [`CONNECT_TTL`]. Never give it to a harness.
     pub fn connect_token(&self, subject: Option<&str>, ttl: Duration) -> Result<String, Error> {
-        self.keys()?.sign(&self.connect_claims(subject, ttl)?)
+        self.token_signer()?
+            .sign(&self.connect_claims(subject, ttl)?)
     }
 
     fn connect_claims(&self, subject: Option<&str>, ttl: Duration) -> Result<Claims, Error> {
@@ -217,7 +232,7 @@ impl Gateway {
             by_network: None,
             by_delegation: None,
         };
-        self.keys()?.sign(&claims)
+        self.token_signer()?.sign(&claims)
     }
 }
 
@@ -259,8 +274,8 @@ pub(crate) fn branch_token(
         scopes: &crate::access::TokenScopes::default(),
     })?;
     let token = gateway
-        .keys()
-        .and_then(|keys| keys.sign(&claims))
+        .token_signer()
+        .and_then(|signer| signer.sign(&claims))
         .map_err(|e| format!("could not sign a gateway token: {e}"))?;
     Ok((gateway, token))
 }
@@ -525,8 +540,8 @@ pub(crate) fn prepare(
         scopes,
     })?;
     let token = gateway
-        .keys()
-        .and_then(|keys| keys.sign(&claims))
+        .token_signer()
+        .and_then(|signer| signer.sign(&claims))
         .map_err(|e| format!("could not sign the gateway token: {e}"))?;
     let token_path = home.join(TOKEN_FILE);
     keys::write_private(&token_path, token.as_bytes())

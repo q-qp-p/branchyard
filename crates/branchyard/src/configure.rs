@@ -365,6 +365,7 @@ fn signer(yard: &Yard, connectors: Option<&connectors::Gateway>) -> Result<Signe
         signer.issuer = gateway.issuer.clone();
         signer.key_file = gateway.key_file.clone();
         signer.jwks_file = gateway.jwks_file.clone();
+        signer.signer = gateway.signer.clone();
     }
     Ok(signer)
 }

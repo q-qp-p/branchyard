@@ -1029,6 +1029,17 @@ impl AppConfig {
     }
 }
 
+/// Whether the connector gateway at `url` is on this host's loopback.
+fn gateway_is_loopback(url: &str) -> bool {
+    let Some((host, _)) = branchyard::connectors::gateway::host_port(url) else {
+        return false;
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// `connectors` in the configuration file: the connector gateway.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectorsConfig {
@@ -1039,8 +1050,11 @@ pub struct ConnectorsConfig {
     /// Every token's issuer. Default: this server's URL.
     pub issuer: Option<String>,
     /// The signing key file (a private JWKS, made if missing). Default:
-    /// `<data_dir>/gateway/key`.
+    /// `<data_dir>/gateway/key`. A worker never makes it. Not with
+    /// `signing_kms`.
     pub signing_key: Option<PathBuf>,
+    /// Sign with Cloud KMS keys instead of a key file.
+    pub signing_kms: Option<KmsSigning>,
     /// The gateway's audit log, read into `connector_call` events.
     /// Default: `<data_dir>/gateway/audit.jsonl`.
     pub audit_file: Option<PathBuf>,
@@ -1065,6 +1079,16 @@ pub struct ConnectorsConfig {
     /// How a sandboxed harness reaches this host: its ledger proxy and its
     /// delegation endpoint.
     pub effects_sandbox_host: Option<String>,
+}
+
+/// `connectors.signing`: the Cloud KMS keys that sign gateway tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KmsSigning {
+    /// `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`
+    /// of `EC_SIGN_ED25519` keys: the first signs, all are published.
+    pub key_versions: Vec<String>,
+    /// The KMS API's address. Default `https://cloudkms.googleapis.com`.
+    pub base_url: Option<String>,
 }
 
 /// What a build without the `postgres` feature says to a configuration that
@@ -1248,6 +1272,40 @@ impl Config {
             }
             if c.anvil.is_empty() {
                 return Err("connectors.anvil names no command".into());
+            }
+            if let Some(kms) = &c.signing_kms {
+                if c.signing_key.is_some() {
+                    return Err(
+                        "connectors.signing and connectors.signing_key both name a signer; \
+                         keep one"
+                            .into(),
+                    );
+                }
+                crate::kms::check_versions(&kms.key_versions)?;
+                if let Some(base) = &kms.base_url {
+                    branchyard_client::http::Endpoint::parse(base)
+                        .map_err(|e| format!("connectors.signing.kms_base_url: {e}"))?;
+                }
+            }
+            if c.issuer.is_none() && (self.worker_only || !gateway_is_loopback(&c.gateway)) {
+                return Err(format!(
+                    "connectors.issuer is required {}: a default taken from this process's \
+                     address would differ between processes, and the gateway checks every \
+                     token against one issuer; set it to the URL the gateway is told to trust",
+                    if self.worker_only {
+                        "on a worker"
+                    } else {
+                        "when connectors.gateway is not on loopback"
+                    }
+                ));
+            }
+            if self.worker_only && c.signing_kms.is_none() && c.signing_key.is_none() {
+                return Err(
+                    "a worker needs connectors.signing (Cloud KMS) or connectors.signing_key, \
+                     the same key file as the server's: it would otherwise make a key of its \
+                     own and sign tokens the gateway does not trust"
+                        .into(),
+                );
             }
         }
         self.app.validate()?;
@@ -2009,10 +2067,13 @@ pub(crate) struct FileConnectors {
     sandbox_gateway: Option<String>,
     /// Every token's issuer. Default: this server's URL.
     issuer: Option<String>,
-    /// The signing key, a private JSON Web Key Set made if missing.
-    /// Default: `<data_dir>/gateway/key`. Its public keys are served at
-    /// `GET /.well-known/jwks.json`.
+    /// The signing key, a private JSON Web Key Set made if missing (never
+    /// by a worker). Default: `<data_dir>/gateway/key`. Its public keys
+    /// are served at `GET /.well-known/jwks.json`.
     signing_key: Option<PathBuf>,
+    /// Sign with Cloud KMS instead of a key file; refused together with
+    /// `signing_key`.
+    signing: Option<FileSigning>,
     /// The gateway's audit log. Default: `<data_dir>/gateway/audit.jsonl`.
     audit_file: Option<PathBuf>,
     /// The bundle root the gateway serves.
@@ -2041,6 +2102,24 @@ pub(crate) struct FileConnectors {
     /// its effects reach the ledger only from the audit log, and a
     /// sandboxed harness gets no delegation tools.
     effects_sandbox_host: Option<String>,
+}
+
+/// `connectors.signing`: sign gateway tokens with Cloud KMS
+/// (`docs/server.md#signing-with-cloud-kms`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileSigning {
+    /// Cloud KMS key versions of `EC_SIGN_ED25519` keys, as
+    /// `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`.
+    /// The first signs; all are published at `GET /.well-known/jwks.json`,
+    /// so a rotation lists the new version first and drops the old one
+    /// once its tokens have expired. The server's and each worker's
+    /// service account needs `roles/cloudkms.signerVerifier` on the key.
+    kms_key_versions: Vec<String>,
+    /// The Cloud KMS API's address. Default `https://cloudkms.googleapis.com`;
+    /// for tests.
+    kms_base_url: Option<String>,
 }
 
 /// `approvals`: the administrator's locked policy and the people's
@@ -2567,6 +2646,10 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             sandbox_gateway: c.sandbox_gateway,
             issuer: c.issuer,
             signing_key: c.signing_key.map(resolve),
+            signing_kms: c.signing.map(|s| KmsSigning {
+                key_versions: s.kms_key_versions,
+                base_url: s.kms_base_url,
+            }),
             audit_file: c.audit_file.map(resolve),
             bundles: resolve(c.bundles),
             anvil: c.anvil.unwrap_or_else(|| vec!["anvil".to_owned()]),
@@ -2674,6 +2757,153 @@ mod tests {
             secret: "0123456789abcdef".into(),
         });
         c
+    }
+
+    const KMS_V1: &str = "projects/p/locations/global/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1";
+
+    fn with_connectors(gateway: &str) -> Config {
+        let mut c = config("127.0.0.1:0");
+        c.connectors = Some(ConnectorsConfig {
+            gateway: gateway.into(),
+            sandbox_gateway: None,
+            issuer: Some("https://by.example".into()),
+            signing_key: None,
+            signing_kms: None,
+            audit_file: None,
+            bundles: PathBuf::from("/nonexistent/bundles"),
+            anvil: vec!["anvil".into()],
+            run_gateway: false,
+            listen: None,
+            vault_key: None,
+            effects_proxy: None,
+            effects_listen: None,
+            effects_sandbox_host: None,
+        });
+        c
+    }
+
+    /// Whether `validate` gets past the connector checks (a worker is next
+    /// refused for having no `--database`, which these tests do not set).
+    fn connectors_pass(c: &Config) -> bool {
+        match c.validate() {
+            Ok(_) => true,
+            Err(e) => e.contains("a worker needs --database"),
+        }
+    }
+
+    fn connectors_mut(c: &mut Config) -> &mut ConnectorsConfig {
+        c.connectors.as_mut().unwrap()
+    }
+
+    #[test]
+    fn the_issuer_is_required_off_loopback_and_on_a_worker() {
+        for url in [
+            "http://127.0.0.1:8931/mcp",
+            "http://localhost:8931/mcp",
+            "http://[::1]:8931/mcp",
+        ] {
+            let mut c = with_connectors(url);
+            connectors_mut(&mut c).issuer = None;
+            assert_eq!(c.validate(), Ok(None), "{url}");
+        }
+        for url in ["https://gateway.example/mcp", "http://10.0.0.7:8931/mcp"] {
+            let mut c = with_connectors(url);
+            connectors_mut(&mut c).issuer = None;
+            let error = c.validate().unwrap_err();
+            assert!(
+                error.contains("connectors.issuer is required"),
+                "{url}: {error}"
+            );
+            assert!(error.contains("not on loopback"), "{error}");
+            connectors_mut(&mut c).issuer = Some("https://by.example".into());
+            assert_eq!(c.validate(), Ok(None), "{url}");
+        }
+        let mut worker = with_connectors("http://127.0.0.1:8931/mcp");
+        worker.worker_only = true;
+        connectors_mut(&mut worker).issuer = None;
+        connectors_mut(&mut worker).signing_key = Some("/keys/gw.key".into());
+        let error = worker.validate().unwrap_err();
+        assert!(error.contains("required on a worker"), "{error}");
+        connectors_mut(&mut worker).issuer = Some("https://by.example".into());
+        assert!(connectors_pass(&worker));
+    }
+
+    #[test]
+    fn a_worker_needs_a_shared_signing_key_or_kms_and_a_server_may_not_have_both() {
+        let mut worker = with_connectors("http://127.0.0.1:8931/mcp");
+        worker.worker_only = true;
+        let error = worker.validate().unwrap_err();
+        assert!(
+            error.contains("a worker needs connectors.signing"),
+            "{error}"
+        );
+        connectors_mut(&mut worker).signing_key = Some("/keys/gw.key".into());
+        assert!(connectors_pass(&worker));
+        connectors_mut(&mut worker).signing_key = None;
+        connectors_mut(&mut worker).signing_kms = Some(KmsSigning {
+            key_versions: vec![KMS_V1.into()],
+            base_url: None,
+        });
+        assert!(connectors_pass(&worker));
+        // A server without either keeps making its own key.
+        assert_eq!(
+            with_connectors("http://127.0.0.1:8931/mcp").validate(),
+            Ok(None)
+        );
+
+        let mut both = with_connectors("http://127.0.0.1:8931/mcp");
+        connectors_mut(&mut both).signing_key = Some("/keys/gw.key".into());
+        connectors_mut(&mut both).signing_kms = Some(KmsSigning {
+            key_versions: vec![KMS_V1.into()],
+            base_url: None,
+        });
+        assert!(both.validate().unwrap_err().contains("keep one"));
+        for (versions, needle) in [
+            (vec![], "names no key version"),
+            (vec!["projects/p".to_owned()], "not a Cloud KMS key version"),
+        ] {
+            let mut bad = with_connectors("http://127.0.0.1:8931/mcp");
+            connectors_mut(&mut bad).signing_kms = Some(KmsSigning {
+                key_versions: versions,
+                base_url: None,
+            });
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains(needle), "{error}");
+        }
+    }
+
+    #[test]
+    fn signing_loads_from_the_file_and_not_beside_a_key_file() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().join("server.json");
+        let write = |connectors: &str| {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"listen": "127.0.0.1:0", "repos": {{"app": "repo"}},
+                        "tokens": [{{"name": "ci", "token": "0123456789abcdef"}}],
+                        "connectors": {{"gateway": "http://127.0.0.1:8931/mcp", "bundles": "b",
+                                        {connectors}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(&format!(
+            r#""signing": {{"kms_key_versions": ["{KMS_V1}"], "kms_base_url": "http://127.0.0.1:1"}}"#
+        ));
+        let partial = load_file(&path).unwrap();
+        assert_eq!(
+            partial.connectors.unwrap().signing_kms,
+            Some(KmsSigning {
+                key_versions: vec![KMS_V1.into()],
+                base_url: Some("http://127.0.0.1:1".into()),
+            })
+        );
+        write(r#""signing": {"kms_key_versions": [], "typo": 1}"#);
+        assert!(load_file(&path).is_err());
     }
 
     #[test]

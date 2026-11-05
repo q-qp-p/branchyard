@@ -387,6 +387,9 @@ pub struct Signer {
     pub issuer: String,
     pub key_file: PathBuf,
     pub jwks_file: Option<PathBuf>,
+    /// What signs, when not the key file (the connector gateway's Cloud
+    /// KMS key, or a worker's existing key file).
+    pub signer: Option<Arc<dyn keys::TokenSigner>>,
     /// The subject and tenant of a branch that records none.
     pub subject: String,
     pub tenant: String,
@@ -402,13 +405,20 @@ impl Signer {
             issuer: crate::connectors::local_issuer(yard.root())?,
             key_file: dir.join("key"),
             jwks_file: Some(dir.join("jwks.json")),
+            signer: None,
             subject: crate::connectors::local_subject(),
             tenant: "local".to_owned(),
         })
     }
 
-    fn keys(&self) -> Result<keys::KeyRing, Error> {
-        keys::KeyRing::load_or_create(&self.key_file, self.jwks_file.as_deref())
+    fn keys(&self) -> Result<Arc<dyn keys::TokenSigner>, Error> {
+        match &self.signer {
+            Some(signer) => Ok(Arc::clone(signer)),
+            None => Ok(Arc::new(keys::KeyRing::load_or_create(
+                &self.key_file,
+                self.jwks_file.as_deref(),
+            )?)),
+        }
     }
 }
 
@@ -1350,6 +1360,7 @@ mod tests {
             issuer: "i".into(),
             key_file: "/nonexistent".into(),
             jwks_file: None,
+            signer: None,
             subject: "s".into(),
             tenant: "t".into(),
         };
@@ -1366,6 +1377,7 @@ mod tests {
             issuer: "i".into(),
             key_file: "/nonexistent".into(),
             jwks_file: None,
+            signer: None,
             subject: "s".into(),
             tenant: "t".into(),
         }
@@ -1734,6 +1746,7 @@ mod tests {
             issuer: "i".into(),
             key_file: "/nonexistent".into(),
             jwks_file: None,
+            signer: None,
             subject: "s".into(),
             tenant: "t".into(),
         };

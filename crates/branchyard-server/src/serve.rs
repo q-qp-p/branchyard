@@ -380,6 +380,7 @@ fn install_database_policy(config: &Config) {
 /// serving. Needs a multi-threaded Tokio runtime.
 pub async fn start(config: Config) -> Result<Running, String> {
     config.validate()?;
+    crate::connectors::check_signer(&config)?;
     // Installed once per process, idempotently: our own TLS acceptor
     // already picks `ring` explicitly, but the webhook client's `reqwest`
     // (built with `rustls-no-provider`, so as never to also pull in
