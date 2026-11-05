@@ -1020,6 +1020,64 @@ class WorkspaceRequests(unittest.TestCase):
             "/v1/admin/policies/tenant%3Aacme?revision=1",
         )
 
+    def test_the_helper_limit_rides_in_tools_and_a_persons_own_policy_has_its_routes(self):
+        c = self.client
+        self.assertEqual(bc.helper_limit(2), {"kind": "helper", "id": "*", "max_children": 2})
+        self.assert_request(
+            lambda: c.start_workspace_session(
+                "w1",
+                "Analyst",
+                "Summarise",
+                harness="gemini-cli",
+                tools=[{"kind": "helper", "id": "codex"}, bc.helper_limit(3)],
+                key="limit",
+            ),
+            self.operation(),
+            "POST",
+            "/v1/workspaces/w1/sessions",
+            {
+                "name": "Analyst",
+                "prompt": "Summarise",
+                "harness": "gemini-cli",
+                "access": "writer",
+                "tools": [{"kind": "helper", "id": "codex"}, {"kind": "helper", "id": "*", "max_children": 3}],
+            },
+            key="limit",
+            query=None,
+        )
+        mine = self.assert_request(
+            c.my_policy,
+            {"key": "self:acme:ana", "policy": {}, "revision": 0},
+            "GET",
+            "/v1/me/policy",
+            query=None,
+        )
+        self.assertEqual((mine.key, mine.revision), ("self:acme:ana", 0))
+        self.assert_request(
+            lambda: c.put_my_policy({"off": [{"kind": "skill", "id": "docx"}], "max_helpers": 2}, revision=0),
+            {"key": "self:acme:ana", "revision": 1},
+            "PUT",
+            "/v1/me/policy",
+            {"policy": {"off": [{"kind": "skill", "id": "docx"}], "max_helpers": 2}, "revision": 0},
+        )
+        started = self.assert_request(
+            lambda: c.install_helper("gemini-cli"),
+            {"harness": "gemini-cli", "state": "queued", "host": "server"},
+            "POST",
+            "/v1/tools/helpers/gemini-cli/install",
+            {},
+            key=None,
+            query=None,
+        )
+        self.assertEqual(started.state, "queued")
+        self.assert_request(
+            lambda: c.helper_install("gemini-cli"),
+            {"harness": "gemini-cli", "state": "succeeded", "host": "server"},
+            "GET",
+            "/v1/tools/helpers/gemini-cli/install",
+            query=None,
+        )
+
     def test_connections_and_session_tools_reach_their_routes(self):
         c = self.client
         listed = self.assert_request(
@@ -3653,6 +3711,11 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     ],
     "/v1/tools": [lambda c, _r: c.tools(), lambda c, _r: c.tools("w1")],
     "/v1/admin/policies": [lambda c, _r: c.policies()],
+    "/v1/me/policy": [lambda c, _r: c.my_policy(), lambda c, _r: c.put_my_policy({"max_helpers": 2})],
+    "/v1/tools/helpers/{id}/install": [
+        lambda c, _r: c.install_helper("gemini-cli"),
+        lambda c, _r: c.helper_install("gemini-cli"),
+    ],
     "/v1/admin/policies/{key}": [
         lambda c, _r: c.put_policy("tenant:default", {"skills": ["docx"]}),
         lambda c, _r: c.delete_policy("tenant:default", revision=1),

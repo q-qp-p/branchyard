@@ -412,6 +412,7 @@ pub(crate) fn prepare(
         capability_guest,
         &capabilities.listed,
         &granted_connectors,
+        record.grant.as_ref().map(|g| &g.envelope),
     )?;
     let native_links = match record.home.as_deref() {
         Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.listed)?,

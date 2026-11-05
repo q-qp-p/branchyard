@@ -2,8 +2,8 @@
 // Chromium for tests/console_connections_browser.rs, which runs the server
 // and a mock connector gateway and reads this script's stdout a line at a
 // time: LOADED, TOOLS_PAGE, OAUTH, KEY, POLICY, CONTROL, STARTED, DEFAULTS,
-// PHONE and DONE, each once the page has shown it and, where the server
-// decides, its API agrees.
+// HELPERS, MINE, INSTALL, PHONE and DONE, each once the page has shown it
+// and, where the server decides, its API agrees.
 //
 // PLAYWRIGHT names the playwright module; BY_URL the server; BY_CODE a
 // pairing code; BY_TOKEN a configured token with every scope (used only to
@@ -186,7 +186,8 @@ const byKey = (list) => list.slice().sort((a, b) => `${a.kind}:${a.id}`.localeCo
   if (!(await page.locator('#session-form').count())) await plus.click();
   const form = page.locator('#session-form');
   if (!(await form.getByRole('radio', { name: /^Work/ }).isChecked())) throw new Error('a knowledge workspace does not start in Work');
-  await form.locator('#sf-run-line', { hasText: 'Runs in Local workers with gemini-cli.' }).waitFor();
+  // Two harnesses are offered (codex is not installed yet), so the run step stays open on the first.
+  same(await form.locator('#sf-harness').inputValue(), 'gemini-cli', 'the harness the form starts with');
   // No separate Tools step: one button beside the message box.
   if (await form.locator('fieldset > legend', { hasText: /^Tools$/ }).count()) throw new Error('the Tools fieldset is still in the form');
   const button = form.getByRole('button', { name: /^Tools:/ });
@@ -283,7 +284,97 @@ const byKey = (list) => list.slice().sort((a, b) => `${a.kind}:${a.id}`.localeCo
   await page.keyboard.press('Escape');
   say('DEFAULTS');
 
+  // The helper limit: a number that waits for a helper, rides in `tools` as
+  // the `*` entry, and stops at the administrator's `max_helpers`.
+  await page.reload();
+  await page.getByRole('heading', { level: 1 }).first().waitFor();
+  if (!(await form.count())) await plus.click();
+  await form.getByLabel('First prompt', { exact: true }).fill('Split the audit across two helpers.');
+  await form.getByRole('button', { name: /^Tools:/ }).click();
+  const limit = menu.getByLabel('Most helpers at once', { exact: true });
+  await limit.waitFor();
+  same(await limit.isDisabled(), true, 'the limit waits for a helper');
+  await menu.getByText('Choose a helper first.', { exact: true }).waitFor();
+  await menu.getByRole('checkbox', { name: 'gemini-cli', exact: true }).check();
+  same(await limit.isDisabled(), false, 'a helper enables the limit');
+  same([await limit.getAttribute('placeholder'), await limit.getAttribute('max')], ['4', '16'], 'the default and the top');
+  await limit.fill('2');
+  await limit.press('Tab');
+  await menu.getByText('From 1 to 16. Left empty, a session may have 4.', { exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  const [limited] = await Promise.all([
+    page.waitForRequest((r) => r.method() === 'POST' && new URL(r.url()).pathname === `/v1/workspaces/${ws}/sessions`),
+    form.getByRole('button', { name: 'Start session', exact: true }).click(),
+  ]);
+  const limitedTools = limited.postDataJSON().tools;
+  same(limitedTools.filter((t) => t.kind === 'helper'), [{ kind: 'helper', id: 'gemini-cli' }, { kind: 'helper', id: '*', max_children: 2 }], 'the limit rides in tools');
+  await toast('Session started.');
+  await page.locator('#session-facts').getByText('helpers: gemini-cli, at most 2 at once', { exact: true }).waitFor(TURN);
+  // The administrator lowers the top to 3: the control stops there.
+  const policies = (await other('GET', '/v1/admin/policies')).policies.find((p) => p.key === 'tenant:default');
+  await other('PUT', '/v1/admin/policies/tenant:default', { policy: { ...policies.policy, max_helpers: 3 }, revision: policies.revision });
+  await page.reload();
+  await page.getByRole('heading', { level: 1 }).first().waitFor();
+  if (!(await form.count())) await plus.click();
+  await form.getByRole('button', { name: /^Tools:/ }).click();
+  await menu.getByRole('checkbox', { name: 'gemini-cli', exact: true }).check();
+  const capped = menu.getByLabel('Most helpers at once', { exact: true });
+  same([await capped.getAttribute('max'), await capped.getAttribute('placeholder')], ['3', '3'], 'the administrator\'s top');
+  await menu.getByText('Your administrator sets the top.', { exact: false }).waitFor();
+  await capped.fill('9');
+  await capped.press('Tab');
+  same(await capped.inputValue(), '3', 'a number above the top is held to it');
+  await page.keyboard.press('Escape');
+  // Back to no cap.
+  const capRecord = (await other('GET', '/v1/admin/policies')).policies.find((p) => p.key === 'tenant:default');
+  const { max_helpers: _gone, ...uncapped } = capRecord.policy;
+  await other('PUT', '/v1/admin/policies/tenant:default', { policy: uncapped, revision: capRecord.revision });
+  say('HELPERS');
+
+  // A person's own policy: the Mine column switches a skill off for them.
+  await go('#/settings/tools');
+  await page.getByRole('heading', { level: 1, name: 'Settings', exact: true }).waitFor();
+  await table.getByRole('columnheader', { name: 'Mine', exact: true }).waitFor();
+  const docxMine = row('skill', 'docx').getByRole('checkbox', { name: 'Use docx', exact: true });
+  same(await docxMine.isChecked(), true, 'docx is on for me');
+  await docxMine.uncheck();
+  await toast('docx is off for you.');
+  await row('skill', 'docx').locator('.conn-state', { hasText: 'Off for you' }).waitFor(TURN);
+  await row('skill', 'docx').getByText('You turned this off for yourself.', { exact: false }).waitFor();
+  await row('skill', 'docx').getByRole('button', { name: 'Turn on docx', exact: true }).waitFor();
+  same((await mine(page, 'GET', '/v1/me/policy')).policy, { off: [{ kind: 'skill', id: 'docx' }] }, 'my stored policy');
+  same((await other('GET', '/v1/admin/policies')).policies.some((p) => p.key.startsWith('self:')), false, 'the administrator\'s list does not hold it');
+  // The administrator's policy stays the ceiling: what it withholds has no switch.
+  const current = (await other('GET', '/v1/admin/policies')).policies.find((p) => p.key === 'tenant:default');
+  await other('PUT', '/v1/admin/policies/tenant:default', { policy: { ...current.policy, skills: ['pdf'] }, revision: current.revision });
+  await page.reload();
+  await row('skill', 'pptx').locator('.conn-state', { hasText: 'Not allowed' }).waitFor(TURN);
+  await row('skill', 'pptx').locator('td.tool-mine', { hasText: 'Not allowed' }).waitFor();
+  same(await row('skill', 'pptx').getByRole('checkbox').count(), 0, 'no switch for what the administrator withholds');
+  await row('skill', 'pdf').getByRole('checkbox', { name: 'Use pdf', exact: true }).waitFor();
+  const lifted = (await other('GET', '/v1/admin/policies')).policies.find((p) => p.key === 'tenant:default');
+  const { skills: _skills, ...open } = lifted.policy;
+  await other('PUT', '/v1/admin/policies/tenant:default', { policy: open, revision: lifted.revision });
+  await page.reload();
+  await row('skill', 'docx').getByRole('button', { name: 'Turn on docx', exact: true }).click();
+  await toast('docx is on for you.');
+  await row('skill', 'docx').locator('.conn-state', { hasText: 'Ready' }).waitFor(TURN);
+  same((await mine(page, 'GET', '/v1/me/policy')).policy, {}, 'turned back on');
+  say('MINE');
+
+  // Installing a helper's harness: on the server's host, from its row.
+  await row('helper', 'codex').locator('.conn-state', { hasText: 'Not available' }).waitFor();
+  await row('helper', 'codex').getByText('On the server only', { exact: true }).waitFor();
+  await row('helper', 'codex').getByRole('button', { name: 'Install codex', exact: true }).click();
+  await toast('codex installed on the server.');
+  await row('helper', 'codex').locator('.conn-state', { hasText: 'Ready' }).waitFor(TURN);
+  same((await mine(page, 'GET', '/v1/tools/helpers/codex/install')).state, 'succeeded', 'the install ended');
+  if (await row('helper', 'codex').getByRole('button').count()) throw new Error('an installed helper still offers Install');
+  say('INSTALL');
+
   // A phone: the menu is a modal sheet that holds focus; Escape closes it.
+  await go(`#/w/${ws}`);
+  if (!(await form.count())) await plus.click();
   await page.setViewportSize({ width: 390, height: 844 });
   const phoneButton = form.getByRole('button', { name: /^Tools:/ });
   await phoneButton.click();

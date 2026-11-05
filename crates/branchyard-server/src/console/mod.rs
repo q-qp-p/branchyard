@@ -5,6 +5,7 @@ mod connections;
 mod decisions;
 mod execution;
 mod harness_input;
+mod installs;
 mod policy;
 mod presets;
 mod previews;

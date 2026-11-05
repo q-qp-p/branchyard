@@ -263,6 +263,20 @@ fn cached<T: Clone>(
     Ok((value, 0))
 }
 
+/// Drop the cached PATH check, so the next one sees a harness just
+/// installed.
+pub(super) fn forget_installed() {
+    INSTALLED.lock_recovering("execution preset checks").clear();
+}
+
+/// Whether this server finds `harness` (an ID or a profile ID) now.
+pub(super) fn is_installed(app: &App, harness: &str) -> Result<bool, ApiError> {
+    let (found, _) = installed(app)?;
+    Ok(found
+        .iter()
+        .any(|i| (i.id == harness || i.profile == harness) && i.available))
+}
+
 /// A harness profile on this server: the ID a request names it by (a
 /// default profile's harness name, else its profile ID), and whether its
 /// executable is found.

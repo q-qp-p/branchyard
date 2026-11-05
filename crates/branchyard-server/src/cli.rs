@@ -731,6 +731,7 @@ fn build(flags: Flags) -> Result<(Config, Vec<String>), String> {
     config.tokens = tokens;
     config.default_token_file = default_token_file;
     config.managed_knowledge = partial.managed_knowledge;
+    config.harness_install = partial.harness_install;
     config.principals = partial.principals;
     config.credentials = partial.credentials;
     config.google_identity = partial.google_identity;
@@ -1254,6 +1255,33 @@ mod tests {
         for program in ["by serve", "by worker", "branchyard-server"] {
             assert!(help(program).contains("--knowledge"));
         }
+    }
+
+    #[test]
+    fn harness_install_is_off_unless_the_file_allows_it_and_keeps_its_path() {
+        let scratch = branchyard_testkit::Scratch::new("harness-install-cli");
+        let file = scratch.path().join("server.json");
+        let resolved = |settings: serde_json::Value| {
+            fs::write(&file, settings.to_string()).unwrap();
+            resolve(&["--config".into(), file.display().to_string()]).unwrap()
+        };
+        let off = resolved(
+            serde_json::json!({"data_dir":"state","repos":{},"managed_knowledge":{"enabled":true}}),
+        );
+        assert_eq!(
+            off.harness_install,
+            crate::config::HarnessInstall::default()
+        );
+        assert!(!off.harness_install.allow && off.harness_install.path.is_none());
+        let on = resolved(serde_json::json!({
+            "data_dir":"state","repos":{},"managed_knowledge":{"enabled":true},
+            "harness_install":{"allow":true,"path":"/opt/tools/bin:/usr/bin"}
+        }));
+        assert!(on.harness_install.allow);
+        assert_eq!(
+            on.harness_install.path.as_deref(),
+            Some("/opt/tools/bin:/usr/bin")
+        );
     }
 
     #[test]

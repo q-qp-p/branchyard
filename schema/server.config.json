@@ -33,6 +33,13 @@
         "max_upload_bytes": 8388608
       }
     },
+    "harness_install": {
+      "$ref": "#/$defs/HarnessInstall",
+      "default": {
+        "allow": false,
+        "path": null
+      }
+    },
     "repos": {
       "type": "object",
       "additionalProperties": {
@@ -410,6 +417,26 @@
           "format": "uint",
           "minimum": 0,
           "default": 8388608
+        }
+      },
+      "additionalProperties": false
+    },
+    "HarnessInstall": {
+      "description": "Whether an administrator may install a helper's harness on this server's\nown host from the console (`POST /v1/tools/helpers/{id}/install`).\nInstalling runs the harness catalog's install command (`npm install -g`,\na vendor's installer script) as the server's user, so it is off until the\noperator turns it on. See docs/server.md#install-a-helpers-harness.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Explicit operator opt-in; disabled by default.",
+          "type": "boolean",
+          "default": false
+        },
+        "path": {
+          "description": "The `PATH` the install commands run with and their programs (`npm`,\n`curl`) are looked for on; the server's own `PATH` when unset.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false

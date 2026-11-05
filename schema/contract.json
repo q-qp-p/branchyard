@@ -30883,6 +30883,15 @@
                 "null"
               ],
               "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            },
+            "max_children": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers the session may have at once, 1 to 16. Only the\nhelper entry with `id` `*` carries it (`{\"kind\": \"helper\", \"id\": \"*\",\n\"max_children\": 2}`); that entry names no harness, and alone it\ngives helpers that run the session's own harness. Unset is the\ndefault of 4, within the administrator's `max_helpers`."
             }
           },
           "required": [
@@ -31854,6 +31863,15 @@
                 "null"
               ],
               "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            },
+            "max_children": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers the session may have at once, 1 to 16. Only the\nhelper entry with `id` `*` carries it (`{\"kind\": \"helper\", \"id\": \"*\",\n\"max_children\": 2}`); that entry names no harness, and alone it\ngives helpers that run the session's own harness. Unset is the\ndefault of 4, within the administrator's `max_helpers`."
             }
           },
           "required": [
@@ -31935,6 +31953,15 @@
             "null"
           ],
           "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+        },
+        "max_children": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The most helpers the session may have at once, 1 to 16. Only the\nhelper entry with `id` `*` carries it (`{\"kind\": \"helper\", \"id\": \"*\",\n\"max_children\": 2}`); that entry names no harness, and alone it\ngives helpers that run the session's own harness. Unset is the\ndefault of 4, within the administrator's `max_helpers`."
         }
       },
       "required": [
@@ -31972,6 +31999,165 @@
             "write"
           ],
           "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.ToolRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolKind",
+          "description": "What kind of tool."
+        },
+        "id": {
+          "type": "string",
+          "description": "The connector id, built-in skill id or harness id; `*` with kind\n`helper` stands for delegation as a whole."
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "description": "A tool named without its settings: what a policy turns off.",
+      "title": "ToolRef",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        }
+      }
+    },
+    "workspace.InstallState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "queued",
+          "description": "Accepted; waiting to start."
+        },
+        {
+          "type": "string",
+          "const": "running",
+          "description": "The install command is running."
+        },
+        {
+          "type": "string",
+          "const": "succeeded",
+          "description": "The harness was found after the install."
+        },
+        {
+          "type": "string",
+          "const": "failed",
+          "description": "The command failed, or the harness was not found afterwards."
+        }
+      ],
+      "description": "Where a helper harness's install on the server's host stands.",
+      "title": "InstallState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.HelperInstall": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string",
+          "description": "The harness being installed."
+        },
+        "state": {
+          "$ref": "#/$defs/InstallState",
+          "description": "Where it stands."
+        },
+        "host": {
+          "type": "string",
+          "description": "The machine it installs on: always `server` for now."
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The shell command the catalog gave, once chosen."
+        },
+        "created_at_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "When it was accepted, in epoch milliseconds."
+        },
+        "finished_at_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "When it ended, in epoch milliseconds."
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why it failed."
+        },
+        "output_tail": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The end of the command's output."
+        }
+      },
+      "required": [
+        "harness",
+        "state",
+        "host",
+        "created_at_ms"
+      ],
+      "description": "`POST` and `GET /v1/tools/helpers/{id}/install`: one install of a\nhelper's harness. It runs on the server's own host only; a worker on\nanother machine keeps what it has.",
+      "title": "HelperInstall",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "InstallState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "queued",
+              "description": "Accepted; waiting to start."
+            },
+            {
+              "type": "string",
+              "const": "running",
+              "description": "The install command is running."
+            },
+            {
+              "type": "string",
+              "const": "succeeded",
+              "description": "The harness was found after the install."
+            },
+            {
+              "type": "string",
+              "const": "failed",
+              "description": "The command failed, or the harness was not found afterwards."
+            }
+          ],
+          "description": "Where a helper harness's install on the server's host stands."
         }
       }
     },
@@ -32015,6 +32201,25 @@
             "null"
           ],
           "description": "Whether sessions may delegate at all. `false` turns helpers off."
+        },
+        "max_helpers": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The most helpers a session may have at once, 1 to 16 (default\nceiling 16). Two records' limits narrow to the lesser."
+        },
+        "off": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ToolRef"
+          },
+          "description": "Tools switched off whatever the lists above allow. A person's own\npolicy (`/v1/me/policy`) uses it to turn a tool off for themselves."
         }
       },
       "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record.",
@@ -32081,6 +32286,45 @@
             "allow"
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
+        },
+        "ToolRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id; `*` with kind\n`helper` stands for delegation as a whole."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "A tool named without its settings: what a policy turns off."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
         }
       }
     },
@@ -32089,7 +32333,7 @@
       "properties": {
         "key": {
           "type": "string",
-          "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`."
+          "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`; a person's own is\n`self:<tenant>:<subject>`."
         },
         "policy": {
           "$ref": "#/$defs/ToolPolicy",
@@ -32151,6 +32395,25 @@
                 "null"
               ],
               "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            },
+            "max_helpers": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers a session may have at once, 1 to 16 (default\nceiling 16). Two records' limits narrow to the lesser."
+            },
+            "off": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/ToolRef"
+              },
+              "description": "Tools switched off whatever the lists above allow. A person's own\npolicy (`/v1/me/policy`) uses it to turn a tool off for themselves."
             }
           },
           "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
@@ -32215,6 +32478,45 @@
             "allow"
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
+        },
+        "ToolRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id; `*` with kind\n`helper` stands for delegation as a whole."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "A tool named without its settings: what a policy turns off."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
         }
       }
     },
@@ -32248,7 +32550,7 @@
           "properties": {
             "key": {
               "type": "string",
-              "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`."
+              "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`; a person's own is\n`self:<tenant>:<subject>`."
             },
             "policy": {
               "$ref": "#/$defs/ToolPolicy",
@@ -32308,6 +32610,25 @@
                 "null"
               ],
               "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            },
+            "max_helpers": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers a session may have at once, 1 to 16 (default\nceiling 16). Two records' limits narrow to the lesser."
+            },
+            "off": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/ToolRef"
+              },
+              "description": "Tools switched off whatever the lists above allow. A person's own\npolicy (`/v1/me/policy`) uses it to turn a tool off for themselves."
             }
           },
           "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
@@ -32372,6 +32693,45 @@
             "allow"
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
+        },
+        "ToolRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id; `*` with kind\n`helper` stands for delegation as a whole."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "A tool named without its settings: what a policy turns off."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
         }
       }
     },
@@ -32440,6 +32800,25 @@
                 "null"
               ],
               "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            },
+            "max_helpers": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers a session may have at once, 1 to 16 (default\nceiling 16). Two records' limits narrow to the lesser."
+            },
+            "off": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/ToolRef"
+              },
+              "description": "Tools switched off whatever the lists above allow. A person's own\npolicy (`/v1/me/policy`) uses it to turn a tool off for themselves."
             }
           },
           "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
@@ -32504,6 +32883,45 @@
             "allow"
           ],
           "description": "Whether a mutation that needs confirmation may run under an entry."
+        },
+        "ToolRef": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id; `*` with kind\n`helper` stands for delegation as a whole."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "A tool named without its settings: what a policy turns off."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
         }
       }
     },
@@ -32559,6 +32977,15 @@
                 "null"
               ],
               "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            },
+            "max_children": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers the session may have at once, 1 to 16. Only the\nhelper entry with `id` `*` carries it (`{\"kind\": \"helper\", \"id\": \"*\",\n\"max_children\": 2}`); that entry names no harness, and alone it\ngives helpers that run the session's own harness. Unset is the\ndefault of 4, within the administrator's `max_helpers`."
             }
           },
           "required": [
@@ -32652,6 +33079,15 @@
                 "null"
               ],
               "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            },
+            "max_children": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The most helpers the session may have at once, 1 to 16. Only the\nhelper entry with `id` `*` carries it (`{\"kind\": \"helper\", \"id\": \"*\",\n\"max_children\": 2}`); that entry names no harness, and alone it\ngives helpers that run the session's own harness. Unset is the\ndefault of 4, within the administrator's `max_helpers`."
             }
           },
           "required": [
@@ -32728,6 +33164,11 @@
           "type": "string",
           "const": "connect",
           "description": "Connect an account."
+        },
+        {
+          "type": "string",
+          "const": "turn_on",
+          "description": "Turn it back on in Settings > Tools: the person switched it off."
         },
         {
           "type": "string",
@@ -32834,6 +33275,14 @@
           ],
           "description": "One plain sentence when it is not ready.",
           "default": null
+        },
+        "off_by_me": {
+          "type": "boolean",
+          "description": "The caller switched it off for themselves (their own policy,\n`/v1/me/policy`). `allowed` is then false, `state` is `not_allowed`\nand `action` is `turn_on`; the administrator's policy would allow it."
+        },
+        "installable": {
+          "type": "boolean",
+          "description": "A helper's harness can be installed on the server's host by an\nadministrator now (`POST /v1/tools/helpers/{id}/install`)."
         }
       },
       "required": [
@@ -32978,6 +33427,11 @@
             },
             {
               "type": "string",
+              "const": "turn_on",
+              "description": "Turn it back on in Settings > Tools: the person switched it off."
+            },
+            {
+              "type": "string",
               "const": "install",
               "description": "Install it."
             },
@@ -33009,7 +33463,14 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0,
-          "description": "The most children a session's helpers may have at once."
+          "description": "The most children a session's helpers may have at once for the\ncaller: 16, or the administrator's lower `max_helpers`."
+        },
+        "default_children": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The children a session has when its `tools` give no number.",
+          "default": 0
         },
         "tools": {
           "type": "array",
@@ -33138,6 +33599,14 @@
               ],
               "description": "One plain sentence when it is not ready.",
               "default": null
+            },
+            "off_by_me": {
+              "type": "boolean",
+              "description": "The caller switched it off for themselves (their own policy,\n`/v1/me/policy`). `allowed` is then false, `state` is `not_allowed`\nand `action` is `turn_on`; the administrator's policy would allow it."
+            },
+            "installable": {
+              "type": "boolean",
+              "description": "A helper's harness can be installed on the server's host by an\nadministrator now (`POST /v1/tools/helpers/{id}/install`)."
             }
           },
           "required": [
@@ -33277,6 +33746,11 @@
               "type": "string",
               "const": "connect",
               "description": "Connect an account."
+            },
+            {
+              "type": "string",
+              "const": "turn_on",
+              "description": "Turn it back on in Settings > Tools: the person switched it off."
             },
             {
               "type": "string",

@@ -10,6 +10,8 @@
 //!   bin/tools     the find-tools skill's script: `search`, `show`, `schema`
 //!   skills        link to ../capabilities, where the skills are staged
 //!   connectors    link to ../connectors, where Anvil's packages are placed
+//!   helpers/INDEX.md  only for a turn that may delegate: one line per
+//!                 harness it may hand work to, and the envelope
 //! ```
 //!
 //! Nothing is copied twice: the links point at the directories
@@ -33,6 +35,8 @@ use branchyard_provision::{apply, skills, Edit, Plan};
 pub(crate) const DIRECTORY: &str = ".branchyard/tools";
 /// The most bytes `INDEX.md` takes.
 pub(crate) const INDEX_BUDGET: usize = 4096;
+/// The most bytes `helpers/INDEX.md` takes.
+pub(crate) const HELPERS_BUDGET: usize = 2048;
 /// The most characters of the one line given to the harness.
 pub(crate) const LINE_BUDGET: usize = 300;
 /// The skill that carries the script, and the script's path in it.
@@ -65,13 +69,17 @@ pub(crate) struct Mounted {
 
 /// Mount the tree in `host`, naming paths as the guest sees them under
 /// `guest`: `skills` are those staged (built-in, then the repository's),
-/// `connectors` the ids of the turn's grant.
+/// `connectors` the ids of the turn's grant, and `helpers` the turn's
+/// delegation envelope. A turn whose envelope has no helpers (a leaf) gets
+/// no `helpers/INDEX.md`, and one an earlier turn wrote is removed.
 pub(crate) fn mount(
     host: &Path,
     guest: &Path,
     skills: &[Tool],
     connectors: &[String],
+    helpers: Option<&crate::Envelope>,
 ) -> Result<Mounted, String> {
+    let helpers = helpers.filter(|e| e.max_depth > 0 && e.max_children > 0);
     let described = connector_tools(host, connectors)?;
     let script = skills::skill(FIND_TOOLS)
         .and_then(|skill| skill.files.iter().find(|(path, _)| *path == SCRIPT))
@@ -81,7 +89,15 @@ pub(crate) fn mount(
     plan.edit(
         &format!("{DIRECTORY}/INDEX.md"),
         false,
-        Edit::Put(render_index(skills, &described)),
+        Edit::Put(render_index(skills, &described, helpers.is_some())),
+    );
+    plan.edit(
+        &format!("{DIRECTORY}/helpers/INDEX.md"),
+        false,
+        match helpers {
+            Some(envelope) => Edit::Put(render_helpers(envelope)),
+            None => Edit::Remove,
+        },
     );
     let script_path = format!("{DIRECTORY}/bin/tools");
     plan.edit(&script_path, false, Edit::Put(script.into()));
@@ -197,9 +213,9 @@ const CONNECTOR_RULES: &str = "Call connectors only through the gateway; never a
 
 /// `INDEX.md`: how to search, then a line for each tool, with descriptions
 /// cut as far as it takes to fit [`INDEX_BUDGET`].
-fn render_index(skills: &[Tool], connectors: &[Tool]) -> String {
+fn render_index(skills: &[Tool], connectors: &[Tool], helpers: bool) -> String {
     for cap in [160, 120, 90, 60, 40, 0] {
-        let text = index_with(skills, connectors, cap, usize::MAX);
+        let text = index_with(skills, connectors, helpers, cap, usize::MAX);
         if text.len() <= INDEX_BUDGET {
             return text;
         }
@@ -207,7 +223,7 @@ fn render_index(skills: &[Tool], connectors: &[Tool]) -> String {
     // Names alone, as many as fit.
     let mut shown = skills.len() + connectors.len();
     loop {
-        let text = index_with(skills, connectors, 0, shown);
+        let text = index_with(skills, connectors, helpers, 0, shown);
         if text.len() <= INDEX_BUDGET || shown == 0 {
             return text;
         }
@@ -215,7 +231,13 @@ fn render_index(skills: &[Tool], connectors: &[Tool]) -> String {
     }
 }
 
-fn index_with(skills: &[Tool], connectors: &[Tool], cap: usize, shown: usize) -> String {
+fn index_with(
+    skills: &[Tool],
+    connectors: &[Tool],
+    helpers: bool,
+    cap: usize,
+    shown: usize,
+) -> String {
     let mut text = String::from(
         "# Your tools\n\nSearch first: `bin/tools search WORDS` ranks everything below; \
          `bin/tools show ID` prints one; `bin/tools schema CONNECTOR.OP` prints an operation's \
@@ -245,12 +267,73 @@ fn index_with(skills: &[Tool], connectors: &[Tool], cap: usize, shown: usize) ->
     };
     section("Skills (skills/NAME/SKILL.md)", skills, &mut text);
     section("Connectors (connectors/ID/SKILL.md)", connectors, &mut text);
+    if helpers {
+        text.push_str(
+            "\n## Helpers\nYou may hand work to other harnesses: `helpers/INDEX.md` lists them and \
+             your limits; `bin/tools search --kind helper WORDS` finds one.\n",
+        );
+    }
     if !connectors.is_empty() {
         text.push('\n');
         text.push_str(CONNECTOR_RULES);
         text.push('\n');
     }
     text
+}
+
+/// `helpers/INDEX.md`: the envelope's limits, then one `- id: description`
+/// line for each harness it lets the turn delegate to. The catalog records
+/// a harness's name and models, not what it is best at, so a line says what
+/// it is and which models it takes. Small by construction: lines past
+/// [`HELPERS_BUDGET`] are replaced by a count.
+fn render_helpers(envelope: &crate::Envelope) -> String {
+    let mut text = String::from("# Helpers\n\n");
+    text.push_str(&format!(
+        "You may have at most {} {} at once, {} {} deep. Hand one a task with the delegate \
+         tools; it runs in its own branch.\n\n",
+        envelope.max_children,
+        if envelope.max_children == 1 {
+            "helper"
+        } else {
+            "helpers"
+        },
+        envelope.max_depth,
+        if envelope.max_depth == 1 {
+            "level"
+        } else {
+            "levels"
+        },
+    ));
+    if envelope.harnesses.is_empty() {
+        text.push_str("Helpers run your own harness; no other is allowed.\n");
+        return text;
+    }
+    for (n, id) in envelope.harnesses.iter().enumerate() {
+        let line = format!("- {}\n", helper_line(id));
+        if text.len() + line.len() + 80 > HELPERS_BUDGET {
+            text.push_str(&format!(
+                "- {} more: `bin/tools search --kind helper WORDS`\n",
+                envelope.harnesses.len() - n
+            ));
+            break;
+        }
+        text.push_str(&line);
+    }
+    text
+}
+
+/// `id: Name, models a, b, c` for a harness or profile id the catalog
+/// knows, else the id with a plain note.
+fn helper_line(id: &str) -> String {
+    let entry = crate::inventory::harness_of(id).and_then(branchyard_controls::catalog::harness);
+    let Some(entry) = entry else {
+        return format!("{id}: a harness this server runs");
+    };
+    let models: Vec<&str> = entry.models.iter().take(3).map(String::as_str).collect();
+    match models.is_empty() {
+        true => format!("{id}: {}", entry.name),
+        false => format!("{id}: {}, models {}", entry.name, models.join(", ")),
+    }
 }
 
 /// `: description` cut to `cap` characters, or nothing when `cap` is 0.
@@ -389,7 +472,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
         assert!(skills.iter().any(|s| s.id == "find-tools"));
-        let text = render_index(&skills, &[]);
+        let text = render_index(&skills, &[], false);
         assert!(text.len() <= INDEX_BUDGET, "{}", text.len());
         for skill in &skills {
             assert!(
@@ -411,13 +494,13 @@ mod tests {
         let many: Vec<Tool> = (0..600)
             .map(|n| tool(&format!("skill-{n:03}"), &"word ".repeat(60), "x"))
             .collect();
-        let text = render_index(&many, &[]);
+        let text = render_index(&many, &[], false);
         assert!(text.len() <= INDEX_BUDGET, "{}", text.len());
         assert!(text.contains("more: `bin/tools search WORDS`"), "{text}");
         let few: Vec<Tool> = (0..20)
             .map(|n| tool(&format!("skill-{n}"), &"word ".repeat(60), "x"))
             .collect();
-        let text = render_index(&few, &[]);
+        let text = render_index(&few, &[], false);
         assert!(text.len() <= INDEX_BUDGET);
         assert!(text.contains("skill-19"), "{text}");
         assert!(
@@ -430,7 +513,7 @@ mod tests {
     fn mounting_writes_the_index_the_script_and_two_links_and_repeats_unchanged() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        let first = mount(host.path(), Path::new("/g"), &skills, &[]).unwrap();
+        let first = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
         let tree = host.path().join(DIRECTORY);
         assert!(first.line.contains("/g/.branchyard/tools/INDEX.md"));
         assert!(std::fs::read_to_string(tree.join("INDEX.md"))
@@ -448,7 +531,7 @@ mod tests {
         assert!(tree.join("skills/find-tools/SKILL.md").is_file());
         assert!(!tree.join("connectors").exists(), "no grant, no link");
         assert!(first.written.iter().any(|p| p.ends_with("bin/tools")));
-        let again = mount(host.path(), Path::new("/g"), &skills, &[]).unwrap();
+        let again = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
         assert!(again.written.is_empty(), "{:?}", again.written);
     }
 
@@ -456,7 +539,7 @@ mod tests {
     fn the_script_runs_from_the_mounted_tree_and_finds_a_staged_skill() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        mount(host.path(), Path::new("/g"), &skills, &[]).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
         let output = std::process::Command::new("python3")
             .arg(host.path().join(DIRECTORY).join("bin/tools"))
             .args(["search", "arithmetic", "units"])
@@ -479,7 +562,7 @@ mod tests {
         .unwrap();
         let skills = staged(host.path());
         let granted = vec!["github".to_owned()];
-        let first = mount(host.path(), Path::new("/g"), &skills, &granted).unwrap();
+        let first = mount(host.path(), Path::new("/g"), &skills, &granted, None).unwrap();
         let tree = host.path().join(DIRECTORY);
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
         assert!(
@@ -490,7 +573,7 @@ mod tests {
         assert!(index.len() <= INDEX_BUDGET);
         assert!(tree.join("connectors/github/SKILL.md").is_file());
         assert!(first.written.contains(&format!("{DIRECTORY}/connectors")));
-        let none = mount(host.path(), Path::new("/g"), &skills, &[]).unwrap();
+        let none = mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
         assert!(!tree.join("connectors").exists());
         assert!(none.written.contains(&format!("{DIRECTORY}/connectors")));
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
@@ -504,7 +587,7 @@ mod tests {
         let own = host.path().join(DIRECTORY).join("skills");
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("mine.md"), "x").unwrap();
-        mount(host.path(), Path::new("/g"), &skills, &[]).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
         assert!(own.join("mine.md").is_file());
     }
 
@@ -515,7 +598,7 @@ mod tests {
         std::fs::create_dir_all(host.path().join(".branchyard")).unwrap();
         std::os::unix::fs::symlink(outside.path(), host.path().join(DIRECTORY)).unwrap();
         let skills = staged(host.path());
-        assert!(mount(host.path(), Path::new("/g"), &skills, &[]).is_err());
+        assert!(mount(host.path(), Path::new("/g"), &skills, &[], None).is_err());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
@@ -582,5 +665,89 @@ mod tests {
             std::fs::read_link(home.path().join(".claude/skills/style")).unwrap(),
             Path::new("../../.branchyard/capabilities/repository/style")
         );
+    }
+
+    fn envelope(harnesses: &[&str], max_children: u32, max_depth: u32) -> crate::Envelope {
+        crate::Envelope {
+            max_depth,
+            max_children,
+            harnesses: harnesses.iter().map(|h| (*h).to_owned()).collect(),
+            ..crate::Envelope::default()
+        }
+    }
+
+    #[test]
+    fn a_turn_with_helpers_lists_each_allowed_harness_and_its_limits() {
+        let host = tempfile::tempdir().unwrap();
+        let skills = staged(host.path());
+        let grant = envelope(&["claude-code", "codex", "no-such-harness"], 3, 1);
+        mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        let tree = host.path().join(DIRECTORY);
+        let text = std::fs::read_to_string(tree.join("helpers/INDEX.md")).unwrap();
+        assert!(text.len() <= HELPERS_BUDGET, "{}", text.len());
+        assert!(
+            text.contains("at most 3 helpers at once, 1 level deep"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- claude-code: Claude Code, models "),
+            "{text}"
+        );
+        assert!(text.contains("- codex: Codex, models gpt-5.5"), "{text}");
+        assert!(text.contains("- no-such-harness: a harness this server runs"));
+        let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
+        assert!(index.contains("## Helpers"), "{index}");
+        assert!(index.len() <= INDEX_BUDGET);
+        let output = std::process::Command::new("python3")
+            .arg(tree.join("bin/tools"))
+            .args(["search", "--kind", "helper", "codex"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(said.starts_with("helper     codex"), "{said}");
+    }
+
+    #[test]
+    fn a_leaf_gets_no_helpers_file_and_a_stale_one_goes() {
+        let host = tempfile::tempdir().unwrap();
+        let skills = staged(host.path());
+        let tree = host.path().join(DIRECTORY);
+        for leaf in [
+            None,
+            Some(envelope(&["codex"], 4, 0)),
+            Some(envelope(&["codex"], 0, 1)),
+        ] {
+            mount(host.path(), Path::new("/g"), &skills, &[], leaf.as_ref()).unwrap();
+            assert!(!tree.join("helpers/INDEX.md").exists());
+            let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
+            assert!(!index.contains("## Helpers"));
+        }
+        let grant = envelope(&["codex"], 2, 1);
+        mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        assert!(tree.join("helpers/INDEX.md").is_file());
+        let again = mount(host.path(), Path::new("/g"), &skills, &[], Some(&grant)).unwrap();
+        assert!(again.written.is_empty(), "{:?}", again.written);
+        mount(host.path(), Path::new("/g"), &skills, &[], None).unwrap();
+        assert!(
+            !tree.join("helpers/INDEX.md").exists(),
+            "the next turn is a leaf"
+        );
+    }
+
+    #[test]
+    fn helpers_with_no_harness_named_run_the_turns_own_and_a_long_list_stays_small() {
+        let own = render_helpers(&envelope(&[], 4, 1));
+        assert!(own.contains("run your own harness"), "{own}");
+        let many: Vec<String> = (0..200).map(|n| format!("harness-{n}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let long = render_helpers(&envelope(&refs, 16, 1));
+        assert!(long.len() <= HELPERS_BUDGET, "{}", long.len());
+        assert!(
+            long.contains(" more: `bin/tools search --kind helper WORDS`"),
+            "{long}"
+        );
+        assert!(render_helpers(&envelope(&["codex"], 1, 2))
+            .contains("at most 1 helper at once, 2 levels deep"));
     }
 }

@@ -15,13 +15,19 @@
 //! `allow_delegation`). Every step only narrows. See `docs/server.md`,
 //! "Tool policy".
 //!
+//! A person narrows themselves with a fourth record,
+//! `self:<tenant>:<subject>`, which they write and an administrator does
+//! not. It is intersected after the administrator's result, so it can only
+//! take away: whatever it lists, the administrator's policy is the ceiling.
+//!
 //! - `GET /v1/admin/policies`: the tenant's stored policies.
 //! - `PUT /v1/admin/policies/{key}`: create or replace one, guarded by its
 //!   revision.
 //! - `DELETE /v1/admin/policies/{key}`: remove one.
+//! - `GET /v1/me/policy` and `PUT /v1/me/policy`: the caller's own.
 //!
-//! All three need the `admin` scope and act on the caller's own tenant,
-//! which no request names.
+//! The admin routes need the `admin` scope; every route acts on the
+//! caller's own tenant, which no request names.
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -29,7 +35,7 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use branchyard::connectors::{intersect, GrantEntry, GrantMode};
 use branchyard_client::workspace_api::{
-    PolicyList, PolicyRecord, PutPolicyRequest, ToolKind, ToolPolicy,
+    PolicyList, PolicyRecord, PutPolicyRequest, ToolKind, ToolPolicy, ToolRef,
 };
 use serde_json::{json, Value};
 
@@ -43,10 +49,13 @@ const MAX_POLICIES: usize = 1000;
 const MAX_ENTRIES: usize = 256;
 
 pub(crate) fn router() -> Router<Shared> {
-    Router::new().route("/v1/admin/policies", get(list)).route(
-        "/v1/admin/policies/{key}",
-        get(read).put(put).delete(remove),
-    )
+    Router::new()
+        .route("/v1/admin/policies", get(list))
+        .route(
+            "/v1/admin/policies/{key}",
+            get(read).put(put).delete(remove),
+        )
+        .route("/v1/me/policy", get(own).put(put_own))
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +104,14 @@ pub(crate) fn intersect_policy(a: &ToolPolicy, b: &ToolPolicy) -> ToolPolicy {
             (Some(a), Some(b)) => Some(a && b),
             (a, b) => a.or(b),
         },
+        max_helpers: match (a.max_helpers, b.max_helpers) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        },
+        off: match (&a.off, &b.off) {
+            (Some(a), Some(b)) => Some(pooled(&[a, b])),
+            (a, b) => a.clone().or_else(|| b.clone()),
+        },
     }
 }
 
@@ -124,11 +141,27 @@ pub(crate) fn union_policy(policies: &[&ToolPolicy]) -> Option<ToolPolicy> {
             true => None,
             false => Some(delegations.contains(&true)),
         },
+        // The widest limit any of them sets.
+        max_helpers: policies.iter().filter_map(|p| p.max_helpers).max(),
+        // Off for the pool only what every record that speaks to it turns off.
+        off: {
+            let lists: Vec<&Vec<ToolRef>> =
+                policies.iter().filter_map(|p| p.off.as_ref()).collect();
+            lists.split_first().map(|(first, rest)| {
+                first
+                    .iter()
+                    .filter(|r| rest.iter().all(|l| l.contains(r)))
+                    .cloned()
+                    .collect()
+            })
+        },
     })
 }
 
 /// A caller's stored policy: the tenant's, narrowed by the union of their
-/// groups' and their own, when any of those exist.
+/// groups' and their own, when any of those exist. This is what the
+/// administrator allows; the person's own record narrows it after
+/// ([`narrowed_by_self`]).
 pub(crate) fn resolve(
     tenant: Option<&ToolPolicy>,
     groups: &[&ToolPolicy],
@@ -140,6 +173,18 @@ pub(crate) fn resolve(
         (Some(only), None) => only.clone(),
         (None, Some(only)) => only,
         (None, None) => ToolPolicy::default(),
+    };
+    policy.connectors = policy.connectors.map(simplified);
+    policy
+}
+
+/// The administrator's result `admin` narrowed by the person's own record,
+/// when they have one. The same intersection every other step uses, so the
+/// result is never wider than `admin` whatever `own` says.
+pub(crate) fn narrowed_by_self(admin: &ToolPolicy, own: Option<&ToolPolicy>) -> ToolPolicy {
+    let mut policy = match own {
+        Some(own) => intersect_policy(admin, own),
+        None => admin.clone(),
     };
     policy.connectors = policy.connectors.map(simplified);
     policy
@@ -182,23 +227,44 @@ pub(crate) fn with_server(
     intersect_policy(policy, &server)
 }
 
-/// Whether sessions may delegate under `policy`.
-pub(crate) fn delegation_allowed(policy: &ToolPolicy) -> bool {
-    policy.delegation != Some(false)
+/// Whether `policy` switches `id` off, whatever its lists allow.
+pub(crate) fn is_off(policy: &ToolPolicy, kind: ToolKind, id: &str) -> bool {
+    policy
+        .off
+        .as_ref()
+        .is_some_and(|off| off.iter().any(|r| r.kind == kind && r.id == id))
 }
 
-/// Whether `policy` lists `id` among its skills (unset lists every one).
+/// Whether sessions may delegate under `policy`.
+pub(crate) fn delegation_allowed(policy: &ToolPolicy) -> bool {
+    policy.delegation != Some(false) && !is_off(policy, ToolKind::Helper, "*")
+}
+
+/// Whether `policy` lists `id` among its skills (unset lists every one) and
+/// does not switch it off.
 pub(crate) fn skill_allowed(policy: &ToolPolicy, id: &str) -> bool {
+    !is_off(policy, ToolKind::Skill, id)
+        && policy
+            .skills
+            .as_ref()
+            .is_none_or(|allowed| allowed.iter().any(|s| s == id))
+}
+
+/// The most helpers a session may have at once under `policy`: the
+/// server's 16, or the policy's lower `max_helpers`.
+pub(crate) fn helper_limit(policy: &ToolPolicy) -> u32 {
     policy
-        .skills
-        .as_ref()
-        .is_none_or(|allowed| allowed.iter().any(|s| s == id))
+        .max_helpers
+        .map_or(super::connections::MAX_HELPERS, |cap| {
+            cap.min(super::connections::MAX_HELPERS)
+        })
 }
 
 /// Whether `policy` allows delegating to `harness`: delegation is on and
-/// the harness is listed (unset lists every one).
+/// the harness is listed (unset lists every one) and not switched off.
 pub(crate) fn helper_allowed(policy: &ToolPolicy, harness: &str) -> bool {
     delegation_allowed(policy)
+        && !is_off(policy, ToolKind::Helper, harness)
         && policy
             .helpers
             .as_ref()
@@ -240,6 +306,11 @@ pub(crate) fn principal_key(tenant: &str, subject: &str) -> String {
     format!("principal:{tenant}:{subject}")
 }
 
+/// A person's own policy key: what they narrow themselves with.
+pub(crate) fn self_key(tenant: &str, subject: &str) -> String {
+    format!("self:{tenant}:{subject}")
+}
+
 /// The key of the tenant's policy version: a counter in the same
 /// collection, so SQLite and PostgreSQL keep it with the policies it counts.
 /// It rises by one in the same transaction as every `PUT` and `DELETE` of
@@ -253,6 +324,12 @@ const VERSION_PREFIX: &str = "version:";
 /// Whether a stored `Policies` row is the counter, not a policy.
 fn is_version(id: &str) -> bool {
     id.starts_with(VERSION_PREFIX)
+}
+
+/// Whether a stored `Policies` row is a person's own record, which the
+/// administrator's routes neither list nor write.
+fn is_self(id: &str) -> bool {
+    id.starts_with("self:")
 }
 
 /// The tenant's policy version: 0 until a policy is first stored, then the
@@ -333,8 +410,15 @@ fn stored(app: &App, caller: &Caller, key: &str) -> Result<Option<(ToolPolicy, u
 /// limit it met.
 pub(crate) struct Resolved {
     /// The stored policy for the caller: tenant, narrowed by groups and
-    /// person.
+    /// the administrator's record for the person, then by the person's
+    /// own record. Everything that decides what a session may choose reads
+    /// this one.
     pub store: ToolPolicy,
+    /// The same without the person's own record: what the administrator
+    /// allows. The ceiling a person's own record cannot exceed.
+    pub admin: ToolPolicy,
+    /// The person's own record, when they have one.
+    pub own: Option<ToolPolicy>,
     /// The `ceilings` configuration's connector ceiling for this caller.
     pub server_ceiling: Option<Vec<GrantEntry>>,
     /// Whether the server delegates at all.
@@ -346,6 +430,16 @@ impl Resolved {
     pub fn effective(&self) -> ToolPolicy {
         with_server(
             &self.store,
+            self.server_ceiling.as_deref(),
+            self.allow_delegation,
+        )
+    }
+
+    /// What the administrator and the server allow, before the person's
+    /// own record: what the caller could switch on.
+    pub fn admin_effective(&self) -> ToolPolicy {
+        with_server(
+            &self.admin,
             self.server_ceiling.as_deref(),
             self.allow_delegation,
         )
@@ -370,8 +464,17 @@ pub(crate) fn resolved(app: &App, caller: &Caller) -> Result<Resolved, ApiError>
     )?
     .map(|(p, _)| p);
     let group_refs: Vec<&ToolPolicy> = groups.iter().collect();
+    let own = stored(
+        app,
+        caller,
+        &self_key(tenant, &caller.0.connector_subject()),
+    )?
+    .map(|(p, _)| p);
+    let admin = resolve(tenant_policy.as_ref(), &group_refs, person.as_ref());
     Ok(Resolved {
-        store: resolve(tenant_policy.as_ref(), &group_refs, person.as_ref()),
+        store: narrowed_by_self(&admin, own.as_ref()),
+        admin,
+        own,
         server_ceiling: super::connections::server_ceiling(app, caller),
         allow_delegation: app.config.allow_delegation,
     })
@@ -438,18 +541,22 @@ pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), A
         None => catalogue.skills.iter().map(|s| s.id.clone()).collect(),
     };
     if let Some(id) = skills.iter().find(|id| !skill_allowed(store, id)) {
-        return Err(changed(not_allowed(ToolKind::Skill, id, None)));
+        return Err(changed(refusal(store, ToolKind::Skill, id, None)));
     }
     if let Some(helpers) = tools["helpers"]["harnesses"].as_array() {
         if !delegation_allowed(store) || !resolved.allow_delegation {
-            return Err(changed(not_allowed(ToolKind::Helper, "*", None)));
+            return Err(changed(refusal(store, ToolKind::Helper, "*", None)));
         }
         if let Some(id) = helpers
             .iter()
             .filter_map(Value::as_str)
             .find(|h| !helper_allowed(store, h))
         {
-            return Err(changed(not_allowed(ToolKind::Helper, id, None)));
+            return Err(changed(refusal(store, ToolKind::Helper, id, None)));
+        }
+        let asked = tools["helpers"]["max_children"].as_u64();
+        if asked.is_some_and(|n| n > u64::from(helper_limit(store))) {
+            return Err(changed(over_limit(store)));
         }
     }
     Ok(())
@@ -502,6 +609,9 @@ pub(crate) fn fit_connectors(
 /// One entry narrowed to the ceiling. A ceiling entry with no account
 /// covers every account of its connector.
 fn fit_entry(policy: &ToolPolicy, entry: &GrantEntry) -> Result<Vec<GrantEntry>, ApiError> {
+    if is_off(policy, ToolKind::Connector, &entry.connector) {
+        return Err(refusal(policy, ToolKind::Connector, &entry.connector, None));
+    }
     let Some(ceiling) = policy.connectors.as_deref() else {
         return Ok(vec![entry.clone()]);
     };
@@ -532,6 +642,31 @@ fn fit_entry(policy: &ToolPolicy, entry: &GrantEntry) -> Result<Vec<GrantEntry>,
     }
 }
 
+/// `tool_not_allowed` for `id` under `policy`: that it is switched off when
+/// `policy` says so (the person's own record, or an administrator's `off`),
+/// else that the administrator has not allowed it.
+pub(crate) fn refusal(
+    policy: &ToolPolicy,
+    kind: ToolKind,
+    id: &str,
+    max_mode: Option<GrantMode>,
+) -> ApiError {
+    if !is_off(policy, kind, id) {
+        return not_allowed(kind, id, max_mode);
+    }
+    let name = match kind {
+        ToolKind::Connector => super::connections::display(id),
+        ToolKind::Helper if id == "*" => "Helpers".to_owned(),
+        _ => id.to_owned(),
+    };
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "tool_not_allowed",
+        format!("{name} is turned off for you. Turn it on in Settings > Tools."),
+    )
+    .detail(json!({ "kind": kind, "id": id, "off": true }))
+}
+
 /// `tool_not_allowed`: the administrator's policy does not allow the tool.
 /// `detail` is `{kind, id}`, and `max_mode` for a connector allowed less.
 pub(crate) fn not_allowed(kind: ToolKind, id: &str, max_mode: Option<GrantMode>) -> ApiError {
@@ -548,6 +683,21 @@ pub(crate) fn not_allowed(kind: ToolKind, id: &str, max_mode: Option<GrantMode>)
         detail["max_mode"] = json!(mode);
     }
     ApiError::new(StatusCode::FORBIDDEN, "tool_not_allowed", message).detail(detail)
+}
+
+/// `tool_not_allowed` for a helper limit above what the policy allows:
+/// `detail.max_children` is the most.
+pub(crate) fn over_limit(policy: &ToolPolicy) -> ApiError {
+    let most = helper_limit(policy);
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "tool_not_allowed",
+        format!(
+            "Your administrator allows at most {most} {} at once.",
+            if most == 1 { "helper" } else { "helpers" }
+        ),
+    )
+    .detail(json!({ "kind": ToolKind::Helper, "id": "*", "max_children": most }))
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +722,7 @@ async fn list(
         .registry
         .console_list(Collection::Policies, caller.tenant())?
         .into_iter()
-        .filter(|row| !is_version(&row.id))
+        .filter(|row| !is_version(&row.id) && !is_self(&row.id))
     {
         let policy = serde_json::from_value(row.body).map_err(|e| {
             ApiError::internal(format!("stored policy {} is unreadable: {e}", row.id))
@@ -627,6 +777,36 @@ fn validate(policy: &ToolPolicy) -> Result<(), ApiError> {
         }
         super::tools::known_harnesses(helpers)?;
     }
+    if let Some(most) = policy.max_helpers {
+        if !(1..=super::connections::MAX_HELPERS).contains(&most) {
+            return Err(ApiError::bad_request(format!(
+                "max_helpers must be from 1 to {}",
+                super::connections::MAX_HELPERS
+            )));
+        }
+    }
+    if let Some(off) = &policy.off {
+        if off.len() > MAX_ENTRIES {
+            return Err(too_many("off entries"));
+        }
+        for tool in off {
+            if tool.id.trim().is_empty() || tool.id.len() > 128 {
+                return Err(ApiError::bad_request("a tool id is 1 to 128 characters"));
+            }
+            match tool.kind {
+                ToolKind::Connector => GrantEntry::read(&tool.id)
+                    .check()
+                    .map_err(ApiError::bad_request)?,
+                ToolKind::Skill => {
+                    branchyard_provision::built_in::check(std::slice::from_ref(&tool.id)).map_err(
+                        |why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why),
+                    )?
+                }
+                ToolKind::Helper if tool.id == "*" => {}
+                ToolKind::Helper => super::tools::known_harnesses(std::slice::from_ref(&tool.id))?,
+            }
+        }
+    }
     Ok(())
 }
 
@@ -638,6 +818,45 @@ async fn put(
 ) -> Result<Json<PolicyRecord>, ApiError> {
     super::scope(&caller, "admin")?;
     check_key(caller.tenant(), &key)?;
+    store(app, caller, key, request).await
+}
+
+/// `GET /v1/me/policy`: the caller's own record, or an empty policy at
+/// revision 0 before they first save one.
+async fn own(
+    State(app): State<Shared>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<PolicyRecord>, ApiError> {
+    super::scope(&caller, "read")?;
+    crate::api::blocking(move || {
+        let key = self_key(caller.tenant(), &caller.0.connector_subject());
+        let (policy, revision) = stored(&app, &caller, &key)?.unwrap_or_default();
+        Ok(Json(record(&key, policy, revision)))
+    })
+    .await?
+}
+
+/// `PUT /v1/me/policy`: replace the caller's own record. It can only take
+/// tools away: it is intersected after the administrator's policy, so a
+/// tool the administrator does not allow stays off whatever it lists.
+async fn put_own(
+    State(app): State<Shared>,
+    Extension(caller): Extension<Caller>,
+    crate::api::JsonBody(request, _): crate::api::JsonBody<PutPolicyRequest>,
+) -> Result<Json<PolicyRecord>, ApiError> {
+    super::scope(&caller, "run")?;
+    let key = self_key(caller.tenant(), &caller.0.connector_subject());
+    store(app, caller, key, request).await
+}
+
+/// Validate and write one policy record, with the tenant's version raised in
+/// the same transaction.
+async fn store(
+    app: Shared,
+    caller: Caller,
+    key: String,
+    request: PutPolicyRequest,
+) -> Result<Json<PolicyRecord>, ApiError> {
     validate(&request.policy)?;
     crate::api::blocking(move || {
         let body =
@@ -661,7 +880,7 @@ async fn put(
                     .registry
                     .console_list(Collection::Policies, caller.tenant())?
                     .iter()
-                    .filter(|row| !is_version(&row.id))
+                    .filter(|row| !is_version(&row.id) && !is_self(&row.id))
                     .count()
                     >= MAX_POLICIES
                 {

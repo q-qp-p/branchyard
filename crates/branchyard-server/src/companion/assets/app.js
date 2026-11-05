@@ -3069,7 +3069,7 @@
       name: '', prompt: '', env: keep.env || null, harness: keep.harness || null, model: keep.model || '', effort: '',
       access: workspaceCanRun(v) ? 'writer' : 'reviewer', sources: new Map(), outputs: new Set(),
       collect: mode === 'work' || v.workspace.result_mode !== 'code', allowAll: false, ack: false,
-      mode, tools: null, remembered: kept,
+      mode, tools: null, remembered: kept, helperLimit: undefined,
     };
   }
 
@@ -3195,12 +3195,13 @@
   const kindWord = (kind) => TOOL_KINDS.find((k) => k.kind === kind) || TOOL_KINDS[0];
   const toolKey = (kind, id) => `${kind}:${id}`;
   const domId = (text) => String(text).replace(/[^a-zA-Z0-9_-]/g, '-');
+  const isLimit = (t) => t.kind === 'helper' && t.id === '*';
   const toolPick = (x, mode) => (x.kind === 'connector' ? { kind: x.kind, id: x.id, mode: mode === 'write' ? 'write' : 'read' } : { kind: x.kind, id: x.id });
 
   const reconnecting = (x) => (x.accounts || []).some((a) => a.state === 'needs_reconnect');
   // Where a tool stands, in words. The dot repeats it and is never alone.
   function toolStateWords(x) {
-    if (x.state === 'not_allowed') return { label: 'Not allowed', lane: 'done' };
+    if (x.state === 'not_allowed') return x.off_by_me ? { label: 'Off for you', lane: 'done' } : { label: 'Not allowed', lane: 'done' };
     if (x.state === 'not_ready') {
       if (x.kind === 'connector') return { label: reconnecting(x) ? 'Needs reconnecting' : 'Not connected', lane: 'needs' };
       return { label: 'Not available', lane: 'needs' };
@@ -3212,6 +3213,7 @@
     switch (x.action) {
       case 'connect': return reconnecting(x) ? { kind: 'reconnect', label: 'Reconnect' } : { kind: 'connect', label: 'Connect' };
       case 'ask_admin': return { kind: 'ask_admin', label: 'Ask your administrator' };
+      case 'turn_on': return { kind: 'turn_on', label: 'Turn on' };
       case 'install': return { kind: 'install', label: 'Install' };
       case 'sign_in': return { kind: 'sign_in', label: 'Sign in' };
       default: return null;
@@ -3252,7 +3254,7 @@
       if (!kept || typeof kept !== 'object') return null;
       const map = new Map();
       for (const t of Array.isArray(kept.tools) ? kept.tools : []) {
-        if (t && typeof t.id === 'string' && KIND_ORDER[t.kind] != null) map.set(toolKey(t.kind, t.id), toolPick(t, t.mode));
+        if (t && typeof t.id === 'string' && KIND_ORDER[t.kind] != null && !isLimit(t)) map.set(toolKey(t.kind, t.id), toolPick(t, t.mode));
       }
       return map.size ? map : null;
     } catch (_) { return null; }
@@ -3271,18 +3273,21 @@
     for (const c of t.connectors || []) map.set(toolKey('connector', c.connector), toolPick({ kind: 'connector', id: c.connector }, c.mode));
     for (const id of Array.isArray(t.skills) ? t.skills : []) map.set(toolKey('skill', id), toolPick({ kind: 'skill', id }));
     for (const id of t.helpers ? t.helpers.harnesses || [] : []) map.set(toolKey('helper', id), toolPick({ kind: 'helper', id }));
-    return { tools: map.size || Array.isArray(t.skills) ? map : null, remembered: null };
+    const limit = t.helpers && Number.isInteger(t.helpers.max_children) ? t.helpers.max_children : undefined;
+    return { tools: map.size || Array.isArray(t.skills) ? map : null, remembered: null, helperLimit: limit };
   }
 
   // What the Tools control offers for a draft, what is chosen and what is
   // closed, and why. Pure. The draft's own choice wins; else the
   // workspace's saved defaults; else what this browser chose last.
   function toolChoices(tools, draft, c) {
-    const none = { state: tools.state, error: tools.error, entries: [], selected: new Map(), chosen: [], blocked: null, explicit: false, dirty: false, saveable: [], gateway: 'ready', gatewayWhy: null };
+    const none = { state: tools.state, error: tools.error, entries: [], selected: new Map(), chosen: [], blocked: null, explicit: false, dirty: false, saveable: [], saveAll: [], limit: null, limitMax: 16, limitDefault: 4, gateway: 'ready', gatewayWhy: null };
     if (tools.state !== 'ready') return none;
     const reviewer = c.access.value === 'reviewer';
     const saved = !!tools.defaults && tools.defaults.revision > 0;
-    const defaults = new Map(((tools.defaults && tools.defaults.tools) || []).map((t) => [toolKey(t.kind, t.id), toolPick(t, t.mode)]));
+    const savedList = (tools.defaults && tools.defaults.tools) || [];
+    const defaults = new Map(savedList.filter((t) => !isLimit(t)).map((t) => [toolKey(t.kind, t.id), toolPick(t, t.mode)]));
+    const savedLimit = (savedList.find(isLimit) || {}).max_children;
     const selected = draft.tools || (saved ? defaults : draft.remembered) || new Map();
     const entries = tools.data.tools.map((x) => {
       const pick = selected.get(toolKey(x.kind, x.id));
@@ -3303,13 +3308,19 @@
     // but the person cannot use now is shown, with why.
     const chosen = entries.filter((r) => r.on);
     const saveable = entries.filter((r) => selected.has(toolKey(r.x.kind, r.x.id))).map((r) => toolPick(r.x, selected.get(toolKey(r.x.kind, r.x.id)).mode));
-    const norm = (list) => JSON.stringify(list.map((t) => toolPick(t, t.mode)).sort((a, b) => toolKey(a.kind, a.id).localeCompare(toolKey(b.kind, b.id))));
+    // The helper limit counts only while a helper is chosen.
+    const limit = draft.helperLimit !== undefined ? draft.helperLimit : Number.isInteger(savedLimit) ? savedLimit : null;
+    const limitMax = tools.data.max_children || 16;
+    const limitDefault = tools.data.default_children || Math.min(4, limitMax);
+    const withLimit = (list) => (limit != null && list.some((t) => t.kind === 'helper') ? list.concat({ kind: 'helper', id: '*', max_children: limit }) : list);
+    const norm = (list) => JSON.stringify(list.map((t) => (isLimit(t) ? t : toolPick(t, t.mode))).sort((a, b) => toolKey(a.kind, a.id).localeCompare(toolKey(b.kind, b.id))));
+    const savedAll = Array.from(defaults.values()).concat(savedList.filter((t) => isLimit(t) && Number.isInteger(t.max_children)).map((t) => ({ kind: 'helper', id: '*', max_children: t.max_children })));
     return {
-      state: 'ready', entries, selected, chosen, saveable,
+      state: 'ready', entries, selected, chosen, saveable, saveAll: withLimit(saveable), limit, limitMax, limitDefault,
       gateway: tools.data.gateway, gatewayWhy: tools.data.reason || null,
       blocked: chosen.find((r) => r.why) || null,
       explicit: !!draft.tools || saved,
-      dirty: norm(saveable) !== norm(Array.from(defaults.values())),
+      dirty: norm(withLimit(saveable)) !== norm(savedAll),
     };
   }
 
@@ -3318,7 +3329,9 @@
   // whole choice; skills only narrow, so none chosen keeps them all.
   function toolRequest(t, draft) {
     if (!t.explicit && !t.chosen.length) return {};
-    return { tools: t.chosen.map((r) => toolPick(r.x, r.mode)) };
+    const picks = t.chosen.map((r) => toolPick(r.x, r.mode));
+    if (t.limit != null && t.chosen.some((r) => r.x.kind === 'helper')) picks.push({ kind: 'helper', id: '*', max_children: t.limit });
+    return { tools: picks };
   }
 
   // A session's name from its prompt's first line, for a person who gave none.
@@ -3474,6 +3487,8 @@
     let policies = null;
     let scope = tenantKey;
     let edit = null;
+    // The person's own record: what they switched off for themselves.
+    let mineRec = null;
 
     const status = h('p', { class: 'muted tools-count', id: 'tools-count', role: 'status', 'aria-live': 'polite', text: 'Loading tools…' });
     const note = h('div', { class: 'tools-note' });
@@ -3485,6 +3500,7 @@
       h('caption', { class: 'visually-hidden', text: 'Connectors, skills and helpers' }),
       h('thead', {}, h('tr', {},
         h('th', { scope: 'col', text: 'Tool' }), h('th', { scope: 'col', text: 'Kind' }), h('th', { scope: 'col', text: 'State' }),
+        h('th', { scope: 'col', id: 'tools-mine-head', text: 'Mine' }),
         admin ? h('th', { scope: 'col', id: 'tools-allowed-head', text: 'Allowed' }) : null,
         h('th', { scope: 'col', text: 'Action' }))),
       body);
@@ -3493,6 +3509,77 @@
     const savedPolicy = () => {
       const rec = (policies || []).find((p) => p.key === scope);
       return rec ? rec.policy : null;
+    };
+    const isOff = (x) => !!mineRec && (mineRec.policy.off || []).some((o) => o.kind === x.kind && o.id === x.id);
+    // Switch a tool off, or on again, for this person only. The record keeps
+    // its other parts; the administrator's policy stays the ceiling.
+    const setOff = async (x, off, focusId) => {
+      if (!mineRec) return;
+      const policy = JSON.parse(JSON.stringify(mineRec.policy || {}));
+      const list = (policy.off || []).filter((o) => !(o.kind === x.kind && o.id === x.id));
+      if (off) list.push({ kind: x.kind, id: x.id });
+      if (list.length) policy.off = list; else delete policy.off;
+      try {
+        mineRec = await api('PUT', '/v1/me/policy', { policy, revision: mineRec.revision });
+        toast(off ? `${x.name} is off for you.` : `${x.name} is on for you.`);
+      } catch (e) {
+        if (e.status === 409 && e.code === 'revision_conflict') {
+          toast('Your settings changed in another tab. They are reloaded; try again.');
+          await loadMine();
+        } else {
+          toast(`Not saved: ${said(e.message)}`);
+        }
+      }
+      await reload(focusId);
+    };
+    const mineCell = (x, id) => {
+      const cell = h('td', { 'data-label': 'Mine', class: 'tool-mine' });
+      if (!mineRec) return cell;
+      // What the administrator withholds, a person cannot switch on.
+      if (!x.allowed && !x.off_by_me) return h('td', { 'data-label': 'Mine', class: 'tool-mine' }, h('span', { class: 'hint', text: 'Not allowed' }));
+      const box = h('input', { type: 'checkbox', id: `${id}-mine`, checked: !x.off_by_me, 'aria-label': `Use ${x.name}`, 'aria-describedby': `${id}-state` });
+      box.addEventListener('change', () => setOff(x, !box.checked, `${id}-mine`));
+      cell.append(h('label', { class: 'toggle', for: box.id }, box, h('span', { text: x.off_by_me ? 'Off' : 'On' })));
+      return cell;
+    };
+    // Install a helper's harness on the server's host, then follow it until
+    // it ends. The server runs one install at a time per harness; the page
+    // asks again once a second, for at most twenty minutes.
+    const installHelper = async (x, slot, button, id) => {
+      button.disabled = true;
+      const wording = h('p', { class: 'hint', role: 'status', id: `${id}-install`, text: `Asking the server to install ${x.name}…` });
+      fill(slot, h('div', { class: 'conn-waiting' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), wording));
+      const failed = (why, tail) => {
+        button.disabled = false;
+        fill(slot, h('p', { class: 'error', role: 'alert', id: `${id}-install-error`, text: `Could not install ${x.name}: ${why}` }),
+          tail ? h('details', {}, h('summary', { text: 'What the installer said' }), h('pre', { class: 'install-output', text: tail })) : null);
+        button.focus();
+      };
+      let got;
+      try {
+        got = await api('POST', `/v1/tools/helpers/${enc(x.id)}/install`, {});
+      } catch (e) {
+        failed(said(e.message));
+        return;
+      }
+      const deadline = Date.now() + 20 * 60 * 1000;
+      while (state.route.name === 'settingsTools') {
+        if (got.state === 'succeeded') {
+          toast(`${x.name} installed on the server.`);
+          await reload(`${id}-state`);
+          return;
+        }
+        if (got.state === 'failed') { failed(got.problem || 'The install failed.', got.output_tail); return; }
+        if (Date.now() > deadline) { failed('It is taking too long. Check the server.'); return; }
+        wording.textContent = got.state === 'queued' ? `Waiting to install ${x.name}…` : `Installing ${x.name} on the server…`;
+        await new Promise((done) => setTimeout(done, 1000));
+        try {
+          got = await api('GET', `/v1/tools/helpers/${enc(x.id)}/install`);
+        } catch (e) {
+          failed(said(e.message));
+          return;
+        }
+      }
     };
     const row = (x) => {
       const id = `tool-${x.kind}-${domId(x.id)}`;
@@ -3514,6 +3601,14 @@
           },
         });
         action = button;
+      } else if (act && act.kind === 'install') {
+        const button = h('button', {
+          type: 'button', class: 'small', id: `${id}-action`, text: act.label, 'aria-label': `${act.label} ${x.name}`, 'aria-describedby': `${id}-state`,
+          onclick: () => installHelper(x, slot, button, id),
+        });
+        action = [button, h('span', { class: 'hint', text: 'On the server only' })];
+      } else if (act && act.kind === 'turn_on') {
+        action = h('button', { type: 'button', class: 'small', id: `${id}-action`, text: act.label, 'aria-label': `${act.label} ${x.name}`, onclick: () => setOff(x, false, `${id}-mine`) });
       } else if (act && act.kind === 'ask_admin') {
         action = h('span', { class: 'tool-ask', id: `${id}-ask`, text: me.tenant && me.tenant !== 'default' ? `${act.label} (${me.tenant})` : act.label });
       } else if (act) {
@@ -3535,6 +3630,7 @@
           slot),
         h('td', { 'data-label': 'Kind', text: kindWord(x.kind).one }),
         h('td', { 'data-label': 'State' }, h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label)),
+        mineCell(x, id),
         admin ? h('td', { 'data-label': 'Allowed', class: 'tool-allowed', text: policies ? policyWords(savedPolicy(), x) : '…' }) : null,
         h('td', { 'data-label': 'Action', class: 'tool-action' }, action));
     };
@@ -3555,6 +3651,13 @@
     search.addEventListener('input', () => draw());
     kinds.addEventListener('change', () => draw());
 
+    const loadMine = async () => {
+      try {
+        mineRec = await api('GET', '/v1/me/policy');
+      } catch (_) {
+        mineRec = null;
+      }
+    };
     const reload = async (focusId) => {
       let got;
       try {
@@ -3660,7 +3763,18 @@
             const box = h('input', { type: 'checkbox', id: 'pol-delegation', checked: p.delegation !== false });
             box.addEventListener('change', () => { if (box.checked) delete p.delegation; else p.delegation = false; });
             return box;
-          })(), h('span', { text: 'Sessions may hand work to helpers' })) : null);
+          })(), h('span', { text: 'Sessions may hand work to helpers' })) : null,
+        f.field === 'helpers' ? (() => {
+          const input = h('input', { type: 'number', id: 'pol-max-helpers', min: '1', max: '16', step: '1', inputmode: 'numeric', placeholder: '16', 'aria-describedby': 'pol-max-helpers-hint' });
+          if (Number.isInteger(p.max_helpers)) input.value = String(p.max_helpers);
+          input.addEventListener('change', () => {
+            const n = Number.parseInt(input.value, 10);
+            if (Number.isNaN(n)) delete p.max_helpers; else p.max_helpers = Math.min(16, Math.max(1, n));
+            input.value = Number.isInteger(p.max_helpers) ? String(p.max_helpers) : '';
+          });
+          return h('div', { class: 'policy-limit' }, h('label', { class: 'block', for: 'pol-max-helpers', text: 'Most helpers at once' }), input,
+            h('p', { class: 'hint', id: 'pol-max-helpers-hint', text: 'From 1 to 16. Left empty, a session may have up to 16.' }));
+        })() : null);
     };
     const drawPolicy = () => {
       if (!policies) {
@@ -3751,6 +3865,7 @@
         h('div', { class: 'filter-field tools-search' }, icon('search', true), search),
         kinds),
       status, note, table, empty, policyBox));
+    await loadMine();
     await reload();
     if (admin) {
       await loadPolicies();
@@ -4158,7 +4273,7 @@
     return [
       ...(t.connectors || []).map((c) => `${named(c.connector)} ${c.mode === 'write' ? '(can make changes)' : '(read only)'}`),
       Array.isArray(t.skills) ? `${plural(t.skills.length, 'skill')}` : null,
-      t.helpers ? `helpers${(t.helpers.harnesses || []).length ? `: ${t.helpers.harnesses.join(', ')}` : ''}` : null,
+      t.helpers ? `helpers${(t.helpers.harnesses || []).length ? `: ${t.helpers.harnesses.join(', ')}` : ''}${Number.isInteger(t.helpers.max_children) ? `${(t.helpers.harnesses || []).length ? ',' : ':'} at most ${t.helpers.max_children} at once` : ''}` : null,
     ];
   }
 
@@ -4885,6 +5000,27 @@
         r.on && r.mode === 'write' ? h('p', { class: 'hint', text: `It may change things in ${x.name}. You are asked before anything that needs confirming.` }) : null,
         mode, connect, flowSlot(x.id));
     };
+    // How many helpers a session may have at once. It applies to the helpers
+    // chosen above, so it waits for one; empty means the default.
+    const helperLimitControl = (t, c) => {
+      if (c.access.value === 'reviewer' || !t.entries.some((r) => r.x.kind === 'helper')) return null;
+      const anyHelper = t.chosen.some((r) => r.x.kind === 'helper');
+      const input = h('input', {
+        type: 'number', id: 'sf-helper-limit', min: '1', max: String(t.limitMax), inputmode: 'numeric', step: '1',
+        placeholder: String(t.limitDefault), disabled: !anyHelper, 'aria-describedby': 'sf-helper-limit-hint',
+      });
+      if (t.limit != null) input.value = String(t.limit);
+      input.addEventListener('change', () => {
+        const n = Number.parseInt(input.value, 10);
+        v.draft.helperLimit = Number.isNaN(n) ? null : Math.min(t.limitMax, Math.max(1, n));
+        syncForm();
+      });
+      return h('div', { class: 'helper-limit' },
+        h('label', { class: 'block', for: 'sf-helper-limit', text: 'Most helpers at once' }), input,
+        h('p', { class: 'hint', id: 'sf-helper-limit-hint', text: anyHelper
+          ? `From 1 to ${t.limitMax}. Left empty, a session may have ${t.limitDefault}.${t.limitMax < 16 ? ' Your administrator sets the top.' : ''}`
+          : 'Choose a helper first.' }));
+    };
     const drawToolList = (c) => {
       const t = c.tools;
       if (t.state === 'loading') return h('p', { class: 'hint', 'aria-busy': 'true', text: 'Loading your tools…' });
@@ -4896,7 +5032,7 @@
       const notes = {
         connector: t.gateway === 'ready' ? null : h('p', { class: t.gateway === 'unreachable' ? 'error' : 'hint', text: t.gatewayWhy || 'Connectors are not set up here.' }),
         skill: h('p', { class: 'hint', text: 'Choose skills to give a session only those. Choose none and it gets every skill it may use.' }),
-        helper: null,
+        helper: helperLimitControl(t, c),
       };
       const shown = groups.reduce((n, g) => n + g.rows.length, 0);
       return [
@@ -4927,10 +5063,11 @@
       savingDefault = true;
       defaultsStatus.textContent = 'Saving…';
       try {
-        const saved = await api('PUT', `${workspacePath(v.id)}/tools`, { tools: t.saveable, revision: v.tools.defaults.revision });
+        const saved = await api('PUT', `${workspacePath(v.id)}/tools`, { tools: t.saveAll, revision: v.tools.defaults.revision });
         if (wsView !== v) return;
         v.tools = { ...v.tools, defaults: saved, at: Date.now() };
         v.draft.tools = null;
+        v.draft.helperLimit = undefined;
         defaultsStatus.textContent = 'Saved. New sessions here start with these tools.';
         syncForm();
       } catch (e) {
@@ -5137,7 +5274,7 @@
       const t = c.tools;
       redraw(toolsButtonSlot, JSON.stringify([t.state, t.chosen.map((r) => [r.x.kind, r.x.id, r.x.name, r.mode]), toolsOpen]), () => drawToolsButton(c));
       redraw(toolsList, JSON.stringify([t.state, t.error, v.tools.at, toolsOpen, toolsNeedle, c.access.value,
-        t.entries.map((r) => [r.x.kind, r.x.id, r.x.state, r.on, r.mode, r.disabled]), Array.from(connecting)]), () => (toolsOpen ? drawToolList(c) : null));
+        t.entries.map((r) => [r.x.kind, r.x.id, r.x.state, r.on, r.mode, r.disabled]), t.limit, t.limitMax, Array.from(connecting)]), () => (toolsOpen ? drawToolList(c) : null));
       const summary = summaryText(c);
       if (toolsSummary.textContent !== summary) toolsSummary.textContent = summary;
       toolsSummary.classList.toggle('tools-blocked', !!t.blocked);
