@@ -722,6 +722,13 @@
               "description": "The verified subject claim.",
               "type": "string"
             },
+            "email": {
+              "description": "The verified email, when the token carried one. Kept so a\nqueued operation is rechecked against the binding that admitted\nit; never the identity key.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "oidc"

@@ -705,11 +705,14 @@ fn chosen_tools(
                 "A reviewer reads only, so its connectors are read only.",
             ));
         }
+        // Narrowed to the policy's operations, confirmation and account
+        // first, so what is admitted and provisioned is what it allows.
+        let connectors = super::policy::fit_connectors(&resolved.store, &connectors)?;
         super::connections::admit(app, caller, &resolved, &connectors)?;
         provision.connectors = connectors;
     }
     // Connectors given through `provision` meet the same policy.
-    super::policy::check_connectors(&resolved.store, &provision.connectors)?;
+    provision.connectors = super::policy::fit_connectors(&resolved.store, &provision.connectors)?;
     let skills: Option<Vec<String>> = field("skills")
         .map(serde_json::from_value)
         .transpose()
@@ -789,7 +792,9 @@ fn chosen_tools(
     let view = json!({
         "connectors": provision.connectors.iter().map(|e| json!({
             "connector": e.connector,
+            "operations": e.operations,
             "mode": e.mode,
+            "confirm": e.confirm,
             "account": e.account,
         })).collect::<Vec<_>>(),
         "skills": provision.skills,

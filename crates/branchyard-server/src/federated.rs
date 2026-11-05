@@ -526,7 +526,7 @@ impl Federation {
         let groups_claim_name = config.groups_claim.as_deref().unwrap_or("groups");
         let identity = Identity {
             subject: subject.clone(),
-            email,
+            email: email.clone(),
             claim_groups: groups_claim(&claims, groups_claim_name),
         };
         let provider = Provider {
@@ -542,6 +542,7 @@ impl Federation {
             AuthenticationOrigin::Oidc {
                 issuer: config.issuer.clone(),
                 sub: subject,
+                email,
             },
         )
         .await
@@ -800,41 +801,61 @@ fn unverified_issuer(token: &str) -> Option<String> {
     value.get("iss")?.as_str().map(str::to_owned)
 }
 
-/// Whether a principal's grants are still no broader than a current binding
-/// of its provider allows. Used to recheck captured callers.
+/// Whether a principal's grants are still no broader than its provider
+/// allows it now. Used to recheck captured callers. The binding is chosen
+/// as sign-in chooses it, the first whose rule matches the captured email
+/// and groups, and only its ceiling counts: another binding with the same
+/// permissions does not keep an identity whose own binding was removed.
 pub fn still_allows(
     iap: Option<&IapConfig>,
     issuers: &[OidcIssuerConfig],
     principal: &Principal,
 ) -> bool {
-    let within =
-        |tenant: Option<&str>, scopes: Option<&BTreeSet<String>>, bindings: &[IdentityBinding]| {
-            bindings.iter().any(|binding| {
-                let ceiling = Principal {
-                    tenant: binding
-                        .tenant
-                        .as_deref()
-                        .or(tenant)
-                        .unwrap_or(DEFAULT_TENANT)
-                        .to_owned(),
-                    scopes: binding
-                        .scopes
-                        .as_ref()
-                        .or(scopes)
-                        .cloned()
-                        .unwrap_or_else(|| ["read".to_owned()].into_iter().collect()),
-                    repos: binding.repos.clone(),
-                    ..principal.clone()
-                };
-                principal.within_policy(&ceiling)
-            })
+    let within = |email: Option<&str>,
+                  tenant: Option<&str>,
+                  scopes: Option<&BTreeSet<String>>,
+                  bindings: &[IdentityBinding]| {
+        let Some(binding) = bindings
+            .iter()
+            .find(|binding| binding_matches(&binding.matches, email, &principal.groups))
+        else {
+            return false;
         };
+        let ceiling = Principal {
+            tenant: binding
+                .tenant
+                .as_deref()
+                .or(tenant)
+                .unwrap_or(DEFAULT_TENANT)
+                .to_owned(),
+            scopes: binding
+                .scopes
+                .as_ref()
+                .or(scopes)
+                .cloned()
+                .unwrap_or_else(|| ["read".to_owned()].into_iter().collect()),
+            repos: binding.repos.clone(),
+            ..principal.clone()
+        };
+        principal.within_policy(&ceiling)
+    };
     match principal.root_origin() {
-        Some(AuthenticationOrigin::Iap { .. }) => {
-            iap.is_some_and(|c| within(c.tenant.as_deref(), c.scopes.as_ref(), &c.bindings))
-        }
-        Some(AuthenticationOrigin::Oidc { issuer, .. }) => issuers.iter().any(|c| {
-            &c.issuer == issuer && within(c.tenant.as_deref(), c.scopes.as_ref(), &c.bindings)
+        Some(AuthenticationOrigin::Iap { email, .. }) => iap.is_some_and(|c| {
+            within(
+                Some(email),
+                c.tenant.as_deref(),
+                c.scopes.as_ref(),
+                &c.bindings,
+            )
+        }),
+        Some(AuthenticationOrigin::Oidc { issuer, email, .. }) => issuers.iter().any(|c| {
+            &c.issuer == issuer
+                && within(
+                    email.as_deref(),
+                    c.tenant.as_deref(),
+                    c.scopes.as_ref(),
+                    &c.bindings,
+                )
         }),
         _ => false,
     }

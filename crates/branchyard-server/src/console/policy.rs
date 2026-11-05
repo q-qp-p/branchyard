@@ -409,11 +409,23 @@ pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), A
         .into_iter()
         .flatten()
         .filter_map(|c| {
-            Some(GrantEntry {
+            let mut entry = GrantEntry {
                 mode: serde_json::from_value(c["mode"].clone()).ok()?,
                 account: c["account"].as_str().map(str::to_owned),
                 ..GrantEntry::read(c["connector"].as_str()?)
-            })
+            };
+            // A row written before operations and confirm were recorded
+            // is checked as every operation, without confirmation.
+            if let Some(ops) = c["operations"].as_array() {
+                entry.operations = ops
+                    .iter()
+                    .filter_map(|op| op.as_str().map(str::to_owned))
+                    .collect();
+            }
+            if let Ok(confirm) = serde_json::from_value(c["confirm"].clone()) {
+                entry.confirm = confirm;
+            }
+            Some(entry)
         })
         .collect();
     check_connectors(store, &grant).map_err(changed)?;
@@ -443,23 +455,81 @@ pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), A
     Ok(())
 }
 
-/// Refuse `entry`s that go beyond `policy`'s connector ceiling: a connector
-/// it does not list, or a write where it allows reads.
+/// Refuse `entry`s that go beyond `policy`'s connector ceiling in any
+/// part: a connector it does not list, a write where it allows reads, an
+/// operation outside its globs, a confirmation it does not allow, or an
+/// account other than the one it names.
 pub(crate) fn check_connectors(policy: &ToolPolicy, grant: &[GrantEntry]) -> Result<(), ApiError> {
     for entry in grant {
-        match connector_mode(policy.connectors.as_deref(), &entry.connector) {
-            None => return Err(not_allowed(ToolKind::Connector, &entry.connector, None)),
-            Some(GrantMode::Read) if entry.mode == GrantMode::Write => {
-                return Err(not_allowed(
-                    ToolKind::Connector,
-                    &entry.connector,
-                    Some(GrantMode::Read),
-                ))
-            }
-            Some(_) => {}
+        let fitted = fit_entry(policy, entry)?;
+        let covered = fitted.iter().any(|f| {
+            f.mode == entry.mode
+                && f.confirm == entry.confirm
+                && entry.operations.iter().all(|op| f.operations.contains(op))
+        });
+        if !covered {
+            return Err(
+                not_allowed(ToolKind::Connector, &entry.connector, None).detail(json!({
+                    "kind": ToolKind::Connector,
+                    "id": entry.connector,
+                    "allowed": fitted,
+                })),
+            );
         }
     }
     Ok(())
+}
+
+/// `grant` narrowed to `policy`'s connector ceiling: each entry keeps only
+/// the operations, confirmation and account the ceiling allows. An entry
+/// the ceiling allows nothing of, or allows only reads of where it writes,
+/// is refused by name rather than dropped or quietly made read only.
+pub(crate) fn fit_connectors(
+    policy: &ToolPolicy,
+    grant: &[GrantEntry],
+) -> Result<Vec<GrantEntry>, ApiError> {
+    let mut out: Vec<GrantEntry> = Vec::new();
+    for entry in grant {
+        for fitted in fit_entry(policy, entry)? {
+            if !out.contains(&fitted) {
+                out.push(fitted);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One entry narrowed to the ceiling. A ceiling entry with no account
+/// covers every account of its connector.
+fn fit_entry(policy: &ToolPolicy, entry: &GrantEntry) -> Result<Vec<GrantEntry>, ApiError> {
+    let Some(ceiling) = policy.connectors.as_deref() else {
+        return Ok(vec![entry.clone()]);
+    };
+    let fitted: Vec<GrantEntry> = ceiling
+        .iter()
+        .filter(|c| c.connector == entry.connector)
+        .filter(|c| c.account.is_none() || c.account == entry.account)
+        .flat_map(|c| {
+            let c = GrantEntry {
+                account: entry.account.clone(),
+                ..c.clone()
+            };
+            intersect(std::slice::from_ref(entry), std::slice::from_ref(&c))
+        })
+        .collect();
+    let mode = fitted.iter().map(|e| e.mode).max();
+    match mode {
+        None => Err(not_allowed(ToolKind::Connector, &entry.connector, None)),
+        Some(GrantMode::Read) if entry.mode == GrantMode::Write => Err(not_allowed(
+            ToolKind::Connector,
+            &entry.connector,
+            Some(GrantMode::Read),
+        )),
+        Some(_) => Ok(fitted
+            .into_iter()
+            .filter(|e| e.mode == entry.mode)
+            .collect()),
+    }
 }
 
 /// `tool_not_allowed`: the administrator's policy does not allow the tool.
@@ -882,6 +952,55 @@ mod tests {
         let detail = missing.body.detail.unwrap();
         assert_eq!(detail["id"], "slack");
         assert!(detail.get("max_mode").is_none());
+    }
+
+    #[test]
+    fn connector_checks_hold_operations_confirm_and_account_to_the_policy() {
+        let policy = ToolPolicy {
+            connectors: connectors(&["github:read:issues.*"]),
+            ..Default::default()
+        };
+        // Every operation is wider than the policy's issues.* and is refused
+        // by the check; fitting narrows it to what the policy allows.
+        let wide = entry("github:read");
+        assert_eq!(
+            check_connectors(&policy, std::slice::from_ref(&wide))
+                .unwrap_err()
+                .body
+                .code,
+            "tool_not_allowed"
+        );
+        let fitted = fit_connectors(&policy, &[wide]).unwrap();
+        assert_eq!(fitted, [entry("github:read:issues.*")]);
+        assert!(check_connectors(&policy, &fitted).is_ok());
+        assert!(check_connectors(&policy, &[entry("github:read:issues.comments.*")]).is_ok());
+        // A confirmation the policy does not allow is narrowed away.
+        let confirming = GrantEntry {
+            confirm: branchyard::connectors::Confirm::Allow,
+            ..entry("github:read:issues.*")
+        };
+        assert!(check_connectors(&policy, std::slice::from_ref(&confirming)).is_err());
+        assert_eq!(
+            fit_connectors(&policy, &[confirming]).unwrap()[0].confirm,
+            branchyard::connectors::Confirm::Deny
+        );
+        // An unnamed account in the policy covers each account; a named
+        // one covers only itself.
+        let work = GrantEntry {
+            account: Some("work".into()),
+            ..entry("github:read:issues.*")
+        };
+        assert!(check_connectors(&policy, std::slice::from_ref(&work)).is_ok());
+        let pinned = ToolPolicy {
+            connectors: Some(vec![GrantEntry {
+                account: Some("home".into()),
+                ..entry("github:read")
+            }]),
+            ..Default::default()
+        };
+        assert!(fit_connectors(&pinned, &[work]).is_err());
+        // Operations outside the policy's globs leave nothing to fit.
+        assert!(fit_connectors(&policy, &[entry("github:read:pulls.*")]).is_err());
     }
 
     #[test]

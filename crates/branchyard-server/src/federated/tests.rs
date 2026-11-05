@@ -361,7 +361,8 @@ async fn oidc_admits_a_bound_identity_with_groups_from_the_claim() {
         principal.origin,
         AuthenticationOrigin::Oidc {
             issuer: OIDC_ISSUER.into(),
-            sub: "workforce-subject-1".into()
+            sub: "workforce-subject-1".into(),
+            email: Some("bob@example.com".into()),
         }
     );
     let subject = principal.connector_subject();
@@ -370,6 +371,7 @@ async fn oidc_admits_a_bound_identity_with_groups_from_the_claim() {
     other_issuer.origin = AuthenticationOrigin::Oidc {
         issuer: "https://other.test".into(),
         sub: "workforce-subject-1".into(),
+        email: None,
     };
     assert_ne!(subject, other_issuer.connector_subject());
     let mut iap = principal.clone();
@@ -662,6 +664,46 @@ async fn captured_callers_are_rechecked_against_current_bindings() {
         .retain(|b| b.matches == "carol@example.com");
     narrowed.bindings[0].scopes = Some(["read".to_owned()].into_iter().collect());
     assert!(!still_allows(Some(&narrowed), &[], &principal));
+}
+
+#[tokio::test]
+async fn a_recheck_uses_the_binding_that_admitted_the_identity() {
+    let keys = serve_keys(rsa_jwks());
+    let config = oidc_config(&keys);
+    let fed = federation(None, vec![config.clone()]);
+    let token = rsa_sign(RSA_KID, &oidc_claims());
+    let principal = fed
+        .verify_oidc(Some(&format!("Bearer {token}")))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(principal.name, "engineer");
+    assert!(still_allows(
+        None,
+        std::slice::from_ref(&config),
+        &principal
+    ));
+    // The group binding that admitted bob is revoked; another binding,
+    // for someone else, carries the same tenant and scopes. Bob now falls
+    // to the domain binding, which allows less, so his work is refused.
+    let mut revoked = config.clone();
+    revoked
+        .bindings
+        .retain(|b| b.matches != "group:eng@example.com");
+    revoked.bindings.insert(
+        0,
+        IdentityBinding {
+            matches: "dave@example.com".into(),
+            name: Some("engineer".into()),
+            tenant: Some("engineering".into()),
+            scopes: Some(["read".to_owned(), "run".to_owned()].into_iter().collect()),
+            repos: None,
+        },
+    );
+    assert!(!still_allows(None, &[revoked.clone()], &principal));
+    // No binding matching at all refuses as well.
+    revoked.bindings.retain(|b| b.matches == "dave@example.com");
+    assert!(!still_allows(None, &[revoked], &principal));
 }
 
 mod http {

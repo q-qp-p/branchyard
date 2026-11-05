@@ -253,6 +253,11 @@ pub enum AuthenticationOrigin {
         issuer: String,
         /// The verified subject claim.
         sub: String,
+        /// The verified email, when the token carried one. Kept so a
+        /// queued operation is rechecked against the binding that admitted
+        /// it; never the identity key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<String>,
     },
 }
 
@@ -454,7 +459,7 @@ impl Principal {
                 let identity = serde_json::json!(["https://cloud.google.com/iap", sub]).to_string();
                 format!("iap:{}", sha256_hex(identity.as_bytes()))
             }
-            AuthenticationOrigin::Oidc { issuer, sub } => {
+            AuthenticationOrigin::Oidc { issuer, sub, .. } => {
                 let identity = serde_json::json!([issuer, sub]).to_string();
                 format!("oidc:{}", sha256_hex(identity.as_bytes()))
             }
