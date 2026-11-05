@@ -1,7 +1,8 @@
 //! `by credential-proxy`: the credential proxy a sandbox runs beside its
 //! harness (`branchyard::connectors::sandbox_proxy`). It needs no repository
 //! and reads no configuration: everything comes from its command line, a
-//! settings file that holds no secret, and `BRANCHYARD_CREDENTIAL_SECRET`.
+//! settings file (which holds the turn's secret, for a sidecar), and
+//! `BRANCHYARD_CREDENTIAL_SECRET`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -50,6 +51,7 @@ pub(crate) fn run(command: &Command) -> Outcome {
                 },
                 _ => IdentityKind::Secret,
             },
+            secret: None,
         },
     };
     let secret = std::env::var(ENV_SECRET).ok();

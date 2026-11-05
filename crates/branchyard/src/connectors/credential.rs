@@ -13,9 +13,12 @@
 //! |---|---|---|
 //! | local process | [`CredentialSite::Host`] | on the host |
 //! | container, recipe machine | [`CredentialSite::Host`] | on the host |
-//! | Microsandbox | [`CredentialSite::Guest`] | a process the engine starts in the guest, with the per-turn secret |
-//! | GKE Agent Sandbox | [`CredentialSite::Sidecar`] | a container beside the harness in the pod, as the pod's Workload Identity |
-//! | Substrate | [`CredentialSite::Sidecar`] | a process the actor template runs, as the actor's identity |
+//! | Microsandbox | [`CredentialSite::Guest`] | a process the engine starts in the guest, with the per-turn secret in its environment |
+//! | GKE Agent Sandbox | [`CredentialSite::Sidecar`] | a container beside the harness in the pod, with the per-turn secret from its settings file and the pod's Workload Identity |
+//! | Substrate | [`CredentialSite::Sidecar`] | a process the actor template runs, the same way |
+//!
+//! Every sandbox proves its turn with the per-turn secret; a sidecar adds
+//! its workload identity, which the server requires where it lists any.
 
 use super::sandbox_proxy::{IdentityKind, ProxyConfig, DEFAULT_PORT};
 
@@ -26,12 +29,14 @@ pub enum CredentialSite {
     /// the sandbox to start one (or no sandbox).
     Host,
     /// A process the engine starts in the sandbox before the harness, on
-    /// the sandbox's loopback. It proves the turn with a per-turn secret.
+    /// the sandbox's loopback. It proves the turn with a per-turn secret
+    /// given in its environment.
     Guest,
     /// A container or process the sandbox's own definition runs beside the
     /// harness, on the same loopback, started by the sandbox and not by the
-    /// engine. It proves the turn with the sandbox's workload identity, and
-    /// finds its settings in a file in the home.
+    /// engine. It proves the turn with a per-turn secret and the sandbox's
+    /// workload identity, and finds its settings and the secret in a file in
+    /// the home the engine copies in for the turn.
     Sidecar,
 }
 
@@ -112,6 +117,7 @@ pub(crate) fn choose(
                 },
                 _ => IdentityKind::Secret,
             },
+            secret: None,
         },
     }
 }
@@ -171,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn a_guest_proves_the_turn_with_a_secret_and_a_sidecar_with_its_workload_identity() {
+    fn a_guest_proves_the_turn_with_a_secret_and_a_sidecar_adds_its_workload_identity() {
         let Holder::Sandbox { config, site } =
             held(CredentialSite::Guest, Some("https://by.example"))
         else {
@@ -200,10 +206,19 @@ mod tests {
                 audience: "https://by.example".into()
             }
         );
-        // The settings file holds no secret and reads back.
+        // The settings the engine chooses hold no secret; the turn's is
+        // added when the file is written, and reads back.
+        assert!(config.secret.is_none());
         let text = config_text(&config).unwrap();
         assert!(!text.to_lowercase().contains("secret"), "{text}");
         assert_eq!(parse_config(&text).unwrap(), config);
+        let with = ProxyConfig {
+            secret: Some("s3cret-value".into()),
+            ..config
+        };
+        let text = config_text(&with).unwrap();
+        assert_eq!(parse_config(&text).unwrap(), with);
+        assert!(!format!("{with:?}").contains("s3cret-value"));
         assert!(parse_config("{\"listen\": 1}").is_err());
     }
 }

@@ -214,7 +214,7 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 | `listen`, `vault_key` | The address the gateway run here binds when not loopback, and its vault key (default `<data_dir>/gateway/vault.key`, made 0600) |
 | `effects_proxy`, `effects_listen`, `effects_sandbox_host` | Each turn's effect-ledger proxy in front of the gateway (default on, on `127.0.0.1`), and how a sandboxed harness reaches it ([effects](effects.md#begun-before-the-call)) |
 | `sandbox_server` | This server's URL as a sandbox reaches it. When set, a sandbox whose provider can run a credential proxy fetches the turn's token from [`POST /v1/turns/token`](#turn-tokens-for-sandboxes) and the harness holds none ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)). Without it every turn keeps the host's proxy |
-| `sandbox_identities` | `[{"service_account": "NAME@PROJECT.iam.gserviceaccount.com", "tenant": "acme"?}]`: the Google service accounts that may fetch tokens, verified from a Google-signed ID token. `tenant` restricts an account to one tenant's turns. Needs `sandbox_server`; empty admits only a turn's own secret |
+| `sandbox_identities` | `[{"service_account": "NAME@PROJECT.iam.gserviceaccount.com", "tenant": "acme"?}]`: the Google service accounts that may fetch tokens, verified from a Google-signed ID token. `tenant` restricts an account to one tenant's turns. Needs `sandbox_server`; empty admits a turn's own secret alone. With accounts listed, a fetch must present a listed account's ID token *and* the turn's secret |
 | `sandbox_audience`, `sandbox_jwks_url` | The `aud` of that ID token (default `issuer`), and where Google's signing keys are read from (default Google's) |
 | `sandbox_by`, `sandbox_proxy_image` | The `by` a Microsandbox guest runs (default `by`), and the image of a GKE Agent Sandbox's `credential-proxy` sidecar (`repository@sha256:digest`, with `by` on its `PATH`; default the sandbox's own) |
 
@@ -226,17 +226,17 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 {"manifest": "blake3:...", "branch": "app/feat-x", "turn": 3}
 ```
 
-`manifest` is the digest of the turn manifest the turn was admitted with, `branch` is `<repo>/<branch>` as tokens name it, `turn` its number. Unknown fields are refused: claims are never taken from the request. The caller proves who it is with one of:
+`manifest` is the digest of the turn manifest the turn was admitted with, `branch` is `<repo>/<branch>` as tokens name it, `turn` its number. Unknown fields are refused: claims are never taken from the request. None of the three is secret (the digest is on the console's session view and in the `provisioned` event; a harness reads its own), and a Workload Identity service account is normally shared by every sandbox, so the caller proves who it is with the turn's secret **always**, and with an identity **in addition** where the server lists any:
 
-- `Authorization: Bearer <Google ID token>`: an ID token for `sandbox_audience` (default `issuer`) of a service account in `sandbox_identities`, fetched by the sandbox from the metadata server (a GKE Workload Identity service account, or a GCE VM's). The server verifies the signature against Google's keys, the audience, the issuer (`accounts.google.com`), the lifetime and `email_verified`, then looks the account up.
-- `X-Branchyard-Turn-Secret: <secret>`: the per-turn secret the engine gave a Microsandbox guest's proxy, checked against the hash in the branch's record.
+- `X-Branchyard-Turn-Secret: <secret>`, required: the per-turn secret the engine made for this turn and gave its sandbox's proxy (a guest's environment, or the GKE sidecar's settings file in the turn's home), checked against the hash in the branch's record, which is bound to the turn's manifest and number and dropped when the turn ends. A harness in another sandbox, even with the shared service account's ID token and the turn's real coordinates, does not hold it.
+- `Authorization: Bearer <Google ID token>`, required when `sandbox_identities` lists any account: an ID token for `sandbox_audience` (default `issuer`) of a listed service account, fetched by the sandbox from the metadata server (a GKE Workload Identity service account, or a GCE VM's). The server verifies the signature against Google's keys, the audience, the issuer (`accounts.google.com`), the lifetime and `email_verified`, then looks the account up. Where no account is listed, a bearer is not read.
 
 The answer is `200` `{"token", "expires_at", "expires_in"}`: a gateway token (the same claims as the turn's own: `by_branch` `<repo>/<branch>`, `by_turn`, `by_manifest`, the recorded grant with the person's ceiling applied, the principal's `sub` and `by_tenant`) that lives five minutes. The server logs the branch, turn, manifest and who asked, never a token.
 
 | Code | Status | When |
 |---|---|---|
-| `auth_required` | 401 | Neither credential was presented |
-| `invalid_credential` | 401 | The bearer is not a valid Google ID token for this server (or no `sandbox_identities` are configured), or the secret is not this turn's or the turn has ended |
+| `auth_required` | 401 | No `X-Branchyard-Turn-Secret` (an identity alone is not enough), or the server lists `sandbox_identities` and no bearer came with it |
+| `invalid_credential` | 401 | The bearer is not a valid Google ID token for this server, or the secret is not this turn's (or this manifest's and number's) or the turn has ended |
 | `identity_not_allowed` | 403 | A valid Google ID token of a service account the server does not list |
 | `tenant_mismatch` | 403 | The account is restricted to another tenant than the turn's |
 | `no_connector_grant` | 403 | The turn was granted no connectors |
@@ -410,7 +410,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 |---|---|---|
 | `GET /healthz` | Liveness, no token | `ok` |
 | `GET /.well-known/jwks.json` | The connector gateway's verification keys, no token; `404` without `connectors` | a JSON Web Key Set |
-| `POST /v1/turns/token` | A running turn's sandbox fetches its five-minute gateway token as its workload identity or with the turn's secret; no bearer token of the server's ([turn tokens for sandboxes](#turn-tokens-for-sandboxes)) | `{"token", "expires_at", "expires_in"}` |
+| `POST /v1/turns/token` | A running turn's sandbox fetches its five-minute gateway token with the turn's secret, and its workload identity where the server lists any; no bearer token of the server's ([turn tokens for sandboxes](#turn-tokens-for-sandboxes)) | `{"token", "expires_at", "expires_in"}` |
 | `GET /v1/repos` | Served repositories | `{"repos": [{"name", "root"}]}` |
 | `GET /v1/harnesses` | Harness profiles, as found on the server's `PATH` | `{"harnesses": [{"harness", "profile", "default", "available", "qualification"}]}` |
 | `GET /v1/inventory` | Live workers serving repositories the caller can see, this server first, with the harnesses each one's machine has ([worker inventory](#worker-inventory)); `read` scope | `{"workers": [{"id", "host", "labels", "repos", "seen_ms_ago", "this", "inventory"}]}` |

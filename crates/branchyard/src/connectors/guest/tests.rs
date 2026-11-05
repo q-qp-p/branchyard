@@ -24,6 +24,7 @@ fn config(identity: IdentityKind) -> ProxyConfig {
         branch: "app/feat".into(),
         turn: 4,
         identity,
+        secret: None,
     }
 }
 

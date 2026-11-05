@@ -148,7 +148,7 @@ fn a_sidecar_waits_for_its_settings_and_then_serves() {
     command
         .args(["credential-proxy", "--wait", "--config"])
         .arg(&settings)
-        .env("BRANCHYARD_CREDENTIAL_SECRET", SECRET);
+        .env_remove("BRANCHYARD_CREDENTIAL_SECRET");
     let mut proxy = Running::start(command);
     // No settings yet: it waits, it neither fails nor listens.
     assert!(
@@ -168,7 +168,10 @@ fn a_sidecar_waits_for_its_settings_and_then_serves() {
             "listen": "127.0.0.1:0", "server": server.url(),
             "upstream": format!("{}/mcp", gateway.url()),
             "manifest": "blake3:abc", "branch": "app/feat", "turn": 2,
-            "identity": {"kind": "secret"}
+            "identity": {"kind": "secret"},
+            // A sidecar's secret is in the settings file the engine wrote
+            // into the home for this turn, not in its environment.
+            "secret": SECRET
         })
         .to_string(),
     )

@@ -41,8 +41,8 @@ use serde_json::Value;
 
 pub use credential::{CredentialProxy, CredentialSite};
 pub use issue::{
-    Proof, Refusal, RefusalKind, TokenRequest, TokenResponse, TurnCredential, SECRET_HEADER,
-    TOKEN_PATH,
+    Identity, Proof, Refusal, RefusalKind, TokenRequest, TokenResponse, TurnCredential,
+    SECRET_HEADER, TOKEN_PATH,
 };
 pub use keys::{jws_finish, jws_input, Claims, KeyFileSigner, KeyRing, TokenSigner};
 pub use packager::{AnvilPackager, Bundle, Packager};
@@ -452,10 +452,13 @@ pub(crate) struct SandboxCredentials {
     pub site: CredentialSite,
     /// What the proxy is started with.
     pub config: sandbox_proxy::ProxyConfig,
-    /// The per-turn secret for a guest's proxy, and what the branch's
-    /// record keeps of it. `None` for a sidecar, which proves the turn with
-    /// its workload identity.
-    pub secret: Option<(String, TurnCredential)>,
+    /// The turn's secret, and what the branch's record keeps of it. A
+    /// guest's proxy is given the secret in its environment; a sidecar
+    /// reads it from `settings`.
+    pub secret: (String, TurnCredential),
+    /// The sidecar's settings file in the home, removed when the turn ends
+    /// (it holds the secret). `None` for a guest.
+    pub settings: Option<std::path::PathBuf>,
 }
 
 impl Prepared {
@@ -493,6 +496,9 @@ impl Prepared {
         self.renewer = None;
         if let Some(token) = &self._token {
             branchyard_support::cleanup_file(&token.0);
+        }
+        if let Some(settings) = self.sandbox.as_ref().and_then(|s| s.settings.as_ref()) {
+            branchyard_support::cleanup_file(settings);
         }
     }
 
@@ -675,17 +681,26 @@ pub(crate) fn prepare(
         // proxy's loopback address and nothing else. No token is signed
         // here and no token file is written.
         let mut files = vec![format!("{HOME_DIR}/")];
-        let mut secret = None;
-        match site {
-            CredentialSite::Sidecar => {
-                // A sidecar finds its settings in the home, which holds no
-                // secret.
-                let text = credential::config_text(&config)?;
-                keys::write_private(&home.join(credential::PROXY_CONFIG_FILE), text.as_bytes())
-                    .map_err(|e| format!("could not write the credential proxy's settings: {e}"))?;
-                files.push(credential::PROXY_CONFIG_FILE.to_owned());
-            }
-            _ => secret = Some(TurnCredential::new(&config.manifest, config.turn)?),
+        // Every sandbox proves its turn with a secret made for it alone;
+        // the record keeps only its hash. A guest's proxy is given it in its
+        // environment (`engine::start_credential_proxy`).
+        let (secret, credential) = TurnCredential::new(&config.manifest, config.turn)?;
+        let mut settings = None;
+        if site == CredentialSite::Sidecar {
+            // A sidecar finds its settings, and this turn's secret, in the
+            // file in the home copied in for the turn. The harness can read
+            // its own turn's secret there (it could already fetch its own
+            // turn's token from the metadata server) and no other turn's;
+            // the file goes when the turn ends ([`Prepared::retire`]).
+            let path = home.join(credential::PROXY_CONFIG_FILE);
+            let text = credential::config_text(&sandbox_proxy::ProxyConfig {
+                secret: Some(secret.clone()),
+                ..config.clone()
+            })?;
+            keys::write_private(&path, text.as_bytes())
+                .map_err(|e| format!("could not write the credential proxy's settings: {e}"))?;
+            files.push(credential::PROXY_CONFIG_FILE.to_owned());
+            settings = Some(path);
         }
         let harness_url = sandbox_proxy::ProxyConfig::harness_url(gateway.credential_proxy.port);
         return Ok(Some(Prepared {
@@ -705,7 +720,8 @@ pub(crate) fn prepare(
             sandbox: Some(SandboxCredentials {
                 site,
                 config,
-                secret,
+                secret: (secret, credential),
+                settings,
             }),
         }));
     }

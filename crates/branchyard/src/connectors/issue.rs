@@ -8,8 +8,15 @@
 //! The token then carries the claims of the turn's *recorded* grant (the
 //! person's ceiling applied, as the turn's own token is), never anything the
 //! request says, and lives [`super::RENEWED_TTL`] (five minutes) at most.
-//! The server route authenticates a Google workload identity and calls this;
-//! a per-turn secret is checked here against the hash the engine recorded.
+//!
+//! The per-turn secret is required in every mode: the engine creates one
+//! for each turn whose credentials are held in its sandbox and records only
+//! its hash, so a sandbox that knows another turn's manifest digest, branch
+//! and number (none of which is secret) still cannot fetch that turn's
+//! token. Where the server lists sandbox identities, the caller must also be
+//! a listed Google service account (`Proof::identity`); the route
+//! authenticates that and calls this, and the secret is checked here against
+//! the recorded hash.
 
 use std::time::Duration;
 
@@ -90,19 +97,35 @@ fn hash(secret: &str) -> String {
     blake3::hash(secret.as_bytes()).to_hex().to_string()
 }
 
-/// Who asks, as the caller proved it.
-#[derive(Clone, Copy, Debug)]
-pub enum Proof<'a> {
-    /// A verified workload identity (a Google service account the server
-    /// lists), restricted to one tenant when the list says so.
-    Identity {
-        /// The account's email, for the audit line.
-        service_account: &'a str,
-        /// The tenant the account is for; any when `None`.
-        tenant: Option<&'a str>,
-    },
+/// Who asks, as the caller proved it. The turn's secret is always there; a
+/// verified workload identity is there when the server lists any.
+#[derive(Clone, Copy)]
+pub struct Proof<'a> {
     /// The per-turn secret the engine gave the sandbox.
-    Secret(&'a str),
+    pub secret: &'a str,
+    /// A verified workload identity (a Google service account the server
+    /// lists), in addition to the secret; `None` where the server lists no
+    /// identities.
+    pub identity: Option<Identity<'a>>,
+}
+
+impl std::fmt::Debug for Proof<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Proof")
+            .field("secret", &"<redacted>")
+            .field("identity", &self.identity)
+            .finish()
+    }
+}
+
+/// A verified workload identity: a Google service account the server lists.
+#[derive(Clone, Copy, Debug)]
+pub struct Identity<'a> {
+    /// The account's email, for the audit line.
+    pub service_account: &'a str,
+    /// The tenant the account is for, restricted to one when the list says
+    /// so; any when `None`.
+    pub tenant: Option<&'a str>,
 }
 
 /// Why a token was not issued.
@@ -177,18 +200,17 @@ impl Yard {
             return refuse(RefusalKind::UnknownTurn, "no such branch");
         };
         // Who first: nothing below is told to a caller that is not the turn's
-        // sandbox, so a wrong secret says no more than a missing branch.
-        if let Proof::Secret(secret) = proof {
-            let admitted = record
-                .credential
-                .as_ref()
-                .is_some_and(|c| c.admits(secret, request));
-            if !admitted {
-                return refuse(
-                    RefusalKind::BadSecret,
-                    "the secret is not this turn's (or the turn has ended)",
-                );
-            }
+        // sandbox, so a wrong secret says no more than a missing branch. An
+        // identity, however well proven, is not enough without the secret.
+        let admitted = record
+            .credential
+            .as_ref()
+            .is_some_and(|c| c.admits(proof.secret, request));
+        if !admitted {
+            return refuse(
+                RefusalKind::BadSecret,
+                "the secret is not this turn's (or the turn has ended)",
+            );
         }
         if record.info.status != BranchStatus::Running {
             return refuse(RefusalKind::NotRunning, "the branch is not running a turn");
@@ -213,10 +235,10 @@ impl Yard {
             .actor
             .as_ref()
             .map_or(gateway.tenant.as_str(), |a| a.tenant.as_str());
-        if let Proof::Identity {
+        if let Some(Identity {
             tenant: Some(allowed),
             ..
-        } = proof
+        }) = proof.identity
         {
             if allowed != tenant {
                 return refuse(
@@ -304,6 +326,34 @@ mod tests {
         let (other, _) = TurnCredential::new("blake3:aa", 2).unwrap();
         assert_ne!(other, secret);
         assert!(!credential.admits(&other, &request("blake3:aa", 2)));
+    }
+
+    #[test]
+    fn an_identity_is_never_a_substitute_for_the_secret() {
+        // The proof always carries a secret; an identity rides beside it.
+        let (secret, credential) = TurnCredential::new("blake3:aa", 1).unwrap();
+        let proof = Proof {
+            secret: "",
+            identity: Some(Identity {
+                service_account: "sandbox@proj.iam.gserviceaccount.com",
+                tenant: None,
+            }),
+        };
+        // The turn's real coordinates and an allow-listed identity, with no
+        // secret or another's, admit nothing.
+        assert!(!credential.admits(proof.secret, &request("blake3:aa", 1)));
+        let (other, _) = TurnCredential::new("blake3:aa", 1).unwrap();
+        assert!(!credential.admits(&other, &request("blake3:aa", 1)));
+        assert!(credential.admits(&secret, &request("blake3:aa", 1)));
+        // And a proof never prints its secret.
+        let shown = format!(
+            "{:?}",
+            Proof {
+                secret: &secret,
+                ..proof
+            }
+        );
+        assert!(!shown.contains(&secret), "{shown}");
     }
 
     #[test]

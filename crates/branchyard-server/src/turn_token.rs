@@ -4,11 +4,15 @@
 //! The sandbox's credential proxy
 //! (`branchyard::connectors::sandbox_proxy`) calls this every few minutes
 //! with the turn it serves (`manifest`, `branch` as `<repo>/<branch>`, and
-//! `turn`) and proves who it is in one of two ways: a Google-signed ID token
-//! for this server's audience, of a service account listed in
-//! `connectors.sandbox_identities` (a GKE Workload Identity service account
-//! or a GCE VM's), or the turn's own secret in `X-Branchyard-Turn-Secret`
-//! (a sandbox with no cloud identity). The route is outside the bearer-token
+//! `turn`) and proves who it is with the turn's own secret in
+//! `X-Branchyard-Turn-Secret`, always: the manifest digest, the branch, the
+//! turn number and a shared service account are none of them secret, so
+//! none is enough alone. Where `connectors.sandbox_identities` lists
+//! Google service accounts (a GKE Workload Identity service account or a
+//! GCE VM's), the request must also carry a Google-signed ID token for this
+//! server's audience of a listed account, as a bearer token. A request with
+//! only an identity, or only the secret where identities are listed, is
+//! refused `auth_required`. The route is outside the bearer-token
 //! middleware for that reason: it authenticates itself.
 //!
 //! What is issued, and refused, is `branchyard::Yard::issue_turn_token`'s: a
@@ -22,7 +26,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 
 use branchyard::connectors::{
-    Proof, RefusalKind, TokenRequest, TokenResponse, SECRET_HEADER, TOKEN_PATH,
+    Identity, Proof, RefusalKind, TokenRequest, TokenResponse, SECRET_HEADER, TOKEN_PATH,
 };
 
 use crate::api::{blocking, JsonBody, Shared};
@@ -51,23 +55,38 @@ fn status(kind: RefusalKind) -> StatusCode {
     }
 }
 
-/// Who the caller is, from its headers.
-enum Caller {
-    Identity {
-        service_account: String,
-        tenant: Option<String>,
-    },
-    Secret(String),
+/// Who the caller is, from its headers: the turn's secret, and a listed
+/// workload identity where the server lists any.
+struct Caller {
+    secret: String,
+    identity: Option<Workload>,
+}
+
+struct Workload {
+    service_account: String,
+    tenant: Option<String>,
 }
 
 async fn authenticate(app: &Shared, headers: &HeaderMap) -> Result<Caller, ApiError> {
-    if let Some(secret) = headers
+    let Some(secret) = headers
         .get(SECRET_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty() && s.len() <= 512)
-    {
-        return Ok(Caller::Secret(secret.to_owned()));
+    else {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "auth_required",
+            "present the turn's secret in X-Branchyard-Turn-Secret (and, where this server lists \
+             sandbox identities, the sandbox's Google ID token as a bearer token)",
+        ));
+    };
+    let secret = secret.to_owned();
+    if !app.credentials.requires_sandbox_identity() {
+        return Ok(Caller {
+            secret,
+            identity: None,
+        });
     }
     let authorization = headers
         .get(header::AUTHORIZATION)
@@ -76,14 +95,17 @@ async fn authenticate(app: &Shared, headers: &HeaderMap) -> Result<Caller, ApiEr
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "auth_required",
-            "present the sandbox's Google ID token as a bearer token, or the turn's secret in \
-             X-Branchyard-Turn-Secret",
+            "this server lists sandbox identities: present the sandbox's Google ID token as a \
+             bearer token besides the turn's secret",
         ));
     }
     match app.credentials.verify_sandbox(authorization).await {
-        Some(SandboxAuth::Allowed(identity)) => Ok(Caller::Identity {
-            service_account: identity.service_account,
-            tenant: identity.tenant,
+        Some(SandboxAuth::Allowed(identity)) => Ok(Caller {
+            secret,
+            identity: Some(Workload {
+                service_account: identity.service_account,
+                tenant: identity.tenant,
+            }),
         }),
         Some(SandboxAuth::Unlisted(account)) => {
             tracing::warn!(service_account = %account, "a service account this server does not list asked for a turn token");
@@ -132,22 +154,17 @@ async fn issue(
     let yard = app.repos.get(repo).ok_or_else(unknown)?.yard.clone();
     let branch = branch.to_owned();
     let body = request.clone();
-    let who = match &caller {
-        Caller::Identity {
-            service_account, ..
-        } => service_account.clone(),
-        Caller::Secret(_) => "turn secret".to_owned(),
+    let who = match &caller.identity {
+        Some(identity) => identity.service_account.clone(),
+        None => "turn secret".to_owned(),
     };
     let issued = blocking(move || {
-        let proof = match &caller {
-            Caller::Identity {
-                service_account,
-                tenant,
-            } => Proof::Identity {
-                service_account,
-                tenant: tenant.as_deref(),
-            },
-            Caller::Secret(secret) => Proof::Secret(secret),
+        let proof = Proof {
+            secret: &caller.secret,
+            identity: caller.identity.as_ref().map(|w| Identity {
+                service_account: &w.service_account,
+                tenant: w.tenant.as_deref(),
+            }),
         };
         yard.issue_turn_token(&branch, &body, proof)
     })

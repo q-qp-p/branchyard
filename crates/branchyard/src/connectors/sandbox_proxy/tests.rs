@@ -23,6 +23,7 @@ fn config(server: &MockHttp, gateway: &MockHttp, identity: IdentityKind) -> Prox
         branch: "app/feat".into(),
         turn: 3,
         identity,
+        secret: None,
     }
 }
 
@@ -217,18 +218,52 @@ fn a_workload_identity_proves_the_turn_with_the_metadata_servers_id_token() {
                 audience: "https://by.example".into(),
             },
         ),
-        None,
+        Some(SECRET.into()),
         true,
         Some(host),
     )
     .unwrap();
+    // The identity is in addition to the secret, never instead of it.
     let fetch = &server.requests()[0];
     assert_eq!(
         fetch.header("authorization"),
         Some("Bearer google-id-token")
     );
-    assert_eq!(fetch.header("x-branchyard-turn-secret"), None);
+    assert_eq!(fetch.header("x-branchyard-turn-secret"), Some(SECRET));
     assert_eq!(call(&proxy, "/mcp", &[]).1["authorization"], "Bearer tok-1");
+}
+
+#[test]
+fn an_identity_without_the_turns_secret_does_not_start_and_a_settings_file_can_hold_it() {
+    let metadata = MockHttp::start(|_| Response::new(200, "google-id-token\n"));
+    let (server, _) = server(300);
+    let gateway = gateway();
+    let host = metadata.url().trim_start_matches("http://").to_owned();
+    let workload = || IdentityKind::Workload {
+        audience: "https://by.example".into(),
+    };
+    let missing = CredentialProxy::start_at(
+        &config(&server, &gateway, workload()),
+        None,
+        true,
+        Some(host.clone()),
+    )
+    .err()
+    .unwrap();
+    assert!(missing.contains(ENV_SECRET), "{missing}");
+    assert!(
+        server.requests().is_empty(),
+        "nothing was asked of the server"
+    );
+    // A sidecar's secret comes from its settings file.
+    let mut settings = config(&server, &gateway, workload());
+    settings.secret = Some(SECRET.into());
+    let proxy = CredentialProxy::start_at(&settings, None, true, Some(host)).unwrap();
+    assert_eq!(
+        server.requests()[0].header("x-branchyard-turn-secret"),
+        Some(SECRET)
+    );
+    drop(proxy);
 }
 
 #[test]

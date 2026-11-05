@@ -1135,7 +1135,8 @@ pub struct ConnectorsConfig {
     /// The audience of the Google ID token a sandbox presents. Default: the
     /// issuer.
     pub sandbox_audience: Option<String>,
-    /// The Google service accounts a sandbox may fetch tokens as.
+    /// The Google service accounts a sandbox must also present, besides the
+    /// turn's secret, to fetch a token. Empty: the secret alone.
     pub sandbox_identities: Vec<SandboxIdentity>,
     /// Where Google's signing keys are read from. Default Google's.
     pub sandbox_jwks_url: Option<String>,
@@ -2281,10 +2282,10 @@ pub(crate) struct FileConnectors {
     /// The audience of the Google ID token a sandbox presents. Default: the
     /// issuer.
     sandbox_audience: Option<String>,
-    /// The Google service accounts a sandbox may fetch tokens as. Each is
-    /// verified from a Google-signed ID token the sandbox gets from the
-    /// metadata server. Empty: only a turn's own secret (a Microsandbox
-    /// guest, hermetic tests) fetches.
+    /// The Google service accounts a sandbox must also present, besides the
+    /// turn's secret, to fetch a token. Each is verified from a
+    /// Google-signed ID token the sandbox gets from the metadata server.
+    /// Empty: the turn's secret alone fetches.
     #[serde(default)]
     sandbox_identities: Vec<FileSandboxIdentity>,
     /// Where Google's signing keys are read from. Default Google's.

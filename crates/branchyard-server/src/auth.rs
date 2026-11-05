@@ -136,6 +136,12 @@ impl Credentials {
         self
     }
 
+    /// Whether sandbox identities are configured, in which case a token
+    /// fetch must present one besides the turn's secret.
+    pub fn requires_sandbox_identity(&self) -> bool {
+        self.sandbox.is_some()
+    }
+
     /// Verify the Google ID token in a bearer `header` as a sandbox's, and
     /// find its service account in the configured list. `None` when no
     /// sandbox identities are configured.

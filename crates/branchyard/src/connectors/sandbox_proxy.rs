@@ -7,20 +7,27 @@
 //! the live token. A harness that reads the sandbox's files finds no token
 //! file; a copy of a token it caught on the wire dies in minutes.
 //!
-//! A fetch proves who asks in one of two ways ([`IdentityKind`]):
+//! A fetch always proves the turn with its **per-turn secret**, on a header
+//! of its own. The engine makes one for every turn whose credentials are
+//! held in the sandbox and records only its hash. A guest's proxy gets it in
+//! [`ENV_SECRET`]; a sidecar finds it in its settings file in the home the
+//! engine copies in for the turn, and that file goes when the turn ends. The
+//! manifest digest, the branch and the turn number are not secret, and
+//! neither is the service account, so none of them is enough alone.
+//!
+//! Where the server lists sandbox identities ([`IdentityKind`]), the fetch
+//! carries the sandbox's Google ID token too:
 //!
 //! - **Workload identity.** The sandbox's Google service account (a GKE
 //!   Workload Identity service account, or a GCE VM's) signs an ID token for
 //!   the server's audience, which the proxy reads from the metadata server.
-//!   The server holds an allowlist of those accounts.
-//! - **A per-turn secret**, handed to the proxy in
-//!   [`ENV_SECRET`] by the engine that started it, for a
-//!   sandbox with no cloud identity (a Microsandbox guest, a local or test
-//!   run).
+//!   The server holds an allowlist of those accounts, and requires one *in
+//!   addition to* the secret, so a secret that leaked from a sandbox is of
+//!   no use from anywhere else.
 //!
-//! Either way the fetch names the turn (`manifest`, `branch`, `turn`) and the
-//! server issues a token only for that turn while it runs, with the claims of
-//! the turn's recorded grant ([`super::issue`]).
+//! The fetch names the turn (`manifest`, `branch`, `turn`) and the server
+//! issues a token only for that turn while it runs, with the claims of the
+//! turn's recorded grant ([`super::issue`]).
 
 use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -64,22 +71,24 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How soon a failed fetch is tried again.
 const RETRY: Duration = Duration::from_secs(1);
 
-/// How a sandbox proves who it is to the server.
+/// What a sandbox proves to the server besides the turn's secret.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum IdentityKind {
-    /// A Google ID token for `audience`, from the metadata server.
+    /// Also a Google ID token for `audience`, from the metadata server.
     Workload {
         /// The `aud` the server verifies (`connectors.sandbox_audience`).
         audience: String,
     },
-    /// The per-turn secret in [`ENV_SECRET`].
+    /// The per-turn secret alone.
     Secret,
 }
 
 /// Everything a sandbox's proxy needs to run, as a file or command line
-/// gives it. Holds no secret.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// gives it. A guest's proxy gets its secret in [`ENV_SECRET`]; the file a
+/// sidecar reads holds it in `secret`, which is why this type's `Debug`
+/// does not print it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyConfig {
     /// The address to listen on, such as `127.0.0.1:18900`; port 0 picks one.
@@ -94,8 +103,27 @@ pub struct ProxyConfig {
     pub branch: String,
     /// The turn's number.
     pub turn: u32,
-    /// How the sandbox proves who it is.
+    /// What the sandbox proves besides the secret.
     pub identity: IdentityKind,
+    /// The turn's secret, for a proxy that reads it from its settings file
+    /// (a sidecar). Absent when the secret is given in [`ENV_SECRET`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("listen", &self.listen)
+            .field("server", &self.server)
+            .field("upstream", &self.upstream)
+            .field("manifest", &self.manifest)
+            .field("branch", &self.branch)
+            .field("turn", &self.turn)
+            .field("identity", &self.identity)
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl ProxyConfig {
@@ -130,10 +158,11 @@ impl Fetched {
     }
 }
 
-/// What proves the sandbox's identity, resolved.
-enum Proof {
-    Workload { audience: String, metadata: Target },
-    Secret(String),
+/// What proves the sandbox, resolved: the turn's secret, and the workload
+/// identity beside it where the server lists identities.
+struct Proof {
+    secret: String,
+    workload: Option<(String, Target)>,
 }
 
 /// Asks the server for the turn's token.
@@ -152,25 +181,24 @@ impl Fetcher {
     ) -> Result<Fetcher, String> {
         let server = Target::parse(&config.server)
             .map_err(|e| format!("the server URL {:?} is not usable: {e}", config.server))?;
-        let proof = match &config.identity {
-            IdentityKind::Secret => {
-                let secret = secret
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| format!("the per-turn secret is not set in {ENV_SECRET}"))?;
-                Proof::Secret(secret)
-            }
+        let secret = secret
+            .or_else(|| config.secret.clone())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                format!("the per-turn secret is in neither {ENV_SECRET} nor the settings file")
+            })?;
+        let workload = match &config.identity {
+            IdentityKind::Secret => None,
             IdentityKind::Workload { audience } => {
                 let host = metadata_host
                     .filter(|h| !h.is_empty())
                     .unwrap_or_else(|| METADATA_HOST.to_owned());
                 let metadata = Target::parse(&format!("http://{host}"))
                     .map_err(|e| format!("the metadata host {host:?} is not usable: {e}"))?;
-                Proof::Workload {
-                    audience: audience.clone(),
-                    metadata,
-                }
+                Some((audience.clone(), metadata))
             }
         };
+        let proof = Proof { secret, workload };
         Ok(Fetcher {
             config: config.clone(),
             server,
@@ -205,12 +233,10 @@ impl Fetcher {
             ("Content-Type".to_owned(), "application/json".to_owned()),
             ("Accept".to_owned(), "application/json".to_owned()),
         ];
-        match &self.proof {
-            Proof::Secret(secret) => headers.push((SECRET_HEADER.to_owned(), secret.clone())),
-            Proof::Workload { audience, metadata } => {
-                let id = self.identity_token(audience, metadata)?;
-                headers.push(("Authorization".to_owned(), format!("Bearer {id}")));
-            }
+        headers.push((SECRET_HEADER.to_owned(), self.proof.secret.clone()));
+        if let Some((audience, metadata)) = &self.proof.workload {
+            let id = self.identity_token(audience, metadata)?;
+            headers.push(("Authorization".to_owned(), format!("Bearer {id}")));
         }
         let body = serde_json::to_vec(&TokenRequest {
             manifest: self.config.manifest.clone(),

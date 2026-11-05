@@ -1172,7 +1172,8 @@ fn the_tool_tree_has_a_volume_of_its_own_at_the_guest_root() {
 }
 
 #[test]
-fn a_deny_allocation_with_a_sidecar_and_a_tool_store_keeps_its_rules_and_opens_only_the_metadata_server() {
+fn a_deny_allocation_with_a_sidecar_and_a_tool_store_keeps_its_rules_and_opens_only_the_metadata_server(
+) {
     let fixture = Fixture::build_full(
         Network::Deny,
         Some(store("acme-tools")),

@@ -938,15 +938,10 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
             });
             let scopes = crate::access::TokenScopes::default();
             let manifest = crate::manifest::settle(&fixture.yard, &record, &scopes, Some(0), false);
-            let prepared = crate::connectors::prepare(
-                &fixture.yard,
-                &record,
-                None,
-                &scopes,
-                Some(&manifest),
-            )
-            .unwrap()
-            .expect("a granted turn");
+            let prepared =
+                crate::connectors::prepare(&fixture.yard, &record, None, &scopes, Some(&manifest))
+                    .unwrap()
+                    .expect("a granted turn");
             let named = |name: &str| prepared.env.iter().find(|v| v.name == name);
             let held_here = server.is_none() || site == CredentialSite::Host;
             let what = format!("{} with server {server:?}", provider.name());
@@ -982,10 +977,13 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
             match site {
                 CredentialSite::Guest => {
                     // A secret for the guest's process, never in the home.
-                    let (secret, kept) = sandbox.secret.as_ref().expect(&what);
+                    let (secret, kept) = &sandbox.secret;
                     assert_eq!(sandbox.config.identity, IdentityKind::Secret, "{what}");
                     assert!(!settings.exists(), "{what}");
-                    assert_eq!((kept.manifest.as_str(), kept.turn), (manifest.digest().as_str(), 1));
+                    assert_eq!(
+                        (kept.manifest.as_str(), kept.turn),
+                        (manifest.digest().as_str(), 1)
+                    );
                     assert!(!format!("{kept:?}").contains(secret.as_str()), "{what}");
                     let mut files = String::new();
                     for entry in walk(home.path()) {
@@ -1000,9 +998,19 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
                     );
                 }
                 CredentialSite::Sidecar => {
-                    // A sidecar proves the turn as its workload, from
-                    // settings in the home that hold no secret.
-                    assert!(sandbox.secret.is_none(), "{what}");
+                    // A sidecar proves the turn with the turn's secret, read
+                    // from settings in the home, and as its workload.
+                    let (secret, kept) = &sandbox.secret;
+                    assert_eq!(
+                        (kept.manifest.as_str(), kept.turn),
+                        (manifest.digest().as_str(), 1)
+                    );
+                    assert!(!format!("{kept:?}").contains(secret.as_str()), "{what}");
+                    assert_eq!(
+                        sandbox.settings.as_deref(),
+                        Some(settings.as_path()),
+                        "{what}"
+                    );
                     assert_eq!(
                         sandbox.config.identity,
                         IdentityKind::Workload {
@@ -1011,7 +1019,27 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
                         "{what}"
                     );
                     let text = std::fs::read_to_string(&settings).expect(&what);
-                    assert_eq!(credential::parse_config(&text).unwrap(), sandbox.config);
+                    let on_disk = credential::parse_config(&text).unwrap();
+                    assert_eq!(on_disk.secret.as_deref(), Some(secret.as_str()), "{what}");
+                    assert_eq!(
+                        credential::parse_config(&text).unwrap().secret,
+                        Some(secret.clone())
+                    );
+                    assert_eq!(
+                        crate::connectors::sandbox_proxy::ProxyConfig {
+                            secret: None,
+                            ..on_disk
+                        },
+                        sandbox.config
+                    );
+                    // The file is the only place, and goes when the turn ends.
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        let mode = std::fs::metadata(&settings).unwrap().permissions().mode();
+                        assert_eq!(mode & 0o077, 0, "{what}: readable beyond its owner");
+                    }
+
                     assert!(
                         prepared
                             .files
@@ -1019,6 +1047,9 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
                             .any(|f| f == credential::PROXY_CONFIG_FILE),
                         "{what}"
                     );
+                    let mut prepared = prepared;
+                    prepared.retire();
+                    assert!(!settings.exists(), "{what}");
                 }
                 CredentialSite::Host => unreachable!("held on the host above"),
             }

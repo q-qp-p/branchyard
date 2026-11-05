@@ -1994,7 +1994,7 @@
           ]
         },
         "sandbox_identities": {
-          "description": "The Google service accounts a sandbox may fetch tokens as. Each is\nverified from a Google-signed ID token the sandbox gets from the\nmetadata server. Empty: only a turn's own secret (a Microsandbox\nguest, hermetic tests) fetches.",
+          "description": "The Google service accounts a sandbox must also present, besides the\nturn's secret, to fetch a token. Each is verified from a\nGoogle-signed ID token the sandbox gets from the metadata server.\nEmpty: the turn's secret alone fetches.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/FileSandboxIdentity"

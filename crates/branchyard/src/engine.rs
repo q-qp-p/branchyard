@@ -745,13 +745,14 @@ fn run(
     for warning in connectors.iter().flat_map(|prepared| &prepared.warnings) {
         recorder.record(Activity::Warning(warning.clone()))?;
     }
-    // A sandbox whose proxy proves the turn with a secret: the server finds
-    // the secret's hash in the branch's record, so it is written before the
-    // proxy starts, and cleared when the turn ends (`conclude`).
+    // A sandbox whose proxy holds the credentials proves the turn with its
+    // secret: the server finds the secret's hash in the branch's record, so
+    // it is written before the proxy starts, and cleared when the turn ends
+    // (`conclude`).
     if let Some((_, credential)) = connectors
         .as_ref()
         .and_then(|c| c.sandbox.as_ref())
-        .and_then(|s| s.secret.as_ref())
+        .map(|s| &s.secret)
     {
         record.credential = Some(credential.clone());
         store.write_fenced(record, fence)?;
@@ -2244,7 +2245,7 @@ fn start_credential_proxy(
         &placement.cwd(),
         &gateway.credential_proxy.guest_command,
         &sandbox.config,
-        sandbox.secret.as_ref().map(|(secret, _)| secret.as_str()),
+        Some(sandbox.secret.0.as_str()),
     )
     .map(Some)
     .map_err(|reason| format!("could not start the credential proxy: {reason}"))

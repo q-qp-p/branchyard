@@ -1595,9 +1595,8 @@ fn mkfifo(path: &Path) {
 }
 
 #[test]
-fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_finished_one_is_not()
-{
-    use branchyard::connectors::{Proof, RefusalKind, TokenRequest};
+fn a_turn_whose_credentials_the_host_holds_is_issued_no_token_whatever_a_sandbox_proves() {
+    use branchyard::connectors::{Identity, Proof, RefusalKind, TokenRequest};
     let f = Fixture::new();
     gateway(&f, &["github"]);
     let gate = f.dir.join("gate");
@@ -1608,48 +1607,35 @@ fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_fi
             let digest = branchyard_testkit::wait::until("the running turn's manifest", || {
                 running_manifest(&root, "gated")
             });
-            // The request names the branch as a server does; the yard is
-            // asked about `gated` whatever it says.
-            let ask = |manifest: &str, turn: u32, proof: Proof<'_>| {
-                yard.issue_turn_token(
-                    "gated",
-                    &TokenRequest {
-                        manifest: manifest.into(),
-                        branch: "other/claims-are-not-read-from-here".into(),
-                        turn,
-                    },
-                    proof,
-                )
-            };
             let account = "sandbox@proj.iam.gserviceaccount.com";
-            let anyone = Proof::Identity {
-                service_account: account,
-                tenant: None,
-            };
-            let kind = |result: Result<_, branchyard::connectors::Refusal>| {
-                result.expect_err("a refusal").kind
-            };
-            assert_eq!(
-                kind(ask("blake3:00", 1, anyone)),
-                RefusalKind::ManifestMismatch
-            );
-            assert_eq!(kind(ask(&digest, 2, anyone)), RefusalKind::TurnMismatch);
-            let other_tenant = Proof::Identity {
-                service_account: account,
-                tenant: Some("globex"),
-            };
-            assert_eq!(
-                kind(ask(&digest, 1, other_tenant)),
-                RefusalKind::TenantMismatch
-            );
-            assert_eq!(
-                kind(ask(&digest, 1, Proof::Secret("a-secret-nobody-recorded"))),
-                RefusalKind::BadSecret
-            );
-            let issued = ask(&digest, 1, anyone).expect("a token for the running turn");
+            let mut kinds = Vec::new();
+            for secret in ["", "x", "a-secret-nobody-recorded"] {
+                // An allow-listed identity, the turn's real coordinates and
+                // a secret: this turn recorded none, so nothing is issued.
+                let proof = Proof {
+                    secret,
+                    identity: Some(Identity {
+                        service_account: account,
+                        tenant: None,
+                    }),
+                };
+                kinds.push(
+                    yard.issue_turn_token(
+                        "gated",
+                        &TokenRequest {
+                            manifest: digest.clone(),
+                            branch: "gated".into(),
+                            turn: 1,
+                        },
+                        proof,
+                    )
+                    .expect_err("a refusal")
+                    .kind,
+                );
+            }
             // The turn may finish now.
             fs::write(&gate, "go").unwrap();
-            (digest, issued)
+            kinds
         })
     };
     let branch = f
@@ -1658,39 +1644,9 @@ fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_fi
         .name("gated")
         .run()
         .unwrap();
-    let (digest, issued) = probe.join().unwrap();
+    let kinds = probe.join().unwrap();
     assert_eq!(branch.info().status, BranchStatus::NoChanges);
-    // Five minutes, signed for this turn with the recorded grant.
-    assert_eq!(issued.expires_in, 300);
-    let claims = connectors::keys::verify(&jwks(&f), &issued.token).expect("a valid token");
-    assert_eq!(
-        claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
-        300
-    );
-    assert_eq!(claims["exp"].as_u64().unwrap(), issued.expires_at);
-    assert_eq!(claims["aud"], URL);
-    assert_eq!(claims["by_manifest"], digest.as_str());
-    assert_eq!(claims["by_branch"], "gated", "{claims}");
-    assert_eq!(claims["by_turn"], "1");
-    assert_eq!(claims["by_grants"][0]["connector"], "github", "{claims}");
-    assert_eq!(claims["by_grants"].as_array().unwrap().len(), 1);
-    // The turn has ended: the same request is refused now.
-    let late = f
-        .yard
-        .issue_turn_token(
-            "gated",
-            &TokenRequest {
-                manifest: digest,
-                branch: "gated".into(),
-                turn: 1,
-            },
-            Proof::Identity {
-                service_account: "sandbox@proj.iam.gserviceaccount.com",
-                tenant: None,
-            },
-        )
-        .expect_err("a finished turn gets no token");
-    assert_eq!(late.kind, RefusalKind::NotRunning, "{late:?}");
+    assert_eq!(kinds, [RefusalKind::BadSecret; 3]);
     // And a branch that does not exist is not a turn.
     let none = f
         .yard
@@ -1701,7 +1657,10 @@ fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_fi
                 branch: "nobody".into(),
                 turn: 1,
             },
-            Proof::Secret("x"),
+            Proof {
+                secret: "x",
+                identity: None,
+            },
         )
         .expect_err("no such branch");
     assert_eq!(none.kind, RefusalKind::UnknownTurn);
@@ -1709,7 +1668,7 @@ fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_fi
 
 #[test]
 fn a_microsandbox_guest_runs_its_own_credential_proxy_and_the_harness_holds_no_token() {
-    use branchyard::connectors::{CredentialProxy, Proof, RefusalKind, TokenRequest};
+    use branchyard::connectors::{CredentialProxy, Identity, Proof, RefusalKind, TokenRequest};
     use branchyard::{Provider, SandboxOptions};
     let f = Fixture::new();
     let fake = Arc::new(branchyard_sandbox::fake::FakeProvider::plain(
@@ -1770,20 +1729,71 @@ exec cat
             );
             assert_eq!(record["credential"]["turn"], 1, "{record}");
             assert_eq!(record["credential"]["manifest"], digest.as_str());
-            let ask = |proof: Proof<'_>| {
+            let ask = |manifest: &str, turn: u32, proof: Proof<'_>| {
                 yard.issue_turn_token(
                     "boxed",
                     &TokenRequest {
-                        manifest: digest.clone(),
-                        branch: "boxed".into(),
-                        turn: 1,
+                        manifest: manifest.into(),
+                        branch: "other/claims-are-not-read-from-here".into(),
+                        turn,
                     },
                     proof,
                 )
             };
-            let wrong = ask(Proof::Secret("not-the-secret")).expect_err("a wrong secret");
-            assert_eq!(wrong.kind, RefusalKind::BadSecret);
-            let issued = ask(Proof::Secret(&secret)).expect("the guest's own secret");
+            let account = "sandbox@proj.iam.gserviceaccount.com";
+            let identity = |tenant| {
+                Some(Identity {
+                    service_account: account,
+                    tenant,
+                })
+            };
+            let kind = |result: Result<_, branchyard::connectors::Refusal>| {
+                result.expect_err("a refusal").kind
+            };
+            let with_secret = Proof {
+                secret: &secret,
+                identity: None,
+            };
+            // The secret alone is enough where no identities are listed.
+            let wrong = Proof {
+                secret: "not-the-secret",
+                identity: None,
+            };
+            assert_eq!(kind(ask(&digest, 1, wrong)), RefusalKind::BadSecret);
+            // Another turn's secret does not open this turn, with the
+            // allow-listed identity beside it or not: the identity, the
+            // manifest digest and the turn number are not secret.
+            let other = "another-turns-secret-0123456789abcdef0123456789abcdef";
+            for identity in [None, identity(None)] {
+                let proof = Proof {
+                    secret: other,
+                    identity,
+                };
+                assert_eq!(kind(ask(&digest, 1, proof)), RefusalKind::BadSecret);
+            }
+            // The right secret still fits only this manifest and this turn.
+            assert_eq!(
+                kind(ask("blake3:00", 1, with_secret)),
+                RefusalKind::BadSecret
+            );
+            assert_eq!(kind(ask(&digest, 2, with_secret)), RefusalKind::BadSecret);
+            // Secret and identity: the tenant of the account is checked.
+            let other_tenant = Proof {
+                secret: &secret,
+                identity: identity(Some("globex")),
+            };
+            assert_eq!(
+                kind(ask(&digest, 1, other_tenant)),
+                RefusalKind::TenantMismatch
+            );
+            let both = Proof {
+                secret: &secret,
+                identity: identity(None),
+            };
+            let issued = ask(&digest, 1, both).expect("the guest's own secret and identity");
+            let alone =
+                ask(&digest, 1, with_secret).expect("the secret where no identity is listed");
+            assert_eq!(alone.expires_in, 300);
             fs::write(&gate, "go").unwrap();
             (secret, issued)
         })
@@ -1854,7 +1864,10 @@ exec cat
                 branch: "boxed".into(),
                 turn: 1,
             },
-            Proof::Secret(&secret),
+            Proof {
+                secret: &secret,
+                identity: None,
+            },
         )
         .expect_err("a finished turn");
     assert_eq!(late.kind, RefusalKind::BadSecret);
