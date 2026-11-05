@@ -21,7 +21,7 @@ Today's contract is in [connectors](connectors.md). This page extends it. Nothin
 | [3. Search index and lean skill](#3-operation-search-index-and-a-lean-skillmd) | built; run against the CLI | none known |
 | [4. Host install and OCI](#4-host-install-oci-packages-and-a-per-host-toolchain) | `install` and `package oci` built; `install` run against the CLI | `--from` an OCI layout or registry, a registry pull or push, a self-contained toolchain |
 | [5. Gateway on Cloud Run](#5-gateway-on-cloud-run) | files and the drain built, hermetic | a deployment, the image build, two instances on one ledger |
-| [6. Token renewal](#6-token-renewal-a-sidecar-that-holds-the-token) | option C (`ANVIL_GATEWAY_AUTH=proxy`) built, hermetic | Branchyard does not set it yet |
+| [6. Token renewal](#6-token-renewal-a-sidecar-that-holds-the-token) | option C (`ANVIL_GATEWAY_AUTH=proxy`) built, hermetic | Branchyard sets it for a sandbox-held turn |
 | [7. `by_manifest`](#7-turn-manifest-claim-by_manifest) | built, hermetic | none known |
 | [8. Connector icon](#8-connector-icon-id) | built; run against the CLI | none known |
 
@@ -300,7 +300,7 @@ Fields not listed are ignored, so Anvil may add some without breaking the reader
 
 Branchyard uses C. The harness then holds no token, and the proxy renews it. A and B stay valid for other setups.
 
-**Built in Anvil (PR #91, hermetic).** Option C: `ANVIL_GATEWAY_AUTH` is `token_file` (the default) or `proxy`; any other value is refused. With `proxy` the CLI (generated and packaged `bin/<connector>`) and the Python and TypeScript SDKs send no `Authorization` header and read no token file, and Anvil refuses the mode, before any request, unless `ANVIL_GATEWAY_URL` names a loopback host (`localhost`, `127.x.x.x`, `::1`). Go and Java clients have no gateway mode. Not done in Branchyard: its sandbox path hands the harness `ANVIL_GATEWAY_URL` (the proxy's loopback address) and no token file, and **does not set `ANVIL_GATEWAY_AUTH=proxy` yet**, so a packaged client there reads a token file by default, and the sandbox writes none. That is the next Branchyard change; no test runs a real Anvil client behind the credential proxy.
+**Built in Anvil (PR #91, hermetic).** Option C: `ANVIL_GATEWAY_AUTH` is `token_file` (the default) or `proxy`; any other value is refused. With `proxy` the CLI (generated and packaged `bin/<connector>`) and the Python and TypeScript SDKs send no `Authorization` header and read no token file, and Anvil refuses the mode, before any request, unless `ANVIL_GATEWAY_URL` names a loopback host (`localhost`, `127.x.x.x`, `::1`). Go and Java clients have no gateway mode. In Branchyard (hermetic: `providers/tests.rs`, `a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_token`): a sandbox-held turn hands the harness `ANVIL_GATEWAY_URL` (the proxy's loopback address) and `ANVIL_GATEWAY_AUTH=proxy`, and no token file; a host-held turn sets no `ANVIL_GATEWAY_AUTH`, so Anvil's clients keep their default, the token file. Not done: no test runs a real Anvil client behind the credential proxy.
 
 **Mock before Anvil shipped.** Branchyard's renewing proxy (`docs/tools-model.md`, phase 3) is tested with a fake gateway that checks the `Authorization` header. The Anvil side is tested with a stub server.
 
