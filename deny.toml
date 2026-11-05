@@ -14,6 +14,7 @@ version = 2
 yanked = "deny"
 ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 2.0.1 only via microsandbox-filesystem (optional microsandbox feature); upstream has no fix" },
+    { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar 0.6.4 (unmaintained, no vulnerability) only via microsandbox-image 0.7.3 (optional microsandbox feature); no maintained release of microsandbox moves off it yet" },
 ]
 
 [licenses]
