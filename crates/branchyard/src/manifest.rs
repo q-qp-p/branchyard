@@ -133,10 +133,16 @@ impl TurnManifest {
     }
 
     /// Write the manifest into `home` at [`MANIFEST_FILE`], 0644 (it holds
-    /// no secret), by rename.
-    pub(crate) fn write(&self, home: &Path) -> Result<(), Error> {
+    /// no secret), by rename, unless the file already holds exactly this;
+    /// whether it wrote. A turn that changed nothing writes nothing.
+    pub(crate) fn write(&self, home: &Path) -> Result<bool, Error> {
         let text = serde_json::to_string_pretty(self).map_err(|e| Error::State(e.to_string()))?;
-        crate::connectors::keys::write_atomic(&home.join(MANIFEST_FILE), text.as_bytes(), 0o644)
+        let path = home.join(MANIFEST_FILE);
+        if std::fs::read(&path).is_ok_and(|current| current == text.as_bytes()) {
+            return Ok(false);
+        }
+        crate::connectors::keys::write_atomic(&path, text.as_bytes(), 0o644)?;
+        Ok(true)
     }
 }
 

@@ -671,10 +671,14 @@ fn run(
         store.write_fenced(record, fence)?;
     }
     let manifest_digest = manifest.digest();
+    let mut manifest_written = false;
     if let Some(home) = record.home.as_deref() {
-        if let Err(error) = manifest.write(home) {
-            driven.end = End::failed(format!("could not write the turn manifest: {error}"));
-            return Ok(driven);
+        match manifest.write(home) {
+            Ok(written) => manifest_written = written,
+            Err(error) => {
+                driven.end = End::failed(format!("could not write the turn manifest: {error}"));
+                return Ok(driven);
+            }
         }
     }
     // A sandboxed harness's delegation tools, served from this host for
@@ -829,6 +833,7 @@ fn run(
             assignment: assignment.as_deref(),
             skills: &skills,
             manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
+            manifest_written,
         },
         crate::provisioning::Access {
             policy: &bounds.policy,

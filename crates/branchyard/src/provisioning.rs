@@ -347,6 +347,9 @@ pub(crate) struct Standing<'a> {
     /// The digest of the turn manifest written into the home
     /// ([`crate::manifest`]); `None` for a branch without a private home.
     pub manifest: Option<&'a str>,
+    /// Whether this turn wrote the manifest file (it is rewritten only when
+    /// it changed), so `provisioned.files` names it only then.
+    pub manifest_written: bool,
 }
 
 /// Plan and apply the turn's provisioning. A failure is the turn's failure
@@ -369,6 +372,7 @@ pub(crate) fn prepare(
         assignment,
         skills,
         manifest,
+        manifest_written,
     } = standing;
     let spec = record.provision.clone().unwrap_or_default();
     let (workspace, home) = placement::guest_paths(record);
@@ -504,7 +508,9 @@ pub(crate) fn prepare(
     // The turn manifest was written into the home before this; the harness
     // is told where, by the path it sees.
     if manifest.is_some() {
-        files.push(crate::manifest::MANIFEST_FILE.to_owned());
+        if manifest_written {
+            files.push(crate::manifest::MANIFEST_FILE.to_owned());
+        }
         plan_env.push(branchyard_provision::EnvVar::plain(
             crate::manifest::ENV_MANIFEST,
             manifest_guest,

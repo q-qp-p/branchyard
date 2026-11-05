@@ -276,7 +276,8 @@ fn the_harness_sees_its_provisioned_home_and_the_secret_stays_there() {
         [
             ".codex/auth.json",
             ".codex/config.toml",
-            ".branchyard/provisioned.json"
+            ".branchyard/provisioned.json",
+            ".branchyard/manifest.json"
         ]
     );
     assert_eq!(provisioned.2, ["CODEX_HOME"]);
