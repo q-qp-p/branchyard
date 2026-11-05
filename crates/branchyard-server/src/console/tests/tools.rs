@@ -679,11 +679,11 @@ async fn a_start_with_tools_expands_and_is_refused_beyond_policy() {
     assert_eq!(status, StatusCode::OK, "{replayed}");
     assert_eq!(replayed["session_id"], started["session_id"]);
 
-    // An empty list stages no built-in skills; an unset choice stages the
-    // ones policy allows.
+    // A list with no skill entries, like an unset choice, keeps the skills
+    // policy allows: skills narrow, they are never taken away by omission.
     let (status, none) = start("none", json!({"tools":[]})).await;
     assert_eq!(status, StatusCode::OK, "{none}");
-    assert_eq!(row(&none).body["tools"]["skills"], json!([]));
+    assert_eq!(row(&none).body["tools"]["skills"], json!(["docx"]));
     let (status, plain) = start("plain", json!({})).await;
     assert_eq!(status, StatusCode::OK, "{plain}");
     assert_eq!(row(&plain).body["tools"]["skills"], json!(["docx"]));

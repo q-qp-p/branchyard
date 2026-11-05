@@ -343,9 +343,10 @@ fn grant(choice: &ToolChoice) -> GrantEntry {
 }
 
 /// Turn a start's `tools` into the `connectors`, `skills` and `helpers`
-/// fields of its body, and drop `tools`. The list is the whole choice: a
-/// kind it leaves out is not chosen, so no `skill` entries stage no
-/// built-in skills and no `helper` entries give no helpers. Refused beside
+/// fields of its body, and drop `tools`. Connectors and helpers are the
+/// whole choice: none listed is none given. Skills are a narrowing: with no
+/// `skill` entries the session keeps every built-in skill its policy allows,
+/// so choosing Jira alone never takes a session's skills away. Refused beside
 /// any of those three fields. A body without `tools` is untouched.
 pub(super) fn expand(body: &mut Value) -> Result<(), ApiError> {
     let Some(object) = body.as_object_mut() else {
@@ -387,7 +388,10 @@ pub(super) fn expand(body: &mut Value) -> Result<(), ApiError> {
         "connectors".into(),
         serde_json::to_value(connectors).map_err(|e| ApiError::internal(e.to_string()))?,
     );
-    object.insert("skills".into(), json!(ids(ToolKind::Skill)));
+    let skills = ids(ToolKind::Skill);
+    if !skills.is_empty() {
+        object.insert("skills".into(), json!(skills));
+    }
     let helpers = ids(ToolKind::Helper);
     if !helpers.is_empty() {
         object.insert("helpers".into(), json!({ "harnesses": helpers }));
@@ -431,7 +435,16 @@ mod tests {
 
         let mut bare = json!({"tools":[]});
         expand(&mut bare).unwrap();
-        assert_eq!(bare["skills"], json!([]), "no skill entries stage none");
+        assert!(
+            bare.get("skills").is_none(),
+            "no skill entries keep every allowed skill"
+        );
+        let mut jira = json!({"tools":[{"kind":"connector","id":"atlassian"}]});
+        expand(&mut jira).unwrap();
+        assert!(
+            jira.get("skills").is_none(),
+            "a connector alone keeps the skills"
+        );
         assert_eq!(bare["connectors"], json!([]));
         assert!(bare.get("helpers").is_none());
     }

@@ -3314,7 +3314,8 @@
   }
 
   // The body's tools for a draft: only what was chosen, so a start that
-  // chose nothing is the start it always was. The list is the whole choice.
+  // chose nothing is the start it always was. Connectors and helpers are the
+  // whole choice; skills only narrow, so none chosen keeps them all.
   function toolRequest(t, draft) {
     if (!t.explicit && !t.chosen.length) return {};
     return { tools: t.chosen.map((r) => toolPick(r.x, r.mode)) };
@@ -4894,7 +4895,7 @@
       const groups = TOOL_KINDS.map((k) => ({ k, rows: t.entries.filter((r) => r.x.kind === k.kind && matches(r.x)), total: t.entries.filter((r) => r.x.kind === k.kind).length }));
       const notes = {
         connector: t.gateway === 'ready' ? null : h('p', { class: t.gateway === 'unreachable' ? 'error' : 'hint', text: t.gatewayWhy || 'Connectors are not set up here.' }),
-        skill: h('p', { class: 'hint', text: 'Once you choose any tool, a session gets only the skills you choose.' }),
+        skill: h('p', { class: 'hint', text: 'Choose skills to give a session only those. Choose none and it gets every skill it may use.' }),
         helper: null,
       };
       const shown = groups.reduce((n, g) => n + g.rows.length, 0);

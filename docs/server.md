@@ -296,7 +296,7 @@ The tenant comes from the credential, never the request: a key naming another te
 
 `PUT /v1/workspaces/{workspace}/tools` stores the workspace's defaults, `{"tools": [{"kind", "id", "mode"?}], "revision"}`, for its owner or an editor (`409 revision_conflict` on a stale `revision`; use `0` before the first save). `GET` on the same path returns them as `defaults`. A client sends them in `tools` when it starts a session; the server does not add them itself.
 
-A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?, "account"?}]`. It is the whole choice: the server expands it to `connectors` (mode `read` by default), `skills` and `helpers`, so a kind left out is not chosen (no `skill` entries stage no built-in skills). It is refused beside any of those fields (`tools_conflict`). The old fields still work. With no skill choice at all, a policy that lists skills stages the ones it allows.
+A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?, "account"?}]`. The server expands it to `connectors` (mode `read` by default), `skills` and `helpers`. Connectors and helpers are the whole choice: none listed is none given. Skills narrow: with no `skill` entries the session keeps every built-in skill its policy allows, so choosing a connector alone never removes skills. It is refused beside any of those fields (`tools_conflict`). The old fields still work. With no skill choice at all, a policy that lists skills stages the ones it allows.
 
 | Error | Status | Meaning |
 |---|---|---|
