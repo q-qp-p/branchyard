@@ -1848,10 +1848,21 @@
           ]
         },
         "signing_key": {
-          "description": "The signing key, a private JSON Web Key Set made if missing.\nDefault: `<data_dir>/gateway/key`. Its public keys are served at\n`GET /.well-known/jwks.json`.",
+          "description": "The signing key, a private JSON Web Key Set made if missing (never\nby a worker). Default: `<data_dir>/gateway/key`. Its public keys\nare served at `GET /.well-known/jwks.json`.",
           "type": [
             "string",
             "null"
+          ]
+        },
+        "signing": {
+          "description": "Sign with Cloud KMS instead of a key file; refused together with\n`signing_key`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileSigning"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "audit_file": {
@@ -1921,6 +1932,30 @@
       "required": [
         "gateway",
         "bundles"
+      ]
+    },
+    "FileSigning": {
+      "description": "`connectors.signing`: sign gateway tokens with Cloud KMS\n(`docs/server.md#signing-with-cloud-kms`).",
+      "type": "object",
+      "properties": {
+        "kms_key_versions": {
+          "description": "Cloud KMS key versions of `EC_SIGN_ED25519` keys, as\n`projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`.\nThe first signs; all are published at `GET /.well-known/jwks.json`,\nso a rotation lists the new version first and drops the old one\nonce its tokens have expired. The server's and each worker's\nservice account needs `roles/cloudkms.signerVerifier` on the key.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kms_base_url": {
+          "description": "The Cloud KMS API's address. Default `https://cloudkms.googleapis.com`;\nfor tests.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kms_key_versions"
       ]
     },
     "FileTools": {
