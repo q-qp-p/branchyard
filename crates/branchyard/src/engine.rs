@@ -745,6 +745,17 @@ fn run(
     for warning in connectors.iter().flat_map(|prepared| &prepared.warnings) {
         recorder.record(Activity::Warning(warning.clone()))?;
     }
+    // A sandbox whose proxy proves the turn with a secret: the server finds
+    // the secret's hash in the branch's record, so it is written before the
+    // proxy starts, and cleared when the turn ends (`conclude`).
+    if let Some((_, credential)) = connectors
+        .as_ref()
+        .and_then(|c| c.sandbox.as_ref())
+        .and_then(|s| s.secret.as_ref())
+    {
+        record.credential = Some(credential.clone());
+        store.write_fenced(record, fence)?;
+    }
     // The effect ledger's proxy in front of the gateway: every effectful
     // call is decided and written to the ledger before it is made. It
     // stops when this function returns, after the harness is gone.
@@ -1101,6 +1112,13 @@ fn run(
     {
         turn_hosts.connector_gateway = Some(gateway);
     }
+    // The server a sandbox's credential proxy fetches from, and the proxy
+    // itself on loopback.
+    for url in connectors.iter().flat_map(|c| &c.reach) {
+        turn_hosts
+            .connector_reach
+            .extend(crate::egress::gateway_rule(url));
+    }
     match crate::egress::prepare(turn.yard, &scoped, turn_hosts) {
         Ok(None) => {}
         Ok(Some(egress)) => {
@@ -1112,6 +1130,17 @@ fn run(
             return Ok(driven);
         }
     }
+    // A sandbox that runs its own credential proxy has it started now, in
+    // the sandbox and before the harness, and stopped (killed) when this
+    // function returns. A sidecar is not started here: the sandbox's own
+    // definition runs it, reading the settings file in the home.
+    let _credential_proxy = match start_credential_proxy(turn, &placement, connectors.as_ref()) {
+        Ok(proxy) => proxy,
+        Err(reason) => {
+            driven.end = End::failed(reason);
+            return Ok(driven);
+        }
+    };
     // A per-turn MCP file lives until this function returns, after the
     // harness is gone.
     let _turn_file = provisioned.turn_file;
@@ -2191,6 +2220,36 @@ fn answer(
     }
 }
 
+/// Start the credential proxy in the turn's sandbox when its provider runs
+/// it as a guest process; `None` when the host holds the credentials or a
+/// sidecar does.
+fn start_credential_proxy(
+    turn: &Turn<'_>,
+    placement: &Placement,
+    connectors: Option<&crate::connectors::Prepared>,
+) -> Result<Option<crate::connectors::guest::GuestProxy>, String> {
+    let Some(sandbox) = connectors.and_then(|c| c.sandbox.as_ref()) else {
+        return Ok(None);
+    };
+    if sandbox.site != crate::connectors::CredentialSite::Guest {
+        return Ok(None);
+    }
+    let (Some((provider, name)), Some(gateway)) = (placement.sandbox(), turn.yard.connectors())
+    else {
+        return Err("the turn has no sandbox to run its credential proxy in".into());
+    };
+    crate::connectors::guest::start(
+        provider,
+        name,
+        &placement.cwd(),
+        &gateway.credential_proxy.guest_command,
+        &sandbox.config,
+        sandbox.secret.as_ref().map(|(secret, _)| secret.as_str()),
+    )
+    .map(Some)
+    .map_err(|reason| format!("could not start the credential proxy: {reason}"))
+}
+
 /// Start the turn's effect-ledger proxy and give it to the harness as the
 /// gateway. `None` when the yard turned it off, or for a sandboxed turn
 /// with no address a sandbox reaches it at (said in a warning: its calls
@@ -2208,6 +2267,20 @@ fn effects_proxy(
     };
     let settings = &gateway.effects;
     if !settings.enabled {
+        return Ok(None);
+    }
+    if prepared.sandbox.is_some() {
+        // The token is in the sandbox's proxy, which the host's ledger
+        // proxy cannot sit in front of without the harness holding a token
+        // again.
+        recorder
+            .record(Activity::Warning(
+                "this turn's gateway credentials are held by a proxy in its sandbox: its effects \
+                 reach the ledger only from the gateway's audit log, after the fact, and are not \
+                 approved first (docs/connectors.md#the-credential-proxy-in-the-sandbox)"
+                    .into(),
+            ))
+            .map_err(|e| e.to_string())?;
         return Ok(None);
     }
     let sandboxed = crate::placement::sandboxed(record.provider.as_ref());
@@ -2290,6 +2363,7 @@ pub(crate) fn conclude(
     let store = yard.store();
     let excluded = crate::workspace::excluded(record);
     let merged = record.merged.take();
+    record.credential = None;
     let info = &mut record.info;
     if driven.submitted {
         info.turns += 1;

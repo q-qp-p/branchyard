@@ -15,7 +15,8 @@ mod transport;
 mod verify;
 
 pub use config::{
-    Config, Egress, GatewayService, Network, Runtime, StoreVolume, GOOGLE_API_BLOCKS, STORAGE_HOST,
+    Config, CredentialSidecar, Egress, GatewayService, Network, Runtime, StoreVolume,
+    GOOGLE_API_BLOCKS, STORAGE_HOST,
 };
 pub use provider::AgentSandboxProvider;
 

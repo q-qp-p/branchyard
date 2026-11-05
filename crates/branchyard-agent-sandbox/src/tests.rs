@@ -7,8 +7,8 @@ use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
 use super::{
-    AgentSandboxProvider, Config, Egress, GatewayService, Network, Runtime, StoreVolume,
-    GOOGLE_API_BLOCKS,
+    AgentSandboxProvider, Config, CredentialSidecar, Egress, GatewayService, Network, Runtime,
+    StoreVolume, GOOGLE_API_BLOCKS,
 };
 
 fn config() -> Config {
@@ -19,6 +19,7 @@ fn config() -> Config {
         network: Network::Deny,
         store: None,
         egress: Egress::default(),
+        credential_proxy: None,
     }
 }
 
@@ -49,10 +50,19 @@ impl Fixture {
     }
 
     fn build(network: Network, store: Option<StoreVolume>) -> Self {
+        Self::build_full(network, store, None)
+    }
+
+    fn build_full(
+        network: Network,
+        store: Option<StoreVolume>,
+        sidecar: Option<CredentialSidecar>,
+    ) -> Self {
         let scratch = Scratch::new("agent-sandbox");
         let mut config = config();
         config.network = network;
         config.store = store;
+        config.credential_proxy = sidecar;
         let mut provider = AgentSandboxProvider::new(config, scratch.join("receipts")).unwrap();
         provider.control.binary = scratch.join("kubectl");
         // Share the immutable fixture inode. Writing executable scripts while
@@ -1033,6 +1043,68 @@ fn a_drifted_or_foreign_egress_policy_is_refused_before_exec() {
     }
 }
 
+fn with_sidecar(sidecar: CredentialSidecar) -> Fixture {
+    Fixture::build_full(Network::Unrestricted, None, Some(sidecar))
+}
+
+#[test]
+fn a_credential_proxy_sidecar_runs_beside_the_harness_with_the_home_read_only() {
+    let image = format!("example.test/by@sha256:{}", "b".repeat(64));
+    for (sidecar, expected) in [
+        (CredentialSidecar::default(), spec().image.unwrap()),
+        (
+            CredentialSidecar {
+                image: Some(image.clone()),
+            },
+            image,
+        ),
+    ] {
+        let fixture = with_sidecar(sidecar);
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        let state = fixture.state();
+        let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+        let containers = pod["containers"].as_array().unwrap();
+        assert_eq!(containers.len(), 2, "{containers:?}");
+        assert_eq!(containers[0]["name"], "runtime");
+        let sidecar = &containers[1];
+        assert_eq!(sidecar["name"], "credential-proxy");
+        assert_eq!(sidecar["image"], expected.as_str());
+        // It reads its settings from the home the engine copies in, and
+        // can neither change that home nor escalate.
+        assert_eq!(
+            sidecar["command"],
+            json!([
+                "by",
+                "credential-proxy",
+                "--config",
+                "/branchyard/home/.branchyard/credential-proxy.json",
+                "--wait"
+            ])
+        );
+        assert_eq!(
+            sidecar["volumeMounts"],
+            json!([{"name":"home","mountPath":"/branchyard/home","readOnly":true}])
+        );
+        assert_eq!(
+            sidecar["securityContext"]["allowPrivilegeEscalation"],
+            false
+        );
+        assert_eq!(sidecar["securityContext"]["readOnlyRootFilesystem"], true);
+        // The pod's identity is its Workload Identity, from the GKE
+        // metadata server, which the pod's network policy leaves open.
+        assert!(sidecar["env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"name":"GCE_METADATA_HOST","value":"169.254.169.254"})));
+        let policy = &state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"]
+            [0]["ipBlock"]["except"];
+        assert_eq!(*policy, json!(["169.254.169.252/32"]));
+        // The pod with both containers passes the allocation's checks.
+        true_in(&fixture).unwrap();
+    }
+}
+
 #[test]
 fn egress_hosts_and_the_gateway_service_are_validated_before_anything_is_created() {
     for hosts in [
@@ -1097,4 +1169,78 @@ fn the_tool_tree_has_a_volume_of_its_own_at_the_guest_root() {
         .unwrap()
         .contains(&json!({"name":"tools","mountPath":"/tools"})));
     true_in(&fixture).unwrap();
+}
+
+#[test]
+fn a_deny_allocation_with_a_sidecar_and_a_tool_store_keeps_its_rules_and_opens_only_the_metadata_server() {
+    let fixture = Fixture::build_full(
+        Network::Deny,
+        Some(store("acme-tools")),
+        Some(CredentialSidecar::default()),
+    );
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+    // The pod has the harness, the credential proxy and the tool store's mount.
+    assert_eq!(pod["containers"].as_array().unwrap().len(), 2);
+    assert!(pod["containers"][0]["volumeMounts"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","mountPath":"/tools"})));
+    let policy = &state["objects"][format!("networkpolicy/{name}")];
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    // DNS, the metadata server on port 80, and the Private Google Access
+    // ranges; no 0.0.0.0/0.
+    assert_eq!(egress.len(), 3, "{egress:?}");
+    assert_eq!(egress[0]["ports"][0]["port"], 53);
+    assert_eq!(
+        egress[1],
+        json!({"to":[{"ipBlock":{"cidr":"169.254.169.254/32"}}],"ports":[{"protocol":"TCP","port":80}]})
+    );
+    assert_eq!(egress[2]["ports"], json!([{"protocol":"TCP","port":443}]));
+    assert!(!policy.to_string().contains("0.0.0.0/0"));
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn without_a_sidecar_the_pod_has_one_container_and_the_metadata_server_stays_closed() {
+    let fixture = Fixture::new(Network::Unrestricted);
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+    assert_eq!(pod["containers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"][0]["ipBlock"]
+            ["except"],
+        json!(["169.254.169.254/32", "169.254.169.252/32"])
+    );
+}
+
+#[test]
+fn a_sidecar_needs_a_pinned_image_and_a_pod_with_a_stranger_in_it_fails() {
+    let mut target = config();
+    target.credential_proxy = Some(CredentialSidecar::default());
+    target.validate().unwrap();
+    target.credential_proxy = Some(CredentialSidecar {
+        image: Some("example.test/by:latest".into()),
+    });
+    assert!(target.validate().is_err(), "an unpinned sidecar image");
+
+    let fixture = with_sidecar(CredentialSidecar::default());
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    fixture.edit(|state| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner"}));
+        pod["status"]["containerStatuses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner","ready":true,"state":{"running":{}}}));
+    });
+    assert!(true_in(&fixture).is_err());
 }

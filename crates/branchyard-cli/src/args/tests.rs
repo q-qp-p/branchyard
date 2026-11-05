@@ -1967,6 +1967,7 @@ const HIDDEN: &[&str] = &[
     "mcp",
     "hook",
     "statusline",
+    "credential-proxy",
     "completions",
     "man",
     "worker",

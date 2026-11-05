@@ -905,6 +905,8 @@ pub fn router(app: Shared) -> Router {
         .merge(crate::knowledge_routes::router())
         // Approvals, the effect ledger and undo: `effects_routes`.
         .merge(crate::effects_routes::router())
+        // A running turn's sandbox fetching its gateway token: `turn_token`.
+        .merge(crate::turn_token::router())
         // Rewinding to a checkpoint: `checkpoint_routes`.
         .merge(crate::checkpoint_routes::router())
         // Wide maps: `map_routes`.
@@ -1185,6 +1187,11 @@ async fn authenticate(State(app): State<Shared>, mut request: Request, next: Nex
         request.uri().path(),
         "/healthz" | "/.well-known/jwks.json" | "/.well-known/branchyard" | "/metrics"
     ) {
+        return next.run(request).await;
+    }
+    // A sandbox fetching its turn's token proves itself with its workload
+    // identity or the turn's secret, which its handler checks.
+    if request.method() == Method::POST && crate::turn_token::is_token(request.uri().path()) {
         return next.run(request).await;
     }
     // A trigger's webhook is authenticated by its own signature, which

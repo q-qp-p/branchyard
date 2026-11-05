@@ -522,6 +522,14 @@ pub async fn start(config: Config) -> Result<Running, String> {
         );
     #[cfg(test)]
     let credentials = credentials.with_google_jwks(config.google_jwks_url.as_deref());
+    let credentials = match &config.connectors {
+        Some(c) => credentials.with_sandbox_identities(
+            crate::connectors::sandbox_audience(&config, c),
+            c.sandbox_identities.clone(),
+            c.sandbox_jwks_url.as_deref(),
+        ),
+        None => credentials,
+    };
     let app = Arc::new(App {
         preview: Arc::new(
             crate::preview::PreviewService::new(config.data_dir.join("previews"))

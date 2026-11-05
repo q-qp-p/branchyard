@@ -131,7 +131,33 @@ pub fn gateway_for(config: &Config, repo: &str) -> Option<Gateway> {
                 .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into()),
             sandbox_host: c.effects_sandbox_host.clone(),
         },
+        credential_proxy: credential_proxy(config, c),
     })
+}
+
+/// How sandboxes hold the gateway's credentials: through a proxy in the
+/// sandbox that fetches tokens from this server, when `sandbox_server`
+/// names it.
+fn credential_proxy(
+    config: &Config,
+    c: &ConnectorsConfig,
+) -> branchyard::connectors::CredentialProxy {
+    let defaults = branchyard::connectors::CredentialProxy::default();
+    branchyard::connectors::CredentialProxy {
+        server: c.sandbox_server.clone(),
+        audience: sandbox_audience(config, c),
+        guest_command: c.sandbox_by.clone().unwrap_or(defaults.guest_command),
+        sidecar_image: c.sandbox_proxy_image.clone(),
+        ..defaults
+    }
+}
+
+/// The audience a sandbox's Google ID token is for: the configured one,
+/// else the issuer.
+pub fn sandbox_audience(config: &Config, c: &ConnectorsConfig) -> String {
+    c.sandbox_audience
+        .clone()
+        .unwrap_or_else(|| issuer(config, c))
 }
 
 /// The public key set, made with the key on first use.
@@ -206,6 +232,12 @@ mod tests {
             effects_proxy: None,
             effects_listen: None,
             effects_sandbox_host: None,
+            sandbox_server: None,
+            sandbox_audience: None,
+            sandbox_identities: Vec::new(),
+            sandbox_jwks_url: None,
+            sandbox_proxy_image: None,
+            sandbox_by: None,
         });
         config
     }

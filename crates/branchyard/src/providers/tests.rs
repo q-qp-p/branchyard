@@ -847,7 +847,195 @@ fn an_agent_sandbox_may_reach_the_workers_hosts_and_mirrors_by_name() {
         image: format!("example.test/r@sha256:{}", "a".repeat(64)),
         ..AgentSandboxOptions::default()
     };
-    let config = options.config_with(None, egress);
+    let config = options.config_with(None, egress, None);
     config.validate().unwrap();
     assert_eq!(config.fqdn_hosts().len(), 5);
+}
+
+/// Serves one bundle, `github`, and packages it as a `SKILL.md`.
+#[derive(Debug)]
+struct OneBundle;
+
+impl crate::connectors::Packager for OneBundle {
+    fn served(&self) -> Result<Vec<crate::connectors::Bundle>, String> {
+        Ok(vec![crate::connectors::Bundle {
+            id: "github".into(),
+            path: "/bundles/github".into(),
+            hash: "hash-github".into(),
+        }])
+    }
+
+    fn package(&self, _: &crate::connectors::Bundle, out: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+        std::fs::write(out.join("SKILL.md"), "# github\n").map_err(|e| e.to_string())
+    }
+
+    fn index(
+        &self,
+        _: &std::path::Path,
+        _: &[crate::connectors::Bundle],
+        out: &std::path::Path,
+    ) -> Result<(), String> {
+        std::fs::write(out, "# Connectors\n").map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn each_provider_declares_where_it_can_run_the_credential_proxy() {
+    use crate::connectors::CredentialSite::{Guest, Host, Sidecar};
+    let fixture = fixture();
+    let sites: Vec<_> = samples(&fixture)
+        .iter()
+        .map(|(good, _)| (good.name(), of(Some(good)).credential_site()))
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("local", Host),
+            ("microsandbox", Guest),
+            ("substrate", Sidecar),
+            ("recipe", Host),
+            ("container", Host),
+            ("agent_sandbox", Sidecar),
+        ]
+    );
+    assert_eq!(of(None).credential_site(), Host);
+}
+
+#[test]
+fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_token() {
+    use crate::connectors::{
+        credential, sandbox_proxy::IdentityKind, CredentialSite, GrantEntry,
+        ENV_GATEWAY_TOKEN_FILE, ENV_GATEWAY_URL, TOKEN_FILE,
+    };
+    const UPSTREAM: &str = "http://192.168.127.1:8931/mcp";
+    let fixture = fixture();
+    for (provider, _) in samples(&fixture) {
+        let site = of(Some(&provider)).credential_site();
+        for server in [None, Some("https://by.example")] {
+            let home = tempfile::Builder::new()
+                .prefix("by-credential-home-")
+                .tempdir()
+                .unwrap();
+            let mut gateway = crate::connectors::Gateway::local(
+                &fixture.yard,
+                "http://127.0.0.1:9/mcp",
+                Arc::new(OneBundle),
+            )
+            .unwrap();
+            gateway.sandbox_url = Some(UPSTREAM.into());
+            gateway.credential_proxy = crate::connectors::CredentialProxy {
+                server: server.map(str::to_owned),
+                audience: "https://by.example".into(),
+                ..crate::connectors::CredentialProxy::default()
+            };
+            fixture.yard.use_connectors(gateway);
+            let mut record = record(&provider);
+            record.home = Some(home.path().to_path_buf());
+            record.provision = Some(crate::Provisioning {
+                connectors: vec![GrantEntry::parse("github:read").unwrap()],
+                ..crate::Provisioning::default()
+            });
+            let scopes = crate::access::TokenScopes::default();
+            let manifest = crate::manifest::settle(&fixture.yard, &record, &scopes, Some(0), false);
+            let prepared = crate::connectors::prepare(
+                &fixture.yard,
+                &record,
+                None,
+                &scopes,
+                Some(&manifest),
+            )
+            .unwrap()
+            .expect("a granted turn");
+            let named = |name: &str| prepared.env.iter().find(|v| v.name == name);
+            let held_here = server.is_none() || site == CredentialSite::Host;
+            let what = format!("{} with server {server:?}", provider.name());
+            if held_here {
+                // The host's proxy holds the token, as before.
+                assert!(prepared.sandbox.is_none(), "{what}");
+                assert!(named(ENV_GATEWAY_TOKEN_FILE).is_some(), "{what}");
+                assert!(home.path().join(TOKEN_FILE).is_file(), "{what}");
+                continue;
+            }
+            let sandbox = prepared.sandbox.as_ref().expect(&what);
+            assert_eq!(sandbox.site, site, "{what}");
+            // The harness is given the proxy on its own loopback and no
+            // token, and no file with one is in its home.
+            let url = named(ENV_GATEWAY_URL).expect(&what);
+            assert_eq!(url.value, "http://127.0.0.1:18900/mcp", "{what}");
+            assert_eq!(prepared.env.len(), 1, "{what}: {:?}", prepared.env);
+            assert!(!home.path().join(TOKEN_FILE).exists(), "{what}");
+            assert!(!prepared.files.iter().any(|f| f == TOKEN_FILE), "{what}");
+            assert_eq!(prepared.shared_token(), None, "{what}");
+            // The proxy reaches the gateway as the sandbox does, and the
+            // server it fetches from is allowed through the sandbox's
+            // network policy.
+            assert_eq!(prepared.gateway_url, UPSTREAM, "{what}");
+            assert_eq!(
+                prepared.reach,
+                ["https://by.example", "http://127.0.0.1:18900/mcp"],
+                "{what}"
+            );
+            assert_eq!(sandbox.config.upstream, UPSTREAM, "{what}");
+            assert_eq!(sandbox.config.manifest, manifest.digest(), "{what}");
+            let settings = home.path().join(credential::PROXY_CONFIG_FILE);
+            match site {
+                CredentialSite::Guest => {
+                    // A secret for the guest's process, never in the home.
+                    let (secret, kept) = sandbox.secret.as_ref().expect(&what);
+                    assert_eq!(sandbox.config.identity, IdentityKind::Secret, "{what}");
+                    assert!(!settings.exists(), "{what}");
+                    assert_eq!((kept.manifest.as_str(), kept.turn), (manifest.digest().as_str(), 1));
+                    assert!(!format!("{kept:?}").contains(secret.as_str()), "{what}");
+                    let mut files = String::new();
+                    for entry in walk(home.path()) {
+                        // Binary files cannot hold a text secret.
+                        if let Ok(text) = std::fs::read_to_string(entry) {
+                            files.push_str(&text);
+                        }
+                    }
+                    assert!(
+                        !files.contains(secret.as_str()),
+                        "{what}: the home holds it"
+                    );
+                }
+                CredentialSite::Sidecar => {
+                    // A sidecar proves the turn as its workload, from
+                    // settings in the home that hold no secret.
+                    assert!(sandbox.secret.is_none(), "{what}");
+                    assert_eq!(
+                        sandbox.config.identity,
+                        IdentityKind::Workload {
+                            audience: "https://by.example".into()
+                        },
+                        "{what}"
+                    );
+                    let text = std::fs::read_to_string(&settings).expect(&what);
+                    assert_eq!(credential::parse_config(&text).unwrap(), sandbox.config);
+                    assert!(
+                        prepared
+                            .files
+                            .iter()
+                            .any(|f| f == credential::PROXY_CONFIG_FILE),
+                        "{what}"
+                    );
+                }
+                CredentialSite::Host => unreachable!("held on the host above"),
+            }
+        }
+    }
+}
+
+/// Every file under `dir`, links not followed.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        match std::fs::symlink_metadata(&path).unwrap().file_type() {
+            t if t.is_dir() => found.extend(walk(&path)),
+            t if t.is_file() => found.push(path),
+            _ => {}
+        }
+    }
+    found
 }

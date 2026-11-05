@@ -36,6 +36,12 @@ pub(super) fn connectors(
         effects_proxy: None,
         effects_listen: None,
         effects_sandbox_host: None,
+        sandbox_server: None,
+        sandbox_audience: None,
+        sandbox_identities: Vec::new(),
+        sandbox_jwks_url: None,
+        sandbox_proxy_image: None,
+        sandbox_by: None,
     }
 }
 

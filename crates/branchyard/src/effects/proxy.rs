@@ -297,7 +297,7 @@ fn accept(listener: TcpListener, state: Arc<ProxyState>, in_flight: Arc<(Mutex<u
 }
 
 /// Hop-by-hop headers, and those the proxy sets itself.
-fn dropped(name: &str) -> bool {
+pub(crate) fn dropped(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     matches!(
         name.as_str(),
@@ -344,7 +344,7 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-fn respond(out: &mut TcpStream, status: u16, headers: &[(String, String)], body: &[u8]) {
+pub(crate) fn respond(out: &mut TcpStream, status: u16, headers: &[(String, String)], body: &[u8]) {
     let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();

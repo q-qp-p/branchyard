@@ -217,6 +217,7 @@ pub(crate) fn new_record(store: &crate::state::Store, new: NewBranch<'_>) -> Res
         landing: None,
         skills: new.skills,
         manifest: None,
+        credential: None,
     })
 }
 

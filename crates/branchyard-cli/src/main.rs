@@ -47,6 +47,7 @@ mod cloud_setup;
 mod commands;
 mod config_cmd;
 mod console;
+mod credential_proxy_cmd;
 mod defaults;
 mod detach;
 mod doctor_cmd;
@@ -149,6 +150,12 @@ fn main() -> ExitCode {
     match &command {
         Command::Hook { harness, event } => return hook_cmd::hook(harness.as_deref(), event),
         Command::Statusline { harness } => return hook_cmd::statusline(harness.as_deref()),
+        Command::CredentialProxy { .. } => {
+            return errors::finish(
+                credential_proxy_cmd::run(&command),
+                errors::wants_json(&argv),
+            );
+        }
         Command::Mcp {
             action: Some(args::McpCommand::Manager { url, .. }),
             ..
@@ -856,6 +863,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         | Command::Sync(_)
         | Command::Connectors { .. }
         | Command::Hook { .. }
+        | Command::CredentialProxy { .. }
         | Command::Statusline { .. } => unreachable!("handled before choosing a target"),
     }
 }

@@ -1978,6 +1978,48 @@
             "string",
             "null"
           ]
+        },
+        "sandbox_server": {
+          "description": "This server's URL as a sandbox reaches it. With it, a sandbox that can\nrun a credential proxy (a GKE Agent Sandbox's sidecar, a Microsandbox\nguest's process) fetches the turn's five-minute gateway token from\n`POST /v1/turns/token` and the harness holds none\n(`docs/connectors.md#the-credential-proxy-in-the-sandbox`). Without\nit every turn keeps the host's proxy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_audience": {
+          "description": "The audience of the Google ID token a sandbox presents. Default: the\nissuer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_identities": {
+          "description": "The Google service accounts a sandbox may fetch tokens as. Each is\nverified from a Google-signed ID token the sandbox gets from the\nmetadata server. Empty: only a turn's own secret (a Microsandbox\nguest, hermetic tests) fetches.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileSandboxIdentity"
+          }
+        },
+        "sandbox_jwks_url": {
+          "description": "Where Google's signing keys are read from. Default Google's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_proxy_image": {
+          "description": "The image of a GKE Agent Sandbox's credential proxy sidecar\n(`repository@sha256:digest`, with `by` on its `PATH`). Default: the\nsandbox's own image.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_by": {
+          "description": "The `by` a Microsandbox guest runs, on its `PATH` or an absolute\nguest path. Default `by`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
@@ -2008,6 +2050,27 @@
       "additionalProperties": false,
       "required": [
         "kms_key_versions"
+      ]
+    },
+    "FileSandboxIdentity": {
+      "description": "`connectors.sandbox_identities`: one Google service account.",
+      "type": "object",
+      "properties": {
+        "service_account": {
+          "description": "The account's email, `NAME@PROJECT.iam.gserviceaccount.com`.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The one tenant it serves. Default: any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "service_account"
       ]
     },
     "FileTools": {

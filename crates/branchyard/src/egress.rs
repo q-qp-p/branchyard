@@ -257,6 +257,9 @@ pub(crate) struct TurnHosts {
     /// The connector gateway, from the URL the harness is given (the turn's
     /// effect-ledger proxy, or the gateway), when the turn has a grant.
     pub connector_gateway: Option<HostRule>,
+    /// What a sandbox's own credential proxy must reach: the server it
+    /// fetches tokens from, and the proxy itself on loopback.
+    pub connector_reach: Vec<HostRule>,
     /// The model gateway of a turn that is on it. The provider's own hosts
     /// need not be allowed then: the gateway calls them.
     pub model_gateway: Option<HostRule>,
@@ -272,6 +275,7 @@ impl TurnHosts {
     pub(crate) fn rules(self) -> Vec<HostRule> {
         self.connector_gateway
             .into_iter()
+            .chain(self.connector_reach)
             .chain(self.model_gateway)
             .chain(self.model_endpoints)
             .chain(self.mirrors)
@@ -637,6 +641,7 @@ mod tests {
     fn all_hosts() -> TurnHosts {
         TurnHosts {
             connector_gateway: gateway_rule("http://10.0.0.5:8931/mcp"),
+            connector_reach: Vec::new(),
             model_gateway: gateway_rule("http://127.0.0.1:9100"),
             model_endpoints: vec![rule("api.anthropic.com:443")],
             mirrors: vec![rule("pypi.org"), rule("*.pythonhosted.org")],

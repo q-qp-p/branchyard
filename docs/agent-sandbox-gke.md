@@ -216,6 +216,31 @@ Not done: no pod ran under these policies on a live cluster. Whether Dataplane V
 
 Each pod mounts an `emptyDir` volume `tools` at `/tools` (64 MiB). The pod copies its home in, so the engine copies the tree it wrote under the home (`.branchyard/tools`) into this volume once the home is in, and sets `BRANCHYARD_TOOLS=/tools` for the harness. The volume is not read-only: the root filesystem is, and the engine writes through the same container; what a harness writes there is dropped with the pod. Container sandboxes get the same, as a private volume. Not done: a turn on a live cluster reading the tree there.
 
+## Credential proxy sidecar
+
+A harness in a pod should hold no gateway token. With the server's `connectors.sandbox_server` set ([server](server.md#turn-tokens-for-sandboxes)), each pod the provider builds gets a second container, `credential-proxy`, beside `runtime` ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)):
+
+| Where | Value |
+|---|---|
+| Container `credential-proxy` | image `connectors.sandbox_proxy_image` (`repository@sha256:digest`, with `by` on its `PATH`) or the allocation's own; command `by credential-proxy --config /branchyard/home/.branchyard/credential-proxy.json --wait`; `GCE_METADATA_HOST=169.254.169.254`; 50m CPU and 64Mi requested, 250m and 128Mi at most; no privilege escalation, read-only root, all capabilities dropped |
+| Mount | the `home` volume at `/branchyard/home`, `readOnly: true`: the sidecar finds its settings once the engine has copied the home in, and can change nothing in it |
+| Network policy | the metadata server `169.254.169.254/32` is no longer excepted from the pod's egress (the node-local `169.254.169.252/32` still is) |
+| Harness environment | `ANVIL_GATEWAY_URL=http://127.0.0.1:18900/mcp`; no token file, no token |
+
+The sidecar and the harness share the pod's network, so the harness reaches the proxy on loopback; the settings file (`.branchyard/credential-proxy.json`) holds the server URL, the gateway URL, the branch, turn and manifest digest, and no secret. The sidecar proves the turn as the pod's Workload Identity: it asks the metadata server for an ID token for the server's audience and the server checks the service account against `connectors.sandbox_identities`.
+
+Refused up front: `credential_proxy` with `network = "deny"` (the sidecar must reach the server and the metadata server) and an unpinned `sandbox_proxy_image`. The provider's live-pod checks accept exactly these two containers and apply the same limits to both; a third fails verification.
+
+What the cluster needs, none of which the setup helper does:
+
+1. Workload Identity on the cluster and the namespace's `default` Kubernetes service account bound to a Google service account (`roles/iam.workloadIdentityUser`), listed in the server's `sandbox_identities` (with its `tenant` if it serves one).
+2. A route from the pod to the server and to Cloud Storage if the store is mounted: `network = "unrestricted"`.
+3. An image with `by` that a pod can pull.
+
+A pod's containers share one network policy: with the sidecar the metadata server is open to the harness as well. The token it could ask for there is the turn's own, bound to its manifest, refused when the turn ends, and lives five minutes; it cannot read a token from a file, because none exists.
+
+Not done: no pod ran this on a live cluster. Workload Identity ID tokens from the pod's metadata server, the NetworkPolicy exception, the sidecar in the gVisor and Kata runtimes, and the sidecar's image digest check on the live pod are unverified; hermetic tests (a fake `kubectl`) cover the pod spec, the policy and the verification only.
+
 ## Evidence and limits
 
 Hermetic verification on 2 November 2026 uses fake `gcloud`, `kubectl` and `curl`

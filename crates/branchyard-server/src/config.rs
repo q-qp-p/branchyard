@@ -1128,6 +1128,93 @@ pub struct ConnectorsConfig {
     /// How a sandboxed harness reaches this host: its ledger proxy and its
     /// delegation endpoint.
     pub effects_sandbox_host: Option<String>,
+    /// This server's URL as a sandbox reaches it. When set, a sandbox whose
+    /// provider can run a credential proxy fetches the turn's gateway token
+    /// from here (`POST /v1/turns/token`) instead of the host holding it.
+    pub sandbox_server: Option<String>,
+    /// The audience of the Google ID token a sandbox presents. Default: the
+    /// issuer.
+    pub sandbox_audience: Option<String>,
+    /// The Google service accounts a sandbox may fetch tokens as.
+    pub sandbox_identities: Vec<SandboxIdentity>,
+    /// Where Google's signing keys are read from. Default Google's.
+    pub sandbox_jwks_url: Option<String>,
+    /// The image of a GKE Agent Sandbox's credential proxy sidecar.
+    pub sandbox_proxy_image: Option<String>,
+    /// The `by` a Microsandbox guest runs. Default `by`.
+    pub sandbox_by: Option<String>,
+}
+
+impl ConnectorsConfig {
+    /// The sandbox credential settings, or what is wrong with them.
+    fn check_sandbox(&self) -> Result<(), String> {
+        for (key, url) in [
+            ("sandbox_server", &self.sandbox_server),
+            ("sandbox_jwks_url", &self.sandbox_jwks_url),
+        ] {
+            if let Some(url) = url {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(format!(
+                        "connectors.{key}: {url:?} is not an http:// or https:// URL"
+                    ));
+                }
+            }
+        }
+        if let Some(image) = &self.sandbox_proxy_image {
+            if self.sandbox_server.is_none() {
+                return Err(
+                    "connectors.sandbox_proxy_image needs connectors.sandbox_server".into(),
+                );
+            }
+            if !image.contains("@sha256:") || image.contains(char::is_whitespace) {
+                return Err(format!(
+                    "connectors.sandbox_proxy_image: {image:?} is not repository@sha256:<digest>"
+                ));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for identity in &self.sandbox_identities {
+            let account = &identity.service_account;
+            let plain = account.len() <= 256
+                && account
+                    .split_once('@')
+                    .is_some_and(|(name, domain)| !name.is_empty() && domain.contains('.'))
+                && !account.chars().any(|c| c.is_whitespace() || c.is_control());
+            if !plain {
+                return Err(format!(
+                    "connectors.sandbox_identities: {account:?} is not a service account email"
+                ));
+            }
+            if identity.tenant.as_deref().is_some_and(str::is_empty) {
+                return Err(format!(
+                    "connectors.sandbox_identities: the tenant of {account} is empty"
+                ));
+            }
+            if !seen.insert(account.to_ascii_lowercase()) {
+                return Err(format!(
+                    "connectors.sandbox_identities names {account} twice"
+                ));
+            }
+        }
+        if !self.sandbox_identities.is_empty() && self.sandbox_server.is_none() {
+            return Err(
+                "connectors.sandbox_identities needs connectors.sandbox_server, the URL a \
+                 sandbox fetches from"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// One Google service account a sandbox may fetch gateway tokens as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxIdentity {
+    /// Its email, `NAME@PROJECT.iam.gserviceaccount.com` (a GKE Workload
+    /// Identity service account, or a GCE VM's).
+    pub service_account: String,
+    /// The one tenant it serves; any tenant when unset.
+    pub tenant: Option<String>,
 }
 
 /// `connectors.signing`: the Cloud KMS keys that sign gateway tokens.
@@ -1333,6 +1420,7 @@ impl Config {
             if c.anvil.is_empty() {
                 return Err("connectors.anvil names no command".into());
             }
+            c.check_sandbox()?;
             if let Some(kms) = &c.signing_kms {
                 if c.signing_key.is_some() {
                     return Err(
@@ -2183,6 +2271,42 @@ pub(crate) struct FileConnectors {
     /// its effects reach the ledger only from the audit log, and a
     /// sandboxed harness gets no delegation tools.
     effects_sandbox_host: Option<String>,
+    /// This server's URL as a sandbox reaches it. With it, a sandbox that can
+    /// run a credential proxy (a GKE Agent Sandbox's sidecar, a Microsandbox
+    /// guest's process) fetches the turn's five-minute gateway token from
+    /// `POST /v1/turns/token` and the harness holds none
+    /// (`docs/connectors.md#the-credential-proxy-in-the-sandbox`). Without
+    /// it every turn keeps the host's proxy.
+    sandbox_server: Option<String>,
+    /// The audience of the Google ID token a sandbox presents. Default: the
+    /// issuer.
+    sandbox_audience: Option<String>,
+    /// The Google service accounts a sandbox may fetch tokens as. Each is
+    /// verified from a Google-signed ID token the sandbox gets from the
+    /// metadata server. Empty: only a turn's own secret (a Microsandbox
+    /// guest, hermetic tests) fetches.
+    #[serde(default)]
+    sandbox_identities: Vec<FileSandboxIdentity>,
+    /// Where Google's signing keys are read from. Default Google's.
+    sandbox_jwks_url: Option<String>,
+    /// The image of a GKE Agent Sandbox's credential proxy sidecar
+    /// (`repository@sha256:digest`, with `by` on its `PATH`). Default: the
+    /// sandbox's own image.
+    sandbox_proxy_image: Option<String>,
+    /// The `by` a Microsandbox guest runs, on its `PATH` or an absolute
+    /// guest path. Default `by`.
+    sandbox_by: Option<String>,
+}
+
+/// `connectors.sandbox_identities`: one Google service account.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileSandboxIdentity {
+    /// The account's email, `NAME@PROJECT.iam.gserviceaccount.com`.
+    service_account: String,
+    /// The one tenant it serves. Default: any.
+    tenant: Option<String>,
 }
 
 /// `connectors.signing`: sign gateway tokens with Cloud KMS
@@ -2745,6 +2869,19 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             effects_proxy: c.effects_proxy,
             effects_listen: c.effects_listen,
             effects_sandbox_host: c.effects_sandbox_host,
+            sandbox_server: c.sandbox_server,
+            sandbox_audience: c.sandbox_audience,
+            sandbox_identities: c
+                .sandbox_identities
+                .into_iter()
+                .map(|i| SandboxIdentity {
+                    service_account: i.service_account,
+                    tenant: i.tenant,
+                })
+                .collect(),
+            sandbox_jwks_url: c.sandbox_jwks_url,
+            sandbox_proxy_image: c.sandbox_proxy_image,
+            sandbox_by: c.sandbox_by,
         }),
         tools: file.tools.map(|t| ToolsConfig {
             store: resolve(t.store),
@@ -2868,6 +3005,12 @@ mod tests {
             effects_proxy: None,
             effects_listen: None,
             effects_sandbox_host: None,
+            sandbox_server: None,
+            sandbox_audience: None,
+            sandbox_identities: Vec::new(),
+            sandbox_jwks_url: None,
+            sandbox_proxy_image: None,
+            sandbox_by: None,
         });
         c
     }
@@ -2883,6 +3026,117 @@ mod tests {
 
     fn connectors_mut(c: &mut Config) -> &mut ConnectorsConfig {
         c.connectors.as_mut().unwrap()
+    }
+
+    #[test]
+    fn sandbox_credential_settings_are_read_and_checked() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().join("server.json");
+        let write = |connectors: &str| {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {{"app": "repo"}},
+                    "connectors": {{"gateway": "http://127.0.0.1:8931/mcp", "bundles": "b",
+                                    {connectors}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(
+            r#""sandbox_server": "https://by.example", "sandbox_audience": "https://aud.example",
+               "sandbox_jwks_url": "https://keys.example/certs", "sandbox_by": "/opt/by",
+               "sandbox_proxy_image": "gcr.io/p/by@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+               "sandbox_identities": [
+                 {"service_account": "sb@p.iam.gserviceaccount.com"},
+                 {"service_account": "gx@p.iam.gserviceaccount.com", "tenant": "globex"}]"#,
+        );
+        let connectors = load_file(&path).unwrap().connectors.unwrap();
+        assert_eq!(
+            connectors.sandbox_server.as_deref(),
+            Some("https://by.example")
+        );
+        assert_eq!(connectors.sandbox_by.as_deref(), Some("/opt/by"));
+        assert_eq!(
+            connectors.sandbox_identities,
+            [
+                SandboxIdentity {
+                    service_account: "sb@p.iam.gserviceaccount.com".into(),
+                    tenant: None
+                },
+                SandboxIdentity {
+                    service_account: "gx@p.iam.gserviceaccount.com".into(),
+                    tenant: Some("globex".into())
+                },
+            ]
+        );
+        // The audience a sandbox's identity token is for is the configured
+        // one, else the issuer.
+        let mut c = with_connectors("http://127.0.0.1:8931/mcp");
+        let configured = c.connectors.as_mut().unwrap();
+        configured.sandbox_server = Some("https://by.example".into());
+        configured.sandbox_identities = connectors.sandbox_identities.clone();
+        assert!(connectors_pass(&c));
+        let configured = c.connectors.clone().unwrap();
+        assert_eq!(
+            crate::connectors::sandbox_audience(&c, &configured),
+            "https://by.example"
+        );
+        c.connectors.as_mut().unwrap().sandbox_audience = Some("https://aud.example".into());
+        let configured = c.connectors.clone().unwrap();
+        assert_eq!(
+            crate::connectors::sandbox_audience(&c, &configured),
+            "https://aud.example"
+        );
+        // And it reaches the gateway the engine uses.
+        let gateway = crate::connectors::gateway_for(&c, "app").unwrap();
+        assert_eq!(
+            gateway.credential_proxy.server.as_deref(),
+            Some("https://by.example")
+        );
+        assert_eq!(gateway.credential_proxy.audience, "https://aud.example");
+
+        // What is refused, by name.
+        let refused = |change: &dyn Fn(&mut ConnectorsConfig)| {
+            let mut bad = with_connectors("http://127.0.0.1:8931/mcp");
+            let connectors = bad.connectors.as_mut().unwrap();
+            connectors.sandbox_server = Some("https://by.example".into());
+            change(connectors);
+            bad.validate().unwrap_err()
+        };
+        let account = |email: &str| SandboxIdentity {
+            service_account: email.into(),
+            tenant: None,
+        };
+        assert!(
+            refused(&|c| c.sandbox_server = Some("by.example".into())).contains("sandbox_server")
+        );
+        assert!(
+            refused(&|c| c.sandbox_identities = vec![account("not-an-email")])
+                .contains("not a service account email")
+        );
+        assert!(refused(
+            &|c| c.sandbox_identities = vec![account("a@p.example"), account("A@p.example")]
+        )
+        .contains("twice"));
+        assert!(refused(&|c| c.sandbox_identities = vec![SandboxIdentity {
+            service_account: "a@p.example".into(),
+            tenant: Some(String::new()),
+        }])
+        .contains("tenant"));
+        assert!(
+            refused(&|c| c.sandbox_proxy_image = Some("gcr.io/p/by:latest".into()))
+                .contains("sha256")
+        );
+        let mut orphan = with_connectors("http://127.0.0.1:8931/mcp");
+        orphan.connectors.as_mut().unwrap().sandbox_identities = vec![account("a@p.example")];
+        assert!(orphan
+            .validate()
+            .unwrap_err()
+            .contains("needs connectors.sandbox_server"));
     }
 
     #[test]
