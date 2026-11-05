@@ -29523,6 +29523,16 @@
             }
           ],
           "description": "Other harnesses this session may hand parts of its work to. Needs\nthe server's `allow_delegation`; refused for a reviewer."
+        },
+        "tools": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ToolChoice"
+          },
+          "description": "Everything this session chooses, as one list: connectors (with\n`mode`, default `read`), built-in skills and helper harnesses. The\nserver expands it into `connectors`, `skills` and `helpers`, so a\nkind left out of the list is not chosen (no `skill` entries stage no\nbuilt-in skills). Refused beside any of those three fields. Each\nentry must be within the caller's effective tool policy\n(`tool_not_allowed`)."
         }
       },
       "required": [
@@ -30811,6 +30821,63 @@
             }
           },
           "description": "The harnesses a session may delegate to, one level deep."
+        },
+        "ToolChoice": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id."
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A connector's mode: `read` (the default) or `write`. Refused on a\nskill or helper."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "One tool a session or a workspace default chooses."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
         }
       }
     },
@@ -31447,6 +31514,14 @@
         "helpers": {
           "$ref": "#/$defs/HelperOptions",
           "description": "Delegation."
+        },
+        "defaults": {
+          "$ref": "#/$defs/ToolDefaults",
+          "description": "The tools sessions in this workspace start with.",
+          "default": {
+            "tools": [],
+            "revision": 0
+          }
         }
       },
       "required": [
@@ -31696,6 +31771,1486 @@
             "max_children"
           ],
           "description": "Whether a session may delegate, and how widely."
+        },
+        "ToolDefaults": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ToolChoice"
+              },
+              "description": "The default tools.",
+              "default": []
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Compare-and-set revision; zero until the first save.",
+              "default": 0
+            }
+          },
+          "description": "A workspace's tools that sessions start with."
+        },
+        "ToolChoice": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id."
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A connector's mode: `read` (the default) or `write`. Refused on a\nskill or helper."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "One tool a session or a workspace default chooses."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        }
+      }
+    },
+    "workspace.ToolKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "connector",
+          "description": "An upstream API through the connector gateway."
+        },
+        {
+          "type": "string",
+          "const": "skill",
+          "description": "A built-in skill."
+        },
+        {
+          "type": "string",
+          "const": "helper",
+          "description": "A harness a session may delegate to."
+        }
+      ],
+      "description": "What a tool is.",
+      "title": "ToolKind",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ToolChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolKind",
+          "description": "What kind of tool."
+        },
+        "id": {
+          "type": "string",
+          "description": "The connector id, built-in skill id or harness id."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GrantMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A connector's mode: `read` (the default) or `write`. Refused on a\nskill or helper."
+        },
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "description": "One tool a session or a workspace default chooses.",
+      "title": "ToolChoice",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.ToolPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectors": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/GrantEntry"
+          },
+          "description": "The widest connector grant, in the grant's form. An empty list\nallows no connector."
+        },
+        "skills": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The built-in skill ids allowed. An empty list allows none."
+        },
+        "helpers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "The harness ids a session may delegate to. An empty list allows\nnone."
+        },
+        "delegation": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether sessions may delegate at all. `false` turns helpers off."
+        }
+      },
+      "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record.",
+      "title": "ToolPolicy",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "GrantEntry": {
+          "description": "One entry of a connector grant (docs/connectors.md#grants): the flag string CONNECTOR[@ACCOUNT][:read|write|write+confirm[:OP,...]] such as \"github:write:issues.*\", or the object {\"connector\", \"operations\", \"mode\", \"confirm\", \"account\"}; always written back as the object.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}(@[A-Za-z0-9_.-]{1,64})?(:(read|write|write\\+confirm)(:[^:]+)?)?$"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string",
+                  "description": "The bundle id the gateway serves, such as `github`."
+                },
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "*"
+                  ],
+                  "description": "Globs over AIR operation ids; `[\"*\"]`, the default, is every approved operation."
+                },
+                "mode": {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                "confirm": {
+                  "$ref": "#/$defs/Confirm"
+                },
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "One of the person's connected accounts for the connector; unset is their default."
+                }
+              },
+              "required": [
+                "connector"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "Confirm": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "description": "Whether a mutation that needs confirmation may run under an entry."
+        }
+      }
+    },
+    "workspace.PolicyRecord": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`."
+        },
+        "policy": {
+          "$ref": "#/$defs/ToolPolicy",
+          "description": "The policy."
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Compare-and-set revision, from one."
+        }
+      },
+      "required": [
+        "key",
+        "policy",
+        "revision"
+      ],
+      "description": "One stored policy.",
+      "title": "PolicyRecord",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "connectors": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/GrantEntry"
+              },
+              "description": "The widest connector grant, in the grant's form. An empty list\nallows no connector."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skill ids allowed. An empty list allows none."
+            },
+            "helpers": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The harness ids a session may delegate to. An empty list allows\nnone."
+            },
+            "delegation": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            }
+          },
+          "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
+        },
+        "GrantEntry": {
+          "description": "One entry of a connector grant (docs/connectors.md#grants): the flag string CONNECTOR[@ACCOUNT][:read|write|write+confirm[:OP,...]] such as \"github:write:issues.*\", or the object {\"connector\", \"operations\", \"mode\", \"confirm\", \"account\"}; always written back as the object.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}(@[A-Za-z0-9_.-]{1,64})?(:(read|write|write\\+confirm)(:[^:]+)?)?$"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string",
+                  "description": "The bundle id the gateway serves, such as `github`."
+                },
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "*"
+                  ],
+                  "description": "Globs over AIR operation ids; `[\"*\"]`, the default, is every approved operation."
+                },
+                "mode": {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                "confirm": {
+                  "$ref": "#/$defs/Confirm"
+                },
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "One of the person's connected accounts for the connector; unset is their default."
+                }
+              },
+              "required": [
+                "connector"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "Confirm": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "description": "Whether a mutation that needs confirmation may run under an entry."
+        }
+      }
+    },
+    "workspace.PolicyList": {
+      "type": "object",
+      "properties": {
+        "policies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PolicyRecord"
+          },
+          "description": "Every stored policy of the caller's tenant, by key."
+        }
+      },
+      "required": [
+        "policies"
+      ],
+      "description": "`GET /v1/admin/policies`: the caller's tenant's policies.",
+      "title": "PolicyList",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "PolicyRecord": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "`tenant:<tenant>`, `group:<tenant>:<group>` or\n`principal:<tenant>:<subject>`."
+            },
+            "policy": {
+              "$ref": "#/$defs/ToolPolicy",
+              "description": "The policy."
+            },
+            "revision": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Compare-and-set revision, from one."
+            }
+          },
+          "required": [
+            "key",
+            "policy",
+            "revision"
+          ],
+          "description": "One stored policy."
+        },
+        "ToolPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "connectors": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/GrantEntry"
+              },
+              "description": "The widest connector grant, in the grant's form. An empty list\nallows no connector."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skill ids allowed. An empty list allows none."
+            },
+            "helpers": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The harness ids a session may delegate to. An empty list allows\nnone."
+            },
+            "delegation": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            }
+          },
+          "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
+        },
+        "GrantEntry": {
+          "description": "One entry of a connector grant (docs/connectors.md#grants): the flag string CONNECTOR[@ACCOUNT][:read|write|write+confirm[:OP,...]] such as \"github:write:issues.*\", or the object {\"connector\", \"operations\", \"mode\", \"confirm\", \"account\"}; always written back as the object.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}(@[A-Za-z0-9_.-]{1,64})?(:(read|write|write\\+confirm)(:[^:]+)?)?$"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string",
+                  "description": "The bundle id the gateway serves, such as `github`."
+                },
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "*"
+                  ],
+                  "description": "Globs over AIR operation ids; `[\"*\"]`, the default, is every approved operation."
+                },
+                "mode": {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                "confirm": {
+                  "$ref": "#/$defs/Confirm"
+                },
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "One of the person's connected accounts for the connector; unset is their default."
+                }
+              },
+              "required": [
+                "connector"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "Confirm": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "description": "Whether a mutation that needs confirmation may run under an entry."
+        }
+      }
+    },
+    "workspace.PutPolicyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/ToolPolicy",
+          "description": "The new policy, replacing the old."
+        },
+        "revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The revision being replaced; unset to create."
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "description": "`PUT /v1/admin/policies/{key}`.",
+      "title": "PutPolicyRequest",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "connectors": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/GrantEntry"
+              },
+              "description": "The widest connector grant, in the grant's form. An empty list\nallows no connector."
+            },
+            "skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skill ids allowed. An empty list allows none."
+            },
+            "helpers": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The harness ids a session may delegate to. An empty list allows\nnone."
+            },
+            "delegation": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether sessions may delegate at all. `false` turns helpers off."
+            }
+          },
+          "description": "What an administrator allows, at one level (tenant, group or person).\nAn unset field says nothing: no limit from this record."
+        },
+        "GrantEntry": {
+          "description": "One entry of a connector grant (docs/connectors.md#grants): the flag string CONNECTOR[@ACCOUNT][:read|write|write+confirm[:OP,...]] such as \"github:write:issues.*\", or the object {\"connector\", \"operations\", \"mode\", \"confirm\", \"account\"}; always written back as the object.",
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}(@[A-Za-z0-9_.-]{1,64})?(:(read|write|write\\+confirm)(:[^:]+)?)?$"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "connector": {
+                  "type": "string",
+                  "description": "The bundle id the gateway serves, such as `github`."
+                },
+                "operations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "*"
+                  ],
+                  "description": "Globs over AIR operation ids; `[\"*\"]`, the default, is every approved operation."
+                },
+                "mode": {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                "confirm": {
+                  "$ref": "#/$defs/Confirm"
+                },
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "One of the person's connected accounts for the connector; unset is their default."
+                }
+              },
+              "required": [
+                "connector"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "Confirm": {
+          "type": "string",
+          "enum": [
+            "deny",
+            "allow"
+          ],
+          "description": "Whether a mutation that needs confirmation may run under an entry."
+        }
+      }
+    },
+    "workspace.ToolDefaults": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolChoice"
+          },
+          "description": "The default tools.",
+          "default": []
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Compare-and-set revision; zero until the first save.",
+          "default": 0
+        }
+      },
+      "description": "A workspace's tools that sessions start with.",
+      "title": "ToolDefaults",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolChoice": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id."
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A connector's mode: `read` (the default) or `write`. Refused on a\nskill or helper."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "One tool a session or a workspace default chooses."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.PutToolDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolChoice"
+          },
+          "description": "The default tools, replacing the old."
+        },
+        "revision": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The revision being replaced; zero (or unset) before the first save.",
+          "default": 0
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "description": "`PUT /v1/workspaces/{workspace}/tools`.",
+      "title": "PutToolDefaults",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolChoice": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The connector id, built-in skill id or harness id."
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A connector's mode: `read` (the default) or `write`. Refused on a\nskill or helper."
+            },
+            "account": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A connector's connected account; unset is the person's default.\nRefused on a skill or helper."
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "description": "One tool a session or a workspace default chooses."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        }
+      }
+    },
+    "workspace.ToolState": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "not_allowed",
+          "description": "Policy does not allow it for this person."
+        },
+        {
+          "type": "string",
+          "const": "not_ready",
+          "description": "Allowed, but not set up for this person."
+        },
+        {
+          "type": "string",
+          "const": "ready",
+          "description": "Allowed and set up."
+        },
+        {
+          "type": "string",
+          "const": "default",
+          "description": "Ready, and sessions here start with it."
+        }
+      ],
+      "description": "How far a tool is along the path to use: the first state it fails, else\n`ready`, or `default` when the workspace starts sessions with it.",
+      "title": "ToolState",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ToolAction": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "ask_admin",
+          "description": "Ask an administrator to allow it."
+        },
+        {
+          "type": "string",
+          "const": "connect",
+          "description": "Connect an account."
+        },
+        {
+          "type": "string",
+          "const": "install",
+          "description": "Install it."
+        },
+        {
+          "type": "string",
+          "const": "sign_in",
+          "description": "Sign in."
+        }
+      ],
+      "description": "What a person can do about a tool that is not ready.",
+      "title": "ToolAction",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "workspace.ToolEntry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ToolKind",
+          "description": "What kind of tool."
+        },
+        "id": {
+          "type": "string",
+          "description": "The id a `tools` entry takes."
+        },
+        "name": {
+          "type": "string",
+          "description": "A display name."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What it does."
+        },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A connector's icon symbol in the console's sprite."
+        },
+        "topic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A skill's topic heading."
+        },
+        "state": {
+          "$ref": "#/$defs/ToolState",
+          "description": "Where it stands."
+        },
+        "allowed": {
+          "type": "boolean",
+          "description": "Policy allows it for this caller."
+        },
+        "ready": {
+          "type": "boolean",
+          "description": "It is set up for this caller (never true when not allowed)."
+        },
+        "default": {
+          "type": "boolean",
+          "description": "Sessions in the workspace start with it."
+        },
+        "max_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GrantMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A connector's most the caller may do: `read` or `write`.",
+          "default": null
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConnectedAccount"
+          },
+          "description": "A connector's accounts for the caller."
+        },
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolAction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the caller can do next, if anything.",
+          "default": null
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One plain sentence when it is not ready.",
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "name",
+        "state",
+        "allowed",
+        "ready",
+        "default"
+      ],
+      "description": "One tool, as the caller sees it.",
+      "title": "ToolEntry",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        },
+        "ToolState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "not_allowed",
+              "description": "Policy does not allow it for this person."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Allowed, but not set up for this person."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Allowed and set up."
+            },
+            {
+              "type": "string",
+              "const": "default",
+              "description": "Ready, and sessions here start with it."
+            }
+          ],
+          "description": "How far a tool is along the path to use: the first state it fails, else\n`ready`, or `default` when the workspace starts sessions with it."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "ConnectedAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "string",
+              "description": "The account name; `default` unless the caller named one."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "`connected` or `needs_reconnect`."
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`oauth` or `static` (an API key)."
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When the gateway last changed it, as it reports the time."
+            }
+          },
+          "required": [
+            "account",
+            "state"
+          ],
+          "description": "One connected account, without any secret."
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        },
+        "ToolAction": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ask_admin",
+              "description": "Ask an administrator to allow it."
+            },
+            {
+              "type": "string",
+              "const": "connect",
+              "description": "Connect an account."
+            },
+            {
+              "type": "string",
+              "const": "install",
+              "description": "Install it."
+            },
+            {
+              "type": "string",
+              "const": "sign_in",
+              "description": "Sign in."
+            }
+          ],
+          "description": "What a person can do about a tool that is not ready."
+        }
+      }
+    },
+    "workspace.ToolCatalogue": {
+      "type": "object",
+      "properties": {
+        "gateway": {
+          "$ref": "#/$defs/GatewayState",
+          "description": "Whether the connector gateway answers."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One plain sentence when it does not."
+        },
+        "max_children": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The most children a session's helpers may have at once."
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolEntry"
+          },
+          "description": "Connectors, then skills, then helpers."
+        }
+      },
+      "required": [
+        "gateway",
+        "max_children",
+        "tools"
+      ],
+      "description": "`GET /v1/tools`: every tool of the three kinds.",
+      "title": "ToolCatalogue",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "GatewayState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "It answered."
+            },
+            {
+              "type": "string",
+              "const": "not_configured",
+              "description": "This server has no `[connectors]` gateway."
+            },
+            {
+              "type": "string",
+              "const": "unreachable",
+              "description": "It is configured and did not answer."
+            }
+          ],
+          "description": "Whether the connector gateway answers."
+        },
+        "ToolEntry": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ToolKind",
+              "description": "What kind of tool."
+            },
+            "id": {
+              "type": "string",
+              "description": "The id a `tools` entry takes."
+            },
+            "name": {
+              "type": "string",
+              "description": "A display name."
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What it does."
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A connector's icon symbol in the console's sprite."
+            },
+            "topic": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A skill's topic heading."
+            },
+            "state": {
+              "$ref": "#/$defs/ToolState",
+              "description": "Where it stands."
+            },
+            "allowed": {
+              "type": "boolean",
+              "description": "Policy allows it for this caller."
+            },
+            "ready": {
+              "type": "boolean",
+              "description": "It is set up for this caller (never true when not allowed)."
+            },
+            "default": {
+              "type": "boolean",
+              "description": "Sessions in the workspace start with it."
+            },
+            "max_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GrantMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A connector's most the caller may do: `read` or `write`.",
+              "default": null
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ConnectedAccount"
+              },
+              "description": "A connector's accounts for the caller."
+            },
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the caller can do next, if anything.",
+              "default": null
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "One plain sentence when it is not ready.",
+              "default": null
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "name",
+            "state",
+            "allowed",
+            "ready",
+            "default"
+          ],
+          "description": "One tool, as the caller sees it."
+        },
+        "ToolKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connector",
+              "description": "An upstream API through the connector gateway."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A built-in skill."
+            },
+            {
+              "type": "string",
+              "const": "helper",
+              "description": "A harness a session may delegate to."
+            }
+          ],
+          "description": "What a tool is."
+        },
+        "ToolState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "not_allowed",
+              "description": "Policy does not allow it for this person."
+            },
+            {
+              "type": "string",
+              "const": "not_ready",
+              "description": "Allowed, but not set up for this person."
+            },
+            {
+              "type": "string",
+              "const": "ready",
+              "description": "Allowed and set up."
+            },
+            {
+              "type": "string",
+              "const": "default",
+              "description": "Ready, and sessions here start with it."
+            }
+          ],
+          "description": "How far a tool is along the path to use: the first state it fails, else\n`ready`, or `default` when the workspace starts sessions with it."
+        },
+        "GrantMode": {
+          "type": "string",
+          "enum": [
+            "read",
+            "write"
+          ],
+          "description": "What an entry lets the harness do: read, or read and write."
+        },
+        "ConnectedAccount": {
+          "type": "object",
+          "properties": {
+            "account": {
+              "type": "string",
+              "description": "The account name; `default` unless the caller named one."
+            },
+            "state": {
+              "$ref": "#/$defs/ConnectionState",
+              "description": "`connected` or `needs_reconnect`."
+            },
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`oauth` or `static` (an API key)."
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When the gateway last changed it, as it reports the time."
+            }
+          },
+          "required": [
+            "account",
+            "state"
+          ],
+          "description": "One connected account, without any secret."
+        },
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "connected",
+              "description": "An account is connected and usable."
+            },
+            {
+              "type": "string",
+              "const": "needs_reconnect",
+              "description": "The provider refused a refresh; connect again."
+            },
+            {
+              "type": "string",
+              "const": "not_connected",
+              "description": "No account is connected."
+            },
+            {
+              "type": "string",
+              "const": "blocked",
+              "description": "The caller's ceiling allows nothing of it."
+            },
+            {
+              "type": "string",
+              "const": "unknown",
+              "description": "The gateway's status is not known."
+            }
+          ],
+          "description": "Where the caller stands with one connector."
+        },
+        "ToolAction": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "ask_admin",
+              "description": "Ask an administrator to allow it."
+            },
+            {
+              "type": "string",
+              "const": "connect",
+              "description": "Connect an account."
+            },
+            {
+              "type": "string",
+              "const": "install",
+              "description": "Install it."
+            },
+            {
+              "type": "string",
+              "const": "sign_in",
+              "description": "Sign in."
+            }
+          ],
+          "description": "What a person can do about a tool that is not ready."
         }
       }
     },

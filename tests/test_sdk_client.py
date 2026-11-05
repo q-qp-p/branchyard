@@ -996,6 +996,30 @@ class WorkspaceRequests(unittest.TestCase):
             query=None,
         )
 
+    def test_tools_policies_and_defaults_reach_their_routes(self):
+        c = self.client
+        self.assert_request(lambda: c.tools("w1"), {"tools": []}, "GET", "/v1/tools", query={"workspace": "w1"})
+        self.assert_request(
+            lambda: c.workspace_tool_defaults("w1", [{"kind": "skill", "id": "docx"}], revision=2),
+            {"tools": [], "revision": 3},
+            "PUT",
+            "/v1/workspaces/w1/tools",
+            {"tools": [{"kind": "skill", "id": "docx"}], "revision": 2},
+        )
+        self.assert_request(
+            lambda: c.put_policy("group:acme:eng", {"delegation": False}, revision=4),
+            {"key": "group:acme:eng", "revision": 5},
+            "PUT",
+            "/v1/admin/policies/group%3Aacme%3Aeng",
+            {"policy": {"delegation": False}, "revision": 4},
+        )
+        self.assert_request(
+            lambda: c.delete_policy("tenant:acme", revision=1),
+            {"deleted": "tenant:acme"},
+            "DELETE",
+            "/v1/admin/policies/tenant%3Aacme?revision=1",
+        )
+
     def test_connections_and_session_tools_reach_their_routes(self):
         c = self.client
         listed = self.assert_request(
@@ -3623,7 +3647,16 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/connections": [lambda c, _r: c.connections()],
     "/v1/connections/{connector}/connect": [lambda c, _r: c.connect("github")],
     "/v1/connections/{connector}/key": [lambda c, _r: c.connect_key("linear", "key")],
-    "/v1/workspaces/{workspace}/tools": [lambda c, _r: c.session_tools("w1")],
+    "/v1/workspaces/{workspace}/tools": [
+        lambda c, _r: c.session_tools("w1"),
+        lambda c, _r: c.workspace_tool_defaults("w1", [{"kind": "skill", "id": "docx"}]),
+    ],
+    "/v1/tools": [lambda c, _r: c.tools(), lambda c, _r: c.tools("w1")],
+    "/v1/admin/policies": [lambda c, _r: c.policies()],
+    "/v1/admin/policies/{key}": [
+        lambda c, _r: c.put_policy("tenant:default", {"skills": ["docx"]}),
+        lambda c, _r: c.delete_policy("tenant:default", revision=1),
+    ],
     "/v1/workspaces/{workspace}/actions/{action}": [lambda c, _r: c.workspace_action("w1", "archive", revision=1)],
     "/v1/workspaces/{workspace}/finalize": [lambda c, _r: c.finalize_workspace("w1", ["a1"], revision=1)],
     "/v1/workspaces/{workspace}/members": [lambda c, _r: c.workspace_members("w1")],

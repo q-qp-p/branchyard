@@ -34,7 +34,7 @@ use branchyard_client::workspace_api::{
 };
 use serde_json::{json, Value};
 
-use super::auth;
+use super::{auth, policy, tools};
 use crate::api::{App, Caller, Shared};
 use crate::error::ApiError;
 
@@ -52,7 +52,10 @@ pub(crate) fn router() -> Router<Shared> {
         .route("/v1/connections", get(list))
         .route("/v1/connections/{connector}/connect", post(connect))
         .route("/v1/connections/{connector}/key", post(key))
-        .route("/v1/workspaces/{workspace}/tools", get(tools))
+        .route(
+            "/v1/workspaces/{workspace}/tools",
+            get(session_tools).put(tools::put_defaults),
+        )
 }
 
 async fn list(
@@ -60,16 +63,22 @@ async fn list(
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<ConnectionList>, ApiError> {
     super::scope(&caller, "read")?;
-    crate::api::blocking(move || Ok(Json(connections(&app, &caller)))).await?
+    crate::api::blocking(move || {
+        let resolved = policy::resolved(&app, &caller)?;
+        Ok(Json(connections(&app, &caller, &resolved)))
+    })
+    .await?
 }
 
-async fn tools(
+async fn session_tools(
     State(app): State<Shared>,
     Path(wid): Path<String>,
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<SessionTools>, ApiError> {
     auth::authorize_workspace(&app, &caller, &wid, "read")?;
     crate::api::blocking(move || {
+        let resolved = policy::resolved(&app, &caller)?;
+        let effective = resolved.effective();
         let skills = branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
         let topic = |id: &str| {
             skills
@@ -81,6 +90,7 @@ async fn tools(
         let options = skills
             .skills
             .iter()
+            .filter(|s| tools::skill_usable(&skills, &effective, &s.id))
             .map(|s| SkillOption {
                 id: s.id.clone(),
                 description: s.description.clone(),
@@ -88,15 +98,16 @@ async fn tools(
                 requires: s.requires.clone(),
             })
             .collect();
+        let helpers = tools::helper_state(&resolved);
         Ok(Json(SessionTools {
-            connections: connections(&app, &caller),
+            connections: connections(&app, &caller, &resolved),
             skills: options,
             helpers: HelperOptions {
-                allowed: app.config.allow_delegation,
-                reason: (!app.config.allow_delegation)
-                    .then(|| "Helpers are turned off on this server.".to_owned()),
+                allowed: helpers.is_none(),
+                reason: helpers,
                 max_children: MAX_HELPERS,
             },
+            defaults: tools::defaults(&app, &caller, &wid)?,
         }))
     })
     .await?
@@ -180,15 +191,21 @@ fn usable(
     if !served.iter().any(|id| id == connector) {
         return Err(not_served(connector));
     }
-    if max_mode(app, caller, connector).is_none() {
+    let resolved = policy::resolved(app, caller)?;
+    if policy::connector_mode(resolved.server_ceiling.as_deref(), connector).is_none() {
         return Err(blocked(connector));
     }
+    policy::check_connectors(&resolved.store, &[GrantEntry::read(connector)])?;
     Ok(gateway)
 }
 
 /// The caller's connections, never failing: a gateway that does not
 /// answer is reported in the list.
-pub(super) fn connections(app: &App, caller: &Caller) -> ConnectionList {
+pub(super) fn connections(
+    app: &App,
+    caller: &Caller,
+    resolved: &policy::Resolved,
+) -> ConnectionList {
     let Some(gateway) = Client::for_caller(app, caller) else {
         return ConnectionList {
             gateway: GatewayState::NotConfigured,
@@ -219,9 +236,10 @@ pub(super) fn connections(app: &App, caller: &Caller) -> ConnectionList {
             )
         }
     };
+    let effective = resolved.effective();
     let connections = served
         .iter()
-        .map(|id| connection(app, caller, id, &accounts, state))
+        .map(|id| connection(id, &accounts, state, effective.connectors.as_deref()))
         .collect();
     ConnectionList {
         gateway: state,
@@ -241,11 +259,10 @@ fn unreachable_list() -> ConnectionList {
 }
 
 fn connection(
-    app: &App,
-    caller: &Caller,
     id: &str,
     accounts: &Value,
     gateway: GatewayState,
+    ceiling: Option<&[GrantEntry]>,
 ) -> Connection {
     let listed = branchyard_controls::catalog::connectors()
         .iter()
@@ -268,7 +285,7 @@ fn connection(
             })
         })
         .collect();
-    let max_mode = max_mode(app, caller, id);
+    let max_mode = policy::connector_mode(ceiling, id);
     let state = if max_mode.is_none() {
         ConnectionState::Blocked
     } else if gateway != GatewayState::Ready {
@@ -343,8 +360,9 @@ fn served(app: &App) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// The caller's ceiling, if the operator set one.
-fn ceiling(app: &App, caller: &Caller) -> Option<Vec<GrantEntry>> {
+/// The caller's ceiling in the server's configuration, if the operator set
+/// one.
+pub(super) fn server_ceiling(app: &App, caller: &Caller) -> Option<Vec<GrantEntry>> {
     let ceilings = app.config.actor_policy(&app.config.ceilings);
     ceilings
         .get(&caller.0.connector_subject())
@@ -352,26 +370,16 @@ fn ceiling(app: &App, caller: &Caller) -> Option<Vec<GrantEntry>> {
         .and_then(|c| c.connectors.clone())
 }
 
-/// The most the caller's ceiling allows of `connector`: `write`, `read`,
-/// or nothing.
-pub(super) fn max_mode(app: &App, caller: &Caller, connector: &str) -> Option<GrantMode> {
-    let Some(ceiling) = ceiling(app, caller) else {
-        return Some(GrantMode::Write);
-    };
-    let asked = GrantEntry {
-        mode: GrantMode::Write,
-        ..GrantEntry::read(connector)
-    };
-    branchyard::connectors::intersect(std::slice::from_ref(&asked), &ceiling)
-        .iter()
-        .map(|e| e.mode)
-        .max()
-}
-
 /// Refuse a session's connectors that this caller cannot use now, naming
-/// the first and what to do about it: not served, over the ceiling, or not
-/// connected. A gateway that does not answer refuses too.
-pub(super) fn admit(app: &App, caller: &Caller, grant: &[GrantEntry]) -> Result<(), ApiError> {
+/// the first and what to do about it: not served, over the server's
+/// ceiling or the caller's policy, or not connected. A gateway that does not
+/// answer refuses too.
+pub(super) fn admit(
+    app: &App,
+    caller: &Caller,
+    resolved: &policy::Resolved,
+    grant: &[GrantEntry],
+) -> Result<(), ApiError> {
     if grant.is_empty() {
         return Ok(());
     }
@@ -381,7 +389,7 @@ pub(super) fn admit(app: &App, caller: &Caller, grant: &[GrantEntry]) -> Result<
         if !served.contains(&entry.connector) {
             return Err(not_served(&entry.connector));
         }
-        match max_mode(app, caller, &entry.connector) {
+        match policy::connector_mode(resolved.server_ceiling.as_deref(), &entry.connector) {
             None => return Err(blocked(&entry.connector)),
             Some(GrantMode::Read) if entry.mode == GrantMode::Write => {
                 return Err(ApiError::new(
@@ -397,6 +405,7 @@ pub(super) fn admit(app: &App, caller: &Caller, grant: &[GrantEntry]) -> Result<
             Some(_) => {}
         }
     }
+    policy::check_connectors(&resolved.store, grant)?;
     let status = gateway.call("GET", "/connect/status", None)?;
     for entry in grant {
         let account = entry.account.as_deref().unwrap_or("default");
@@ -424,7 +433,7 @@ pub(super) fn admit(app: &App, caller: &Caller, grant: &[GrantEntry]) -> Result<
     Ok(())
 }
 
-fn display(connector: &str) -> String {
+pub(super) fn display(connector: &str) -> String {
     branchyard_controls::catalog::connectors()
         .iter()
         .find(|c| c.id == connector)

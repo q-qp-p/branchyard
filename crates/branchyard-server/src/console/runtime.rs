@@ -7,6 +7,7 @@ use crate::ops::NewOperation;
 use crate::store::{Idempotency, Lane};
 use axum::http::{HeaderMap, StatusCode};
 use branchyard_client::api::{Operation, OperationKind, SendRequest, TaskRequest};
+use branchyard_client::workspace_api::ToolKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -567,7 +568,11 @@ fn start_once(
         }
         provision.effort = Some(effort);
     }
-    let chosen = chosen_tools(app, caller, &body, access, &mut provision)?;
+    // `tools` is the whole choice in one list; the rest of the start reads
+    // the three fields it expands into.
+    let mut expanded = body.clone();
+    super::tools::expand(&mut expanded)?;
+    let chosen = chosen_tools(app, caller, &expanded, access, &mut provision)?;
     let policy = match body.get("policy").filter(|value| !value.is_null()) {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| ApiError::bad_request(error.to_string()))?,
@@ -671,6 +676,7 @@ fn chosen_tools(
     provision: &mut branchyard::Provisioning,
 ) -> Result<Chosen, ApiError> {
     let field = |key: &str| body.get(key).filter(|value| !value.is_null()).cloned();
+    let resolved = super::policy::resolved(app, caller)?;
     let connectors: Vec<branchyard::connectors::GrantEntry> = field("connectors")
         .map(serde_json::from_value)
         .transpose()
@@ -695,17 +701,44 @@ fn chosen_tools(
                 "A reviewer reads only, so its connectors are read only.",
             ));
         }
-        super::connections::admit(app, caller, &connectors)?;
+        super::connections::admit(app, caller, &resolved, &connectors)?;
         provision.connectors = connectors;
     }
+    // Connectors given through `provision` meet the same policy.
+    super::policy::check_connectors(&resolved.store, &provision.connectors)?;
     let skills: Option<Vec<String>> = field("skills")
         .map(serde_json::from_value)
         .transpose()
         .map_err(|error| ApiError::bad_request(format!("invalid skills: {error}")))?;
-    if let Some(skills) = &skills {
-        branchyard_provision::built_in::check(skills)
-            .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why))?;
-        provision.skills = Some(skills.clone());
+    if let Some(skills) = skills {
+        provision.skills = Some(skills);
+    }
+    match &provision.skills {
+        Some(asked) => {
+            branchyard_provision::built_in::check(asked).map_err(|why| {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why)
+            })?;
+            if let Some(id) = asked
+                .iter()
+                .find(|id| !super::policy::skill_allowed(&resolved.store, id))
+            {
+                return Err(super::policy::not_allowed(ToolKind::Skill, id, None));
+            }
+        }
+        // No choice means every built-in skill the policy allows.
+        None if resolved.store.skills.is_some() => {
+            let catalogue =
+                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+            provision.skills = Some(
+                catalogue
+                    .skills
+                    .iter()
+                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
+                    .map(|s| s.id.clone())
+                    .collect(),
+            );
+        }
+        None => {}
     }
     let helpers: Option<branchyard_client::workspace_api::Helpers> = field("helpers")
         .map(serde_json::from_value)
@@ -730,16 +763,16 @@ fn chosen_tools(
                     super::connections::MAX_HELPERS
                 )));
             }
-            if let Some(unknown) = helpers.harnesses.iter().find(|h| {
-                branchyard_harness::profiles::by_id(h).is_none()
-                    && branchyard_harness::profiles::default_for(h).is_none()
-            }) {
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "harness_unavailable",
-                    format!("{unknown} is not a harness this server knows"),
-                )
-                .detail(json!({ "harness": unknown })));
+            super::tools::known_harnesses(&helpers.harnesses)?;
+            if !super::policy::delegation_allowed(&resolved.store) {
+                return Err(super::policy::not_allowed(ToolKind::Helper, "*", None));
+            }
+            if let Some(id) = helpers
+                .harnesses
+                .iter()
+                .find(|h| !super::policy::helper_allowed(&resolved.store, h))
+            {
+                return Err(super::policy::not_allowed(ToolKind::Helper, id, None));
             }
             Some(branchyard::Envelope {
                 max_depth: 1,
@@ -755,7 +788,7 @@ fn chosen_tools(
             "mode": e.mode,
             "account": e.account,
         })).collect::<Vec<_>>(),
-        "skills": skills,
+        "skills": provision.skills,
         "helpers": helpers,
     });
     Ok(Chosen { delegation, view })

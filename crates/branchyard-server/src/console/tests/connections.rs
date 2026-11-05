@@ -11,7 +11,7 @@ use branchyard::connectors::GrantEntry;
 use branchyard_testkit::{MockHttp, Response};
 
 /// A connectors section pointing at `gateway`, serving `bundles`.
-fn connectors(
+pub(super) fn connectors(
     root: &std::path::Path,
     gateway: &str,
     bundles: &[&str],
@@ -40,7 +40,7 @@ fn connectors(
 
 /// A gateway where the person has Atlassian connected and nothing else;
 /// GitHub signs in with OAuth and Linear takes a key.
-fn gateway() -> MockHttp {
+pub(super) fn gateway() -> MockHttp {
     MockHttp::start(|request| {
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         match (request.method.as_str(), request.path.as_str()) {

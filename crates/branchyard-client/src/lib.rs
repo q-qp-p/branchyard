@@ -523,6 +523,14 @@ impl Client {
         self.decode(response)
     }
 
+    /// `PUT` a JSON body. A revision in the body guards it, so it is not
+    /// retried: a second try after a lost answer would meet its own write.
+    fn put<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T, Error> {
+        let body = serde_json::to_vec(body).map_err(|e| Error::Config(e.to_string()))?;
+        let response = self.call("PUT", path, Some(&body), &[], self.timeout)?;
+        self.decode(response)
+    }
+
     /// `POST` with an idempotency key, retried with the same key when the
     /// connection fails, so the server runs it at most once.
     fn post<T: DeserializeOwned>(

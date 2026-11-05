@@ -566,6 +566,49 @@ pub(super) fn discover(
     })
 }
 
+/// A harness a session could delegate to, as the tool catalogue lists it.
+pub(super) struct HelperHarness {
+    /// The ID `helpers.harnesses` takes.
+    pub id: String,
+    /// Some environment offered to the tenant can run it, as this server
+    /// sees it.
+    pub ready: bool,
+    /// Why not, when it cannot be run.
+    pub reason: Option<String>,
+    /// An operator can fix that by installing the harness.
+    pub install: bool,
+}
+
+/// The harnesses the environments offered to `tenant` provide, each once,
+/// ready when any environment can run it. Reads what discovery reads and
+/// contacts nothing.
+pub(super) fn helper_harnesses(app: &App, tenant: &str) -> Result<Vec<HelperHarness>, ApiError> {
+    let installed = installed(app)?;
+    let mut found: Vec<HelperHarness> = Vec::new();
+    for (preset, _) in offered(app, tenant)? {
+        let place = Place::of(&preset.provider);
+        for harness in &preset.harnesses {
+            let (state, _, why, action) = place
+                .executable(&installed, &harness.harness)
+                .reason
+                .facts();
+            let ready = state != ReadyState::NotReady;
+            let entry = HelperHarness {
+                id: harness.harness.clone(),
+                ready,
+                reason: (!ready).then(|| why.to_owned()),
+                install: matches!(action, Some(Action::InstallHarness)),
+            };
+            match found.iter_mut().find(|h| h.id == entry.id) {
+                Some(seen) if !seen.ready && entry.ready => *seen = entry,
+                Some(_) => {}
+                None => found.push(entry),
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// What a session start's `preset` resolved to. The session row keeps it
 /// (`_preset`), so every continuation and every error view uses what the
 /// session started with, whatever the configuration says later.

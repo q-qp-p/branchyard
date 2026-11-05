@@ -44,6 +44,8 @@ pub(crate) fn router() -> Router<Shared> {
         .merge(super::previews::router())
         .merge(super::collaboration::router())
         .merge(super::connections::router())
+        .merge(super::policy::router())
+        .merge(super::tools::router())
 }
 pub(super) fn project_access(
     app: &App,
@@ -488,7 +490,7 @@ async fn action(
     super::runtime::lifecycle(&app, &caller, &wid, &headers, &action, body).map(Json)
 }
 
-fn query(raw: Option<String>) -> BTreeMap<String, String> {
+pub(super) fn query(raw: Option<String>) -> BTreeMap<String, String> {
     raw.as_deref()
         .unwrap_or("")
         .split('&')

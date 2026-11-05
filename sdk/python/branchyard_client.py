@@ -1494,6 +1494,10 @@ class Client:
         """`POST path` with `body` as JSON and `key` as the idempotency key; the parsed JSON. See `request`."""
         return self.request("POST", path, body if body is not None else {}, key=key, query=query or None)
 
+    def put(self, path: str, body: Any = None) -> Any:
+        """`PUT path` with `body` as JSON; the parsed JSON. See `request`."""
+        return self.request("PUT", path, body if body is not None else {})
+
     def delete(self, path: str) -> Any:
         """`DELETE path`; the parsed JSON, empty for most."""
         return self.request("DELETE", path)
@@ -1619,20 +1623,26 @@ class Client:
         skills: Optional[Sequence[str]] = None,
         helpers: Optional[Sequence[str]] = None,
         max_helpers: Optional[int] = None,
+        tools: Optional[Sequence[JSON]] = None,
         key: Optional[str] = None,
     ) -> Operation:
         """Queue an isolated writer or reviewer using the existing harness.
         `connectors` (grants, beside a preset), `skills` (built-in skill IDs;
         unset stages all) and `helpers` (harness IDs it may delegate to, at
         most `max_helpers` at once) are the choices `session_tools()` offers;
-        the server checks each again."""
-        tools: JSON = {}
+        the server checks each again. `tools` is the same choice as one list
+        of `{"kind", "id", "mode"?}` from `tools_catalogue()`; the server
+        refuses it beside the three fields above, and a kind it leaves out is
+        not chosen."""
+        chosen: JSON = {}
         if connectors is not None:
-            tools["connectors"] = grants_json(connectors)
+            chosen["connectors"] = grants_json(connectors)
         if skills is not None:
-            tools["skills"] = list(skills)
+            chosen["skills"] = list(skills)
         if helpers is not None:
-            tools["helpers"] = _drop_none({"harnesses": list(helpers), "max_children": max_helpers})
+            chosen["helpers"] = _drop_none({"harnesses": list(helpers), "max_children": max_helpers})
+        if tools is not None:
+            chosen["tools"] = [dict(t) for t in tools]
         return self._start_workspace_session(
             workspace,
             name,
@@ -1650,9 +1660,39 @@ class Client:
             sources=sources,
             artifacts=artifacts,
             candidate=candidate,
-            tools=tools,
+            tools=chosen,
             key=key,
         )
+
+    def tools(self, workspace: Optional[str] = None) -> Record:
+        """`GET /v1/tools`: every connector, skill and helper as the caller
+        sees it: `state` (`not_allowed`, `not_ready`, `ready`, `default`),
+        `allowed`, `ready`, `default`, `max_mode`, `action` and `reason`.
+        With `workspace`, `default` reflects that workspace's defaults."""
+        return Record(self.get("/v1/tools", workspace=workspace) if workspace else self.get("/v1/tools"))
+
+    def workspace_tool_defaults(self, workspace: str, tools: Sequence[JSON], *, revision: int = 0) -> Record:
+        """`PUT /v1/workspaces/{workspace}/tools`: the tools its sessions start
+        with, as `{"kind", "id", "mode"?}`. `revision` is the saved one (0
+        before the first save); an owner or editor may."""
+        body = {"tools": [dict(t) for t in tools], "revision": revision}
+        return Record(self.put(self._workspace(workspace, "/tools"), body))
+
+    def policies(self) -> Record:
+        """`GET /v1/admin/policies`: the tenant's tool policies (`admin` scope)."""
+        return Record(self.get("/v1/admin/policies"))
+
+    def put_policy(self, key: str, policy: JSON, *, revision: Optional[int] = None) -> Record:
+        """`PUT /v1/admin/policies/{key}` (`tenant:T`, `group:T:G` or
+        `principal:T:SUBJECT`): `policy` holds optional `connectors`, `skills`,
+        `helpers` and `delegation`. `revision` is the stored one; unset creates."""
+        body = _drop_none({"policy": policy, "revision": revision})
+        return Record(self.put(f"/v1/admin/policies/{_q(key)}", body))
+
+    def delete_policy(self, key: str, *, revision: Optional[int] = None) -> Record:
+        """`DELETE /v1/admin/policies/{key}`, guarded by `revision` when given."""
+        suffix = f"?revision={revision}" if revision is not None else ""
+        return Record(self.delete(f"/v1/admin/policies/{_q(key)}{suffix}"))
 
     def connections(self) -> Record:
         """`GET /v1/connections`: `gateway` (`ready`, `not_configured` or

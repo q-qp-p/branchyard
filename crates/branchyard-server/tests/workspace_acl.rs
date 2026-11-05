@@ -396,6 +396,7 @@ fn typed_client_reads_durable_console_metadata_and_native_conversations() {
                 connectors: Vec::new(),
                 skills: None,
                 helpers: None,
+                tools: None,
             },
             "typed-session",
         )

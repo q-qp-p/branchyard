@@ -1,0 +1,804 @@
+//! Who may use which tools: the policy model.
+//!
+//! An administrator stores a [`ToolPolicy`] at three levels, in the console
+//! store (`Collection::Policies`, so SQLite and PostgreSQL alike):
+//!
+//! - `tenant:<tenant>`: the tenant's;
+//! - `group:<tenant>:<group>`: one group's, for callers whose principal
+//!   lists the group;
+//! - `principal:<tenant>:<subject>`: one person's, by the stable subject
+//!   ([`crate::config::Principal::connector_subject`]).
+//!
+//! A caller's policy is the tenant's policy narrowed by what their groups
+//! and their own record allow together ([`resolve`]), then by the server's
+//! own limits ([`with_server`]: the `ceilings` configuration and
+//! `allow_delegation`). Every step only narrows. See `docs/server.md`,
+//! "Tool policy".
+//!
+//! - `GET /v1/admin/policies`: the tenant's stored policies.
+//! - `PUT /v1/admin/policies/{key}`: create or replace one, guarded by its
+//!   revision.
+//! - `DELETE /v1/admin/policies/{key}`: remove one.
+//!
+//! All three need the `admin` scope and act on the caller's own tenant,
+//! which no request names.
+
+use axum::extract::{Path, RawQuery, State};
+use axum::http::StatusCode;
+use axum::routing::get;
+use axum::{Extension, Json, Router};
+use branchyard::connectors::{intersect, GrantEntry, GrantMode};
+use branchyard_client::workspace_api::{
+    PolicyList, PolicyRecord, PutPolicyRequest, ToolKind, ToolPolicy,
+};
+use serde_json::{json, Value};
+
+use crate::api::{App, Caller, Shared};
+use crate::console_store::Collection;
+use crate::error::ApiError;
+
+/// Policies one tenant may store, so a list stays a page.
+const MAX_POLICIES: usize = 1000;
+/// Entries one list in a policy may hold.
+const MAX_ENTRIES: usize = 256;
+
+pub(crate) fn router() -> Router<Shared> {
+    Router::new().route("/v1/admin/policies", get(list)).route(
+        "/v1/admin/policies/{key}",
+        get(read).put(put).delete(remove),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// The pure model.
+// ---------------------------------------------------------------------------
+
+/// The items of `a` that `b` also holds, in `a`'s order.
+fn common(a: &[String], b: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in a {
+        if b.contains(item) && !out.contains(item) {
+            out.push(item.clone());
+        }
+    }
+    out
+}
+
+/// Every item of `lists`, once, in first-seen order.
+fn pooled<T: Clone + PartialEq>(lists: &[&Vec<T>]) -> Vec<T> {
+    let mut out: Vec<T> = Vec::new();
+    for item in lists.iter().flat_map(|list| list.iter()) {
+        if !out.contains(item) {
+            out.push(item.clone());
+        }
+    }
+    out
+}
+
+/// What both policies allow. A field one of them leaves unset (no limit) is
+/// the other's.
+pub(crate) fn intersect_policy(a: &ToolPolicy, b: &ToolPolicy) -> ToolPolicy {
+    ToolPolicy {
+        connectors: match (&a.connectors, &b.connectors) {
+            (Some(a), Some(b)) => Some(intersect(a, b)),
+            (a, b) => a.clone().or_else(|| b.clone()),
+        },
+        skills: match (&a.skills, &b.skills) {
+            (Some(a), Some(b)) => Some(common(a, b)),
+            (a, b) => a.clone().or_else(|| b.clone()),
+        },
+        helpers: match (&a.helpers, &b.helpers) {
+            (Some(a), Some(b)) => Some(common(a, b)),
+            (a, b) => a.clone().or_else(|| b.clone()),
+        },
+        delegation: match (a.delegation, b.delegation) {
+            (Some(a), Some(b)) => Some(a && b),
+            (a, b) => a.or(b),
+        },
+    }
+}
+
+/// What any of `policies` allows, for the policies that speak to a field:
+/// the pooled lists, and delegation when any allows it. A policy that
+/// leaves a field unset adds nothing to that field, so naming only
+/// `delegation` on a group never lifts a limit another group sets on
+/// skills. `None` when there are no policies.
+pub(crate) fn union_policy(policies: &[&ToolPolicy]) -> Option<ToolPolicy> {
+    if policies.is_empty() {
+        return None;
+    }
+    fn pool<T: Clone + PartialEq>(lists: Vec<&Vec<T>>) -> Option<Vec<T>> {
+        (!lists.is_empty()).then(|| pooled(&lists))
+    }
+    let delegations: Vec<bool> = policies.iter().filter_map(|p| p.delegation).collect();
+    Some(ToolPolicy {
+        connectors: pool(
+            policies
+                .iter()
+                .filter_map(|p| p.connectors.as_ref())
+                .collect(),
+        ),
+        skills: pool(policies.iter().filter_map(|p| p.skills.as_ref()).collect()),
+        helpers: pool(policies.iter().filter_map(|p| p.helpers.as_ref()).collect()),
+        delegation: match delegations.is_empty() {
+            true => None,
+            false => Some(delegations.contains(&true)),
+        },
+    })
+}
+
+/// A caller's stored policy: the tenant's, narrowed by the union of their
+/// groups' and their own, when any of those exist.
+pub(crate) fn resolve(
+    tenant: Option<&ToolPolicy>,
+    groups: &[&ToolPolicy],
+    principal: Option<&ToolPolicy>,
+) -> ToolPolicy {
+    let below: Vec<&ToolPolicy> = groups.iter().copied().chain(principal).collect();
+    let mut policy = match (tenant, union_policy(&below)) {
+        (Some(tenant), Some(below)) => intersect_policy(tenant, &below),
+        (Some(only), None) => only.clone(),
+        (None, Some(only)) => only,
+        (None, None) => ToolPolicy::default(),
+    };
+    policy.connectors = policy.connectors.map(simplified);
+    policy
+}
+
+/// `entries` without any that another entry for the same connector,
+/// account and operations already covers with at least its mode and
+/// confirmation.
+fn simplified(entries: Vec<GrantEntry>) -> Vec<GrantEntry> {
+    let covered = |a: &GrantEntry, b: &GrantEntry| {
+        a.connector == b.connector
+            && a.account == b.account
+            && a.operations == b.operations
+            && a.mode <= b.mode
+            && a.confirm <= b.confirm
+    };
+    let mut kept: Vec<GrantEntry> = Vec::new();
+    for entry in entries {
+        if kept.iter().any(|k| covered(&entry, k)) {
+            continue;
+        }
+        kept.retain(|k| !covered(k, &entry));
+        kept.push(entry);
+    }
+    kept
+}
+
+/// `policy` within the server's own limits: the `ceilings` configuration's
+/// connectors for this caller, and whether the server delegates at all.
+pub(crate) fn with_server(
+    policy: &ToolPolicy,
+    ceiling: Option<&[GrantEntry]>,
+    allow_delegation: bool,
+) -> ToolPolicy {
+    let server = ToolPolicy {
+        connectors: ceiling.map(<[GrantEntry]>::to_vec),
+        delegation: (!allow_delegation).then_some(false),
+        ..ToolPolicy::default()
+    };
+    intersect_policy(policy, &server)
+}
+
+/// Whether sessions may delegate under `policy`.
+pub(crate) fn delegation_allowed(policy: &ToolPolicy) -> bool {
+    policy.delegation != Some(false)
+}
+
+/// Whether `policy` lists `id` among its skills (unset lists every one).
+pub(crate) fn skill_allowed(policy: &ToolPolicy, id: &str) -> bool {
+    policy
+        .skills
+        .as_ref()
+        .is_none_or(|allowed| allowed.iter().any(|s| s == id))
+}
+
+/// Whether `policy` allows delegating to `harness`: delegation is on and
+/// the harness is listed (unset lists every one).
+pub(crate) fn helper_allowed(policy: &ToolPolicy, harness: &str) -> bool {
+    delegation_allowed(policy)
+        && policy
+            .helpers
+            .as_ref()
+            .is_none_or(|allowed| allowed.iter().any(|h| h == harness))
+}
+
+/// The most `ceiling` allows of `connector`: `write`, `read`, or nothing.
+/// No ceiling allows `write`.
+pub(crate) fn connector_mode(ceiling: Option<&[GrantEntry]>, connector: &str) -> Option<GrantMode> {
+    let Some(ceiling) = ceiling else {
+        return Some(GrantMode::Write);
+    };
+    let asked = GrantEntry {
+        mode: GrantMode::Write,
+        ..GrantEntry::read(connector)
+    };
+    intersect(std::slice::from_ref(&asked), ceiling)
+        .iter()
+        .map(|e| e.mode)
+        .max()
+}
+
+// ---------------------------------------------------------------------------
+// Keys and the store.
+// ---------------------------------------------------------------------------
+
+/// The tenant policy's key.
+pub(crate) fn tenant_key(tenant: &str) -> String {
+    format!("tenant:{tenant}")
+}
+
+/// A group policy's key.
+pub(crate) fn group_key(tenant: &str, group: &str) -> String {
+    format!("group:{tenant}:{group}")
+}
+
+/// A person's policy key.
+pub(crate) fn principal_key(tenant: &str, subject: &str) -> String {
+    format!("principal:{tenant}:{subject}")
+}
+
+fn invalid_key(why: &str) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, "policy_key_invalid", why)
+}
+
+/// Refuse a key that is not one of the three forms for `tenant`.
+pub(crate) fn check_key(tenant: &str, key: &str) -> Result<(), ApiError> {
+    if key == tenant_key(tenant) {
+        return Ok(());
+    }
+    if let Some(group) = key.strip_prefix(&group_key(tenant, "")) {
+        return crate::config::check_group_name(group).map_err(|why| invalid_key(&why));
+    }
+    if let Some(subject) = key.strip_prefix(&principal_key(tenant, "")) {
+        if !subject.is_empty() && subject.len() <= 512 && !subject.chars().any(char::is_control) {
+            return Ok(());
+        }
+        return Err(invalid_key(
+            "the subject is 1 to 512 characters with no control characters",
+        ));
+    }
+    Err(invalid_key(
+        "a policy key is tenant:<tenant>, group:<tenant>:<group> or principal:<tenant>:<subject>, \
+         naming your own tenant",
+    ))
+}
+
+fn stored(app: &App, caller: &Caller, key: &str) -> Result<Option<(ToolPolicy, u64)>, ApiError> {
+    let Some(record) = app.registry.console_get(Collection::Policies, key)? else {
+        return Ok(None);
+    };
+    if record.tenant != caller.tenant() {
+        return Err(ApiError::internal(format!(
+            "policy {key} belongs to another tenant"
+        )));
+    }
+    let policy = serde_json::from_value(record.body)
+        .map_err(|e| ApiError::internal(format!("stored policy {key} is unreadable: {e}")))?;
+    Ok(Some((policy, record.revision)))
+}
+
+/// What applies to one caller, kept in its parts so a refusal can say which
+/// limit it met.
+pub(crate) struct Resolved {
+    /// The stored policy for the caller: tenant, narrowed by groups and
+    /// person.
+    pub store: ToolPolicy,
+    /// The `ceilings` configuration's connector ceiling for this caller.
+    pub server_ceiling: Option<Vec<GrantEntry>>,
+    /// Whether the server delegates at all.
+    pub allow_delegation: bool,
+}
+
+impl Resolved {
+    /// Everything together: what the caller may actually choose.
+    pub fn effective(&self) -> ToolPolicy {
+        with_server(
+            &self.store,
+            self.server_ceiling.as_deref(),
+            self.allow_delegation,
+        )
+    }
+}
+
+/// The caller's stored policy and the server's limits. Reads the store, so
+/// run it where blocking is fine.
+pub(crate) fn resolved(app: &App, caller: &Caller) -> Result<Resolved, ApiError> {
+    let tenant = caller.tenant();
+    let tenant_policy = stored(app, caller, &tenant_key(tenant))?.map(|(p, _)| p);
+    let mut groups = Vec::new();
+    for group in &caller.0.groups {
+        if let Some((policy, _)) = stored(app, caller, &group_key(tenant, group))? {
+            groups.push(policy);
+        }
+    }
+    let person = stored(
+        app,
+        caller,
+        &principal_key(tenant, &caller.0.connector_subject()),
+    )?
+    .map(|(p, _)| p);
+    let group_refs: Vec<&ToolPolicy> = groups.iter().collect();
+    Ok(Resolved {
+        store: resolve(tenant_policy.as_ref(), &group_refs, person.as_ref()),
+        server_ceiling: super::connections::server_ceiling(app, caller),
+        allow_delegation: app.config.allow_delegation,
+    })
+}
+
+/// Refuse `entry`s that go beyond `policy`'s connector ceiling: a connector
+/// it does not list, or a write where it allows reads.
+pub(crate) fn check_connectors(policy: &ToolPolicy, grant: &[GrantEntry]) -> Result<(), ApiError> {
+    for entry in grant {
+        match connector_mode(policy.connectors.as_deref(), &entry.connector) {
+            None => return Err(not_allowed(ToolKind::Connector, &entry.connector, None)),
+            Some(GrantMode::Read) if entry.mode == GrantMode::Write => {
+                return Err(not_allowed(
+                    ToolKind::Connector,
+                    &entry.connector,
+                    Some(GrantMode::Read),
+                ))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// `tool_not_allowed`: the administrator's policy does not allow the tool.
+/// `detail` is `{kind, id}`, and `max_mode` for a connector allowed less.
+pub(crate) fn not_allowed(kind: ToolKind, id: &str, max_mode: Option<GrantMode>) -> ApiError {
+    let name = match kind {
+        ToolKind::Connector => super::connections::display(id),
+        _ => id.to_owned(),
+    };
+    let message = match max_mode {
+        Some(_) => format!("Your administrator allows read only for {name}."),
+        None => format!("Your administrator has not allowed {name}."),
+    };
+    let mut detail = json!({ "kind": kind, "id": id });
+    if let Some(mode) = max_mode {
+        detail["max_mode"] = json!(mode);
+    }
+    ApiError::new(StatusCode::FORBIDDEN, "tool_not_allowed", message).detail(detail)
+}
+
+// ---------------------------------------------------------------------------
+// The admin routes.
+// ---------------------------------------------------------------------------
+
+fn record(key: &str, policy: ToolPolicy, revision: u64) -> PolicyRecord {
+    PolicyRecord {
+        key: key.to_owned(),
+        policy,
+        revision,
+    }
+}
+
+async fn list(
+    State(app): State<Shared>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<PolicyList>, ApiError> {
+    super::scope(&caller, "admin")?;
+    let mut policies = Vec::new();
+    for row in app
+        .registry
+        .console_list(Collection::Policies, caller.tenant())?
+    {
+        let policy = serde_json::from_value(row.body).map_err(|e| {
+            ApiError::internal(format!("stored policy {} is unreadable: {e}", row.id))
+        })?;
+        policies.push(record(&row.id, policy, row.revision));
+    }
+    Ok(Json(PolicyList { policies }))
+}
+
+async fn read(
+    State(app): State<Shared>,
+    Path(key): Path<String>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<PolicyRecord>, ApiError> {
+    super::scope(&caller, "admin")?;
+    check_key(caller.tenant(), &key)?;
+    let (policy, revision) = stored(&app, &caller, &key)?.ok_or_else(|| no_policy(&key))?;
+    Ok(Json(record(&key, policy, revision)))
+}
+
+fn no_policy(key: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "not_found",
+        format!("no policy is stored at {key}"),
+    )
+}
+
+/// Refuse a policy that names something the server cannot honour.
+fn validate(policy: &ToolPolicy) -> Result<(), ApiError> {
+    let too_many =
+        |what: &str| ApiError::bad_request(format!("a policy lists at most {MAX_ENTRIES} {what}"));
+    if let Some(connectors) = &policy.connectors {
+        if connectors.len() > MAX_ENTRIES {
+            return Err(too_many("connectors"));
+        }
+        for entry in connectors {
+            entry.check().map_err(ApiError::bad_request)?;
+        }
+    }
+    if let Some(skills) = &policy.skills {
+        if skills.len() > MAX_ENTRIES {
+            return Err(too_many("skills"));
+        }
+        branchyard_provision::built_in::check(skills)
+            .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why))?;
+    }
+    if let Some(helpers) = &policy.helpers {
+        if helpers.len() > MAX_ENTRIES {
+            return Err(too_many("helpers"));
+        }
+        super::tools::known_harnesses(helpers)?;
+    }
+    Ok(())
+}
+
+async fn put(
+    State(app): State<Shared>,
+    Path(key): Path<String>,
+    Extension(caller): Extension<Caller>,
+    crate::api::JsonBody(request, _): crate::api::JsonBody<PutPolicyRequest>,
+) -> Result<Json<PolicyRecord>, ApiError> {
+    super::scope(&caller, "admin")?;
+    check_key(caller.tenant(), &key)?;
+    validate(&request.policy)?;
+    crate::api::blocking(move || {
+        let body =
+            serde_json::to_value(&request.policy).map_err(|e| ApiError::internal(e.to_string()))?;
+        let (mutation, revision) = match app.registry.console_get(Collection::Policies, &key)? {
+            Some(current) => {
+                if current.tenant != caller.tenant() {
+                    return Err(no_policy(&key));
+                }
+                if request.revision != Some(current.revision) {
+                    return Err(super::revision_conflict());
+                }
+                let revision = current.revision.saturating_add(1);
+                (super::update(current, body), revision)
+            }
+            None => {
+                if request.revision.is_some_and(|r| r != 0) {
+                    return Err(super::revision_conflict());
+                }
+                if app
+                    .registry
+                    .console_list(Collection::Policies, caller.tenant())?
+                    .len()
+                    >= MAX_POLICIES
+                {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "policy_limit",
+                        format!("a tenant stores at most {MAX_POLICIES} policies"),
+                    ));
+                }
+                (
+                    super::insert(super::new(Collection::Policies, &key, &caller, body)),
+                    1,
+                )
+            }
+        };
+        app.registry.console_mutate(&[mutation])?;
+        Ok(Json(record(&key, request.policy, revision)))
+    })
+    .await?
+}
+
+async fn remove(
+    State(app): State<Shared>,
+    Path(key): Path<String>,
+    Extension(caller): Extension<Caller>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, ApiError> {
+    super::scope(&caller, "admin")?;
+    check_key(caller.tenant(), &key)?;
+    let guard = super::routes::query(raw)
+        .remove("revision")
+        .map(|r| {
+            r.parse::<u64>()
+                .map_err(|_| ApiError::bad_request("revision must be a number"))
+        })
+        .transpose()?;
+    let current = app
+        .registry
+        .console_get(Collection::Policies, &key)?
+        .filter(|r| r.tenant == caller.tenant())
+        .ok_or_else(|| no_policy(&key))?;
+    if guard.is_some_and(|revision| revision != current.revision) {
+        return Err(super::revision_conflict());
+    }
+    app.registry
+        .console_mutate(&[crate::console_store::Mutation::Delete {
+            collection: Collection::Policies,
+            id: key.clone(),
+            tenant: caller.tenant().to_owned(),
+            expected: current.revision,
+        }])?;
+    Ok(Json(json!({ "deleted": key })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(text: &str) -> GrantEntry {
+        GrantEntry::parse(text).unwrap()
+    }
+
+    fn connectors(entries: &[&str]) -> Option<Vec<GrantEntry>> {
+        Some(entries.iter().map(|e| entry(e)).collect())
+    }
+
+    fn names(items: &[&str]) -> Option<Vec<String>> {
+        Some(items.iter().map(|i| (*i).to_owned()).collect())
+    }
+
+    #[test]
+    fn unset_levels_impose_no_limit() {
+        let none = resolve(None, &[], None);
+        assert_eq!(none, ToolPolicy::default());
+        assert!(delegation_allowed(&none));
+        assert!(skill_allowed(&none, "docx"));
+        assert!(helper_allowed(&none, "claude-code"));
+        assert_eq!(
+            connector_mode(none.connectors.as_deref(), "x"),
+            Some(GrantMode::Write)
+        );
+        let tenant = ToolPolicy {
+            skills: names(&["docx"]),
+            ..Default::default()
+        };
+        assert_eq!(resolve(Some(&tenant), &[], None), tenant, "tenant alone");
+        assert_eq!(resolve(None, &[&tenant], None), tenant, "group alone");
+        assert_eq!(resolve(None, &[], Some(&tenant)), tenant, "person alone");
+    }
+
+    #[test]
+    fn intersecting_connectors_takes_the_lesser_mode_and_drops_the_rest() {
+        let a = ToolPolicy {
+            connectors: connectors(&["github:write", "linear:write"]),
+            ..Default::default()
+        };
+        let b = ToolPolicy {
+            connectors: connectors(&["github:read", "slack:write"]),
+            ..Default::default()
+        };
+        let both = intersect_policy(&a, &b);
+        assert_eq!(both.connectors, connectors(&["github:read"]));
+        assert_eq!(intersect_policy(&b, &a), both, "order does not matter");
+        let open = ToolPolicy::default();
+        assert_eq!(intersect_policy(&a, &open), a);
+        assert_eq!(intersect_policy(&open, &a), a);
+        let empty = ToolPolicy {
+            connectors: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(intersect_policy(&a, &empty).connectors, Some(vec![]));
+    }
+
+    #[test]
+    fn intersecting_connectors_narrows_operations_and_keeps_accounts_apart() {
+        let wide = ToolPolicy {
+            connectors: connectors(&["github:write"]),
+            ..Default::default()
+        };
+        let issues = ToolPolicy {
+            connectors: connectors(&["github:write:issues.*"]),
+            ..Default::default()
+        };
+        assert_eq!(intersect_policy(&wide, &issues), issues);
+        let work = ToolPolicy {
+            connectors: connectors(&["github@work:write"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            intersect_policy(&wide, &work).connectors,
+            Some(vec![]),
+            "an account entry never matches the default account"
+        );
+    }
+
+    #[test]
+    fn intersecting_lists_keeps_what_both_name_and_delegation_needs_both() {
+        let a = ToolPolicy {
+            skills: names(&["docx", "pptx", "xlsx"]),
+            helpers: names(&["claude-code", "gemini-cli"]),
+            delegation: Some(true),
+            ..Default::default()
+        };
+        let b = ToolPolicy {
+            skills: names(&["xlsx", "docx", "pdf"]),
+            helpers: names(&[]),
+            delegation: Some(false),
+            ..Default::default()
+        };
+        let both = intersect_policy(&a, &b);
+        assert_eq!(both.skills, names(&["docx", "xlsx"]));
+        assert_eq!(both.helpers, names(&[]));
+        assert_eq!(both.delegation, Some(false));
+        assert_eq!(
+            intersect_policy(&a, &ToolPolicy::default()).delegation,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn groups_and_the_person_pool_what_they_allow_and_the_tenant_caps_it() {
+        let tenant = ToolPolicy {
+            connectors: connectors(&["github:write", "linear:read"]),
+            skills: names(&["docx", "pptx"]),
+            ..Default::default()
+        };
+        let readers = ToolPolicy {
+            connectors: connectors(&["github:read"]),
+            skills: names(&["docx"]),
+            ..Default::default()
+        };
+        let writers = ToolPolicy {
+            connectors: connectors(&["github:write", "slack:write"]),
+            skills: names(&["xlsx"]),
+            ..Default::default()
+        };
+        let person = ToolPolicy {
+            connectors: connectors(&["linear:write"]),
+            ..Default::default()
+        };
+        let one = resolve(Some(&tenant), &[&readers], None);
+        assert_eq!(one.connectors, connectors(&["github:read"]));
+        assert_eq!(one.skills, names(&["docx"]));
+        let two = resolve(Some(&tenant), &[&readers, &writers], Some(&person));
+        assert_eq!(
+            two.connectors,
+            connectors(&["github:write", "linear:read"]),
+            "github from the writers, linear from the person, both capped by the tenant; slack is outside it"
+        );
+        assert_eq!(
+            two.skills,
+            names(&["docx"]),
+            "xlsx is outside the tenant's skills; the person names none, so adds none"
+        );
+    }
+
+    #[test]
+    fn a_policy_silent_on_a_field_does_not_lift_a_siblings_limit() {
+        let limits = ToolPolicy {
+            skills: names(&["docx"]),
+            ..Default::default()
+        };
+        let delegates = ToolPolicy {
+            delegation: Some(true),
+            ..Default::default()
+        };
+        let merged = union_policy(&[&limits, &delegates]).unwrap();
+        assert_eq!(merged.skills, names(&["docx"]));
+        assert_eq!(merged.delegation, Some(true));
+        assert_eq!(union_policy(&[]), None);
+        let off = ToolPolicy {
+            delegation: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(union_policy(&[&off]).unwrap().delegation, Some(false));
+        assert_eq!(
+            union_policy(&[&off, &delegates]).unwrap().delegation,
+            Some(true),
+            "any group that allows delegation allows it"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_allows_nothing_and_no_list_allows_everything() {
+        let none = ToolPolicy {
+            skills: names(&[]),
+            helpers: names(&[]),
+            connectors: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(!skill_allowed(&none, "docx"));
+        assert!(!helper_allowed(&none, "claude-code"));
+        assert_eq!(connector_mode(none.connectors.as_deref(), "github"), None);
+        let listed = ToolPolicy {
+            helpers: names(&["claude-code"]),
+            ..Default::default()
+        };
+        assert!(helper_allowed(&listed, "claude-code"));
+        assert!(!helper_allowed(&listed, "gemini-cli"));
+        let off = ToolPolicy {
+            delegation: Some(false),
+            ..Default::default()
+        };
+        assert!(!helper_allowed(&off, "claude-code"), "delegation off");
+    }
+
+    #[test]
+    fn the_server_narrows_last() {
+        let stored = ToolPolicy {
+            connectors: connectors(&["github:write", "linear:write"]),
+            delegation: Some(true),
+            ..Default::default()
+        };
+        let server = [entry("github:read")];
+        let effective = with_server(&stored, Some(&server), true);
+        assert_eq!(effective.connectors, connectors(&["github:read"]));
+        assert_eq!(effective.delegation, Some(true));
+        let off = with_server(&stored, None, false);
+        assert_eq!(off.connectors, stored.connectors, "no ceiling, no change");
+        assert_eq!(off.delegation, Some(false), "the server flag wins");
+        let unset = with_server(&ToolPolicy::default(), None, true);
+        assert_eq!(unset, ToolPolicy::default());
+        let open = with_server(&ToolPolicy::default(), Some(&server), true);
+        assert_eq!(
+            open.connectors,
+            connectors(&["github:read"]),
+            "the ceiling applies when the store says nothing"
+        );
+    }
+
+    #[test]
+    fn connector_checks_name_the_first_connector_over_the_policy() {
+        let policy = ToolPolicy {
+            connectors: connectors(&["github:read", "linear:write"]),
+            ..Default::default()
+        };
+        assert!(check_connectors(&policy, &[entry("github"), entry("linear:write")]).is_ok());
+        let over = check_connectors(&policy, &[entry("github:write")]).unwrap_err();
+        assert_eq!(over.body.code, "tool_not_allowed");
+        let detail = over.body.detail.unwrap();
+        assert_eq!(detail["kind"], "connector");
+        assert_eq!(detail["id"], "github");
+        assert_eq!(detail["max_mode"], "read");
+        let missing = check_connectors(&policy, &[entry("slack")]).unwrap_err();
+        let detail = missing.body.detail.unwrap();
+        assert_eq!(detail["id"], "slack");
+        assert!(detail.get("max_mode").is_none());
+    }
+
+    #[test]
+    fn keys_name_the_callers_own_tenant_in_one_of_three_forms() {
+        for ok in [
+            "tenant:acme",
+            "group:acme:eng@example.com",
+            "group:acme:a:b",
+            "principal:acme:google:abc123",
+        ] {
+            assert!(check_key("acme", ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "tenant:other",
+            "group:other:eng",
+            "group:acme:",
+            "principal:acme:",
+            "principal:other:me",
+            "acme",
+            "",
+            "tenant:acme:extra",
+            "group:acme:bad\nname",
+        ] {
+            let error = check_key("acme", bad).unwrap_err();
+            assert_eq!(error.body.code, "policy_key_invalid", "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_policy_serializes_without_its_unset_fields() {
+        let policy = ToolPolicy {
+            skills: names(&["docx"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&policy).unwrap(),
+            json!({"skills":["docx"]})
+        );
+        let back: ToolPolicy = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(back, ToolPolicy::default());
+        assert!(serde_json::from_value::<ToolPolicy>(json!({"skill":[]})).is_err());
+    }
+}

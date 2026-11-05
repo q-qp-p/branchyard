@@ -140,6 +140,18 @@ pub fn contract() -> Value {
     entry::<crate::workspace_api::SkillOption>("workspace.SkillOption", &mut types);
     entry::<crate::workspace_api::HelperOptions>("workspace.HelperOptions", &mut types);
     entry::<crate::workspace_api::SessionTools>("workspace.SessionTools", &mut types);
+    entry::<crate::workspace_api::ToolKind>("workspace.ToolKind", &mut types);
+    entry::<crate::workspace_api::ToolChoice>("workspace.ToolChoice", &mut types);
+    entry::<crate::workspace_api::ToolPolicy>("workspace.ToolPolicy", &mut types);
+    entry::<crate::workspace_api::PolicyRecord>("workspace.PolicyRecord", &mut types);
+    entry::<crate::workspace_api::PolicyList>("workspace.PolicyList", &mut types);
+    entry::<crate::workspace_api::PutPolicyRequest>("workspace.PutPolicyRequest", &mut types);
+    entry::<crate::workspace_api::ToolDefaults>("workspace.ToolDefaults", &mut types);
+    entry::<crate::workspace_api::PutToolDefaults>("workspace.PutToolDefaults", &mut types);
+    entry::<crate::workspace_api::ToolState>("workspace.ToolState", &mut types);
+    entry::<crate::workspace_api::ToolAction>("workspace.ToolAction", &mut types);
+    entry::<crate::workspace_api::ToolEntry>("workspace.ToolEntry", &mut types);
+    entry::<crate::workspace_api::ToolCatalogue>("workspace.ToolCatalogue", &mut types);
     entry::<crate::workspace_api::MessageRequest>("workspace.MessageRequest", &mut types);
     entry::<crate::workspace_api::Message>("workspace.Message", &mut types);
     entry::<crate::workspace_api::MessagePage>("workspace.MessagePage", &mut types);

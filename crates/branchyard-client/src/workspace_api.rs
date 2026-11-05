@@ -275,6 +275,213 @@ pub struct StartSessionRequest {
     /// the server's `allow_delegation`; refused for a reviewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Helpers>,
+    /// Everything this session chooses, as one list: connectors (with
+    /// `mode`, default `read`), built-in skills and helper harnesses. The
+    /// server expands it into `connectors`, `skills` and `helpers`, so a
+    /// kind left out of the list is not chosen (no `skill` entries stage no
+    /// built-in skills). Refused beside any of those three fields. Each
+    /// entry must be within the caller's effective tool policy
+    /// (`tool_not_allowed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolChoice>>,
+}
+
+/// What a tool is.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    /// An upstream API through the connector gateway.
+    Connector,
+    /// A built-in skill.
+    Skill,
+    /// A harness a session may delegate to.
+    Helper,
+}
+
+/// One tool a session or a workspace default chooses.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolChoice {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The connector id, built-in skill id or harness id.
+    pub id: String,
+    /// A connector's mode: `read` (the default) or `write`. Refused on a
+    /// skill or helper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<branchyard::connectors::GrantMode>,
+    /// A connector's connected account; unset is the person's default.
+    /// Refused on a skill or helper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// What an administrator allows, at one level (tenant, group or person).
+/// An unset field says nothing: no limit from this record.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPolicy {
+    /// The widest connector grant, in the grant's form. An empty list
+    /// allows no connector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<Vec<branchyard::connectors::GrantEntry>>,
+    /// The built-in skill ids allowed. An empty list allows none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// The harness ids a session may delegate to. An empty list allows
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Vec<String>>,
+    /// Whether sessions may delegate at all. `false` turns helpers off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<bool>,
+}
+
+/// One stored policy.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRecord {
+    /// `tenant:<tenant>`, `group:<tenant>:<group>` or
+    /// `principal:<tenant>:<subject>`.
+    pub key: String,
+    /// The policy.
+    pub policy: ToolPolicy,
+    /// Compare-and-set revision, from one.
+    pub revision: u64,
+}
+
+/// `GET /v1/admin/policies`: the caller's tenant's policies.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyList {
+    /// Every stored policy of the caller's tenant, by key.
+    pub policies: Vec<PolicyRecord>,
+}
+
+/// `PUT /v1/admin/policies/{key}`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutPolicyRequest {
+    /// The new policy, replacing the old.
+    pub policy: ToolPolicy,
+    /// The revision being replaced; unset to create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+}
+
+/// A workspace's tools that sessions start with.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDefaults {
+    /// The default tools.
+    #[serde(default)]
+    pub tools: Vec<ToolChoice>,
+    /// Compare-and-set revision; zero until the first save.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// `PUT /v1/workspaces/{workspace}/tools`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutToolDefaults {
+    /// The default tools, replacing the old.
+    pub tools: Vec<ToolChoice>,
+    /// The revision being replaced; zero (or unset) before the first save.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// How far a tool is along the path to use: the first state it fails, else
+/// `ready`, or `default` when the workspace starts sessions with it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolState {
+    /// Policy does not allow it for this person.
+    NotAllowed,
+    /// Allowed, but not set up for this person.
+    NotReady,
+    /// Allowed and set up.
+    Ready,
+    /// Ready, and sessions here start with it.
+    Default,
+}
+
+/// What a person can do about a tool that is not ready.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    /// Ask an administrator to allow it.
+    AskAdmin,
+    /// Connect an account.
+    Connect,
+    /// Install it.
+    Install,
+    /// Sign in.
+    SignIn,
+}
+
+/// One tool, as the caller sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEntry {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The id a `tools` entry takes.
+    pub id: String,
+    /// A display name.
+    pub name: String,
+    /// What it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A connector's icon symbol in the console's sprite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A skill's topic heading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Where it stands.
+    pub state: ToolState,
+    /// Policy allows it for this caller.
+    pub allowed: bool,
+    /// It is set up for this caller (never true when not allowed).
+    pub ready: bool,
+    /// Sessions in the workspace start with it.
+    pub default: bool,
+    /// A connector's most the caller may do: `read` or `write`.
+    #[serde(default)]
+    pub max_mode: Option<branchyard::connectors::GrantMode>,
+    /// A connector's accounts for the caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<ConnectedAccount>,
+    /// What the caller can do next, if anything.
+    #[serde(default)]
+    pub action: Option<ToolAction>,
+    /// One plain sentence when it is not ready.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `GET /v1/tools`: every tool of the three kinds.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCatalogue {
+    /// Whether the connector gateway answers.
+    pub gateway: GatewayState,
+    /// One plain sentence when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The most children a session's helpers may have at once.
+    pub max_children: u32,
+    /// Connectors, then skills, then helpers.
+    pub tools: Vec<ToolEntry>,
 }
 
 /// The harnesses a session may delegate to, one level deep.
@@ -469,6 +676,9 @@ pub struct SessionTools {
     pub skills: Vec<SkillOption>,
     /// Delegation.
     pub helpers: HelperOptions,
+    /// The tools sessions in this workspace start with.
+    #[serde(default)]
+    pub defaults: ToolDefaults,
 }
 
 /// Continue, steer or resume one native session.
@@ -892,6 +1102,58 @@ impl crate::Client {
             "/v1/workspaces/{}/tools",
             crate::http::encode(workspace)
         ))
+    }
+
+    /// Every connector, skill and helper as the caller sees it, with the
+    /// workspace's defaults when `workspace` is given.
+    pub fn tools(&self, workspace: Option<&str>) -> Result<ToolCatalogue, crate::Error> {
+        match workspace {
+            Some(id) => self.get(&format!("/v1/tools?workspace={}", crate::http::encode(id))),
+            None => self.get("/v1/tools"),
+        }
+    }
+
+    /// Replace the tools sessions in `workspace` start with. The workspace's
+    /// owner or an editor may.
+    pub fn workspace_tool_defaults(
+        &self,
+        workspace: &str,
+        request: &PutToolDefaults,
+    ) -> Result<ToolDefaults, crate::Error> {
+        self.put(
+            &format!("/v1/workspaces/{}/tools", crate::http::encode(workspace)),
+            request,
+        )
+    }
+
+    /// The tool policies of the caller's tenant (`admin` scope).
+    pub fn policies(&self) -> Result<PolicyList, crate::Error> {
+        self.get("/v1/admin/policies")
+    }
+
+    /// Create or replace the policy at `key` (`admin` scope).
+    pub fn put_policy(
+        &self,
+        key: &str,
+        request: &PutPolicyRequest,
+    ) -> Result<PolicyRecord, crate::Error> {
+        self.put(
+            &format!("/v1/admin/policies/{}", crate::http::encode(key)),
+            request,
+        )
+    }
+
+    /// Delete the policy at `key` (`admin` scope); `revision` guards it.
+    pub fn delete_policy(
+        &self,
+        key: &str,
+        revision: Option<u64>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let mut path = format!("/v1/admin/policies/{}", crate::http::encode(key));
+        if let Some(revision) = revision {
+            path.push_str(&format!("?revision={revision}"));
+        }
+        self.delete(&path)
     }
 
     /// Start a named attempt through the existing operation queue.

@@ -179,6 +179,20 @@ pub(crate) fn check_principal(principal: &Principal) -> Result<(), String> {
     for scope in &principal.scopes {
         check_scope_name(scope).map_err(|e| format!("principal {}: {e}", principal.name))?;
     }
+    for group in &principal.groups {
+        check_group_name(group).map_err(|e| format!("principal {}: {e}", principal.name))?;
+    }
+    Ok(())
+}
+
+/// A group name: 1 to 256 characters and no control characters, so it can
+/// sit inside a policy key.
+pub fn check_group_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(format!(
+            "group {name:?} is not a usable group name (1 to 256 characters, no control characters)"
+        ));
+    }
     Ok(())
 }
 
@@ -365,8 +379,10 @@ pub struct Principal {
     /// `None` allows every repository its tenant allows.
     #[serde(default)]
     pub repos: Option<BTreeSet<String>>,
-    /// Groups the identity provider asserted, or Cloud Identity returned.
-    /// Empty for static credentials. Not part of the grant ceiling.
+    /// Groups this subject belongs to, matched against group tool policies
+    /// (`docs/server.md`, "Tool policy"). Static entries name them; IAP and
+    /// federated sign-in fill them from the token's groups claim or from
+    /// Cloud Identity. A paired device carries its issuer's groups.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub groups: BTreeSet<String>,
 }
@@ -401,6 +417,7 @@ impl Principal {
     pub(crate) fn within_policy(&self, issuer: &Principal) -> bool {
         self.tenant == issuer.tenant
             && self.scopes.is_subset(&issuer.scopes)
+            && self.groups.is_subset(&issuer.groups)
             && match (&self.repos, &issuer.repos) {
                 (_, None) => true,
                 (Some(asked), Some(allowed)) => asked.is_subset(allowed),
@@ -2111,6 +2128,9 @@ pub(crate) struct FileToken {
     scopes: Vec<String>,
     #[serde(default)]
     repos: Option<Vec<String>>,
+    /// Groups this principal belongs to, for group tool policies.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -2125,6 +2145,10 @@ pub(crate) struct FileCredential {
     scopes: Vec<String>,
     #[serde(default)]
     repos: Option<Vec<String>>,
+    /// Groups this credential's principal belongs to, for group tool
+    /// policies.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -2295,7 +2319,11 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                 ))
             }
         };
-        if token.tenant.is_some() || !token.scopes.is_empty() || token.repos.is_some() {
+        if token.tenant.is_some()
+            || !token.scopes.is_empty()
+            || token.repos.is_some()
+            || !token.groups.is_empty()
+        {
             let principal = Principal {
                 origin: Default::default(),
                 name: token.name.clone(),
@@ -2305,7 +2333,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => token.scopes.into_iter().collect(),
                 },
                 repos: token.repos.map(|r| r.into_iter().collect()),
-                groups: Default::default(),
+                groups: token.groups.into_iter().collect(),
             };
             principals.insert(token.name.clone(), principal);
         }
@@ -2330,7 +2358,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => credential.scopes.into_iter().collect(),
                 },
                 repos: credential.repos.map(|r| r.into_iter().collect()),
-                groups: Default::default(),
+                groups: credential.groups.into_iter().collect(),
             },
         });
     }
@@ -2742,6 +2770,59 @@ mod tests {
         weak.secret = "short".into();
         c.webhooks.push(weak);
         assert!(c.validate().unwrap_err().contains("shorter than 16"));
+    }
+
+    #[test]
+    fn principals_carry_groups_from_tokens_and_credentials_and_pass_them_to_devices() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let dir = temp.path();
+        fs::write(dir.join("t.token"), "0123456789abcdef\n").unwrap();
+        let path = dir.join("server.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {{"app": "repo"}},
+                "tokens": [{{"name": "ci", "token_file": "t.token", "groups": ["eng", "ops"]}}],
+                "credentials": [{{"token_sha256": "{}", "tenant": "acme", "groups": ["eng"]}}]}}"#,
+                sha256_hex(b"another-token")
+            ),
+        )
+        .unwrap();
+        let partial = load_file(&path).unwrap();
+        let ci = &partial.principals["ci"];
+        assert_eq!(
+            ci.groups,
+            ["eng".to_owned(), "ops".to_owned()].into_iter().collect()
+        );
+        assert_eq!(
+            partial.credentials[0].principal.groups,
+            ["eng".to_owned()].into_iter().collect()
+        );
+        // A device keeps its issuer's groups and can never claim more.
+        let device = ci.delegated_to("phone".into());
+        assert_eq!(device.groups, ci.groups);
+        assert!(device.within_policy(ci));
+        let mut wider = device.clone();
+        wider.groups.insert("admins".into());
+        assert!(!wider.within_policy(ci));
+        // Without groups the principal serializes as before.
+        let plain = Principal::default_for("plain");
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("groups")
+            .is_none());
+        assert!(
+            serde_json::from_value::<Principal>(serde_json::to_value(&plain).unwrap())
+                .unwrap()
+                .groups
+                .is_empty()
+        );
+        let mut bad = plain.clone();
+        bad.groups.insert("bad\ngroup".into());
+        assert!(check_principal(&bad).unwrap_err().contains("group"));
     }
 
     #[test]

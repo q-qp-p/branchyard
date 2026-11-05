@@ -144,7 +144,7 @@ Every route except `GET /healthz`, `GET /.well-known/jwks.json` (public keys, [c
 **A request's identity comes only from its verified credential, never from anything the request itself says**: there is no `tenant_id` field anywhere in the wire protocol. Each configured credential names a **principal**: a `tenant` (1 to 128 characters, no `/`), a subject `name` (the caller's identity for idempotency scoping and audit), a set of **scopes**, and, optionally, its own repository allowlist narrower than its tenant's. Two ways to configure one:
 
 - **`tokens`** (unchanged from before tenants existed): `{"name", "token"|"token_file"}`, plus optional `tenant`, `scopes` and `repos`. A `tokens` entry that gives none of those three becomes a principal in the unconfigured `default` tenant with every scope and every repository (**exactly what a single-token server did before this existed**, so old configurations keep working unchanged).
-- **`credentials`**: `{"token_sha256", "tenant", "name"?, "scopes"?, "repos"?}`, storing the token's SHA-256 directly so the plaintext never has to enter the configuration at all. `branchyard-server token new [--tenant T] [--scopes S,...] [--repo R,...]` (also `by serve token new`) generates a fresh token, prints it once (give it to the client, never store it), and prints the `credentials` object to paste in. There is no hot rotation or revocation API for these: replacing or removing a hash and restarting is how a token is rotated or revoked, the same restart a `tokens` change already needed. A third kind, **paired tokens**, exists only with the [companion](companion.md) on: `by serve token new --link` prints a one-time pairing link whose code becomes a token with the scopes, tenant and repositories the link was made with, stored hashed in the server's store, expiring, and revocable at once with `by serve token revoke NAME` (`token list` shows them).
+- **`credentials`**: `{"token_sha256", "tenant", "name"?, "scopes"?, "repos"?, "groups"?}`, storing the token's SHA-256 directly so the plaintext never has to enter the configuration at all. `branchyard-server token new [--tenant T] [--scopes S,...] [--repo R,...]` (also `by serve token new`) generates a fresh token, prints it once (give it to the client, never store it), and prints the `credentials` object to paste in. There is no hot rotation or revocation API for these: replacing or removing a hash and restarting is how a token is rotated or revoked, the same restart a `tokens` change already needed. A third kind, **paired tokens**, exists only with the [companion](companion.md) on: `by serve token new --link` prints a one-time pairing link whose code becomes a token with the scopes, tenant and repositories the link was made with, stored hashed in the server's store, expiring, and revocable at once with `by serve token revoke NAME` (`token list` shows them).
 
 Scopes: `read` (every `GET`, including the event stream), `run` (submitting a task, send, fork, reincarnate or spawn, and acting on a running turn: cancel, steer, ask, report, escalate, answer; and acting for a branch: check, report-status), `merge` (merge, integrate), `admin` (removing a branch). Every endpoint checks the caller's scope and returns `403 scope_required` (`detail.scope`) when it is missing; `read` is checked once for every `GET` and `HEAD` before any handler runs, so a credential with `run`, `merge` or `admin` but not `read` sees nothing. A secret may appear once across `tokens` and `credentials`: the same secret twice (two tokens, or a token and a hash) is refused at startup, naming the entries, since it could otherwise authenticate as either principal.
 
@@ -232,6 +232,41 @@ A console session start (`POST /v1/workspaces/{workspace}/sessions`) takes three
 - `helpers`: `{"harnesses", "max_children"?}`, the harnesses the session may delegate to, one level deep, at most 16 at once (default 4). It needs `allow_delegation`; with a preset, each harness must be one the preset offers; a reviewer has none.
 
 The session row keeps what it chose as `tools`, which the console shows beside the session.
+
+### Tool policy
+
+An administrator decides which tools a person may use, in the server's store (SQLite, or PostgreSQL such as AlloyDB), not in each worker's JSON. A policy has four optional parts: `connectors` (a ceiling in the `--connector` form), `skills` (built-in skill IDs), `helpers` (harness IDs a session may delegate to) and `delegation` (`false` turns helpers off). A part that is unset says nothing. An empty list allows nothing.
+
+Policies sit at three levels, keyed by the caller's own tenant:
+
+- `tenant:<tenant>`
+- `group:<tenant>:<group>`, for callers whose principal lists the group in `groups` (a `tokens` or `credentials` entry's `groups`; a paired device carries its issuer's)
+- `principal:<tenant>:<subject>`, for one person, by their stable subject
+
+A caller's effective policy is the tenant's, narrowed by the union of their group policies and their own, then by the server: the `ceilings` configuration and `allow_delegation`. Each step only narrows. In the union, lists pool, delegation is on when any record allows it, and a record that leaves a part unset adds nothing to it, so a group that sets only `delegation` never lifts another group's limit on skills. A skill brings the skills it needs whether or not the policy lists them. Policy applies on the next request, and every session start checks it again.
+
+| Route | What it does | Scope |
+|---|---|---|
+| `GET /v1/admin/policies` | `{"policies": [{"key", "policy", "revision"}]}` for the caller's tenant | `admin` |
+| `GET /v1/admin/policies/{key}` | one policy | `admin` |
+| `PUT /v1/admin/policies/{key}` | `{"policy", "revision"?}`: creates (no `revision`) or replaces at the stored `revision`; `409 revision_conflict` otherwise | `admin` |
+| `DELETE /v1/admin/policies/{key}?revision=N` | removes one; `revision` is optional | `admin` |
+
+The tenant comes from the credential, never the request: a key naming another tenant is `policy_key_invalid`.
+
+### Tools
+
+`GET /v1/tools?workspace=ID` (scope `read`) lists every connector, skill and helper for the caller, each with `kind`, `id`, `name`, `state`, `allowed`, `ready`, `default`, `max_mode` (connectors), `action` and `reason`. `state` is the first step the tool fails: `not_allowed` (action `ask_admin`), `not_ready` (`connect` for a connector with no live account, `install` for a helper whose harness no environment has), else `ready`, or `default` when the workspace starts sessions with it. A skill is ready once allowed (installing skills per person comes later). A helper is ready when an environment offered to the tenant can run it; `sign_in` is reserved for per-person harness sign-in. Without `workspace` nothing is `default`.
+
+`PUT /v1/workspaces/{workspace}/tools` stores the workspace's defaults, `{"tools": [{"kind", "id", "mode"?}], "revision"}`, for its owner or an editor (`409 revision_conflict` on a stale `revision`; use `0` before the first save). `GET` on the same path returns them as `defaults`. A client sends them in `tools` when it starts a session; the server does not add them itself.
+
+A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?, "account"?}]`. It is the whole choice: the server expands it to `connectors` (mode `read` by default), `skills` and `helpers`, so a kind left out is not chosen (no `skill` entries stage no built-in skills). It is refused beside any of those fields (`tools_conflict`). The old fields still work. With no skill choice at all, a policy that lists skills stages the ones it allows.
+
+| Error | Status | Meaning |
+|---|---|---|
+| `tool_not_allowed` | 403 | Policy does not allow a tool; `detail.kind`, `detail.id` (`*` when delegation is off), and `detail.max_mode` for a connector allowed less |
+| `tools_conflict` | 400 | `tools` beside `connectors`, `skills` or `helpers` |
+| `policy_key_invalid` | 400 | A policy key that is not one of the three forms for the caller's tenant |
 
 ## Approvals
 
@@ -577,6 +612,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `connectors_not_configured` | 403 | `provision.connectors`, a session's `connectors`, or a connect route, on a server without `connectors` |
 | `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
 | `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
+| `tool_not_allowed`, `tools_conflict`, `policy_key_invalid` | 403, 400, 400 | See [tool policy](#tool-policy) |
 | `connector_over_ceiling` | 403 | A connector, or a write, beyond the caller's ceiling; `detail.connector`, and `detail.max_mode` when reads are allowed |
 | `connector_not_connected` | 409 | A session's connector the caller has not connected, or must reconnect; `detail.connector`, `detail.account`, `detail.action` (`connect`) |
 | `gateway_unreachable`, `gateway_refused`, `gateway_unexpected` | 502 | The connector gateway did not answer, refused a connect call (`detail.status`, `detail.code`), or answered something else |

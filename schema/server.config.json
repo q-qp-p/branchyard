@@ -444,6 +444,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups this principal belongs to, for group tool policies.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -483,6 +491,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups this credential's principal belongs to, for group tool\npolicies.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -576,7 +592,7 @@
           "default": null
         },
         "groups": {
-          "description": "Groups the identity provider asserted, or Cloud Identity returned.\nEmpty for static credentials. Not part of the grant ceiling.",
+          "description": "Groups this subject belongs to, matched against group tool policies\n(`docs/server.md`, \"Tool policy\"). Static entries name them; IAP and\nfederated sign-in fill them from the token's groups claim or from\nCloud Identity. A paired device carries its issuer's groups.",
           "type": "array",
           "uniqueItems": true,
           "items": {
