@@ -369,7 +369,7 @@ mod tests {
     }
 
     fn staged(host: &Path) -> Vec<Tool> {
-        crate::capabilities::stage(host, None).unwrap().listed
+        crate::capabilities::stage(host, None, None).unwrap().listed
     }
 
     #[test]

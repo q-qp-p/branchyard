@@ -382,7 +382,8 @@ pub(crate) fn prepare(
         crate::skills::ForTurn::Staged(set) => Some(set),
         crate::skills::ForTurn::Nothing | crate::skills::ForTurn::Withheld(_) => None,
     };
-    let capabilities = crate::capabilities::stage(&capability_home, repository, spec.skills.as_deref())?;
+    let capabilities =
+        crate::capabilities::stage(&capability_home, repository, spec.skills.as_deref())?;
     let granted_connectors = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
     let tools = crate::tooltree::mount(
         &capability_home,

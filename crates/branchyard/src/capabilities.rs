@@ -389,7 +389,10 @@ mod tests {
         let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
         assert!(index.contains("[Custom](topics/custom/INDEX.md)"));
         assert!(root.join(skillset::CUSTOM_TOPIC).is_file());
-        assert!(stage(host.path(), Some(&set), None).unwrap().written.is_empty());
+        assert!(stage(host.path(), Some(&set), None)
+            .unwrap()
+            .written
+            .is_empty());
 
         let smaller = repository_set(&[("style", "")]);
         let second = stage(host.path(), Some(&smaller), None).unwrap();
