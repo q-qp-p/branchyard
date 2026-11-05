@@ -47,21 +47,26 @@ const LIMIT: Duration = Duration::from_secs(15 * 60);
 /// The most characters of output a status keeps.
 const TAIL: usize = 2000;
 
-/// Each harness's latest install, in this process.
+/// Each harness's latest install, in this process, keyed by the server's
+/// data directory and the harness ([`key`]), so two servers in one process
+/// (as tests run them) keep their own.
 static JOBS: LazyLock<Mutex<BTreeMap<String, HelperInstall>>> = LazyLock::new(Default::default);
 
 pub(crate) fn router() -> Router<Shared> {
     Router::new().route("/v1/tools/helpers/{id}/install", post(start).get(status))
 }
 
-fn job(harness: &str) -> Option<HelperInstall> {
-    JOBS.lock_recovering("helper installs")
-        .get(harness)
-        .cloned()
+/// The job map's key for `harness` on the server `app`.
+fn key(app: &App, harness: &str) -> String {
+    format!("{}\n{harness}", app.config.data_dir.display())
 }
 
-fn change(harness: &str, edit: impl FnOnce(&mut HelperInstall)) {
-    if let Some(install) = JOBS.lock_recovering("helper installs").get_mut(harness) {
+fn job(key: &str) -> Option<HelperInstall> {
+    JOBS.lock_recovering("helper installs").get(key).cloned()
+}
+
+fn change(key: &str, edit: impl FnOnce(&mut HelperInstall)) {
+    if let Some(install) = JOBS.lock_recovering("helper installs").get_mut(key) {
         edit(install);
     }
 }
@@ -73,11 +78,12 @@ fn failed(install: &mut HelperInstall, problem: String) {
 }
 
 async fn status(
+    State(app): State<Shared>,
     Path(id): Path<String>,
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<HelperInstall>, ApiError> {
     super::scope(&caller, "admin")?;
-    job(&id).map(Json).ok_or_else(|| {
+    job(&key(&app, &id)).map(Json).ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -157,7 +163,7 @@ fn accept(app: &Shared, caller: &Caller, id: &str) -> Result<HelperInstall, ApiE
     .map_err(|why| unsupported(id, &why))?;
     let created = {
         let mut jobs = JOBS.lock_recovering("helper installs");
-        if let Some(running) = jobs.get(id).filter(|j| !j.state.is_terminal()) {
+        if let Some(running) = jobs.get(&key(app, id)).filter(|j| !j.state.is_terminal()) {
             return Ok(running.clone());
         }
         let created = HelperInstall {
@@ -170,7 +176,7 @@ fn accept(app: &Shared, caller: &Caller, id: &str) -> Result<HelperInstall, ApiE
             problem: None,
             output_tail: None,
         };
-        jobs.insert(id.to_owned(), created.clone());
+        jobs.insert(key(app, id), created.clone());
         created
     };
     let work = Work {
@@ -179,7 +185,7 @@ fn accept(app: &Shared, caller: &Caller, id: &str) -> Result<HelperInstall, ApiE
         command: plan.command,
         path,
     };
-    let panicked = id.to_owned();
+    let panicked = key(app, id);
     let spawned = branchyard_support::spawn_named(
         format!("install-{id}"),
         move |report| {
@@ -190,7 +196,7 @@ fn accept(app: &Shared, caller: &Caller, id: &str) -> Result<HelperInstall, ApiE
         move || work.run(),
     );
     if let Err(error) = spawned {
-        change(id, |install| {
+        change(&key(app, id), |install| {
             failed(install, format!("could not start the install: {error}"));
         });
         return Err(ApiError::internal(format!(
@@ -219,7 +225,8 @@ struct Work {
 impl Work {
     fn run(self) {
         let started = branchyard_support::time::now_ms();
-        change(&self.harness, |install| {
+        let key = key(&self.app, &self.harness);
+        change(&key, |install| {
             install.state = InstallState::Running;
         });
         let (status, output) = match run(&self.command, &self.path) {
@@ -242,7 +249,7 @@ impl Work {
             (None, _) => Some("the install command did not run to the end".to_owned()),
         };
         let tail = tail(&output);
-        change(&self.harness, |install| {
+        change(&key, |install| {
             install.output_tail = Some(tail.clone());
             match &problem {
                 None => {
@@ -352,10 +359,4 @@ fn run(command: &str, path: &OsString) -> Result<(Option<i32>, String), String> 
 fn tail(output: &str) -> String {
     let skip = output.chars().count().saturating_sub(TAIL);
     output.chars().skip(skip).collect()
-}
-
-/// Forget every install, so a test starts from none.
-#[cfg(test)]
-pub(super) fn reset() {
-    JOBS.lock_recovering("helper installs").clear();
 }

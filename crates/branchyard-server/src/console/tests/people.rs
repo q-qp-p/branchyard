@@ -570,7 +570,6 @@ fn installer(allow: bool, exit: i32) -> (Fixture, std::path::PathBuf) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_administrator_installs_a_helpers_harness_and_its_row_becomes_ready() {
-    super::super::installs::reset();
     let (fixture, argv) = installer(true, 0);
     let list = fixture.tools(OWNER).await;
     let helper = row(&list, "helper", "gemini-cli");
@@ -656,7 +655,6 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_install_says_why_and_the_row_stays_not_ready() {
-    super::super::installs::reset();
     let (fixture, _) = installer(true, 3);
     let route = "/v1/tools/helpers/gemini-cli/install";
     let (status, accepted) = fixture
@@ -684,7 +682,6 @@ async fn a_failed_install_says_why_and_the_row_stays_not_ready() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installing_is_closed_until_the_operator_allows_it_and_refuses_what_it_cannot_do() {
-    super::super::installs::reset();
     let (fixture, argv) = installer(false, 0);
     let route = "/v1/tools/helpers/gemini-cli/install";
     let list = fixture.tools(OWNER).await;
