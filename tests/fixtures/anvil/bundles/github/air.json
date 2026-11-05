@@ -1,9 +1,9 @@
 {
-  "service": {"description": "Issues, pull requests and repositories on GitHub.", "icon": "github"},
+  "service": {"id": "github", "title": "GitHub", "description": "Issues, pull requests and repositories on GitHub.", "icon": "github"},
   "operations": [
-    {"id": "issues.list", "title": "List issues", "description": "List issues in a repository, filtered by state. Paged.", "effect": "read", "resource": "issues", "tags": ["issues"], "input_schema": {"type": "object", "required": ["owner", "repo"], "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "state": {"type": "string"}}}},
-    {"id": "issues.create", "title": "Open an issue", "description": "Open an issue in a repository.", "effect": "compensable", "confirm": true, "idempotency": "keyed", "resource": "issues", "tags": ["issues"], "input_schema": {"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}, "body": {"type": "string"}}}},
-    {"id": "pulls.merge", "title": "Merge a pull request", "description": "Merge a pull request into its base branch.", "effect": "irreversible", "risk": "high", "confirm": true, "idempotency": "none", "resource": "pulls", "tags": ["pulls"]},
-    {"id": "drafts.publish", "title": "Publish a draft", "description": "Pending operation.", "approved": false}
+    {"id": "github.issues.list", "title": "List issues", "description": "List issues in a repository, filtered by state. Paged.", "effect": "read", "risk": "none", "idempotency": "natural", "capability": "github.issues", "tags": ["issues"], "input_schema": {"type": "object", "required": ["owner", "repo"], "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "state": {"type": "string"}}}},
+    {"id": "github.issues.create", "title": "Open an issue", "description": "Open an issue in a repository.", "effect": "compensable", "risk": "low", "confirm": true, "idempotency": "key_supported", "capability": "github.issues", "tags": ["issues"], "input_schema": {"type": "object", "required": ["title"], "properties": {"title": {"type": "string"}, "body": {"type": "string"}}}},
+    {"id": "github.pulls.merge", "title": "Merge a pull request", "description": "Merge a pull request into its base branch.", "effect": "irreversible", "risk": "high", "confirm": true, "idempotency": "none", "capability": "github.pulls"},
+    {"id": "github.drafts.publish", "title": "Publish a draft", "description": "Pending operation.", "approved": false}
   ]
 }

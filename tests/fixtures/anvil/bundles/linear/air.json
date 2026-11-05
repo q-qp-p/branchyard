@@ -1,6 +1,6 @@
 {
-  "service": {"description": "Tickets and cycles in Linear.", "icon": "linear"},
+  "service": {"id": "linear", "title": "Linear", "description": "Tickets and cycles in Linear.", "icon": "linear"},
   "operations": [
-    {"id": "tickets.search", "title": "Search tickets", "description": "Search tickets by text and team.", "effect": "read", "resource": "tickets", "tags": ["tickets"]}
+    {"id": "linear.tickets.search", "title": "Search tickets", "description": "Search tickets by text and team.", "effect": "read", "capability": "linear.tickets", "tags": ["tickets"]}
   ]
 }

@@ -219,6 +219,8 @@ STEPS = (
     Step("test_find_tools", "fast", (PY, "tests/test_find_tools.py")),
     # The Anvil mock follows docs/anvil-contract-v2.md; the tests that put it on PATH stand on it.
     Step("test_anvil_mock", "fast", (PY, "tests/test_anvil_mock.py")),
+    # The same shapes against a built real Anvil (ANVIL_BIN); skipped, with the reason, when there is none.
+    Step("test_anvil_real", "fast", (PY, "tests/test_anvil_real.py")),
     # The lint table's exceptions only fall, and every crate inherits the table.
     Step("check_lint_ratchet", "controls", (PY, "tools/check_lint_ratchet.py")),
     Step("test_check_lint_ratchet", "controls", (PY, "tests/test_check_lint_ratchet.py")),

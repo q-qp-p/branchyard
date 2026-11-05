@@ -10,8 +10,8 @@ The tree is the directory this script's `bin/` sits in: `INDEX.md`, `skills/`,
 or set BRANCHYARD_TOOLS_DIR (or BRANCHYARD_TOOLS, which a sandbox sets to /tools) to read
 another. Standard library only.
 
-A connector package with a `search.json` (Anvil's operation search index,
-docs/anvil-contract-v2.md item 3) is read from it, and strictly: a malformed one is refused
+A connector package with a `search.json` (Anvil's operation search index, which `anvil
+package harness` writes; docs/anvil-contract-v2.md item 3) is read from it, and strictly: a malformed one is refused
 with a message that names the file and the field, none of that connector's operations are
 searched, and the command exits 3 after answering with everything else. Only a package
 without `search.json` is read tolerantly, from `harness.json`, `compose.json`, `schemas/`
@@ -41,9 +41,10 @@ TABLE_OP = re.compile(r"^\|\s*`?(" + OP_ID.pattern + r")`?\s*\|\s*([^|]*)\|")
 LIST_ITEM = re.compile(r"^[-*]\s+`?([^`:]+?)`?\s*(?:\([^)]*\))?\s*:\s*(.+)$")
 SCHEMA_KEYS = ("input_schema", "inputSchema", "schema", "parameters")
 
-# The operation search index of docs/anvil-contract-v2.md, item 3 ("anvil.search/v1").
+# The operation search index of docs/anvil-contract-v2.md, item 3 ("anvil.search/v1"), as Anvil writes it.
 SEARCH_FILE = "search.json"
 SEARCH_SCHEMA = "anvil.search/v1"
+INDEX_SCHEMA = "anvil-search-v1.json"
 EFFECTS = ("read", "reversible", "compensable", "irreversible")
 IDEMPOTENCY = ("safe", "keyed", "none")
 SUMMARY_MAX = 160
@@ -300,11 +301,13 @@ def operations(package: Path, connector: str) -> list[tuple[str, str, Any, str]]
     schemas = package / "schemas"
     if schemas.is_dir():
         for file in sorted(schemas.glob("*.json")):
+            if file.name == INDEX_SCHEMA or file.name.endswith(".schema.json"):
+                continue  # the index's own schema; Anvil's per-tool schemas, which are named by tool
             data = load_json(file)
             description = ""
             if isinstance(data, dict):
                 description = str(data.get("description") or data.get("title") or "")
-            add(file.stem, description, data, f"schemas/{file.name}")
+            add(file.stem.removesuffix(".input"), description, data, f"schemas/{file.name}")
     reference = package / "reference"
     if reference.is_dir():
         for file in sorted(reference.rglob("*.md")):
@@ -315,6 +318,23 @@ def operations(package: Path, connector: str) -> list[tuple[str, str, Any, str]]
                         match.group(1), (match.group(2) or "").strip(), None, f"reference/{file.relative_to(reference)}"
                     )
     return [(ident, d, s, src) for ident, (d, s, src) in sorted(found.items())]
+
+
+def index_description(index: str, name: str) -> str:
+    """What `INDEX.md` says of a connector: its `## id - title` block's lines, else its one-line entry."""
+    lines = index.split("\n")
+    for number, text in enumerate(lines):
+        heading = re.match(rf"^##\s+{re.escape(name)}\s+[—-]\s+(.*)$", text.strip())
+        if heading:
+            block = []
+            for follow in lines[number + 1 :]:
+                if follow.startswith("#"):
+                    break
+                if follow.startswith("- **For:**") or follow.startswith("- **Use when:**"):
+                    block.append(follow.split(":**", 1)[1].strip())
+            return " ".join([heading.group(1).strip(), *block])
+    line = next((ln for ln in lines if re.search(rf"\b{re.escape(name)}\b", ln)), "")
+    return line.lstrip("-* ").strip()
 
 
 def connector_docs(root: Path, refused: list[str] | None = None) -> list[Doc]:
@@ -330,8 +350,7 @@ def connector_docs(root: Path, refused: list[str] | None = None) -> list[Doc]:
         text = read(package / "SKILL.md")
         description = frontmatter(text).get("description", "")
         if not description:
-            line = next((ln for ln in index.split("\n") if re.search(rf"\b{re.escape(name)}\b", ln)), "")
-            description = line.lstrip("-* ").strip()
+            description = index_description(index, name)
         docs.append(
             Doc(
                 "connector",

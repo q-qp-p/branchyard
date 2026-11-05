@@ -231,7 +231,7 @@ by compute gce --project PROJECT --zone ZONE --name NAME --tools-store gs://BUCK
 
 Setup runs `by tools pull --from gs://BUCKET/PREFIX --store /opt/branchyard/store` on the VM, checks every entry against the index, and writes `tools.store` and `tools.store_bucket` into the worker's `server.json` so its server links turns to the store. The plan lists the step. The VM needs `gcloud`, which setup checks before it pulls, and its service account needs `roles/storage.objectViewer` on the bucket; the helper grants no roles. Without `--tools-store` nothing changes and turns copy.
 
-Setup also installs Anvil's CLI and SDKs once under `/opt/anvil` with `anvil install --prefix /opt/anvil` ([Anvil contract v2](anvil-contract-v2.md), item 4) when `anvil` is on the VM and has an `install` command. When it does not, setup says so and goes on. Anvil is not installed by this helper.
+Setup also installs Anvil's CLI and SDKs once under `/opt/anvil` with `anvil install --prefix /opt/anvil` ([Anvil contract v2](anvil-contract-v2.md), item 4) when `anvil` is on the VM and has an `install` command (Anvil has had one since its PR #91; the installed launcher runs the installing Anvil's CLI, so that Anvil's tree must stay where it is). When it does not, setup says so and goes on. Anvil is not installed by this helper.
 
 Hermetic evidence: `tests/test_compute_gce.py` checks the generated script and plan, and runs the Anvil guard with fake `anvil` and `sudo`. Not done: no worker was set up with `--tools-store`, and no real `anvil install` ran.
 
