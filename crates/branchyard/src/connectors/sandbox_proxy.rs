@@ -167,9 +167,14 @@ struct Proof {
 
 /// Asks the server for the turn's token.
 struct Fetcher {
-    config: ProxyConfig,
+    /// The turn it serves and its secret. A proxy that reads a settings
+    /// file ([`Fetcher::source`]) replaces both when the file names another
+    /// turn, so a sidecar in a pod kept between turns serves each in turn.
+    turn: Mutex<(ProxyConfig, Proof)>,
+    /// The settings file to read again before each fetch and call (a
+    /// sidecar's); `None` for a proxy given one turn for its life.
+    source: Option<std::path::PathBuf>,
     server: Target,
-    proof: Proof,
     transport: Transport,
 }
 
@@ -200,11 +205,51 @@ impl Fetcher {
         };
         let proof = Proof { secret, workload };
         Ok(Fetcher {
-            config: config.clone(),
+            turn: Mutex::new((config.clone(), proof)),
+            source: None,
             server,
-            proof,
             transport: Transport::from_env(FETCH_TIMEOUT),
         })
+    }
+
+    /// Read the settings file again, when there is one. `Ok(true)` when it
+    /// now names another turn (or another secret), whose token must not be
+    /// the one held; an error when it is gone or unreadable: the turn has
+    /// ended, and no token is served until the next turn writes it.
+    fn reload(&self) -> Result<bool, String> {
+        let Some(path) = &self.source else {
+            return Ok(false);
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "no turn is running in this sandbox: {} is gone",
+                    path.display()
+                ))
+            }
+            Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+        };
+        let config = super::credential::parse_config(&text)?;
+        let secret = config
+            .secret
+            .clone()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("{} holds no per-turn secret", path.display()))?;
+        let mut turn = self.turn.lock_recovering("credential proxy turn");
+        let (held, proof) = &mut *turn;
+        if held.manifest == config.manifest
+            && held.branch == config.branch
+            && held.turn == config.turn
+            && proof.secret == secret
+        {
+            return Ok(false);
+        }
+        held.manifest = config.manifest;
+        held.branch = config.branch;
+        held.turn = config.turn;
+        proof.secret = secret;
+        Ok(true)
     }
 
     /// Google's ID token for this sandbox's service account.
@@ -229,21 +274,29 @@ impl Fetcher {
     }
 
     fn fetch(&self) -> Result<Fetched, String> {
+        let (request, secret, workload) = {
+            let turn = self.turn.lock_recovering("credential proxy turn");
+            let (config, proof) = &*turn;
+            (
+                TokenRequest {
+                    manifest: config.manifest.clone(),
+                    branch: config.branch.clone(),
+                    turn: config.turn,
+                },
+                proof.secret.clone(),
+                proof.workload.clone(),
+            )
+        };
         let mut headers = vec![
             ("Content-Type".to_owned(), "application/json".to_owned()),
             ("Accept".to_owned(), "application/json".to_owned()),
         ];
-        headers.push((SECRET_HEADER.to_owned(), self.proof.secret.clone()));
-        if let Some((audience, metadata)) = &self.proof.workload {
+        headers.push((SECRET_HEADER.to_owned(), secret));
+        if let Some((audience, metadata)) = &workload {
             let id = self.identity_token(audience, metadata)?;
             headers.push(("Authorization".to_owned(), format!("Bearer {id}")));
         }
-        let body = serde_json::to_vec(&TokenRequest {
-            manifest: self.config.manifest.clone(),
-            branch: self.config.branch.clone(),
-            turn: self.config.turn,
-        })
-        .map_err(|e| e.to_string())?;
+        let body = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         let at_ms = branchyard_support::time::now_ms();
         let mut response = self
             .transport
@@ -305,7 +358,7 @@ impl Live {
     /// Fetch now and keep the result.
     fn refresh(&self) -> Result<Fetched, String> {
         let _one_at_a_time = self.fetching.lock_recovering("credential fetch");
-        let result = self.fetcher.fetch();
+        let result = self.follow().and_then(|()| self.fetcher.fetch());
         match &result {
             Ok(fetched) => {
                 *self.current.lock_recovering("live credential") = Some(fetched.clone());
@@ -320,6 +373,7 @@ impl Live {
     /// good, else a fresh one; and when a fetch fails, the held one for as
     /// long as it has not lapsed.
     fn token(&self) -> Result<String, String> {
+        self.follow()?;
         let held = self.current.lock_recovering("live credential").clone();
         let now = branchyard_support::time::now_ms();
         match held {
@@ -330,6 +384,24 @@ impl Live {
                 Err(why) => Err(why),
             },
             None => self.refresh().map(|f| f.token),
+        }
+    }
+
+    /// Follow the settings file: when it names another turn the held token
+    /// is dropped, and when it is gone the held token is dropped and this is
+    /// the error, so a token never outlives the turn's file.
+    fn follow(&self) -> Result<(), String> {
+        match self.fetcher.reload() {
+            Ok(false) => Ok(()),
+            Ok(true) => {
+                *self.current.lock_recovering("live credential") = None;
+                Ok(())
+            }
+            Err(why) => {
+                *self.current.lock_recovering("live credential") = None;
+                *self.failure.lock_recovering("credential failure") = Some(why.clone());
+                Err(why)
+            }
         }
     }
 
@@ -410,9 +482,34 @@ impl CredentialProxy {
         first: bool,
         metadata_host: Option<String>,
     ) -> Result<CredentialProxy, String> {
+        CredentialProxy::serve(config, None, secret, first, metadata_host)
+    }
+
+    /// [`CredentialProxy::start_at`] for a sidecar that outlives a turn:
+    /// `config` was read from `settings`, which is read again before each
+    /// fetch and call. A file that names another turn is followed (the held
+    /// token is dropped and the new turn's fetched); a file that is gone
+    /// means no turn runs, and nothing is served until one writes it again.
+    pub fn start_following(
+        settings: &std::path::Path,
+        config: &ProxyConfig,
+        first: bool,
+        metadata_host: Option<String>,
+    ) -> Result<CredentialProxy, String> {
+        CredentialProxy::serve(config, Some(settings), None, first, metadata_host)
+    }
+
+    fn serve(
+        config: &ProxyConfig,
+        settings: Option<&std::path::Path>,
+        secret: Option<String>,
+        first: bool,
+        metadata_host: Option<String>,
+    ) -> Result<CredentialProxy, String> {
         let upstream = Target::parse(&config.upstream)
             .map_err(|e| format!("the gateway URL {:?} is not usable: {e}", config.upstream))?;
-        let fetcher = Fetcher::new(config, secret, metadata_host)?;
+        let mut fetcher = Fetcher::new(config, secret, metadata_host)?;
+        fetcher.source = settings.map(std::path::Path::to_path_buf);
         let listener = TcpListener::bind(&config.listen)
             .map_err(|e| format!("could not listen on {}: {e}", config.listen))?;
         let address = listener.local_addr().map_err(|e| e.to_string())?;
@@ -598,7 +695,26 @@ fn handle(stream: TcpStream, live: &Live, upstream: &Target) {
 /// [`ENV_SECRET`]'s value. With `first`, a failure to fetch the first token
 /// is this call's error.
 pub fn run(config: &ProxyConfig, secret: Option<String>, first: bool) -> Result<(), String> {
-    let proxy = CredentialProxy::start(config, secret, first)?;
+    announce(&CredentialProxy::start(config, secret, first)?)
+}
+
+/// [`run`] for a sidecar that reads `settings` and follows it from turn to
+/// turn ([`CredentialProxy::start_following`]).
+pub fn run_following(
+    settings: &std::path::Path,
+    config: &ProxyConfig,
+    first: bool,
+) -> Result<(), String> {
+    announce(&CredentialProxy::start_following(
+        settings,
+        config,
+        first,
+        std::env::var(ENV_METADATA_HOST).ok(),
+    )?)
+}
+
+/// Print that `proxy` is ready, then serve until the process ends.
+fn announce(proxy: &CredentialProxy) -> Result<(), String> {
     let mut stdout = io::stdout();
     writeln!(stdout, "{READY} {}", proxy.address())
         .and_then(|()| stdout.flush())

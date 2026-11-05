@@ -54,10 +54,14 @@ pub(crate) fn run(command: &Command) -> Outcome {
             secret: None,
         },
     };
-    let secret = std::env::var(ENV_SECRET).ok();
     // A sidecar waits out a server that is not ready; a guest the engine
-    // started fails at once, so the turn says why.
-    sandbox_proxy::run(&settings, secret, !*wait).map_err(|why| {
+    // started fails at once, so the turn says why. A proxy that read a
+    // settings file follows it, so a pod kept between turns serves each.
+    let ran = match config {
+        Some(path) => sandbox_proxy::run_following(Path::new(path), &settings, !*wait),
+        None => sandbox_proxy::run(&settings, std::env::var(ENV_SECRET).ok(), !*wait),
+    };
+    ran.map_err(|why| {
         Report::new("config", format!("the credential proxy could not run: {why}"))
             .next("check the server URL, the turn's manifest and the sandbox's identity (docs/connectors.md#the-credential-proxy-in-the-sandbox)")
             .into()

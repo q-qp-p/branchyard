@@ -284,3 +284,55 @@ fn a_stopped_proxy_stops_renewing() {
     assert!(std::net::TcpStream::connect(address).is_err());
     assert_eq!(arrivals.lock().unwrap().len(), fetched);
 }
+
+#[test]
+fn a_sidecar_follows_its_settings_file_from_turn_to_turn_and_serves_none_once_it_is_gone() {
+    // A server that issues a token naming the turn and secret it was asked
+    // with, so the test sees which turn each call carried.
+    let server = MockHttp::start(|request| {
+        let body = request.json();
+        let secret = request.header("x-branchyard-turn-secret").unwrap_or("");
+        Response::json(
+            200,
+            &json!({
+                "token": format!("turn-{}-{secret}", body["turn"]),
+                "expires_at": branchyard_support::time::now_ms() / 1000 + 300,
+                "expires_in": 300,
+            }),
+        )
+    });
+    let gateway = gateway();
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("credential-proxy.json");
+    let write = |turn: u32, secret: &str| {
+        let mut settings = config(&server, &gateway, IdentityKind::Secret);
+        settings.turn = turn;
+        settings.secret = Some(secret.into());
+        std::fs::write(&file, serde_json::to_string(&settings).unwrap()).unwrap();
+        settings
+    };
+    let first = write(3, "s3");
+    let proxy = CredentialProxy::start_following(&file, &first, true, None).unwrap();
+    assert_eq!(
+        call(&proxy, "/mcp", &[]).1["authorization"],
+        "Bearer turn-3-s3"
+    );
+    assert_eq!(server.requests().len(), 1, "the held token serves the turn");
+    // The turn ends: the engine removes the file, and the token held for it
+    // is no longer used, though it has minutes left.
+    std::fs::remove_file(&file).unwrap();
+    let (status, _) = call(&proxy, "/mcp", &[]);
+    assert_ne!(status, 200, "no turn runs, so no call is forwarded");
+    assert_eq!(server.requests().len(), 1, "and nothing is fetched");
+    // The pod is kept and the next turn writes its own settings: the proxy
+    // fetches that turn's token with that turn's secret.
+    write(4, "s4");
+    assert_eq!(
+        call(&proxy, "/mcp", &[]).1["authorization"],
+        "Bearer turn-4-s4"
+    );
+    let fetched = server.requests();
+    assert_eq!(fetched.len(), 2);
+    assert_eq!(fetched[1].json()["turn"], 4);
+    assert_eq!(fetched[1].header("x-branchyard-turn-secret"), Some("s4"));
+}
