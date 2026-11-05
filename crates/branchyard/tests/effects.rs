@@ -1749,13 +1749,6 @@ print("e-stale-effect", rest("slack__chat_post", first))
 print("changed", fresh != first)
 "#;
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-}
-
 fn jwks_of(root: &Path) -> serde_json::Value {
     let path = root.join(".branchyard/gateway/jwks.json");
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
@@ -1778,7 +1771,7 @@ fn a_turn_longer_than_its_token_keeps_calling_the_gateway_on_renewed_tokens() {
         .status()
         .unwrap()
         .success());
-    mock.on_call(|_| Some(now_secs().to_string()));
+    mock.on_call(|_| Some((branchyard_support::time::now_ms() / 1000).to_string()));
     let mock = Arc::new(mock);
     let releaser = {
         let (mock, gate, root) = (mock.clone(), gate.clone(), f.root.clone());
@@ -1792,7 +1785,9 @@ fn a_turn_longer_than_its_token_keeps_calling_the_gateway_on_renewed_tokens() {
             let jwks = jwks_of(&root);
             let claims = branchyard::connectors::keys::verify(&jwks, &first).unwrap();
             let exp = claims["exp"].as_u64().unwrap();
-            wait::until("the first token to expire", || now_secs() > exp);
+            wait::until("the first token to expire", || {
+                (branchyard_support::time::now_ms() / 1000) > exp
+            });
             fs::write(&gate, "go").unwrap();
             first
         })
