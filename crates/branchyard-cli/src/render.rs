@@ -530,9 +530,6 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             manifest,
         } => {
             let mut parts = Vec::new();
-            if let Some(manifest) = manifest {
-                parts.push(format!("manifest {manifest}"));
-            }
             if let Some(auth) = auth {
                 parts.push(format!("auth {auth}"));
             }
@@ -615,6 +612,10 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
                 ));
             }
             parts.extend(skills_parts(skills));
+            // The session's manifest digest last: a reference, not news.
+            if let Some(manifest) = manifest {
+                parts.push(format!("manifest {manifest}"));
+            }
             style.paint(Tone::Dim, &format!("provisioned: {}", parts.join("; ")))
         }
         Activity::Steered { by, text, .. } => style.paint(
