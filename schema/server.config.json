@@ -62,6 +62,23 @@
         }
       ]
     },
+    "iap": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IapConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "oidc_issuers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OidcIssuerConfig"
+      },
+      "default": []
+    },
     "tenants": {
       "type": "object",
       "additionalProperties": {
@@ -546,6 +563,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups the identity provider asserted, or Cloud Identity returned.\nEmpty for static credentials. Not part of the grant ceiling.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -622,7 +647,285 @@
             "subject",
             "audience"
           ]
+        },
+        {
+          "description": "A Google Cloud IAP assertion matched an operator-configured binding.",
+          "type": "object",
+          "properties": {
+            "email": {
+              "description": "The verified email address, for audit. Never the identity key.",
+              "type": "string"
+            },
+            "sub": {
+              "description": "The verified IAP subject, such as `accounts.google.com:1234`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "iap"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "email",
+            "sub"
+          ]
+        },
+        {
+          "description": "A federated OIDC token (Workforce or Workload Identity Federation, or\na plain issuer) matched an operator-configured binding.",
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "description": "The verified issuer.",
+              "type": "string"
+            },
+            "sub": {
+              "description": "The verified subject claim.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "oidc"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "issuer",
+            "sub"
+          ]
         }
+      ]
+    },
+    "IapConfig": {
+      "description": "Sign-in behind Google Cloud IAP.",
+      "type": "object",
+      "properties": {
+        "audience": {
+          "description": "The exact IAP audience: `/projects/NUMBER/global/backendServices/ID`,\nor `/projects/NUMBER/apps/PROJECT` for App Engine and Cloud Run.",
+          "type": "string"
+        },
+        "keys_url": {
+          "description": "Where to fetch the signing keys. Defaults to Google's published IAP\nkey set. Set it only to a mirror or, in tests, a local server.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant of a binding that names none. Defaults to the default tenant.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes of a binding that names none. Defaults to `read`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "bindings": {
+          "description": "Who may sign in, and as what.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IdentityBinding"
+          }
+        },
+        "groups_from": {
+          "description": "Where to look up groups. IAP assertions carry no groups claim.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupsFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "groups_url": {
+          "description": "The Cloud Identity base URL. Defaults to Google's. For tests.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "audience",
+        "bindings"
+      ]
+    },
+    "IdentityBinding": {
+      "description": "One rule mapping a verified identity to server authorization policy.\nBindings are tried in order and the first match wins.",
+      "type": "object",
+      "properties": {
+        "match": {
+          "description": "An exact email address, `domain:example.com`, or `group:eng@example.com`.\nEmail, domain and group names compare without regard to case.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The principal's name. Defaults to the email, else the subject.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant. Defaults to the provider's `tenant`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes. Defaults to the provider's `scopes`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "repos": {
+          "description": "A repository allowlist. Absent allows every repository of the tenant.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "match"
+      ]
+    },
+    "GroupsFrom": {
+      "description": "Where groups come from when the token carries none.",
+      "oneOf": [
+        {
+          "description": "The Cloud Identity Groups API, called with the server's metadata token.",
+          "type": "string",
+          "const": "cloud_identity"
+        }
+      ]
+    },
+    "OidcIssuerConfig": {
+      "description": "A federated OIDC issuer whose bearer ID tokens are accepted.",
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "description": "The exact `iss` claim.",
+          "type": "string"
+        },
+        "audience": {
+          "description": "The exact audience this server expects in `aud`.",
+          "type": "string"
+        },
+        "jwks_url": {
+          "description": "Where the issuer publishes its signing keys (a JWKS document).",
+          "type": "string"
+        },
+        "subject_claim": {
+          "description": "The claim that names the subject. Defaults to `sub`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "email_claim": {
+          "description": "The claim that holds the email. Defaults to `email`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "groups_claim": {
+          "description": "The claim that holds the groups. Defaults to `groups`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant of a binding that names none. Defaults to the default tenant.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes of a binding that names none. Defaults to `read`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "bindings": {
+          "description": "Who may sign in, and as what.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IdentityBinding"
+          }
+        },
+        "groups_from": {
+          "description": "Where to look up groups when the token carries none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupsFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "groups_url": {
+          "description": "The Cloud Identity base URL. Defaults to Google's. For tests.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "audience",
+        "jwks_url",
+        "bindings"
       ]
     },
     "FileTenantPolicy": {

@@ -433,6 +433,7 @@ fn the_person_answers_a_roots_question_through_the_server() {
             tenant: "default".into(),
             scopes: ["read".to_owned()].into(),
             repos: None,
+            groups: Default::default(),
         },
     );
     let server = Server::start(config);

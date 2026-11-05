@@ -27,6 +27,9 @@ schema = ["dep:schemars", "branchyard/schema"]
 [dependencies]
 branchyard-support = { path = "../branchyard-support" }
 google-cloud-auth = { workspace = true }
+# IAP and federated OIDC token verification (src/federated.rs); already in
+# Cargo.lock through google-cloud-auth.
+jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
 branchyard = { path = "../branchyard" }
 branchyard-client = { path = "../branchyard-client" }
@@ -80,7 +83,6 @@ branchyard-bridge = { path = "../branchyard-bridge" }
 branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
 branchyard-runtime = { path = "../branchyard-runtime" }
 branchyard-sandbox = { path = "../branchyard-sandbox" }
-jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 branchyard-testkit = { path = "../branchyard-testkit" }
 blake3 = { workspace = true }
 branchyard-sync = { path = "../branchyard-sync", features = ["testing"] }

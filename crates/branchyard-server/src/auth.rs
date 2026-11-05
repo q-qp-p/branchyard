@@ -4,7 +4,9 @@
 //! a plaintext token, and nothing here logs or echoes one.
 
 use crate::config::{sha256_hex, AuthenticationOrigin, Credential, GoogleIdTokenConfig, Principal};
+use crate::federated::{AccessToken, Federation, IapConfig, OidcIssuerConfig, Refusal};
 use google_cloud_auth::credentials::idtoken::verifier::{Builder, Verifier};
+use std::sync::Arc;
 use std::time::Duration;
 
 mod policy;
@@ -13,6 +15,7 @@ pub(crate) use policy::{origin_allowed, paired_allowed, recheck_caller};
 pub struct Credentials {
     credentials: Vec<Credential>,
     google: Option<GoogleVerifier>,
+    federation: Option<Federation>,
 }
 
 impl Credentials {
@@ -20,7 +23,36 @@ impl Credentials {
         Credentials {
             credentials,
             google: None,
+            federation: None,
         }
+    }
+
+    /// Add IAP and federated OIDC sign-in. `access` supplies the server's
+    /// token for Cloud Identity group lookups; it is only called when a
+    /// provider sets `groups_from`.
+    pub fn with_federation(
+        mut self,
+        iap: Option<IapConfig>,
+        issuers: Vec<OidcIssuerConfig>,
+        access: Arc<dyn AccessToken>,
+    ) -> Self {
+        if iap.is_some() || !issuers.is_empty() {
+            self.federation = Some(Federation::new(iap, issuers, access));
+        }
+        self
+    }
+
+    /// Authenticate by the IAP assertion header. `None` unless IAP is
+    /// configured and the request carries the header; then any failure is
+    /// final and the request must not fall back to a bearer.
+    pub async fn verify_iap(&self, assertion: Option<&str>) -> Option<Result<Principal, Refusal>> {
+        self.federation.as_ref()?.verify_iap(assertion).await
+    }
+
+    /// Authenticate a bearer ID token from a configured federated issuer.
+    /// `None` when the token names no configured issuer.
+    pub async fn verify_oidc(&self, header: Option<&str>) -> Option<Result<Principal, Refusal>> {
+        self.federation.as_ref()?.verify_oidc(header).await
     }
 
     /// Add Google-only ID-token verification without changing static credentials.

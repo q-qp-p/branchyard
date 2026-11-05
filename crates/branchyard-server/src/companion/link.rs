@@ -158,6 +158,7 @@ fn create_inner(
         tenant: request.tenant.clone(),
         scopes: request.scopes.iter().cloned().collect(),
         repos: request.repos.as_ref().map(|r| r.iter().cloned().collect()),
+        groups: Default::default(),
     };
     if let Some(issuer) = issuer {
         principal.origin = issuer.delegated_to(name.clone()).origin;

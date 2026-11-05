@@ -19,6 +19,9 @@ pub(crate) fn origin_allowed(config: &Config, principal: &Principal) -> bool {
             .google_identity
             .as_ref()
             .is_some_and(|google| google.still_allows(principal)),
+        AuthenticationOrigin::Iap { .. } | AuthenticationOrigin::Oidc { .. } => {
+            crate::federated::still_allows(config.iap.as_ref(), &config.oidc_issuers, principal)
+        }
         AuthenticationOrigin::Configured => {
             let subject = principal.connector_subject();
             let allows = |current: &Principal| {

@@ -489,8 +489,13 @@ pub async fn start(config: Config) -> Result<Running, String> {
     if let Some(sync) = &sync {
         sync.start()?;
     }
-    let credentials =
-        Credentials::new(config.all_credentials()).with_google(config.google_identity.clone());
+    let credentials = Credentials::new(config.all_credentials())
+        .with_google(config.google_identity.clone())
+        .with_federation(
+            config.iap.clone(),
+            config.oidc_issuers.clone(),
+            std::sync::Arc::new(crate::federated::MetadataAccessToken::new(None)),
+        );
     #[cfg(test)]
     let credentials = credentials.with_google_jwks(config.google_jwks_url.as_deref());
     let app = Arc::new(App {

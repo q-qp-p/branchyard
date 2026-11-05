@@ -79,6 +79,7 @@ pub mod console_runtime;
 pub mod console_store;
 pub mod effects_routes;
 pub mod error;
+pub mod federated;
 pub mod feed;
 pub mod knowledge_routes;
 pub mod logging;

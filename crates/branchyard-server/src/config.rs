@@ -96,9 +96,12 @@ pub fn check_scope_name(name: &str) -> Result<(), String> {
 }
 
 pub(crate) fn check_principal(principal: &Principal) -> Result<(), String> {
-    if principal.origin == AuthenticationOrigin::Configured && principal.name.starts_with("google:")
+    if principal.origin == AuthenticationOrigin::Configured
+        && ["google:", "iap:", "oidc:"]
+            .iter()
+            .any(|prefix| principal.name.starts_with(prefix))
     {
-        return Err("the google: principal prefix is reserved for authenticated external identities; rename this static principal".into());
+        return Err("the google:, iap: and oidc: principal prefixes are reserved for authenticated external identities; rename this static principal".into());
     }
     if principal.name.is_empty() || principal.name.len() > 128 {
         return Err(format!(
@@ -157,6 +160,33 @@ pub enum AuthenticationOrigin {
         /// The server audience against which the token was verified.
         audience: String,
     },
+    /// A Google Cloud IAP assertion matched an operator-configured binding.
+    Iap {
+        /// The verified email address, for audit. Never the identity key.
+        email: String,
+        /// The verified IAP subject, such as `accounts.google.com:1234`.
+        sub: String,
+    },
+    /// A federated OIDC token (Workforce or Workload Identity Federation, or
+    /// a plain issuer) matched an operator-configured binding.
+    Oidc {
+        /// The verified issuer.
+        issuer: String,
+        /// The verified subject claim.
+        sub: String,
+    },
+}
+
+impl AuthenticationOrigin {
+    /// Whether an external identity provider vouched for this origin.
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(
+            self,
+            AuthenticationOrigin::GoogleIdToken { .. }
+                | AuthenticationOrigin::Iap { .. }
+                | AuthenticationOrigin::Oidc { .. }
+        )
+    }
 }
 
 /// An exact external identity mapped to existing server authorization policy.
@@ -270,6 +300,10 @@ pub struct Principal {
     /// `None` allows every repository its tenant allows.
     #[serde(default)]
     pub repos: Option<BTreeSet<String>>,
+    /// Groups the identity provider asserted, or Cloud Identity returned.
+    /// Empty for static credentials. Not part of the grant ceiling.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub groups: BTreeSet<String>,
 }
 
 impl Principal {
@@ -288,9 +322,7 @@ impl Principal {
             }
             origin = parent;
         }
-        if matches!(self.origin, AuthenticationOrigin::Paired { .. })
-            && matches!(origin, AuthenticationOrigin::GoogleIdToken { .. })
-        {
+        if matches!(self.origin, AuthenticationOrigin::Paired { .. }) && origin.is_external() {
             let mut root = self.clone();
             root.origin = origin.clone();
             if root.connector_subject() != subject {
@@ -320,6 +352,7 @@ impl Principal {
             tenant: DEFAULT_TENANT.to_owned(),
             scopes: SCOPES.iter().map(|s| s.to_string()).collect(),
             repos: None,
+            groups: BTreeSet::new(),
         }
     }
 
@@ -334,6 +367,14 @@ impl Principal {
             } => {
                 let identity = serde_json::json!([issuer, subject]).to_string();
                 format!("google:{}", sha256_hex(identity.as_bytes()))
+            }
+            AuthenticationOrigin::Iap { sub, .. } => {
+                let identity = serde_json::json!(["https://cloud.google.com/iap", sub]).to_string();
+                format!("iap:{}", sha256_hex(identity.as_bytes()))
+            }
+            AuthenticationOrigin::Oidc { issuer, sub } => {
+                let identity = serde_json::json!([issuer, sub]).to_string();
+                format!("oidc:{}", sha256_hex(identity.as_bytes()))
             }
         }
     }
@@ -670,6 +711,10 @@ pub struct Config {
     pub credentials: Vec<Credential>,
     /// Optional Google-only verified caller admission.
     pub google_identity: Option<GoogleIdTokenConfig>,
+    /// Sign-in through Google Cloud IAP (`x-goog-iap-jwt-assertion`).
+    pub iap: Option<crate::federated::IapConfig>,
+    /// Federated OIDC issuers whose bearer ID tokens are accepted.
+    pub oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     #[cfg(test)]
     pub(crate) google_jwks_url: Option<String>,
     /// Each tenant's resource ceilings and repositories, keyed by tenant
@@ -957,6 +1002,8 @@ impl Config {
             principals: BTreeMap::new(),
             credentials: Vec::new(),
             google_identity: None,
+            iap: None,
+            oidc_issuers: Vec::new(),
             #[cfg(test)]
             google_jwks_url: None,
             tenants: BTreeMap::new(),
@@ -1117,9 +1164,12 @@ impl Config {
         if let Some(identity) = &self.google_identity {
             identity.validate()?;
         }
+        crate::federated::validate(self.iap.as_ref(), &self.oidc_issuers)?;
         if self.tokens.is_empty()
             && self.credentials.is_empty()
             && self.google_identity.is_none()
+            && self.iap.is_none()
+            && self.oidc_issuers.is_empty()
             && !self.worker_only
         {
             return Err("no tokens or credentials configured; every request needs one".into());
@@ -1586,6 +1636,9 @@ pub(crate) struct FileConfig {
     #[serde(default)]
     credentials: Vec<FileCredential>,
     google_identity: Option<GoogleIdTokenConfig>,
+    iap: Option<crate::federated::IapConfig>,
+    #[serde(default)]
+    oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     #[serde(default)]
     tenants: BTreeMap<String, FileTenantPolicy>,
     tls: Option<FileTls>,
@@ -2017,6 +2070,10 @@ pub struct Partial {
     pub credentials: Vec<Credential>,
     /// Optional Google-only verified caller admission.
     pub google_identity: Option<GoogleIdTokenConfig>,
+    /// Optional Google Cloud IAP sign-in.
+    pub iap: Option<crate::federated::IapConfig>,
+    /// Federated OIDC issuers.
+    pub oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     pub tenants: BTreeMap<String, TenantPolicy>,
     pub tls: Option<TlsFiles>,
     pub max_body_bytes: Option<usize>,
@@ -2128,6 +2185,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => token.scopes.into_iter().collect(),
                 },
                 repos: token.repos.map(|r| r.into_iter().collect()),
+                groups: Default::default(),
             };
             principals.insert(token.name.clone(), principal);
         }
@@ -2152,6 +2210,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => credential.scopes.into_iter().collect(),
                 },
                 repos: credential.repos.map(|r| r.into_iter().collect()),
+                groups: Default::default(),
             },
         });
     }
@@ -2287,6 +2346,8 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
         principals,
         credentials,
         google_identity: file.google_identity,
+        iap: file.iap,
+        oidc_issuers: file.oidc_issuers,
         tenants,
         tls: file.tls.map(|t| TlsFiles {
             cert: resolve(t.cert),

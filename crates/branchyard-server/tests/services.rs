@@ -69,6 +69,7 @@ fn a_server_describes_itself_and_its_services_and_takes_registrations() {
             tenant: "default".into(),
             scopes: ["read"].into_iter().map(String::from).collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     let server = Server::start(config);

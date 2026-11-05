@@ -689,6 +689,8 @@ fn build(flags: Flags) -> Result<(Config, Vec<String>), String> {
         && token_files.is_empty()
         && partial.credentials.is_empty()
         && partial.google_identity.is_none()
+        && partial.iap.is_none()
+        && partial.oidc_issuers.is_empty()
         && !flags.worker
     {
         let path = data_dir.join("token");
@@ -732,6 +734,8 @@ fn build(flags: Flags) -> Result<(Config, Vec<String>), String> {
     config.principals = partial.principals;
     config.credentials = partial.credentials;
     config.google_identity = partial.google_identity;
+    config.iap = partial.iap;
+    config.oidc_issuers = partial.oidc_issuers;
     config.tenants = partial.tenants;
     config.tls = match (flags.tls_cert, flags.tls_key) {
         (Some(cert), Some(key)) => Some(TlsFiles { cert, key }),

@@ -999,6 +999,23 @@ async fn jwks(State(app): State<Shared>) -> Response {
     }
 }
 
+/// A federated identity's caller, or the response that refuses it. Like a
+/// Google workload credential, it cannot use companion pairing.
+fn federated_caller(
+    path: &str,
+    result: Result<crate::config::Principal, crate::federated::Refusal>,
+) -> Result<(crate::config::Principal, Option<crate::companion::Verified>), ApiError> {
+    let principal = result.map_err(ApiError::from)?;
+    if path.starts_with("/v1/app/") {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "machine_pairing_unsupported",
+            "federated identities cannot use companion pairing or push subscriptions",
+        ));
+    }
+    Ok((principal, None))
+}
+
 /// `GET /metrics`: Prometheus metrics, for a principal with the `admin`
 /// scope or the metrics token; `404` unless metrics are configured. See
 /// `docs/observability.md`.
@@ -1009,9 +1026,24 @@ async fn metrics_route(State(app): State<Shared>, headers: HeaderMap) -> Respons
     let header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
-    let principal = match app.credentials.verify(header) {
-        Some(principal) => Some(principal.clone()),
-        None => app.credentials.verify_google(header).await,
+    let iap = headers
+        .get(crate::federated::IAP_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let principal = if let Some(result) = app.credentials.verify_iap(iap).await {
+        match result {
+            Ok(principal) => Some(principal),
+            Err(refusal) => return ApiError::from(refusal).into_response(),
+        }
+    } else if let Some(principal) = app.credentials.verify(header) {
+        Some(principal.clone())
+    } else if let Some(principal) = app.credentials.verify_google(header).await {
+        Some(principal)
+    } else {
+        match app.credentials.verify_oidc(header).await {
+            Some(Ok(principal)) => Some(principal),
+            Some(Err(refusal)) => return ApiError::from(refusal).into_response(),
+            None => None,
+        }
     };
     let operator = principal
         .as_ref()
@@ -1168,7 +1200,19 @@ async fn authenticate(State(app): State<Shared>, mut request: Request, next: Nex
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok());
-    let verified = if let Some(principal) = app.credentials.verify(header) {
+    // An IAP assertion, when IAP is configured, is the only credential that
+    // counts: a failure ends the request instead of trying a bearer.
+    let iap = request
+        .headers()
+        .get(crate::federated::IAP_HEADER)
+        .and_then(|v| v.to_str().ok());
+    let path = request.uri().path().to_owned();
+    let verified = if let Some(result) = app.credentials.verify_iap(iap).await {
+        match federated_caller(&path, result) {
+            Ok(caller) => Some(caller),
+            Err(error) => return error.into_response(),
+        }
+    } else if let Some(principal) = app.credentials.verify(header) {
         Some((
             principal.clone(),
             Some(crate::companion::configured(header)),
@@ -1183,6 +1227,11 @@ async fn authenticate(State(app): State<Shared>, mut request: Request, next: Nex
             .into_response();
         }
         Some((principal, None))
+    } else if let Some(result) = app.credentials.verify_oidc(header).await {
+        match federated_caller(&path, result) {
+            Ok(caller) => Some(caller),
+            Err(error) => return error.into_response(),
+        }
     } else {
         crate::companion::verify_paired(&app, header)
             .await
