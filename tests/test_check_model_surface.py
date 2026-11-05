@@ -171,10 +171,23 @@ class Repository(unittest.TestCase):
         self.assertEqual(found, [])
         self.assertEqual(len(held), len(check.STATED_LIMITS))
 
+    def test_every_tools_list_case_and_the_plain_work_turn_has_a_cap(self):
+        caps = check.load()
+        for case in check.TOOL_CASES:
+            self.assertIn(case, caps)
+        table = check.groups()
+        self.assertIn("work-turn-no-helpers", table)
+        self.assertNotIn(check.MCP_CORE, table["work-turn-no-helpers"])
+        self.assertEqual(len(check.reserved_line("pub(crate) const LINE_BUDGET: usize = 300;")), 300)
+        with self.assertRaises(check.Unreadable):
+            check.reserved_line("nothing")
+
     def test_a_spawning_branch_and_a_leaf_are_given_the_mcp_instructions(self):
         table = check.groups()
-        self.assertIn(check.MCP, table["spawning-branch"])
-        self.assertIn(check.MCP, table["leaf-branch"])
+        self.assertIn(check.MCP_CORE, table["spawning-branch"])
+        self.assertIn(check.MCP_DELEGATION, table["spawning-branch"])
+        self.assertIn(check.MCP_CORE, table["leaf-branch"])
+        self.assertNotIn(check.MCP_DELEGATION, table["leaf-branch"])
         self.assertNotIn("skill:delegate", table)
 
 

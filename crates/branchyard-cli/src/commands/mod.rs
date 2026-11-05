@@ -371,9 +371,12 @@ pub fn mcp(root: &str, branch: &str) -> Outcome {
 }
 
 /// `by mcp --list-tools`: the tools `by mcp` serves, with their input
-/// schemas, as the MCP `tools/list` result. Needs no branch or token.
+/// schemas, as the MCP `tools/list` result. Needs no branch or token. With
+/// `BRANCHYARD_MCP_SURFACE` set (`core`, `core,storage`, `core,delegation,storage`)
+/// it lists what a branch with those grants is shown.
 pub fn mcp_tools() -> Outcome {
-    let listing = serde_json::json!({ "tools": branchyard_mcp::tools() });
+    let surface = branchyard::operations::Surface::from_env();
+    let listing = serde_json::json!({ "tools": branchyard_mcp::tools_for(surface) });
     print(&format!("{}\n", to_json(&listing)))
 }
 

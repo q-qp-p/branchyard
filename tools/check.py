@@ -216,6 +216,7 @@ STEPS = (
     # What one agent is given stays under its cap, and the numbers it states are the code's.
     Step("check_model_surface", "fast", (PY, "tools/check_model_surface.py")),
     Step("test_check_model_surface", "fast", (PY, "tests/test_check_model_surface.py")),
+    Step("test_find_tools", "fast", (PY, "tests/test_find_tools.py")),
     # The lint table's exceptions only fall, and every crate inherits the table.
     Step("check_lint_ratchet", "controls", (PY, "tools/check_lint_ratchet.py")),
     Step("test_check_lint_ratchet", "controls", (PY, "tests/test_check_lint_ratchet.py")),

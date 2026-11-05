@@ -88,7 +88,7 @@ Every turn of a branch that was given delegation gets these, for the duration of
 | `by` | `BRANCHYARD_BY`, and `by`'s directory first on `PATH` |
 | The Python modules | `.branchyard/sdk/python/`, first on `PYTHONPATH`: `branchyard.py`, and the `branchyard_client.py` whose error classes it raises and whose `connect()` runs the same script outside a turn ([SDKs](sdk.md#one-api-inside-and-outside-a-harness)) |
 | The MCP server | `by mcp --root <root> --branch <name>`, projected per harness (below); `by mcp --list-tools` prints its tools with their input schemas as JSON, with no branch or token |
-| Instructions | The delegation skill for a branch that may spawn; for a leaf, a short note ([`plugins/branchyard/leaf.md`](../plugins/branchyard/leaf.md)) on what it may do. Projected per harness (below) |
+| Instructions | The delegation skill for a branch with helpers (`max_depth` above 0 and `max_children` above 0); for any other, a short note ([`plugins/branchyard/leaf.md`](../plugins/branchyard/leaf.md)) on what it may do. Projected per harness (below) |
 
 What the token may do is the branch's capabilities, not its depth: every token acts as its own branch only, on itself (`inspect`, `events`, `check`, `graph`, `children`, and `wait`, which a leaf, with no children, never blocks in), on the artifacts and scratch areas it may reach under [storage](storage.md)'s grants (its own, its ancestors' and descendants', and what was shared to it), and on its parent's inbox (`ask`, `report`, `escalate`, its own `inbox`), and it states its own status (`report_status`). Spawning and acting on descendants (`spawn`, `send`, `steer`, `integrate`, `cancel`, `discard`, `answer`, the plan and approval answers, `graph apply`) need an envelope whose `max_depth` is above 0; a leaf asking for them is refused `denied`, with the reason. So a leaf can publish what it made, ask its parent a question and wait for the answer, and report, but never touch another branch's work.
 
@@ -220,19 +220,26 @@ The module is standard library only. It finds `by` from `BRANCHYARD_BY`, else on
 import branchyard
 
 me = branchyard.inspect()
-child = branchyard.spawn("Port the tokenizer to the new API; run its tests",
-                         harness="codex", name="tokenizer",
-                         budget_usd=(me.remaining_usd or 0) / 2)
+child = branchyard.spawn(
+    "Port the tokenizer to the new API; run its tests",
+    harness="codex",
+    name="tokenizer",
+    budget_usd=(me.remaining_usd or 0) / 2,
+)
 done = branchyard.wait(child.name, timeout=1800)
 if done.status.state == "ready":
     branchyard.integrate(child.name)
 
 # Or hand the engine the whole split and end the turn: each child lands in
 # this branch when it is ready, and the next turn says what landed.
-branchyard.delegate([
-    {"name": "lexer", "prompt": "Write the lexer", "owns": ["src/lexer"]},
-    {"name": "parser", "prompt": "Write the parser", "owns": ["src/parser"]},
-], brief="Tokens are the Token type in src/token.rs.", land=True)
+branchyard.delegate(
+    [
+        {"name": "lexer", "prompt": "Write the lexer", "owns": ["src/lexer"]},
+        {"name": "parser", "prompt": "Write the parser", "owns": ["src/parser"]},
+    ],
+    brief="Tokens are the Token type in src/token.rs.",
+    land=True,
+)
 ```
 
 Its source is [`sdk/python/branchyard.py`](../sdk/python/branchyard.py); the engine installs the same file, with [`branchyard_client.py`](../sdk/python/branchyard_client.py) beside it, for each delegating turn.
@@ -260,7 +267,7 @@ me.integrate_all(&["tokenizer", "formatter"])?;
 
 ## MCP tools
 
-`spawn` (with `result: {schema, required?}`, [result contract](#result-contract)), `delegate` (`{tasks, brief?, land?, review?}`, [plans](#plans-and-the-shared-brief)), `brief` (`{text?}`), `inspect`, `events`, `send`, `steer` (`{branch, text}`), `propose_integration` (`{branch}`, or `{branches}` to integrate several together), `check` (`{branch?}`, returning `CheckReport`), `wait` (`{branches?, any?, timeout_seconds?}`, returning `Waited`), `cancel`, `discard` (`{branch, reason?}`), `children`, `apply_graph` (`{expected_revision, edits}`) and `graph` (`{branch?}`) ([task graphs](graph.md)), `advise` (`{prompt, kind?}`, returning `Advice`: the candidates with availability and recorded outcomes, the router's pick, the budget left and notes; [fleet](fleet.md#advice)), the storage tools (`publish_artifact`, `list_artifacts`, `get_artifact`, `share_artifact`, `create_scratch`, `list_scratch`, `share_scratch`, `lock_scratch`, `unlock_scratch`; see [storage](storage.md)), `ask`, `report` (`{text, result?}`), `escalate`, `report_status` (`{state, summary, link?}`, returning `Reported`), `answer` and `inbox` (`{unread?}`), `approve_plan` (`{branch, edited?}`) and `reject_plan` (`{branch, reason?, replan?}`) ([plans](plans-and-goals.md#delegated-children)), `answer_approval` (`{id, allow, reason?}`, [effects](effects.md)), with the arguments of the CLI flags (`spawn`'s `plan` makes the child plan first, its `why` records the reason for its harness and model, its `owns` gives the paths it owns ([ownership](#ownership)), its `land` leaves it to the engine to land ([landing](#landing)), and its `review` (`{harness, model?, rubric?, budget_usd?}`) has a reviewer read its work first ([review](#review))) (`budget` is `{max_usd, max_turns, max_minutes}`, or give the flat `budget_usd`, `max_turns` and `max_minutes` the CLI and Python use, in `spawn` and in a spawn edit of `apply_graph`, but not both; `check`, `harnesses`, `deny`, `depends_on` and `connectors` are arrays; `seat` names a rig seat; `bindings` is `[{scratch, access}]`; `ask`'s `wait_seconds` blocks for an answer). Refusals come back as tool results with `isError: true` and the reason, so the model can adjust; a malformed call is a JSON-RPC error. A leaf's server lists the same tools, and refuses the ones its token does not reach. The server uses the official Rust SDK, `rmcp` 3.4, server role and stdio transport only. It is `by mcp`, or the standalone `branchyard-mcp` binary.
+`spawn` (with `result: {schema, required?}`, [result contract](#result-contract)), `delegate` (`{tasks, brief?, land?, review?}`, [plans](#plans-and-the-shared-brief)), `brief` (`{text?}`), `inspect`, `events`, `send`, `steer` (`{branch, text}`), `propose_integration` (`{branch}`, or `{branches}` to integrate several together), `check` (`{branch?}`, returning `CheckReport`), `wait` (`{branches?, any?, timeout_seconds?}`, returning `Waited`), `cancel`, `discard` (`{branch, reason?}`), `children`, `apply_graph` (`{expected_revision, edits}`) and `graph` (`{branch?}`) ([task graphs](graph.md)), `advise` (`{prompt, kind?}`, returning `Advice`: the candidates with availability and recorded outcomes, the router's pick, the budget left and notes; [fleet](fleet.md#advice)), the storage tools (`publish_artifact`, `list_artifacts`, `get_artifact`, `share_artifact`, `create_scratch`, `list_scratch`, `share_scratch`, `lock_scratch`, `unlock_scratch`; see [storage](storage.md)), `ask`, `report` (`{text, result?}`), `escalate`, `report_status` (`{state, summary, link?}`, returning `Reported`), `answer` and `inbox` (`{unread?}`), `approve_plan` (`{branch, edited?}`) and `reject_plan` (`{branch, reason?, replan?}`) ([plans](plans-and-goals.md#delegated-children)), `answer_approval` (`{id, allow, reason?}`, [effects](effects.md)), with the arguments of the CLI flags (`spawn`'s `plan` makes the child plan first, its `why` records the reason for its harness and model, its `owns` gives the paths it owns ([ownership](#ownership)), its `land` leaves it to the engine to land ([landing](#landing)), and its `review` (`{harness, model?, rubric?, budget_usd?}`) has a reviewer read its work first ([review](#review))) (`budget` is `{max_usd, max_turns, max_minutes}`, or give the flat `budget_usd`, `max_turns` and `max_minutes` the CLI and Python use, in `spawn` and in a spawn edit of `apply_graph`, but not both; `check`, `harnesses`, `deny`, `depends_on` and `connectors` are arrays; `seat` names a rig seat; `bindings` is `[{scratch, access}]`; `ask`'s `wait_seconds` blocks for an answer). Refusals come back as tool results with `isError: true` and the reason, so the model can adjust; a malformed call is a JSON-RPC error. The server lists the tools the branch's grants reach (`BRANCHYARD_MCP_SURFACE`, set by the engine): without helpers it omits `spawn`, `delegate`, `graph`, `propose_integration`, `apply_graph`, `wait`, `children`, `brief`, `send`, `steer`, `cancel`, `discard`, `advise`, `handoff`, `answer`, the plan and approval answers; without helpers or a result contract it also omits the artifact and scratch tools. It lists 8 tools to a plain leaf, 17 with a result contract, and 35 to a branch with helpers. A tool left out is still refused by the engine if called. A server started without the variable lists all. The instructions follow the same split, and carry no operator text; the operator notes the instructions used to hold are under [Operator notes](#operator-notes). The server uses the official Rust SDK, `rmcp` 3.4, server role and stdio transport only. It is `by mcp`, or the standalone `branchyard-mcp` binary.
 
 ## Inbox
 
@@ -610,6 +617,19 @@ Children run on threads of the process that runs their parent's turn, whether th
 Steered input is never queued for a later turn: input the running turn does not take is refused, and `send` without `--steer` starts the next turn. When the harness takes the input depends on its protocol ([harness integration](harness-integration.md#steering-a-running-turn)): Claude Code, Pi and Codex before their next model call, claude-agent-acp at once, interrupting the response in progress but not the turn. A child whose harness cannot take input mid-turn (Amp, Antigravity, an ACP agent without the steering extension) is refused with the reason, never interrupted in its place; a child with no running turn is `not_running`, and `send` continues it instead. The child's budget and permissions do not change.
 
 A child's own spend counts against every ancestor through the reservations, and its actual spend against every ancestor's limit through the tree ([what a cost limit guarantees](#what-a-cost-limit-guarantees)). `inspect` reports `subtree_cost_usd`, the reported spend of a branch and its descendants.
+
+## Operator notes
+
+These sentences were in the MCP instructions every branch was given. They are for the person running Branchyard, not for a harness, and live here now.
+
+- Substrate setup is an operator action outside a harness: `by substrate setup` prepares the saved template; `by substrate check --smoke` verifies bridge execution and cleanup without a model. `by up` and `by doctor` report the saved connection and remote credential readiness, in seven readiness checks; only a verified one was established by that run. `by up --plan --smoke` also lists Substrate workers, creating no actor and calling no model.
+- `by setup --guided` selects a repository and compute backend. `by setup --up --json` includes readiness in one report; `--directory PATH` selects the repository.
+- `by compute gce --project PROJECT --zone ZONE --name NAME --tunnel-through-iap` reviews an offline JSON plan; `--apply` provisions the VM and its dedicated IAP TCP 22 firewall rule. `--internal-ip` omits an external address. `--service-account EMAIL` attaches that account with the cloud-platform scope, so its IAM roles decide API access; `--scopes` narrows it. The command refuses harness sessions and `--remote`. `--gvisor` installs the pinned gVisor Docker runtime; Container execution needs permission to use the worker's local Docker socket.
+- For GKE, `tools/substrate_gke.py --atenet-dataplane=agentgateway` with the target options pins a compatible gateway in a private source export before installation.
+- `by mcp manager --url URL --token-file FILE` (optionally `--ca-file FILE`) manages authorized code and knowledge workspaces over a separate HTTP principal; it is not added to a branch's server. For a repository-free console, `by serve --app --knowledge` keeps configured storage and quotas and does not expand a branch's grant. `BRANCHYARD_MANAGER_TOKEN` is reserved for that operator and is never forwarded to native harnesses. Manager tool outputs have a bounded JSON budget, with explicit errors for oversized responses. The manager's `start_session` accepts an explicit `unapproved_tools` acknowledgment for profiles without routed approvals, still subject to server permission, and a `preset` an operator can require. Its `workspace_action` requires the `revision` from `inspect_workspace`; on `revision_conflict`, inspect again before explicitly proposing a new action.
+- `--provider container` or `--provider agent-sandbox` with a digest-pinned `--image`, `--cpus`, `--memory` and `--pass-env`; Agent Sandbox also needs `--kube-context` and `--kube-namespace`. `--sandbox-runtime` defaults to gvisor (`runc` applies only to Container, `microvm` only to Agent Sandbox). `--sandbox-network` defaults to deny; unrestricted permits ordinary networking. Container permits cloud metadata; Agent Sandbox retains its GKE metadata blocks. Native providers destroy allocations after each turn and refuse retention, snapshots and required hostname allowlists.
+- `by obligations [BRANCH] --json` lists durable work owed; it refuses `--remote`.
+- Trusting a repository's skills (`by skills trust`) is a person's decision, made outside any branch. `by skills ls` shows the skills a branch runs with, staged or withheld and why.
 
 ## Not guaranteed
 

@@ -19,9 +19,13 @@
 //!   harness gets it over HTTP from this host instead
 //!   ([`crate::endpoint`]), and none of the variables above, which name
 //!   this host's paths and the broker's token.
-//! - Standing instructions: the delegation skill for a branch that may
-//!   spawn, a short note on what a leaf may do for one that may not (see
-//!   [`branchyard_harness::Instructions`]).
+//!   The server lists only the tools the grant reaches
+//!   ([`crate::operations::Surface`], named in [`crate::operations::ENV_SURFACE`]):
+//!   the delegation tools for a branch with helpers, the artifact and
+//!   scratch tools for one with helpers or a result contract.
+//! - Standing instructions: the delegation skill for a branch with helpers
+//!   (it may spawn and its envelope allows a child), a short note on what a
+//!   leaf may do for one without (see [`branchyard_harness::Instructions`]).
 //!
 //! The Python module and the skill are written under `.branchyard/`, which
 //! git ignores through `info/exclude`, never into the branch's worktree, so
@@ -50,6 +54,7 @@ use branchyard_harness::{Instructions, McpServer, RemoteMcpServer};
 use serde::{Deserialize, Serialize};
 
 use crate::broker::Broker;
+use crate::operations::{Surface, ENV_SURFACE};
 use crate::state::Record;
 use crate::{harness, Budget, Error, Policy, TaskOptions, Yard};
 
@@ -437,7 +442,14 @@ pub(crate) fn project(
     let Some(grant) = record.grant.as_ref() else {
         return Ok(None);
     };
-    let spawns = grant.can_spawn();
+    let spawns = grant.has_helpers();
+    // The MCP tools it is shown follow what it was granted: delegation
+    // with helpers, the artifact and scratch tools with somewhere to put
+    // outputs (a result contract, or children to bind scratch areas to).
+    let surface = Surface {
+        delegation: spawns,
+        storage: spawns || record.result_contract.is_some(),
+    };
     let name = record.info.name.clone();
     let tools = tools(options)?;
     let store = yard.store();
@@ -494,7 +506,10 @@ pub(crate) fn project(
                 .cloned()
                 .chain(["--root".into(), root, "--branch".into(), name.clone()])
                 .collect(),
-            env: vec![(ENV_TOKEN.into(), token.clone())],
+            env: vec![
+                (ENV_TOKEN.into(), token.clone()),
+                (ENV_SURFACE.into(), surface.render()),
+            ],
         },
         remote: None,
         env,

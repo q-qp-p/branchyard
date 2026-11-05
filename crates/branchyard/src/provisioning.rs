@@ -299,27 +299,28 @@ pub(crate) const WORKSPACE_NOTE: &str = "Branchyard runs you on your own git bra
 
 /// The task's own instructions, then what its parent assigned it (the paths
 /// it owns, the shared brief), then the repository knowledge given this
-/// turn, then the connectors' line, then [`WORKSPACE_NOTE`]. The note
-/// alone is given only where a harness takes instructions apart from the
-/// prompt (`note_alone`): an ACP harness gets them prepended to its first
-/// prompt, which a note on its own should not change.
+/// turn, then [`WORKSPACE_NOTE`]. The connectors and skills are one line,
+/// the tool tree's, given with the prompt (`Provisioned::capabilities`); a
+/// turn with connectors still gets the note, as when it had its own line.
+/// The note alone is given only where a harness takes instructions apart
+/// from the prompt (`note_alone`): an ACP harness gets them prepended to
+/// its first prompt, which a note on its own should not change.
 fn own_instructions(
     own: Option<&str>,
     assignment: Option<&str>,
     knowledge: Option<&str>,
-    connectors: Option<&crate::connectors::Prepared>,
+    has_connectors: bool,
     note_alone: bool,
 ) -> Option<String> {
     let mut parts: Vec<&str> = [
         own.filter(|t| !t.trim().is_empty()),
         assignment.filter(|t| !t.trim().is_empty()),
         knowledge.filter(|t| !t.trim().is_empty()),
-        connectors.map(|c| c.instruction.as_str()),
     ]
     .into_iter()
     .flatten()
     .collect();
-    if note_alone || !parts.is_empty() {
+    if note_alone || has_connectors || !parts.is_empty() {
         parts.push(WORKSPACE_NOTE);
     }
     (!parts.is_empty()).then(|| parts.join("\n\n"))
@@ -381,12 +382,18 @@ pub(crate) fn prepare(
         crate::skills::ForTurn::Staged(set) => Some(set),
         crate::skills::ForTurn::Nothing | crate::skills::ForTurn::Withheld(_) => None,
     };
-    let capabilities = crate::capabilities::stage(
+    let capabilities = crate::capabilities::stage(&capability_home, repository, spec.skills.as_deref())?;
+    let granted_connectors = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
+    let tools = crate::tooltree::mount(
         &capability_home,
         capability_guest,
-        repository,
-        spec.skills.as_deref(),
+        &capabilities.listed,
+        &granted_connectors,
     )?;
+    let native_links = match record.home.as_deref() {
+        Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.listed)?,
+        None => Vec::new(),
+    };
     let skill_set = crate::skills::skill_set(capabilities.built_in, skills);
     // Branchyard's own server first, then the task's, with the variables
     // they take from secrets. A sandboxed harness gets Branchyard's over
@@ -437,7 +444,7 @@ pub(crate) fn prepare(
                 spec.instructions.as_deref(),
                 assignment,
                 knowledge.and_then(|k| k.text.as_deref()),
-                connectors,
+                connectors.is_some(),
                 // A delegating branch has it in its skill.
                 projection.is_none()
                     && matches!(
@@ -477,6 +484,8 @@ pub(crate) fn prepare(
     };
     let mut files: Vec<String> = applied.written.into_iter().chain(applied.removed).collect();
     files.extend(capabilities.written);
+    files.extend(tools.written);
+    files.extend(native_links);
     let mut plan_env = plan.env;
     if let Some(connectors) = connectors {
         files.extend(connectors.files.iter().cloned());
@@ -510,7 +519,7 @@ pub(crate) fn prepare(
         })
         .collect();
     Ok(Provisioned {
-        capabilities: capabilities.instruction,
+        capabilities: tools.line,
         env: plan_env,
         session: plan.session,
         mcp_config_file,

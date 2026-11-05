@@ -675,6 +675,12 @@
       "topic": "runtime"
     },
     {
+      "id": "find-tools",
+      "description": "Search the tools mounted for this turn (skills, connector operations, helpers) with BM25, then show one or print an operation's schema.",
+      "requires": [],
+      "topic": "runtime"
+    },
+    {
       "id": "docx",
       "description": "Create, inspect, update and validate editable Word DOCX documents, preserving source files and checking layout when needed.",
       "requires": [

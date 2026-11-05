@@ -105,6 +105,55 @@ fn initialize_lists_the_tools_and_calls_answer_without_an_engine() {
     assert!(client.finish().success());
 }
 
+/// A branch whose grants reach only the core tools is listed only those,
+/// and told nothing of delegation; calling a tool it is not shown is still
+/// refused as before, as a tool error.
+#[test]
+fn a_server_started_for_a_branch_without_helpers_lists_and_says_only_the_core() {
+    let root = temp_root("core");
+    let mut client = Client::start_with_surface(&root, "b", "t0k", "core");
+    let init = client.initialize();
+    let said = init["result"]["instructions"].as_str().unwrap();
+    assert!(said.contains("report_status"), "{said}");
+    assert!(
+        !said.contains("delegate") && !said.contains("Substrate"),
+        "{said}"
+    );
+    let listed = client.request("tools/list", json!({}));
+    let mut names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "ask",
+            "check",
+            "escalate",
+            "events",
+            "inbox",
+            "inspect",
+            "report",
+            "report_status"
+        ]
+    );
+    let (error, text) = client.call("spawn", json!({"prompt": "x"}));
+    assert!(error, "{text}");
+    assert!(text.contains("no running turn"), "{text}");
+    // With storage granted and delegation not, the artifact tools appear.
+    let mut outputs = Client::start_with_surface(&root, "b", "t0k", "core,storage");
+    outputs.initialize();
+    let listed = outputs.request("tools/list", json!({}));
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let has = |name: &str| tools.iter().any(|t| t["name"] == name);
+    assert!(has("publish_artifact") && has("create_scratch"));
+    assert!(!has("spawn") && !has("wait"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn a_token_that_matches_no_running_turn_or_another_branch_is_refused_locally() {
     let root = temp_root("forged");

@@ -266,7 +266,11 @@ fn the_harness_sees_its_provisioned_home_and_the_secret_stays_there() {
         provisioned
             .1
             .iter()
-            .filter(|path| !path.starts_with(".branchyard/capabilities/"))
+            .filter(|path| {
+                !path.starts_with(".branchyard/capabilities/")
+                    && !path.starts_with(".branchyard/tools/")
+                    && !path.starts_with(".codex/skills/")
+            })
             .cloned()
             .collect::<Vec<_>>(),
         [

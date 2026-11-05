@@ -344,7 +344,7 @@ fn cancel_stops_a_running_child_and_its_subtree() {
     let answer = inspected["last_message"].as_str().unwrap();
     assert!(answer.starts_with("echo: "), "{said}");
     assert!(
-        answer.contains("/.branchyard/capabilities/INDEX.md"),
+        answer.contains("/.branchyard/tools/INDEX.md") && answer.contains("bin/tools search"),
         "{said}"
     );
     assert!(answer.ends_with("\n\nsay again"), "{said}");

@@ -1018,6 +1018,82 @@ pub fn by_tool(tool: &str) -> Option<&'static Operation> {
     OPERATIONS.iter().find(|o| o.tool == Some(tool))
 }
 
+/// The variable naming the groups of MCP tools a turn's server lists
+/// ([`Surface`]); the engine sets it, and a server without it lists all.
+pub const ENV_SURFACE: &str = "BRANCHYARD_MCP_SURFACE";
+
+/// Tools that read or arrange a branch's children, though a token holds
+/// them without delegation: a branch with no helpers has no use for them.
+const DELEGATION_READS: &[&str] = &["children", "graph", "wait", "advise"];
+
+/// Which MCP tools a turn's server lists: the core ones every branch has
+/// (`inspect`, `events`, `check`, and the messaging tools), the delegation
+/// tools only a branch with helpers has, and the artifact and scratch tools
+/// only a branch with somewhere to put outputs has. It follows what the
+/// turn was granted, so a plain turn is not shown 35 tools it cannot call.
+/// A tool left out is still refused if called, by the engine, as before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Surface {
+    /// Spawn, delegate, graph, integrate, wait and the rest.
+    pub delegation: bool,
+    /// The artifact and scratch tools.
+    pub storage: bool,
+}
+
+impl Surface {
+    /// Every tool.
+    pub const ALL: Surface = Surface {
+        delegation: true,
+        storage: true,
+    };
+    /// The core tools alone.
+    pub const CORE: Surface = Surface {
+        delegation: false,
+        storage: false,
+    };
+
+    /// The groups in `text`, comma-separated: `core`, `delegation`,
+    /// `storage`. An unknown word names no group.
+    pub fn parse(text: &str) -> Surface {
+        let has = |word: &str| text.split(',').any(|part| part.trim() == word);
+        Surface {
+            delegation: has("delegation"),
+            storage: has("storage"),
+        }
+    }
+
+    /// The surface of [`ENV_SURFACE`]: [`Surface::ALL`] when it is unset.
+    pub fn from_env() -> Surface {
+        match std::env::var(ENV_SURFACE) {
+            Ok(text) => Surface::parse(&text),
+            Err(_) => Surface::ALL,
+        }
+    }
+
+    /// The text [`Surface::parse`] reads back; never empty.
+    pub fn render(self) -> String {
+        let mut groups = vec!["core"];
+        if self.delegation {
+            groups.push("delegation");
+        }
+        if self.storage {
+            groups.push("storage");
+        }
+        groups.join(",")
+    }
+
+    /// Whether the server lists `operation`.
+    pub fn holds(self, operation: &Operation) -> bool {
+        match operation.capability {
+            Capability::Delegate => self.delegation,
+            Capability::Storage => self.storage,
+            Capability::Own | Capability::Message => {
+                self.delegation || !DELEGATION_READS.contains(&operation.name)
+            }
+        }
+    }
+}
+
 /// Whether `words` (a `by` command line after the program) runs an
 /// operation a harness may run on its own branch: what
 /// [`crate::Policy::allow_delegation_commands`] allows.
@@ -1083,6 +1159,101 @@ pub const SHARED_TASK_FLAGS: &[&str] = &[
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    fn listed(surface: Surface) -> Vec<&'static str> {
+        tools()
+            .filter(|o| surface.holds(o))
+            .filter_map(|o| o.tool)
+            .collect()
+    }
+
+    #[test]
+    fn a_surface_lists_the_tools_its_grants_reach() {
+        let mut core = listed(Surface::CORE);
+        core.sort_unstable();
+        assert_eq!(
+            core,
+            [
+                "ask",
+                "check",
+                "escalate",
+                "events",
+                "inbox",
+                "inspect",
+                "report",
+                "report_status"
+            ]
+        );
+        for hidden in [
+            "spawn",
+            "delegate",
+            "graph",
+            "propose_integration",
+            "apply_graph",
+            "wait",
+            "children",
+            "brief",
+            "steer",
+            "cancel",
+            "discard",
+            "send",
+            "advise",
+            "handoff",
+            "answer",
+            "approve_plan",
+            "reject_plan",
+            "answer_approval",
+        ] {
+            assert!(!listed(Surface::CORE).contains(&hidden), "{hidden}");
+            assert!(listed(Surface::ALL).contains(&hidden), "{hidden}");
+        }
+        let with_storage = Surface {
+            storage: true,
+            ..Surface::CORE
+        };
+        let with_delegation = Surface {
+            delegation: true,
+            ..Surface::CORE
+        };
+        for tool in [
+            "publish_artifact",
+            "get_artifact",
+            "create_scratch",
+            "lock_scratch",
+        ] {
+            assert!(!listed(Surface::CORE).contains(&tool), "{tool}");
+            assert!(listed(with_storage).contains(&tool), "{tool}");
+            assert!(!listed(with_delegation).contains(&tool), "{tool}");
+        }
+        let table: Vec<&str> = tools().filter_map(|o| o.tool).collect();
+        assert_eq!(listed(Surface::ALL), table);
+    }
+
+    #[test]
+    fn a_surface_round_trips_through_its_variable() {
+        for surface in [
+            Surface::ALL,
+            Surface::CORE,
+            Surface {
+                delegation: true,
+                storage: false,
+            },
+            Surface {
+                delegation: false,
+                storage: true,
+            },
+        ] {
+            assert_eq!(Surface::parse(&surface.render()), surface);
+        }
+        assert_eq!(Surface::CORE.render(), "core");
+        assert_eq!(
+            Surface::parse("delegation, nonsense"),
+            Surface {
+                delegation: true,
+                storage: false
+            }
+        );
+    }
 
     #[test]
     fn names_tools_and_functions_are_unique() {

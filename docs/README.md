@@ -24,6 +24,7 @@ Task-focused guides for daily workflows.
 |---|---|
 | [Cooperative teams](cooperative-teams.md) | Coordinate native coding and knowledge workers, validate structured JSON deliverables, and pass frozen handoffs between branches. |
 | [Knowledge and design skills](knowledge-skills.md) | Use built-in skills to gather evidence, analyze tables, and generate and validate documents, spreadsheets, and slide decks. |
+| [Tools: one model](tools-model.md) | How connectors, skills and helpers are chosen, mounted as one searched tool tree, and kept out of the context a turn does not need. |
 | [Document previews](artifact-previews.md) | Preview CSV, Excel, Word, PowerPoint, PDF, and HTML artifacts safely while preserving originals and enforcing read permissions. |
 | [Workspace runtime controls](workspace-runtime.md) | Route interactive terminals and workspace lifecycle actions to the owning worker and sandbox allocation. |
 | [Watching branches](watch.md) | Monitor all branches live in the terminal with `by watch`, run keyboard actions on any branch, and configure desktop or terminal notifications. |

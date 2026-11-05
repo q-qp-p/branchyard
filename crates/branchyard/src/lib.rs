@@ -179,6 +179,7 @@ mod tarball;
 pub mod tasks;
 mod timeline;
 mod timers;
+mod tooltree;
 pub mod up;
 mod wake;
 mod workspace;

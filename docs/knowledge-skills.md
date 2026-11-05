@@ -37,6 +37,22 @@ follow the connector grant instead, and repository skills their own gate below.
 `crates/branchyard-provision/src/built_in.rs` holds the rule;
 `crates/branchyard/src/capabilities.rs` stages it.
 
+## The tool tree and `tools search`
+
+Status: built, hermetic only (fakes and unit tests; no harness was run with a model against it). Each turn the chosen skills and connectors are mounted as one tree, `.branchyard/tools/` in the branch's home, and the harness is told about it in one line instead of one line for skills and one for connectors.
+
+```text
+.branchyard/tools/
+  INDEX.md     at most 4 KB: one `- name: description` per skill and connector, how to search
+  bin/tools    stdlib Python; `search WORDS`, `show ID`, `schema CONNECTOR.OP`
+  skills       -> ../capabilities     (built-in, and repository/<name> when staged)
+  connectors   -> ../connectors       (Anvil's packages, and _compose)
+```
+
+`tools search` ranks with BM25 over each skill's frontmatter and headings, each connector's description and operations, and helper lines when a `helpers/INDEX.md` exists. Operations come from a package's `harness.json` or `compose.json` (an `operations` list or map), its `schemas/*.json` file names and its `reference/*.md` headings and table rows. `tools schema` prints the schema from `schemas/` or from the JSON catalogs. When a package records none it says so and names the connector's own `--schema`. The package formats are read tolerantly and were written from `docs/connectors.md`, not from a real Anvil package. The `find-tools` skill (under 600 characters of instructions) teaches the habit. Descriptions in `INDEX.md` are cut, then dropped, then the list cut, to stay in 4 KB.
+
+The built-in skills are not yet chosen per turn: every turn lists all of them. Choosing is phase 1 of [tools-model.md](tools-model.md). Helpers have no listing yet either.
+
 ## Your repository's skills
 
 A repository can carry its own skills in `.agents/skills/<name>/`, the folder

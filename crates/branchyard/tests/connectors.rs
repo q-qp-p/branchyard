@@ -239,6 +239,13 @@ fn a_granted_turn_gets_packages_an_index_and_a_signed_token() {
     let home = PathBuf::from(stored_record(&f.root, "granted")["home"].as_str().unwrap());
     assert!(!home.join(".branchyard/gateway-token").exists());
     assert!(home.join(".branchyard/connectors/INDEX.md").is_file());
+    // The tool tree lists the connector and carries the rules the
+    // connectors' line used to; its `connectors` link reaches the package.
+    let tools = home.join(".branchyard/tools");
+    let index = fs::read_to_string(tools.join("INDEX.md")).unwrap();
+    assert!(index.contains("- github"), "{index}");
+    assert!(index.contains("X-Branchyard-Decision-Key"), "{index}");
+    assert!(tools.join("connectors/github/SKILL.md").is_file());
     // The yard's key is private.
     let key = f.root.join(".branchyard/gateway/key");
     assert_eq!(
@@ -324,10 +331,9 @@ fn the_token_never_reaches_the_log_or_the_record_and_the_index_is_in_the_instruc
         .unwrap();
     let events = branch.events().unwrap();
     let said = text(&events);
-    assert!(
-        said.contains(".branchyard/connectors/INDEX.md") && said.contains("Connectors (github)"),
-        "{said}"
-    );
+    // The connectors' line is gone from the instructions; the tools line
+    // rides with the prompt (the engine tests read it there).
+    assert!(!said.contains("Connectors (github)"), "{said}");
     let log = serde_json::to_string(&events).unwrap();
     let record = stored_record(&f.root, "quiet").to_string();
     // A token is three base64url parts; neither the log nor the record
@@ -416,10 +422,11 @@ fn antigravity_gets_its_grant_the_delegation_tools_and_its_policy_as_rules() {
         assert!(env.contains(var), "{var} missing from {env}");
     }
 
-    // The skill and the connectors' line, in the CLI's instructions.
+    // The skill, in the CLI's instructions; the connectors have no line of
+    // their own now, the tool tree lists them.
     let instructions = read(".gemini/GEMINI.md");
     assert!(
-        instructions.contains("Connectors (github)"),
+        !instructions.contains("Connectors (github)"),
         "{instructions}"
     );
     assert!(instructions.contains("by spawn"), "{instructions}");
@@ -541,9 +548,17 @@ fn two_granted_connectors_also_get_the_composite() {
         .run()
         .unwrap();
     let said = text(&instructed.events().unwrap());
+    assert!(!said.contains("Connectors (github"), "{said}");
+    let home = PathBuf::from(
+        stored_record(&f.root, "instructed")["home"]
+            .as_str()
+            .unwrap(),
+    );
+    let index = fs::read_to_string(home.join(".branchyard/tools/INDEX.md")).unwrap();
+    assert!(index.contains("- _compose:"), "{index}");
     assert!(
-        said.contains(".branchyard/connectors/_compose/SKILL.md composes them"),
-        "{said}"
+        index.contains("- github") && index.contains("- slack"),
+        "{index}"
     );
     assert_eq!(packager.composed.load(Ordering::SeqCst), 2);
 

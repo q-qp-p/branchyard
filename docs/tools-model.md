@@ -1,6 +1,6 @@
 # Tools: one model for connectors, skills and helpers
 
-Written 4 November 2026. Status: **design, not built.** It answers four questions from the console work in [#67](https://github.com/vamsiramakrishnan/branchyard/pull/67): how a person's identity and permissions reach Anvil's gateway, how a tool is installed, allowed and chosen per query, how choosing fewer tools saves context, and how all of it runs on GCE, GCE with Microsandbox, GKE and Substrate. The audits it rests on read the code at `af17285d` plus #67, and Anvil at `8e990cb`. Each claim about today names its file.
+Written 5 November 2026. Status: **design; section 3 is built, the rest is not.** It answers four questions from the console work in [#67](https://github.com/vamsiramakrishnan/branchyard/pull/67): how a person's identity and permissions reach Anvil's gateway, how a tool is installed, allowed and chosen per query, how choosing fewer tools saves context, and how all of it runs on GCE, GCE with Microsandbox, GKE and Substrate. The audits it rests on read the code at `af17285d` plus #67, and Anvil at `8e990cb`. Each claim about today names its file.
 
 ## The problem in four lines
 
@@ -62,6 +62,8 @@ Two rules fall out of the owner key:
 
 ## 3. Context: a mounted tool tree, searched, not pasted
 
+**Status: built (5 November 2026), hermetic only.** What is built and measured is listed in "Built" at the end of this section. Not done: any run of Claude Code or Codex with a model against the tree or the native links; Anvil's real package formats (the search reads `harness.json`, `compose.json`, `schemas/` and `reference/` tolerantly, from `connectors.md`); a listing of helpers (the per-turn choice of skills is built: the index and the tree list only the chosen skills, `Provisioning::skills`); `helpers/INDEX.md` is read when present and nothing writes it; a `/tools` link at the guest root (the tree is under the home, `.branchyard/tools/`, not `/tools`).
+
 A turn sees only what was chosen. Everything it sees, past one line, is on disk and found by search.
 
 ```text
@@ -83,6 +85,20 @@ A turn sees only what was chosen. Everything it sees, past one line, is on disk 
   - Without outputs, it lists no artifact or scratch tools.
   - The operator paragraphs move out of the MCP instructions into a file.
   - The Branchyard surface of a plain Work turn falls from about 90 KB to under 15 KB, enforced by `tools/model_surface_budget.json` per case.
+
+**Built.** `crates/branchyard/src/tooltree.rs` mounts the tree and links native skills (`~/.claude/skills`, `~/.codex/skills`, private homes only); `plugins/branchyard/skills/find-tools/` holds the skill and the `tools` script (BM25, `search`, `show`, `schema`), tested in `tests/test_find_tools.py`; `Grant::has_helpers` picks the delegate skill or `leaf.md`; `operations::Surface` and `BRANCHYARD_MCP_SURFACE` gate `tools/list`; the operator paragraphs moved to [delegation.md](delegation.md#operator-notes). Measured with `cargo test -p branchyard-mcp` and `tools/check_model_surface.py`:
+
+| Case | Before | After | Cap |
+|---|---|---|---|
+| MCP `tools/list`, leaf (8 tools) | 41,736 B (35 tools) | 5,500 B | 5,800 |
+| MCP `tools/list`, leaf with a result contract (17 tools) | 41,736 B | 8,861 B | 9,300 |
+| MCP `tools/list`, branch with helpers (35 tools) | 41,736 B | 41,736 B | 43,900 |
+| Spawning branch text (delegate skill, instructions, note) | 45,969 chars | 42,314 chars | 44,500 |
+| Leaf branch text (`leaf.md`, instructions, note) | 14,352 chars | 8,526 chars | 9,000 |
+| Work turn, no delegation: note and the tools line | note 0.4 KB, capabilities line 0.2 KB, connectors line 0.6 KB | 661 chars at the line's cap | 1,000 |
+| Skills and connectors lines | two lines, 0.8 KB | one line under 300 chars | 300 |
+
+A plain Work turn with no delegation gets no MCP server at all, so its Branchyard surface is under 1 KB of prompt plus the 4 KB index it reads on demand. A leaf is 8,526 chars plus 5,500 B of tools, about 14 KB. A spawning branch is not smaller in tools; its saving is 3.7 KB of instructions. The delegate skill itself (38.5 KB) is unchanged and still goes to every branch with helpers.
 
 ## 4. One turn, remotely: lifecycle and delivery
 
@@ -142,7 +158,7 @@ Admission resolves everything once, and the turn carries the result. A worker ru
 | Phase | What | Where |
 |---|---|---|
 | 1 | The model and its API (`/v1/tools`, server-side defaults, one start field); policy in the store; required issuer; the console's Tools page and composer control | Branchyard |
-| 2 | The mounted tool tree, `tools search`, the `find-tools` skill, native skill links, Branchyard's MCP surface following the choice, budgets per case | Branchyard |
+| 2 | The mounted tool tree, `tools search`, the `find-tools` skill, native skill links, Branchyard's MCP surface following the choice, budgets per case (built; see section 3) | Branchyard |
 | 3 | The in-sandbox proxy with renewing tokens; turn manifests; workers re-admitting on a stale policy | Branchyard |
 | 4 | GCP: KMS signing, IAP and groups, Artifact Registry and GCS store, GCS FUSE on GKE, FQDN egress, Workload Identity token fetch | Branchyard, deployment |
 | 5 | Anvil: Firestore and KMS vault, disconnect route, operation search index in the package, a fleet-gateway image for Cloud Run | Anvil |

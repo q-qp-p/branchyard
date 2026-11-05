@@ -486,7 +486,7 @@ fn a_branch_acts_only_on_its_descendants() {
     let answer = delegate.inspect("kid").unwrap().last_message;
     assert!(answer.starts_with("echo: "), "{answer}");
     assert!(
-        answer.contains("/.branchyard/capabilities/INDEX.md"),
+        answer.contains("/.branchyard/tools/INDEX.md") && answer.contains("bin/tools search"),
         "{answer}"
     );
     assert!(answer.ends_with("\n\nsay kid"), "{answer}");
@@ -1486,4 +1486,41 @@ fn a_cost_limit_bounds_the_whole_tree_under_it() {
         }
     );
     assert_eq!(again.info().turns, 1, "it ran no turn");
+}
+
+/// A branch whose envelope allows no child is told what a leaf may do, not
+/// given the delegation skill, though it holds a token and a server; one
+/// with helpers is given the skill.
+#[test]
+fn a_branch_with_no_helpers_gets_the_leaf_note_and_not_the_delegate_skill() {
+    let f = Fixture::new();
+    let leaf_text = "Your delegated branch cannot create Branchyard children";
+    let skill_text = "# Delegating with Branchyard";
+    let told = |name: &str, envelope: Envelope| {
+        let branch = f
+            .yard
+            .task("SHOW_INSTRUCTIONS")
+            .options(delegating(&f, envelope))
+            .name(name)
+            .run()
+            .unwrap();
+        common::text(&branch.events().unwrap())
+    };
+    let none = told(
+        "alone",
+        Envelope {
+            max_children: 0,
+            ..Envelope::default()
+        },
+    );
+    assert!(none.contains(leaf_text), "{none}");
+    assert!(!none.contains(skill_text), "{none}");
+    let flat = told("flat", Envelope::depth(0));
+    assert!(
+        flat.contains(leaf_text) && !flat.contains(skill_text),
+        "{flat}"
+    );
+    let helpers = told("helped", Envelope::default());
+    assert!(helpers.contains(skill_text), "{helpers}");
+    assert!(!helpers.contains(leaf_text), "{helpers}");
 }

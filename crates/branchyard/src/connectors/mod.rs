@@ -378,8 +378,6 @@ pub(crate) struct Prepared {
     /// The gateway's URL as the harness is given it, which a restricted
     /// network policy allows (`crate::egress`).
     pub gateway_url: String,
-    /// One line for the harness's instructions, pointing at `INDEX.md`.
-    pub instruction: String,
     pub connectors: Vec<String>,
     /// What the turn should know but did not fail on (a composite Anvil
     /// could not write), recorded as warnings.
@@ -465,7 +463,6 @@ pub(crate) fn prepare(
         keys::random_id().map_err(|e| e.to_string())?
     ));
     let mut warnings = Vec::new();
-    let mut composed = false;
     let placed = (|| -> Result<(), String> {
         fs::create_dir_all(&staged).map_err(|e| format!("create {}: {e}", staged.display()))?;
         for bundle in &bundles {
@@ -478,14 +475,11 @@ pub(crate) fn prepare(
         // on its own, so a failure here is a warning, not the turn's.
         if bundles.len() > 1 {
             let out = staged.join(COMPOSE_DIR);
-            match gateway.packager.compose(&bundles, &staged, &out) {
-                Ok(()) => composed = out.join("SKILL.md").is_file(),
-                Err(reason) => {
-                    branchyard_support::cleanup_dir(&out);
-                    warnings.push(format!(
-                        "connectors are provided one by one: the composite could not be written ({reason})"
-                    ));
-                }
+            if let Err(reason) = gateway.packager.compose(&bundles, &staged, &out) {
+                branchyard_support::cleanup_dir(&out);
+                warnings.push(format!(
+                    "connectors are provided one by one: the composite could not be written ({reason})"
+                ));
             }
         }
         let grants = staged.join(".grants.json");
@@ -544,23 +538,6 @@ pub(crate) fn prepare(
             EnvVar::plain(ENV_GATEWAY_URL, url.clone()),
             EnvVar::plain(ENV_GATEWAY_TOKEN_FILE, guest(TOKEN_FILE)),
         ],
-        instruction: format!(
-            "Connectors ({}) are available through Branchyard's gateway: before using one, read {} \
-             and follow it; never ask for or use upstream credentials. When a call carries out a \
-             decision you might repeat after a restart (a payment, a message), name it: \
-             `_meta.decision_key` on the MCP call, or the `X-Branchyard-Decision-Key` header, \
-             such as `invoice-7-payment`; a repeat of a decision already made is refused with what \
-             is known.{}",
-            names.join(", "),
-            guest(&format!("{HOME_DIR}/INDEX.md")),
-            match composed {
-                true => format!(
-                    " For a task that spans them, {} composes them into one client and flows.",
-                    guest(&format!("{HOME_DIR}/{COMPOSE_DIR}/SKILL.md"))
-                ),
-                false => String::new(),
-            }
-        ),
         connectors: names,
         warnings,
         gateway_url: url,
