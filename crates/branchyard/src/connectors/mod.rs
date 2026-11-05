@@ -18,6 +18,7 @@
 pub mod gateway;
 pub mod keys;
 pub mod packager;
+pub(crate) mod renewal;
 
 use branchyard_support::best_effort;
 use std::fs;
@@ -53,6 +54,9 @@ pub const COMPOSE_DIR: &str = "_compose";
 pub const TOKEN_FILE: &str = ".branchyard/gateway-token";
 /// The longest a token lives, whatever the turn's deadline.
 pub const MAX_TTL: Duration = Duration::from_secs(3600);
+/// How long the token a harness can read lives while its turn's effect
+/// proxy renews it: five minutes. See `docs/connectors.md#token-renewal`.
+pub const RENEWED_TTL: Duration = Duration::from_secs(300);
 /// The longest a connect token lives: ten minutes, which the gateway
 /// enforces too.
 pub const CONNECT_TTL: Duration = Duration::from_secs(600);
@@ -93,6 +97,10 @@ pub struct Gateway {
     pub branch_scope: Option<String>,
     /// The longest a token lives; at most [`MAX_TTL`].
     pub max_ttl: Duration,
+    /// How long the token a harness can read lives while a turn's effect
+    /// proxy renews it ([`RENEWED_TTL`], five minutes). Renewal
+    /// runs every half of it.
+    pub token_ttl: Duration,
     pub packager: Arc<dyn Packager>,
     /// How each turn's ledger proxy runs in front of the gateway
     /// (`docs/effects.md`).
@@ -143,6 +151,7 @@ impl Gateway {
             tenant: "local".to_owned(),
             branch_scope: None,
             max_ttl: MAX_TTL,
+            token_ttl: RENEWED_TTL,
             packager,
             effects: EffectsProxy::default(),
         })
@@ -204,6 +213,7 @@ impl Gateway {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         })
     }
 
@@ -231,6 +241,7 @@ impl Gateway {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         };
         self.token_signer()?.sign(&claims)
     }
@@ -272,6 +283,7 @@ pub(crate) fn branch_token(
         window: (now, now + ttl),
         grants: grant,
         scopes: &crate::access::TokenScopes::default(),
+        manifest: None,
     })?;
     let token = gateway
         .token_signer()
@@ -399,12 +411,51 @@ pub(crate) struct Prepared {
     pub warnings: Vec<String>,
     /// Written in the home, relative to it.
     pub files: Vec<String>,
-    /// The turn's token, which the model gateway takes too when the
-    /// branch is on it: one token carries every scope.
+    /// The turn's long token (an hour at most, and not past its deadline).
+    /// The harness holds it only when nothing renews: once
+    /// [`Prepared::renewing`] has run, the file holds a short one and this
+    /// is for nobody.
     pub token: String,
+    /// What signs the turn's next short token.
+    mint: renewal::Mint,
+    /// The renewing thread, once started; dropped (stopped) before the
+    /// token file is removed.
+    renewer: Option<renewal::Renewer>,
     /// The token file on this host, removed when the turn ends (held for
     /// its drop).
     pub _token: TokenFile,
+}
+
+impl Prepared {
+    /// Start renewing the turn's token: the file the harness reads now holds
+    /// a short token (`token_ttl`), replaced by rename before it expires
+    /// until the turn ends. Returns the live token the effect proxy calls
+    /// the gateway with. Call it once, after the proxy is certain to run.
+    pub(crate) fn renewing(&mut self) -> Result<renewal::LiveToken, String> {
+        let first = self.mint.token()?;
+        let path = self._token.0.clone();
+        keys::write_private(&path, first.as_bytes())
+            .map_err(|e| format!("could not write the gateway token: {e}"))?;
+        let live = renewal::LiveToken::new(first);
+        let mint = renewal::Mint {
+            keys: Arc::clone(&self.mint.keys),
+            claims: self.mint.claims.clone(),
+            ttl: self.mint.ttl,
+            deadline_s: self.mint.deadline_s,
+        };
+        self.renewer = Some(
+            renewal::Renewer::start(mint, live.clone(), path)
+                .map_err(|e| format!("could not start renewing the gateway token: {e}"))?,
+        );
+        Ok(live)
+    }
+
+    /// The token the model gateway may share with the connector gateway:
+    /// the turn's long one, unless renewal has made the harness's short.
+    /// (A renewing turn's model gateway signs a token of its own.)
+    pub(crate) fn shared_token(&self) -> Option<&str> {
+        self.renewer.is_none().then_some(self.token.as_str())
+    }
 }
 
 /// The turn's token file, removed when dropped.
@@ -425,6 +476,7 @@ pub(crate) fn prepare(
     record: &Record,
     deadline_ms: Option<u64>,
     scopes: &crate::access::TokenScopes,
+    manifest: Option<&str>,
 ) -> Result<Option<Prepared>, String> {
     let grant = match &record.provision {
         Some(spec) if !spec.connectors.is_empty() => spec.connectors.clone(),
@@ -538,11 +590,20 @@ pub(crate) fn prepare(
         window: (now, exp),
         grants: grant,
         scopes,
+        manifest,
     })?;
-    let token = gateway
+    let keys = gateway
         .token_signer()
-        .and_then(|signer| signer.sign(&claims))
         .map_err(|e| format!("could not sign the gateway token: {e}"))?;
+    let token = keys
+        .sign(&claims)
+        .map_err(|e| format!("could not sign the gateway token: {e}"))?;
+    let mint = renewal::Mint {
+        keys,
+        claims,
+        ttl: gateway.token_ttl.min(MAX_TTL),
+        deadline_s: deadline_ms.map(|d| d / 1000),
+    };
     let token_path = home.join(TOKEN_FILE);
     keys::write_private(&token_path, token.as_bytes())
         .map_err(|e| format!("could not write the gateway token: {e}"))?;
@@ -558,6 +619,8 @@ pub(crate) fn prepare(
         gateway_url: url,
         files: vec![format!("{HOME_DIR}/"), TOKEN_FILE.to_owned()],
         token,
+        mint,
+        renewer: None,
         _token: TokenFile(token_path),
     }))
 }
@@ -573,6 +636,8 @@ pub(crate) struct TurnToken<'a> {
     pub window: (u64, u64),
     pub grants: Vec<GrantEntry>,
     pub scopes: &'a crate::access::TokenScopes,
+    /// The turn manifest's digest, for `by_manifest`.
+    pub manifest: Option<&'a str>,
 }
 
 /// A turn's claims: the contract's, and the turn's other scopes
@@ -587,6 +652,7 @@ pub(crate) fn turn_claims(token: TurnToken<'_>) -> Result<Claims, String> {
         window: (iat, exp),
         grants,
         scopes,
+        manifest,
     } = token;
     Ok(Claims {
         iss: issuer.to_owned(),
@@ -603,6 +669,7 @@ pub(crate) fn turn_claims(token: TurnToken<'_>) -> Result<Claims, String> {
         by_models: scopes.models.clone(),
         by_network: scopes.network.clone(),
         by_delegation: scopes.delegation.clone(),
+        by_manifest: manifest.map(str::to_owned),
     })
 }
 

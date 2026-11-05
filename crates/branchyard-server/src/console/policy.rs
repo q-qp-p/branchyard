@@ -240,6 +240,55 @@ pub(crate) fn principal_key(tenant: &str, subject: &str) -> String {
     format!("principal:{tenant}:{subject}")
 }
 
+/// The key of the tenant's policy version: a counter in the same
+/// collection, so SQLite and PostgreSQL keep it with the policies it counts.
+/// It rises by one in the same transaction as every `PUT` and `DELETE` of
+/// any of the tenant's policy records, and is never a policy itself.
+pub(crate) fn version_key(tenant: &str) -> String {
+    format!("{VERSION_PREFIX}{tenant}")
+}
+
+const VERSION_PREFIX: &str = "version:";
+
+/// Whether a stored `Policies` row is the counter, not a policy.
+fn is_version(id: &str) -> bool {
+    id.starts_with(VERSION_PREFIX)
+}
+
+/// The tenant's policy version: 0 until a policy is first stored, then the
+/// number of changes made to its policies. A session records it when it is
+/// admitted; a later claim compares ([`recheck`]).
+pub(crate) fn current_version(app: &App, tenant: &str) -> Result<u64, ApiError> {
+    Ok(app
+        .registry
+        .console_get(Collection::Policies, &version_key(tenant))?
+        .and_then(|row| row.body["version"].as_u64())
+        .unwrap_or(0))
+}
+
+/// The change that raises the tenant's policy version by one, to apply with
+/// the policy's own.
+fn bump(app: &App, caller: &Caller) -> Result<crate::console_store::Mutation, ApiError> {
+    let key = version_key(caller.tenant());
+    Ok(
+        match app.registry.console_get(Collection::Policies, &key)? {
+            Some(current) => {
+                let next = current.body["version"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                super::update(current, json!({ "version": next }))
+            }
+            None => super::insert(super::new(
+                Collection::Policies,
+                &key,
+                caller,
+                json!({ "version": 1 }),
+            )),
+        },
+    )
+}
+
 fn invalid_key(why: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "policy_key_invalid", why)
 }
@@ -328,6 +377,72 @@ pub(crate) fn resolved(app: &App, caller: &Caller) -> Result<Resolved, ApiError>
     })
 }
 
+/// A session's tools against the policy as it stands now. A session records
+/// the tenant's policy version when it is admitted. When its operation is
+/// claimed and the version has moved, this runs the check again over the
+/// tools the session was admitted with (`tools`, the session row's view):
+/// a connector the policy no longer lists, or lists for reading only where
+/// the session writes; a built-in skill, or all of them when none was
+/// chosen, that the policy no longer allows; helpers turned off or a helper
+/// harness no longer listed. A refusal is `policy_changed`, with the
+/// detail of what is no longer allowed; the person starts again with tools
+/// the policy allows. Reads the store, so run it where blocking is fine.
+pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), ApiError> {
+    let changed = |error: ApiError| {
+        let mut out = ApiError::new(
+            StatusCode::FORBIDDEN,
+            "policy_changed",
+            format!(
+                "the tool policy changed after this session was admitted: {}",
+                error.body.message
+            ),
+        );
+        if let Some(detail) = error.body.detail {
+            out = out.detail(detail);
+        }
+        out
+    };
+    let resolved = resolved(app, caller)?;
+    let store = &resolved.store;
+    let grant: Vec<GrantEntry> = tools["connectors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            Some(GrantEntry {
+                mode: serde_json::from_value(c["mode"].clone()).ok()?,
+                account: c["account"].as_str().map(str::to_owned),
+                ..GrantEntry::read(c["connector"].as_str()?)
+            })
+        })
+        .collect();
+    check_connectors(store, &grant).map_err(changed)?;
+    let catalogue = branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+    let skills: Vec<String> = match tools["skills"].as_array() {
+        Some(chosen) => chosen
+            .iter()
+            .filter_map(|s| s.as_str().map(str::to_owned))
+            .collect(),
+        None => catalogue.skills.iter().map(|s| s.id.clone()).collect(),
+    };
+    if let Some(id) = skills.iter().find(|id| !skill_allowed(store, id)) {
+        return Err(changed(not_allowed(ToolKind::Skill, id, None)));
+    }
+    if let Some(helpers) = tools["helpers"]["harnesses"].as_array() {
+        if !delegation_allowed(store) || !resolved.allow_delegation {
+            return Err(changed(not_allowed(ToolKind::Helper, "*", None)));
+        }
+        if let Some(id) = helpers
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|h| !helper_allowed(store, h))
+        {
+            return Err(changed(not_allowed(ToolKind::Helper, id, None)));
+        }
+    }
+    Ok(())
+}
+
 /// Refuse `entry`s that go beyond `policy`'s connector ceiling: a connector
 /// it does not list, or a write where it allows reads.
 pub(crate) fn check_connectors(policy: &ToolPolicy, grant: &[GrantEntry]) -> Result<(), ApiError> {
@@ -386,13 +501,16 @@ async fn list(
     for row in app
         .registry
         .console_list(Collection::Policies, caller.tenant())?
+        .into_iter()
+        .filter(|row| !is_version(&row.id))
     {
         let policy = serde_json::from_value(row.body).map_err(|e| {
             ApiError::internal(format!("stored policy {} is unreadable: {e}", row.id))
         })?;
         policies.push(record(&row.id, policy, row.revision));
     }
-    Ok(Json(PolicyList { policies }))
+    let version = current_version(&app, caller.tenant())?;
+    Ok(Json(PolicyList { policies, version }))
 }
 
 async fn read(
@@ -472,7 +590,9 @@ async fn put(
                 if app
                     .registry
                     .console_list(Collection::Policies, caller.tenant())?
-                    .len()
+                    .iter()
+                    .filter(|row| !is_version(&row.id))
+                    .count()
                     >= MAX_POLICIES
                 {
                     return Err(ApiError::new(
@@ -487,7 +607,8 @@ async fn put(
                 )
             }
         };
-        app.registry.console_mutate(&[mutation])?;
+        app.registry
+            .console_mutate(&[mutation, bump(&app, &caller)?])?;
         Ok(Json(record(&key, request.policy, revision)))
     })
     .await?
@@ -516,13 +637,15 @@ async fn remove(
     if guard.is_some_and(|revision| revision != current.revision) {
         return Err(super::revision_conflict());
     }
-    app.registry
-        .console_mutate(&[crate::console_store::Mutation::Delete {
+    app.registry.console_mutate(&[
+        crate::console_store::Mutation::Delete {
             collection: Collection::Policies,
             id: key.clone(),
             tenant: caller.tenant().to_owned(),
             expected: current.revision,
-        }])?;
+        },
+        bump(&app, &caller)?,
+    ])?;
     Ok(Json(json!({ "deleted": key })))
 }
 

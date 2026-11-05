@@ -32,7 +32,7 @@ A compact JWT signed with Ed25519 (`alg: EdDSA`), one per turn, delivered to the
 | `iss` | The yard's issuer: the server's URL, or `branchyard:local:<yard id>` locally |
 | `aud` | The gateway's canonical `/mcp` URL |
 | `sub` | The person the branch acts for (`local:<os user>` locally, the principal on a server) |
-| `iat`, `exp`, `jti` | Issued now; expires with the turn's deadline, at most one hour |
+| `iat`, `exp`, `jti` | Issued now; expires in five minutes, never past the turn's deadline, and is [renewed](#token-renewal) while the turn runs (an hour at most when nothing renews it) |
 | `by_tenant`, `by_branch`, `by_turn` | Where the call comes from, for policy and audit |
 | `by_grants` | The grant, below |
 
@@ -48,6 +48,8 @@ A grant is a list of entries; an operation is allowed when some entry allows it:
 - `account` picks one of the person's connected accounts for that connector; omitted means their default.
 
 Three more claims are optional, and Anvil ignores them: `by_models`, `by_network` and `by_delegation`, the turn's other scopes ([one scope](model-gateway.md#one-scope)). A turn's token carries `by_network` and `by_delegation`, and `by_models` when the branch is on the model gateway; a connect token carries none of them. The table's claims are unchanged.
+
+A fourth, `by_manifest`, is the digest of the session's [turn manifest](#the-turn-manifest) (`blake3:<hex>`, 71 characters). Anvil's contract ([item 7](anvil-contract-v2.md#7-turn-manifest-claim-by_manifest)) records it on every audit line and does not enforce it; a token without it gives `null`. The contract's example writes the algorithm as `sha256`; the claim is opaque text of at most 256 characters, and Branchyard's value is a blake3 digest.
 
 Keys: `kid` in the header; the public keys are a JWKS at the server's `/.well-known/jwks.json`, or locally the file `.branchyard/gateway/jwks.json`. Anvil's inbound auth gets a `branchyard` mode that reads `ANVIL_INBOUND_ISSUER`, `ANVIL_INBOUND_AUDIENCE` and `ANVIL_INBOUND_JWKS_URI` (an `https:` or `file:` URL) and accepts `EdDSA`.
 
@@ -133,6 +135,38 @@ The person's **connect token** is the only other kind. `by connect` mints it (`G
 - A connect token living more than ten minutes, or any other `by_purpose`, is invalid (`401`).
 - A connect token goes to `anvil connect` in a 0600 file and is removed afterwards; it is never placed in a harness's home.
 
+### The turn manifest
+
+A session resolves what it was admitted with once, and every turn of it runs on that. The **turn manifest** (`TurnManifest`, [`manifest.rs`](../crates/branchyard/src/manifest.rs)) holds:
+
+| Field | Value |
+|---|---|
+| `version` | The format, `1` |
+| `actor` | `subject` and `tenant`, as in the token |
+| `grants` | The connector grant, after the person's ceiling |
+| `skills` | `all`, or `{"chosen": [ids]}` |
+| `connectors` | Each granted connector's id and the packager's `Bundle.hash` (empty if the gateway did not serve it) |
+| `helpers` | The delegation envelope; absent when the session may not delegate |
+| `models`, `network` | The model globs it may call and its network policy, as the token carries them |
+| `policy_version` | The tenant's [policy version](server.md#tool-policy) at admission, `0` without a server |
+| `created_at_ms` | When it was resolved |
+
+Its **digest** is `blake3:` and the hex BLAKE3 of the manifest's canonical JSON (keys sorted, no whitespace). The engine resolves it in a session's first turn and stores it with the branch. A later turn uses the stored one when the tools are the same. It resolves a new one only when the person changes the session's tools: a send that carries a different grant, skills, helpers, models or network, or a different actor. A new bundle hash alone is not a change of tools, and neither is the time. A send that carries a newer `policy_version` (`TaskOptions::policy_version`, set by a server that has checked the session against its policy) updates that field and nothing else, so the digest changes and `created_at_ms` does not.
+
+A branch with a private home finds the manifest at `~/.branchyard/manifest.json` (0644, written by rename, no secret), named by `BRANCHYARD_MANIFEST`. The turn's token carries the digest as `by_manifest`, the `provisioned` event as `manifest`, and a server's session view as `manifest` beside `policy_version`. `Branch::manifest()` reads it.
+
+Not done: a turn takes the bundles the packager serves now, whatever digest the manifest recorded. The digests are recorded and audited, not yet enforced. Bundles are installed per host ([the decisions](tools-model.md#decisions-4-november-2026)), so a worker that holds another bundle than the one admitted is not caught.
+
+### Token renewal
+
+The token a harness can read lives five minutes (`Gateway::token_ttl`, `RENEWED_TTL`), not the hour a turn's token used to. While the turn runs:
+
+- A renewing thread signs a new token every half of that, with a fresh `iat`, `exp` and `jti` and the same claims, and replaces `~/.branchyard/gateway-token` by rename (0600). Anvil's CLIs and SDKs read `ANVIL_GATEWAY_TOKEN_FILE` on every call ([contract](anvil-contract-v2.md#6-token-renewal-a-sidecar-that-holds-the-token), form A), so a call after a renewal uses the new token with no change to the harness.
+- The [effect-ledger proxy](effects.md#begun-before-the-call), which the harness's `ANVIL_GATEWAY_URL` names, calls the gateway with the live token. A call that presents a token this turn issued (the file's, or one it read long ago) or none is made with the live one. A call that presents any other token is refused `401` if effectful, and passes as it is otherwise, for the gateway to refuse. So a harness that cached a token, or a turn that outlives `MAX_TTL`, keeps working.
+- The thread stops when the turn ends, before the file is removed, and the last token lapses within five minutes.
+
+The model gateway no longer shares this token on a renewing turn: it signs its own, with an empty grant, for the hour at most. A turn that runs without the proxy (`effects_proxy = false`, or a sandbox with no `effects_sandbox_host`) keeps the one long token in the file, as before, and says so in the same warning as before; renewal needs the proxy to be the one that holds the live token. The proxy does not yet move into the sandbox (`tools-model.md`, section 4, step 4), and the token is still written to a file in the harness's home.
+
 ### Each turn
 
 Before a granted turn starts, and before its sandbox exists ([provisioning](provisioning.md#connectors)):
@@ -141,9 +175,9 @@ Before a granted turn starts, and before its sandbox exists ([provisioning](prov
 2. Each granted bundle's package comes from `.branchyard/connectors/cache/<hash>/`, made with `anvil package harness <bundle> --out <dir> --workspace <root> --connector <id>` when missing; the hash is BLAKE3 over the bundle's files, so a recompiled bundle is packaged again.
 3. With two or more granted connectors, `anvil connectors compose --out <staged>/_compose --skills-root <staged> --workspace <root> <bundle...>` writes the composite beside the packages. If it fails (an Anvil without `connectors compose`, for example), nothing of it is placed, the turn records a warning, and the connectors are provided one by one.
 4. The packages and `anvil connectors index --grants <file> --out INDEX.md --workspace <root> <bundle...>`'s index (`--workspace` makes Anvil name each bundle by its fleet id, so a nested `team/github` is indexed as `team_github`, as it is granted) replace `~/.branchyard/connectors/` in the private home. Only granted connectors are there.
-5. The token is written to `~/.branchyard/gateway-token` (0600) and removed when the turn ends.
+5. The token is written to `~/.branchyard/gateway-token` (0600), renewed while the turn runs ([token renewal](#token-renewal)), and removed when the turn ends.
 6. The harness gets `ANVIL_GATEWAY_URL` and `ANVIL_GATEWAY_TOKEN_FILE` (its home's path as it sees it, `/branchyard/home/...` in a Microsandbox guest), and the one tools line every turn gets (*Your tools: read …/.branchyard/tools/INDEX.md. Find one with `…/bin/tools search WORDS` before you open a skill.*). The tool tree's `INDEX.md` lists each granted connector (`- github: …`, from its package's `SKILL.md` description), `_compose` when written, and the rules the connectors line used to carry: never ask for or use upstream credentials, and name a decision you might repeat with `_meta.decision_key` or `X-Branchyard-Decision-Key`. `tools search` finds a connector's operations; see [the tool tree](knowledge-skills.md#the-tool-tree-and-tools-search).
-7. The `provisioned` event lists the connectors, the two variable names and the files; never the token.
+7. The `provisioned` event lists the connectors, the variable names (the two above and `BRANCHYARD_MANIFEST`), the files and the manifest's digest; never the token.
 8. `ANVIL_GATEWAY_URL` is the turn's **effect-ledger proxy**, on loopback, in front of the gateway: it decides each effectful call's approval and writes it to the ledger before forwarding it, with the entry's id as the idempotency key; everything else passes through as it is. The token's audience stays the gateway's URL. `[connectors] effects_proxy = false` turns it off; a sandboxed turn needs `effects_sandbox_host` (and `effects_listen`) to reach it, or calls the gateway directly and says so. See [effects](effects.md#begun-before-the-call).
 
 Packaging is behind the `Packager` trait ([`packager.rs`](../crates/branchyard/src/connectors/packager.rs)); `AnvilPackager` runs Anvil's command, and the tests use fakes.
@@ -225,7 +259,8 @@ Built in Anvil (ADR-0029 there, `docs/branchyard.md`): the `branchyard` inbound 
 ## Tests
 
 - Unit: grant parsing, both wire forms (the object and the flag string, a bad mode refused with the parser's words), globs, intersection and narrowing chains (`branchyard-provision`, 7); a `SpawnSpec` whose `connectors` mix the two forms (`branchyard`); key rings, rotation, signing and verification, bad key files, bundle discovery and hashing, audit line and time parsing, the gateway command, vault key and supervisor restarts (`branchyard`, 10); `[connectors]` parsing and rendering (`branchyard-setup`); `--connector`, `by gateway`, `by connect`, default grants and rig seats (`by`); the server's configuration file.
-- Engine (`crates/branchyard/tests/connectors.rs`, 14, fake packager and the fake ACP agent): a granted turn sees its packages, index, URL and a 0600 token that verifies against the yard's JWKS with the contract's claims, no `by_purpose`, and an `exp` within the turn's deadline; a connect token carries `by_purpose: "connect"`, no grant, branch or turn, and lives at most ten minutes; a second turn reuses the cached package and gets a new token; the token appears in neither the event log nor the stored record, and the index is in the instructions; no grant, no token; an unserved connector, a missing gateway and a missing private home each refused by name; children narrowed by spawn, by seat and on a send; audit lines recorded once, a partial line kept for later, a rotated log read again; a sandboxed turn given the sandbox address or failed naming it; a granted, delegated Antigravity turn (a shell in its place) given its packages, the variables, the connectors' line and the skill in `GEMINI.md`, the delegation server in its `mcp_config.json` and its policy as permission rules; and the fake agent as `deepseek-harness-acp`, a profile with no provisioner, given the variables, a token file and the delegation server.
+- Manifest and renewal (hermetic: fakes only, no model): `manifest.rs` (the digest over sorted compact JSON; only a change of tools is one; the file holds no token), `connectors/renewal.rs` (a minted token's window and claims; the live token remembers what it issued; the renewer replaces the file and stops when dropped, with a one-second token); `crates/branchyard/tests/connectors.rs` (`a_session_runs_every_turn_on_one_manifest_until_its_tools_change`: file, environment variable, `by_manifest`, the `provisioned` event, a send with the same tools, a newer policy version, new tools); `crates/branchyard/tests/effects.rs` (`a_turn_longer_than_its_token_keeps_calling_the_gateway_on_renewed_tokens`: a two-second token, a harness that waits on a named pipe until its first token has lapsed and then calls with the stale token, with none and with the file's, a mock gateway that sees only live, signed tokens naming the manifest, the file changed, and no file after the turn).
+- Engine (`crates/branchyard/tests/connectors.rs`, 15, fake packager and the fake ACP agent): a granted turn sees its packages, index, URL and a 0600 token that verifies against the yard's JWKS with the contract's claims, no `by_purpose`, and an `exp` within the turn's deadline; a connect token carries `by_purpose: "connect"`, no grant, branch or turn, and lives at most ten minutes; a second turn reuses the cached package and gets a new token; the token appears in neither the event log nor the stored record, and the index is in the instructions; no grant, no token; an unserved connector, a missing gateway and a missing private home each refused by name; children narrowed by spawn, by seat and on a send; audit lines recorded once, a partial line kept for later, a rotated log read again; a sandboxed turn given the sandbox address or failed naming it; a granted, delegated Antigravity turn (a shell in its place) given its packages, the variables, the connectors' line and the skill in `GEMINI.md`, the delegation server in its `mcp_config.json` and its policy as permission rules; and the fake agent as `deepseek-harness-acp`, a profile with no provisioner, given the variables, a token file and the delegation server.
 - CLI (`crates/branchyard-cli/tests/connectors.rs`, 2): `by gateway start|status|rotate-key|jwks|stop` supervising a stand-in Anvil written in Python, a granted turn calling it through its token, `by log` and `by log --json` showing the two calls, `by connect` (with a connect token), and a refusal without a private home.
 - HTTP client (`crates/branchyard-cli/tests/sdk_client.rs`, running `tests/sdk_client_e2e.py` against `by serve` with the fake agent and a fake Anvil): a surface's conversation created with a grant, its harness spawning a child that asks for more and gets the intersection, visible in `inspect().grants` on both sides; a send that names no grant keeping it; a child asking for a connector its parent lacks refused `denied`; a grant without a private home refused before a branch exists. `tests/test_sdk_client.py` covers the client's grant round trips and the grant's private home against a scripted server ([SDKs](sdk.md#connectors)).
 - Server (`crates/branchyard-server/tests/connectors.rs`, 2): the JWKS route, refusal without a gateway, the principal and `<repo>/<branch>` in a verified token, and audit lines recorded by the poller for that repository only.
@@ -233,6 +268,7 @@ Built in Anvil (ADR-0029 there, `docs/branchyard.md`): the `branchyard` inbound 
 
 ## What is not done
 
+- The manifest's bundle digests are recorded, not enforced, and a worker still takes the bundles on its own host ([turn manifest](#the-turn-manifest)). The store, the sidecar inside the sandbox and the server fetch of tokens as the sandbox's identity (`tools-model.md`, section 4) are not built: the proxy that renews runs on the host that runs the turn, and the token file is still in the harness's home. Anvil's `ANVIL_GATEWAY_AUTH=proxy` mode (contract item 6, option C), which would take the file away, has no Anvil to run against.
 - Effects, approvals and undo are Branchyard's side only until Anvil declares effects; see [effects](effects.md#what-is-not-done).
 - Egress enforcement for sandboxes (above), and any check of the sandbox addresses on a KVM host or a Substrate cluster.
 - A real harness using a connector: the end-to-end test drives the packaged SDK from the fake agent's shell.

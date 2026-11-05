@@ -506,6 +506,7 @@ fn issue(
         window: (now, exp),
         grants: Vec::new(),
         scopes,
+        manifest: None,
     })?;
     let token = ring
         .sign(&claims)
@@ -761,6 +762,7 @@ mod tests {
                 max_children: 4,
                 harnesses: Vec::new(),
             }),
+            by_manifest: None,
         }
     }
 

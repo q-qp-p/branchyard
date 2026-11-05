@@ -206,12 +206,16 @@ async fn policy_routes_need_admin_and_act_only_on_the_callers_tenant() {
         .put_policy(FOREIGN, "tenant:foreign", json!({"skills":[]}), None)
         .await;
     assert_eq!(status, StatusCode::OK, "{mine}");
+    // The tenant's version counter sits beside its policies; it is not one.
     let stored = |tenant: &str| {
         fixture
             .app
             .registry
             .console_list(Collection::Policies, tenant)
             .unwrap()
+            .into_iter()
+            .filter(|row| !row.id.starts_with("version:"))
+            .collect::<Vec<_>>()
     };
     assert_eq!(stored("default").len(), 1);
     assert_eq!(stored("default")[0].revision, 2);
@@ -721,4 +725,308 @@ async fn a_start_with_tools_expands_and_is_refused_beyond_policy() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{ok}");
+}
+
+#[tokio::test]
+async fn the_policy_version_rises_with_every_change_and_is_never_a_policy() {
+    let mock = super::connections::gateway();
+    let fixture = fixture(&mock);
+    let tenant = "default";
+    let version = || crate::console::policy::current_version(&fixture.app, tenant).unwrap();
+    let list = || async {
+        let (status, list) = fixture
+            .json(Method::GET, "/v1/admin/policies", OWNER, None, Value::Null)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        list
+    };
+    assert_eq!(version(), 0, "no policy, no version");
+    assert_eq!(list().await["version"], 0);
+
+    let (status, put) = fixture
+        .put_policy(OWNER, "tenant:default", json!({"skills":["docx"]}), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    assert_eq!(version(), 1);
+    // A group's and a person's policy count for the tenant too.
+    let (status, put) = fixture
+        .put_policy(OWNER, "group:default:eng", json!({"skills":["pptx"]}), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    assert_eq!(version(), 2);
+    let (status, put) = fixture
+        .put_policy(
+            OWNER,
+            "tenant:default",
+            json!({"skills":["docx","pptx"]}),
+            Some(1),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    assert_eq!(version(), 3);
+    // A refused change (stale revision) does not move it.
+    let (status, _) = fixture
+        .put_policy(OWNER, "tenant:default", json!({}), Some(1))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(version(), 3);
+    let (status, gone) = fixture
+        .json(
+            Method::DELETE,
+            "/v1/admin/policies/group:default:eng",
+            OWNER,
+            None,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{gone}");
+    assert_eq!(version(), 4);
+
+    // The counter is not listed as a policy and cannot be addressed as one.
+    let listed = list().await;
+    assert_eq!(listed["version"], 4);
+    let keys: Vec<&str> = listed["policies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["tenant:default"]);
+    let (status, error) = fixture
+        .json(
+            Method::GET,
+            "/v1/admin/policies/version:default",
+            OWNER,
+            None,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    // Another tenant's counter is its own.
+    assert_eq!(
+        crate::console::policy::current_version(&fixture.app, "foreign").unwrap(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claimed_start_is_checked_again_when_the_policy_moved_since_admission() {
+    struct Gated {
+        native: ReservedFakeAgentPorts,
+        open: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl crate::ops::Executor for Gated {
+        fn execute(
+            &self,
+            operation: &crate::store::StoredOperation,
+            work: &Value,
+        ) -> crate::ops::Finished {
+            if matches!(
+                serde_json::from_value::<crate::work::Work>(work.clone()),
+                Ok(crate::work::Work::Console {
+                    command: crate::console::ConsoleWork::Start { .. },
+                    ..
+                })
+            ) {
+                branchyard_testkit::wait::until("the test to move the policy", || {
+                    self.open.load(std::sync::atomic::Ordering::SeqCst)
+                });
+            }
+            crate::ops::Executor::execute(&self.native, operation, work)
+        }
+    }
+    let mock = super::connections::gateway();
+    let fixture = {
+        let url = format!("http://{}", mock.addr());
+        Fixture::with(false, move |config, root| {
+            config.connectors = Some(super::connections::connectors(root, &url, &["github"]));
+        })
+    };
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fixture
+        .app
+        .registry
+        .start(Arc::new(Gated {
+            native: ReservedFakeAgentPorts(fixture.app.clone()),
+            open: open.clone(),
+        }))
+        .unwrap();
+    let wid = fixture.workspace().await;
+    let (status, put) = fixture
+        .put_policy(
+            OWNER,
+            "tenant:default",
+            json!({"skills":["docx","pptx"]}),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    let route = format!("/v1/workspaces/{wid}/sessions");
+    let start = |key: &'static str, tools: Value| {
+        let (fixture, route) = (&fixture, route.clone());
+        async move {
+            let (status, started) = fixture
+                .json(
+                    Method::POST,
+                    &route,
+                    OWNER,
+                    Some(key),
+                    json!({"name":key,"prompt":"Hello","harness":"gemini-cli",
+                           "access":"writer","tools":tools}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{started}");
+            started
+        }
+    };
+    let dropped = start("dropped", json!([{"kind":"skill","id":"pptx"}])).await;
+    let kept = start("kept", json!([{"kind":"skill","id":"docx"}])).await;
+    let row = |started: &Value| {
+        fixture
+            .app
+            .registry
+            .console_get(
+                Collection::Sessions,
+                started["session_id"].as_str().unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(row(&dropped).body["policy_version"], 1);
+    assert_eq!(row(&kept).body["policy_version"], 1);
+
+    // While both wait, the administrator takes pptx away.
+    let (status, put) = fixture
+        .put_policy(OWNER, "tenant:default", json!({"skills":["docx"]}), Some(1))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    open.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let refused = fixture.finished(dropped["id"].as_str().unwrap());
+    assert_eq!(
+        refused.state,
+        branchyard_client::api::OperationState::Failed,
+        "{refused:?}"
+    );
+    let error = refused.error.unwrap();
+    assert_eq!(error.code, "policy_changed", "{error:?}");
+    assert!(error.message.contains("pptx"), "{error:?}");
+    assert_eq!(
+        row(&dropped).body["policy_version"],
+        1,
+        "a refused session keeps the version it was admitted under"
+    );
+
+    // The other session's tools are still allowed: it ran, took the new
+    // version, and its manifest records it.
+    let ran = fixture.finished(kept["id"].as_str().unwrap());
+    assert_eq!(
+        ran.state,
+        branchyard_client::api::OperationState::Succeeded,
+        "{ran:?}"
+    );
+    assert_eq!(row(&kept).body["policy_version"], 2);
+    let workspace = fixture
+        .app
+        .registry
+        .console_get(Collection::Workspaces, &wid)
+        .unwrap()
+        .unwrap();
+    let repo = crate::console::runtime::resolve(&fixture.app, &workspace).unwrap();
+    let sid = kept["session_id"].as_str().unwrap();
+    let manifest = repo.yard.branch(sid).unwrap().manifest().unwrap().unwrap();
+    assert_eq!(manifest.policy_version, 2);
+    // The console shows the manifest's digest on the session.
+    let (status, detail) = fixture
+        .json(
+            Method::GET,
+            &format!("/v1/workspaces/{wid}"),
+            OWNER,
+            None,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let shown = detail["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == sid)
+        .unwrap();
+    assert_eq!(shown["manifest"], manifest.digest());
+    assert_eq!(shown["policy_version"], 2);
+}
+
+#[tokio::test]
+async fn a_recheck_names_what_the_policy_no_longer_allows() {
+    let mock = super::connections::gateway();
+    let fixture = fixture(&mock);
+    let caller =
+        crate::api::Caller::authenticated(fixture.app.config.principals["owner"].clone(), None);
+    let (status, put) = fixture
+        .put_policy(
+            OWNER,
+            "tenant:default",
+            json!({"connectors":["github:read"],"skills":["docx"],"helpers":["claude-code-acp"]}),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    let check = |tools: Value| crate::console::policy::recheck(&fixture.app, &caller, &tools);
+    let allowed = json!({
+        "connectors":[{"connector":"github","mode":"read","account":null}],
+        "skills":["docx"],
+        "helpers":{"harnesses":["claude-code-acp"],"max_children":2},
+    });
+    check(allowed.clone()).unwrap();
+    let refused = |tools: Value, kind: &str, id: &str| {
+        let error = check(tools).unwrap_err();
+        assert_eq!(error.body.code, "policy_changed", "{error:?}");
+        let detail = error.body.detail.unwrap();
+        assert_eq!(detail["kind"], kind, "{detail}");
+        assert_eq!(detail["id"], id, "{detail}");
+    };
+    let with = |key: &str, value: Value| {
+        let mut tools = allowed.clone();
+        tools[key] = value;
+        tools
+    };
+    refused(
+        with(
+            "connectors",
+            json!([{"connector":"github","mode":"write","account":null}]),
+        ),
+        "connector",
+        "github",
+    );
+    refused(
+        with(
+            "connectors",
+            json!([{"connector":"linear","mode":"read","account":null}]),
+        ),
+        "connector",
+        "linear",
+    );
+    refused(with("skills", json!(["pptx"])), "skill", "pptx");
+    // No skill chosen means every skill, and the policy lists one.
+    assert_eq!(
+        check(with("skills", Value::Null)).unwrap_err().body.code,
+        "policy_changed"
+    );
+    refused(
+        with("helpers", json!({"harnesses":["gemini-cli"]})),
+        "helper",
+        "gemini-cli",
+    );
+    // Delegation switched off refuses every helper.
+    let (status, put) = fixture
+        .put_policy(
+            OWNER,
+            "principal:default:owner",
+            json!({"delegation":false}),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{put}");
+    refused(allowed, "helper", "*");
 }

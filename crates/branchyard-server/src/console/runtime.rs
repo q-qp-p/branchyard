@@ -249,6 +249,7 @@ pub(super) fn session_views(
                     view["status"] = status["state"].clone();
                     view["status_detail"] = status;
                     view["native_session"] = json!(branch.info().session);
+                    view["manifest"] = json!(branch.manifest().map_err(sdk)?.map(|m| m.digest()));
                 }
                 Err(branchyard::Error::UnknownBranch(_)) => {
                     let operation_id = text(&r.body, "operation_id")?;
@@ -572,6 +573,9 @@ fn start_once(
     // the three fields it expands into.
     let mut expanded = body.clone();
     super::tools::expand(&mut expanded)?;
+    // Read before the policy is: a change that lands during admission moves
+    // the version past this one, and the claim checks again.
+    let policy_version = super::policy::current_version(app, caller.tenant())?;
     let chosen = chosen_tools(app, caller, &expanded, access, &mut provision)?;
     let policy = match body.get("policy").filter(|value| !value.is_null()) {
         Some(value) => serde_json::from_value(value.clone())
@@ -639,7 +643,7 @@ fn start_once(
         Collection::Sessions,
         &sid,
         caller,
-        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"created_at_ms":branchyard_support::time::now_ms()}),
+        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"policy_version":policy_version,"created_at_ms":branchyard_support::time::now_ms()}),
     );
     let mutations = vec![
         insert(row),

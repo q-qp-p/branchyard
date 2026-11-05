@@ -851,6 +851,7 @@ mod tests {
             window: (now, now + 600),
             grants: Vec::new(),
             scopes: &scopes,
+            manifest: None,
         })
         .unwrap();
         let token = keys.sign(&claims).unwrap();

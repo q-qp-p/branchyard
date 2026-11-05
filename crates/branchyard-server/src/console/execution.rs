@@ -156,6 +156,7 @@ pub(crate) fn execute(
                     }
                     None => crate::work::task_options(app, &repo, &request)?,
                 };
+                options.policy_version = Some(claim_policy(app, &caller, &session)?);
                 options.join_task = Some(text(&workspace.body, "task_id")?.into());
                 options.actor = Some(branchyard::connectors::Actor {
                     subject: caller.0.connector_subject(),
@@ -192,6 +193,7 @@ pub(crate) fn execute(
                     ));
                 }
                 let mut options = crate::work::send_options(app, &repo, &request)?;
+                options.policy_version = Some(claim_policy(app, &caller, &session)?);
                 let branch = repo
                     .yard
                     .branch(text(&session.body, "branch")?)
@@ -287,6 +289,34 @@ pub(crate) fn execute(
         result: run().map_err(|e| *e.body),
         end_cursor: None,
     }
+}
+
+/// The tenant's policy version a claimed start or send runs under. When it
+/// has not moved since the session was admitted (or last checked), that
+/// version. When it has, the session's tools are checked against the policy
+/// as it stands ([`super::policy::recheck`]): refused as `policy_changed`
+/// if no longer allowed, else the session records the new version and the
+/// turn's manifest takes it.
+fn claim_policy(app: &App, caller: &Caller, session: &Record) -> Result<u64, ApiError> {
+    let now = super::policy::current_version(app, caller.tenant())?;
+    if session.body["policy_version"].as_u64() == Some(now) {
+        return Ok(now);
+    }
+    super::policy::recheck(app, caller, &session.body["tools"])?;
+    for _ in 0..8 {
+        let current = get(app, Collection::Sessions, &session.id)?;
+        let mut body = current.body.clone();
+        body["policy_version"] = json!(now);
+        match app.registry.console_mutate(&[update(current, body)]) {
+            Err(error) if error.body.code == "revision_conflict" => continue,
+            result => return result.map(|()| now),
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        "revision_conflict",
+        "the session was busy; send again",
+    ))
 }
 
 fn cancel_observer(

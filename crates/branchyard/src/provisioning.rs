@@ -344,6 +344,9 @@ pub(crate) struct Standing<'a> {
     pub knowledge: Option<&'a crate::knowledge::Briefing>,
     pub assignment: Option<&'a str>,
     pub skills: &'a crate::skills::ForTurn,
+    /// The digest of the turn manifest written into the home
+    /// ([`crate::manifest`]); `None` for a branch without a private home.
+    pub manifest: Option<&'a str>,
 }
 
 /// Plan and apply the turn's provisioning. A failure is the turn's failure
@@ -365,9 +368,15 @@ pub(crate) fn prepare(
         knowledge,
         assignment,
         skills,
+        manifest,
     } = standing;
     let spec = record.provision.clone().unwrap_or_default();
     let (workspace, home) = placement::guest_paths(record);
+    let manifest_guest = format!(
+        "{}/{}",
+        home.trim_end_matches('/'),
+        crate::manifest::MANIFEST_FILE
+    );
     let secrets = resolve(&spec.secrets)?;
     let capability_home = match &record.home {
         Some(home) => home.clone(),
@@ -492,6 +501,15 @@ pub(crate) fn prepare(
         files.extend(connectors.files.iter().cloned());
         plan_env.extend(connectors.env.iter().cloned());
     }
+    // The turn manifest was written into the home before this; the harness
+    // is told where, by the path it sees.
+    if manifest.is_some() {
+        files.push(crate::manifest::MANIFEST_FILE.to_owned());
+        plan_env.push(branchyard_provision::EnvVar::plain(
+            crate::manifest::ENV_MANIFEST,
+            manifest_guest,
+        ));
+    }
     let env: Vec<String> = plan_env.iter().map(|e| e.name.clone()).collect();
     let granted = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
     let knowledge_ids = knowledge.map(|k| k.ids.clone()).unwrap_or_default();
@@ -509,6 +527,7 @@ pub(crate) fn prepare(
         // managed settings into a sandbox; nothing writes them now.
         managed: None,
         permissions,
+        manifest: manifest.map(str::to_owned),
     };
     let scrub = spec
         .secrets

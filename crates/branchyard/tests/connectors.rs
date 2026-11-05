@@ -1022,3 +1022,122 @@ fn a_seats_grant_is_narrowed_to_its_parents_too() {
     assert!(child_grant(&f, "n").is_empty());
     assert_eq!(child_grant(&f, "w2"), ["github:read:issues.*"]);
 }
+
+/// The session's manifest as a turn left it, from the branch's record.
+fn manifest_of(branch: &branchyard::Branch) -> branchyard::manifest::TurnManifest {
+    branch.manifest().unwrap().expect("a manifest is stored")
+}
+
+#[test]
+fn a_session_runs_every_turn_on_one_manifest_until_its_tools_change() {
+    use branchyard::manifest::{ManifestSkills, MANIFEST_FILE};
+    let f = Fixture::new();
+    gateway(&f, &["github", "linear"]);
+    let branch = f
+        .task(
+            "SH echo manifest=$BRANCHYARD_MANIFEST\n\
+             SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")\n\
+             SH cat \"$BRANCHYARD_MANIFEST\"",
+        )
+        .options(TaskOptions {
+            policy_version: Some(7),
+            budget: Budget {
+                max_duration: Some(Duration::from_secs(120)),
+                ..Budget::default()
+            },
+            ..granted(&f, &["github:read:issues.*"])
+        })
+        .name("manifested")
+        .run()
+        .unwrap();
+    let events = branch.events().unwrap();
+    let said = text(&events);
+    let first = manifest_of(&branch);
+    let digest = first.digest();
+
+    // Resolved from the admission: who, what, the bundles, the version.
+    assert_eq!(first.version, 1);
+    assert_eq!(first.actor.tenant, "local");
+    assert_eq!(
+        first.grants,
+        [GrantEntry::parse("github:read:issues.*").unwrap()]
+    );
+    assert_eq!(first.skills, ManifestSkills::All);
+    assert_eq!(first.connectors.len(), 1);
+    assert_eq!(first.connectors[0].id, "github");
+    assert_eq!(first.connectors[0].digest, "hash-github");
+    assert_eq!(first.policy_version, 7);
+
+    // The harness is told where the file is, the file holds the manifest,
+    // and the token names it.
+    let path = after(&said, "manifest=");
+    assert!(path.ends_with(MANIFEST_FILE), "{path}");
+    assert!(said.contains("\"policy_version\": 7"), "{said}");
+    let claims = connectors::keys::verify(&jwks(&f), after(&said, "token=")).unwrap();
+    assert_eq!(claims["by_manifest"], digest.as_str());
+    let (recorded, env) = events
+        .iter()
+        .find_map(|e| match &e.activity {
+            Activity::Provisioned { manifest, env, .. } => Some((manifest.clone(), env.clone())),
+            _ => None,
+        })
+        .expect("a provisioned event");
+    assert_eq!(recorded.as_deref(), Some(digest.as_str()));
+    assert!(env.contains(&"BRANCHYARD_MANIFEST".to_owned()));
+
+    // A later turn with the same tools uses the same manifest.
+    let again = branch
+        .send(
+            "SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..TaskOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(manifest_of(&again).digest(), digest);
+    let said = text(&again.events().unwrap());
+    let last = said
+        .rsplit("token=")
+        .next()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let claims = connectors::keys::verify(&jwks(&f), last.trim()).unwrap();
+    assert_eq!(claims["by_manifest"], digest.as_str());
+
+    // A newer policy version from the server updates it and nothing else.
+    let checked = branch
+        .send(
+            "SH true",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                policy_version: Some(8),
+                ..TaskOptions::default()
+            },
+        )
+        .unwrap();
+    let second = manifest_of(&checked);
+    assert_eq!(second.policy_version, 8);
+    assert_eq!(second.created_at_ms, first.created_at_ms);
+    assert!(second.same_tools(&first));
+    assert_ne!(second.digest(), digest);
+
+    // Changing the tools resolves it again.
+    let changed = branch
+        .send(
+            "SH true",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..granted(&f, &["linear:read"])
+            },
+        )
+        .unwrap();
+    let third = manifest_of(&changed);
+    assert_eq!(third.grants, [GrantEntry::parse("linear:read").unwrap()]);
+    assert_eq!(third.connectors[0].id, "linear");
+    assert_eq!(third.policy_version, 8, "no server word keeps the version");
+    assert!(!third.same_tools(&second));
+    assert!(third.created_at_ms >= second.created_at_ms);
+}

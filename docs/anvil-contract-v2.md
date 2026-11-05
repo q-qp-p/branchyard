@@ -248,8 +248,8 @@ Branchyard uses C. The harness then holds no token, and the proxy renews it. A a
 
 **Wire.**
 
-- Token: `"by_manifest": "sha256:<hex>"`. Text, at most 256 characters, like `by_turn`. Optional.
-- Audit line: `"by_manifest": "sha256:…"`, or `null` when the claim is absent.
+- Token: `"by_manifest": "<algorithm>:<hex>"`. Text, at most 256 characters, like `by_turn`. Optional. Branchyard writes `blake3:<hex>`; Anvil treats the value as opaque text.
+- Audit line: `"by_manifest": "…"`, the claim as it came, or `null` when the claim is absent.
 - Claim check: a value longer than 256 characters fails the token check with `401`, as the other `by_*` claims do.
 
 **Limits.** `by_manifest` is recorded, not enforced. It does not change the owner key, the grants or the decision. The grant still decides.

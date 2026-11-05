@@ -394,6 +394,7 @@ mod tests {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         }
     }
 

@@ -204,6 +204,15 @@ pub struct Session {
     /// skill) and `helpers`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<serde_json::Value>,
+    /// The tenant's tool-policy version when the session was admitted, or
+    /// last checked at a claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u64>,
+    /// The digest of the turn manifest the session runs with (what it was
+    /// admitted with, resolved once; `docs/connectors.md#the-turn-manifest`),
+    /// once its first turn has started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
 }
 
 /// Admit an isolated native session through the durable queue.
@@ -359,6 +368,11 @@ pub struct PolicyRecord {
 pub struct PolicyList {
     /// Every stored policy of the caller's tenant, by key.
     pub policies: Vec<PolicyRecord>,
+    /// The tenant's policy version: it rises by one with every change to any
+    /// of its policies, and a session records the one it was admitted
+    /// under.
+    #[serde(default)]
+    pub version: u64,
 }
 
 /// `PUT /v1/admin/policies/{key}`.

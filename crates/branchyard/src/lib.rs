@@ -135,6 +135,7 @@ mod land;
 mod lifecycle;
 mod liveness;
 mod lock;
+pub mod manifest;
 mod map;
 mod map_input;
 pub mod models;
@@ -1675,6 +1676,12 @@ pub struct TaskOptions {
     /// default (`local:<user>` locally). A server sets it to the request's
     /// principal. See `docs/connectors.md`.
     pub actor: Option<connectors::Actor>,
+    /// The tenant's tool-policy version a server admitted this call under.
+    /// The branch's turn manifest records it when it is resolved, and a
+    /// send that carries a newer one (the server re-checked the session's
+    /// tools against the policy) updates it. `None`: no server, or no
+    /// change. See `docs/connectors.md#the-turn-manifest`.
+    pub policy_version: Option<u64>,
     /// The server trigger run that started a new task, recorded on it
     /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
     /// Read only when a branch starts a new task.
@@ -2270,6 +2277,13 @@ impl Branch {
     /// The structured output contract stored with this branch, when requested.
     pub fn result_contract(&self) -> Result<Option<ResultContract>, Error> {
         Ok(self.yard.store().read(&self.info.name)?.result_contract)
+    }
+
+    /// The turn manifest the session runs with: what it was admitted with,
+    /// resolved when it started and again only when its tools changed.
+    /// `None` until its first turn has started.
+    pub fn manifest(&self) -> Result<Option<manifest::TurnManifest>, Error> {
+        Ok(self.yard.store().read(&self.info.name)?.manifest)
     }
 
     /// Where this branch's harness runs; `None` is a local process.
@@ -3011,6 +3025,12 @@ pub enum Activity {
         /// `docs/provisioning.md#antigravity-permission-rules`. Rules only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permissions: Option<branchyard_provision::PermissionsWritten>,
+        /// The digest of the turn manifest the session runs with (its file
+        /// is `.branchyard/manifest.json`, named by `BRANCHYARD_MANIFEST`,
+        /// and the gateway token's `by_manifest` carries the same value);
+        /// see `docs/connectors.md#the-turn-manifest`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manifest: Option<String>,
     },
     /// Input from `by` was written into the running turn; see
     /// [`Branch::steer`]. The harness's `steer_accepted` or

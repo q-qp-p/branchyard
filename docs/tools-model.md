@@ -1,6 +1,6 @@
 # Tools: one model for connectors, skills and helpers
 
-Written 5 November 2026. Status: **design; section 3 is built, the rest is not.** It answers four questions from the console work in [#67](https://github.com/vamsiramakrishnan/branchyard/pull/67): how a person's identity and permissions reach Anvil's gateway, how a tool is installed, allowed and chosen per query, how choosing fewer tools saves context, and how all of it runs on GCE, GCE with Microsandbox, GKE and Substrate. The audits it rests on read the code at `af17285d` plus #67, and Anvil at `8e990cb`. Each claim about today names its file.
+Written 5 November 2026. Status: **design; section 3 is built, section 4 is partly built (the manifest, the policy version and renewing tokens), the rest is not.** It answers four questions from the console work in [#67](https://github.com/vamsiramakrishnan/branchyard/pull/67): how a person's identity and permissions reach Anvil's gateway, how a tool is installed, allowed and chosen per query, how choosing fewer tools saves context, and how all of it runs on GCE, GCE with Microsandbox, GKE and Substrate. The audits it rests on read the code at `af17285d` plus #67, and Anvil at `8e990cb`. Each claim about today names its file.
 
 ## The problem in four lines
 
@@ -102,6 +102,14 @@ A plain Work turn with no delegation gets no MCP server at all, so its Branchyar
 
 ## 4. One turn, remotely: lifecycle and delivery
 
+**Status: partly built.** Hermetic (fakes only: the fake ACP agent, a mock gateway, a fake packager, an in-process server; no model, no real sandbox, no GCP), run on 5 November 2026 at the commit that adds this paragraph. Built:
+
+- **The manifest (step 1, in part).** A session resolves a `TurnManifest` in its first turn and keeps it with the branch; every turn uses it until the person changes the session's tools. It holds the actor, grants, chosen skills (or all), each connector's bundle hash, the helpers envelope, models, network, the policy version and the time. Its blake3 digest is written to `~/.branchyard/manifest.json` (`BRANCHYARD_MANIFEST`), carried in the token as `by_manifest`, in the `provisioned` event and on the console's session view. See [the turn manifest](connectors.md#the-turn-manifest).
+- **The policy version (steps 1 and 2, on the server).** Every `PUT` and `DELETE` of any policy record raises the tenant's version in the same transaction. A session records the version at admission. When its queued start or send is claimed and the version has moved, the server checks the session's tools against the policy as it stands and refuses `policy_changed` if they are no longer allowed, else records the new version in the session and its manifest. See [tool policy](server.md#tool-policy).
+- **Renewing tokens (step 4, in part).** The token file holds a five-minute token that the engine replaces by rename every two and a half minutes while the turn runs, and the effects proxy calls the gateway with the live token whatever the harness presents (its own, an earlier one, or none), so a turn can outlast the hour. See [token renewal](connectors.md#token-renewal).
+
+Not done: the worker does not ask the server to re-admit (step 2): the check runs on the server when the operation is claimed, not on a worker that holds an older manifest, and a worker still reads its own configuration. The digests in the manifest are not enforced and there is no content-addressed store, Artifact Registry or Cloud Storage FUSE (step 3). The proxy is still on the host that runs the turn, not in the sandbox; the harness can still read the short token from its file; there is no token fetch from the server as the sandbox's identity, no Workload Identity, and nothing binds a fetch to the manifest (step 4). Egress (step 5) and sleep and resume (step 7) are as before. No part of this ran against a real Anvil, gateway, sandbox or cluster.
+
 Admission resolves everything once, and the turn carries the result. A worker runs exactly what was admitted.
 
 1. **Admission (server).** It computes the effective tools (section 1). It resolves each to a content digest, writes a **turn manifest** and stores it with the operation:
@@ -161,7 +169,7 @@ Admission resolves everything once, and the turn carries the result. A worker ru
 |---|---|---|
 | 1 | The model and its API (`/v1/tools`, server-side defaults, one start field); policy in the store; required issuer; the console's Tools page and composer control | Branchyard |
 | 2 | The mounted tool tree, `tools search`, the `find-tools` skill, native skill links, Branchyard's MCP surface following the choice, budgets per case (built; see section 3) | Branchyard |
-| 3 | The in-sandbox proxy with renewing tokens; turn manifests; workers re-admitting on a stale policy | Branchyard |
+| 3 | The in-sandbox proxy with renewing tokens; turn manifests; workers re-admitting on a stale policy. **Built:** manifests, the policy version and its check at claim, renewing tokens on the host's proxy. **Not built:** the proxy in the sandbox, workers re-admitting | Branchyard |
 | 4 | GCP: KMS signing, IAP and groups, Artifact Registry and GCS store, GCS FUSE on GKE, FQDN egress, Workload Identity token fetch | Branchyard, deployment |
 | 5 | Anvil: Firestore and KMS vault, disconnect route, operation search index in the package, a fleet-gateway image for Cloud Run | Anvil |
 

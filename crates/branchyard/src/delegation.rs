@@ -5711,6 +5711,7 @@ Checks on the merged result: \
             removed: Vec::new(),
             metered_from: None,
             skills: None,
+            manifest: None,
 
             result_contract: None,
         }

@@ -224,6 +224,11 @@ pub(crate) struct Record {
     /// its base commit had none. See `crate::skills`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<crate::skills::BranchSkills>,
+    /// What the session was admitted with, resolved when it started and
+    /// again only when its tools change; every turn uses it. See
+    /// `crate::manifest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<crate::manifest::TurnManifest>,
 }
 
 /// A delegated child that was removed, as its parent's record remembers it.

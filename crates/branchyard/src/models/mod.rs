@@ -1211,6 +1211,7 @@ pub(crate) fn prepare(
                 window: (now, exp),
                 grants: Vec::new(),
                 scopes,
+                manifest: None,
             })?;
             keys.sign(&claims)
                 .map_err(|e| format!("could not sign the model gateway token: {e}"))?

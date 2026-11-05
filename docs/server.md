@@ -281,6 +281,8 @@ Policies sit at three levels, keyed by the caller's own tenant:
 
 A caller's effective policy is the tenant's, narrowed by the union of their group policies and their own, then by the server: the `ceilings` configuration and `allow_delegation`. Each step only narrows. In the union, lists pool, delegation is on when any record allows it, and a record that leaves a part unset adds nothing to it, so a group that sets only `delegation` never lifts another group's limit on skills. A skill brings the skills it needs whether or not the policy lists them. Policy applies on the next request, and every session start checks it again.
 
+Each tenant has a **policy version**: a counter, stored in the same collection as the policies (key `version:<tenant>`, never listed as a policy and refused as a policy key), that rises by one in the same transaction as every `PUT` and `DELETE` of any of the tenant's policy records. A refused change does not move it. `GET /v1/admin/policies` returns it as `version`. A session start records the version it was admitted under (`policy_version` on the session). When the session's operation is claimed, and for a send as well as a start, the server compares: if the version has not moved, nothing more is checked. If it has, the session's tools (its connectors and modes, its skills, or all of them when it chose none, and its helpers) are checked against the policy as it stands now. A tool no longer allowed fails the operation `policy_changed` and the session keeps the version it was admitted under; the person starts again with allowed tools. If every tool is still allowed, the session records the new version, and the turn's [manifest](connectors.md#the-turn-manifest) takes it. The check is of policy only: it does not look again at whether the person's accounts are connected.
+
 | Route | What it does | Scope |
 |---|---|---|
 | `GET /v1/admin/policies` | `{"policies": [{"key", "policy", "revision"}]}` for the caller's tenant | `admin` |
@@ -303,6 +305,7 @@ A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?,
 | `tool_not_allowed` | 403 | Policy does not allow a tool; `detail.kind`, `detail.id` (`*` when delegation is off), and `detail.max_mode` for a connector allowed less |
 | `tools_conflict` | 400 | `tools` beside `connectors`, `skills` or `helpers` |
 | `policy_key_invalid` | 400 | A policy key that is not one of the three forms for the caller's tenant |
+| `policy_changed` | 403 | The tenant's policy changed after the session was admitted, and a tool it chose is no longer allowed; same `detail` as `tool_not_allowed`. Returned in the failed operation, not on the start |
 
 ## Approvals
 
@@ -648,7 +651,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `connectors_not_configured` | 403 | `provision.connectors`, a session's `connectors`, or a connect route, on a server without `connectors` |
 | `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
 | `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
-| `tool_not_allowed`, `tools_conflict`, `policy_key_invalid` | 403, 400, 400 | See [tool policy](#tool-policy) |
+| `tool_not_allowed`, `tools_conflict`, `policy_key_invalid`, `policy_changed` | 403, 400, 400, 403 | See [tool policy](#tool-policy) |
 | `connector_over_ceiling` | 403 | A connector, or a write, beyond the caller's ceiling; `detail.connector`, and `detail.max_mode` when reads are allowed |
 | `connector_not_connected` | 409 | A session's connector the caller has not connected, or must reconnect; `detail.connector`, `detail.account`, `detail.action` (`connect`) |
 | `gateway_unreachable`, `gateway_refused`, `gateway_unexpected` | 502 | The connector gateway did not answer, refused a connect call (`detail.status`, `detail.code`), or answered something else |

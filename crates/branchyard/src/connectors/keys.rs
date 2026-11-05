@@ -59,6 +59,11 @@ pub struct Claims {
     /// What the turn's branch may delegate. Anvil ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by_delegation: Option<crate::access::DelegationScope>,
+    /// The digest of the turn manifest the turn runs with
+    /// (`crate::manifest`); Anvil records it on every audit line and does
+    /// not enforce it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_manifest: Option<String>,
 }
 
 /// One Ed25519 key: its id and 32-byte seed.
@@ -445,6 +450,7 @@ mod tests {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         }
     }
 

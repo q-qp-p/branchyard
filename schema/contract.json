@@ -28964,6 +28964,22 @@
             },
             "tools": {
               "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
+            },
+            "policy_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The tenant's tool-policy version when the session was admitted, or\nlast checked at a claim."
+            },
+            "manifest": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The digest of the turn manifest the session runs with (what it was\nadmitted with, resolved once; `docs/connectors.md#the-turn-manifest`),\nonce its first turn has started."
             }
           },
           "required": [
@@ -29272,6 +29288,22 @@
         },
         "tools": {
           "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
+        },
+        "policy_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The tenant's tool-policy version when the session was admitted, or\nlast checked at a claim."
+        },
+        "manifest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The digest of the turn manifest the session runs with (what it was\nadmitted with, resolved once; `docs/connectors.md#the-turn-manifest`),\nonce its first turn has started."
         }
       },
       "required": [
@@ -32195,6 +32227,13 @@
             "$ref": "#/$defs/PolicyRecord"
           },
           "description": "Every stored policy of the caller's tenant, by key."
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The tenant's policy version: it rises by one with every change to any\nof its policies, and a session records the one it was admitted\nunder.",
+          "default": 0
         }
       },
       "required": [
@@ -36125,6 +36164,22 @@
             },
             "tools": {
               "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
+            },
+            "policy_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The tenant's tool-policy version when the session was admitted, or\nlast checked at a claim."
+            },
+            "manifest": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The digest of the turn manifest the session runs with (what it was\nadmitted with, resolved once; `docs/connectors.md#the-turn-manifest`),\nonce its first turn has started."
             }
           },
           "required": [
@@ -36451,6 +36506,22 @@
             },
             "tools": {
               "description": "What it was started with beyond its harness: `connectors` (each\n`connector`, `mode`, `account`), `skills` (unset: every built-in\nskill) and `helpers`."
+            },
+            "policy_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The tenant's tool-policy version when the session was admitted, or\nlast checked at a claim."
+            },
+            "manifest": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The digest of the turn manifest the session runs with (what it was\nadmitted with, resolved once; `docs/connectors.md#the-turn-manifest`),\nonce its first turn has started."
             }
           },
           "required": [
@@ -37691,6 +37762,13 @@
                         {
                           "type": "null"
                         }
+                      ]
+                    },
+                    "manifest": {
+                      "description": "The digest of the turn manifest the session runs with (its file\nis `.branchyard/manifest.json`, named by `BRANCHYARD_MANIFEST`,\nand the gateway token's `by_manifest` carries the same value);\nsee `docs/connectors.md#the-turn-manifest`.",
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     }
                   },
@@ -43315,6 +43393,13 @@
                         {
                           "type": "null"
                         }
+                      ]
+                    },
+                    "manifest": {
+                      "description": "The digest of the turn manifest the session runs with (its file\nis `.branchyard/manifest.json`, named by `BRANCHYARD_MANIFEST`,\nand the gateway token's `by_manifest` carries the same value);\nsee `docs/connectors.md#the-turn-manifest`.",
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     }
                   },
@@ -55137,6 +55222,13 @@
                         {
                           "type": "null"
                         }
+                      ]
+                    },
+                    "manifest": {
+                      "description": "The digest of the turn manifest the session runs with (its file\nis `.branchyard/manifest.json`, named by `BRANCHYARD_MANIFEST`,\nand the gateway token's `by_manifest` carries the same value);\nsee `docs/connectors.md#the-turn-manifest`.",
+                      "type": [
+                        "string",
+                        "null"
                       ]
                     }
                   },

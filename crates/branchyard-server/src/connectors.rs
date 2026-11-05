@@ -119,6 +119,7 @@ pub fn gateway_for(config: &Config, repo: &str) -> Option<Gateway> {
         tenant: DEFAULT_TENANT.to_owned(),
         branch_scope: Some(repo.to_owned()),
         max_ttl: MAX_TTL,
+        token_ttl: branchyard::connectors::RENEWED_TTL,
         packager: Arc::new(AnvilPackager {
             command: c.anvil.clone(),
             root: c.bundles.clone(),

@@ -661,6 +661,22 @@ fn run(
         recorder.record(Activity::Access(Box::new(narrowed)))?;
     }
     let scopes = crate::access::TokenScopes::of(&scoped);
+    // The session's turn manifest: resolved when it started, and again
+    // only when its tools changed (`crate::manifest`). Kept with the
+    // branch, written into its home, and named in its token.
+    let manifest =
+        crate::manifest::settle(turn.yard, &scoped, &scopes, turn.options.policy_version);
+    if record.manifest.as_ref() != Some(&manifest) {
+        record.manifest = Some(manifest.clone());
+        store.write_fenced(record, fence)?;
+    }
+    let manifest_digest = manifest.digest();
+    if let Some(home) = record.home.as_deref() {
+        if let Err(error) = manifest.write(home) {
+            driven.end = End::failed(format!("could not write the turn manifest: {error}"));
+            return Ok(driven);
+        }
+    }
     // A sandboxed harness's delegation tools, served from this host for
     // this turn with a token of its own; stopped, with each session's
     // server, when this function returns, after the harness is gone.
@@ -690,8 +706,13 @@ fn run(
             None
         }
     };
-    let mut connectors = match crate::connectors::prepare(turn.yard, &scoped, deadline_ms, &scopes)
-    {
+    let mut connectors = match crate::connectors::prepare(
+        turn.yard,
+        &scoped,
+        deadline_ms,
+        &scopes,
+        Some(&manifest_digest),
+    ) {
         Ok(connectors) => connectors,
         Err(reason) => {
             driven.end = End::failed(format!("could not provide connectors: {reason}"));
@@ -726,7 +747,7 @@ fn run(
     let models = match crate::models::prepare(
         turn.yard,
         &scoped,
-        connectors.as_ref().map(|c| c.token.as_str()),
+        connectors.as_ref().and_then(|c| c.shared_token()),
         deadline_ms,
         &scopes,
         bounds.budget.clone(),
@@ -807,6 +828,7 @@ fn run(
             knowledge: Some(&briefing),
             assignment: assignment.as_deref(),
             skills: &skills,
+            manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
         },
         crate::provisioning::Access {
             policy: &bounds.policy,
@@ -2169,13 +2191,16 @@ fn effects_proxy(
             return Ok(None);
         }
     };
+    // The harness's token file now holds a short token, renewed until the
+    // turn ends; the proxy calls the gateway with the live one.
+    let token = prepared.renewing()?;
     let proxy = crate::effects::proxy::EffectProxy::start(
         turn.yard,
         record,
         settings.listen,
         crate::effects::proxy::ProxySpec {
             upstream: gateway.url.clone(),
-            token: prepared.token.clone(),
+            token,
             deadline_ms,
             preset,
         },

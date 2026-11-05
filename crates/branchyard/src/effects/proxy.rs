@@ -44,8 +44,9 @@ use super::{
     EffectActivity, EffectClass, EffectEntry, EffectMove, EffectState, Layers, Resolved, Staged,
     Subject,
 };
+use crate::connectors::renewal::LiveToken;
 use crate::connectors::{GrantEntry, GrantMode};
-use crate::models::gateway::{presented, read_request, same, Request};
+use crate::models::gateway::{presented, read_request, Request};
 use crate::models::upstream::{self, Failure, Target};
 use crate::Yard;
 use branchyard_support::time::now_ms;
@@ -62,8 +63,10 @@ pub(crate) struct ProxyState {
     pub yard: Yard,
     /// The gateway's `/mcp` URL, as this host reaches it.
     pub upstream: String,
-    /// The turn's token: the only one this proxy takes.
-    pub token: String,
+    /// The turn's token, renewed while the turn runs: the proxy calls the
+    /// gateway with the live one, and takes a call that presents any token
+    /// of this turn or none.
+    pub token: LiveToken,
     pub branch: String,
     pub task: String,
     pub turn: u32,
@@ -94,7 +97,7 @@ impl ProxyState {
         let mut tools = self.tools.lock_recovering("tools");
         let listed = tools.get_or_insert_with(|| {
             Listed::of(
-                &mcp::Client::new(&self.upstream, &self.token)
+                &mcp::Client::new(&self.upstream, self.token.current())
                     .list_tools()
                     .unwrap_or_default(),
             )
@@ -150,7 +153,7 @@ impl Listed {
 /// What starts a turn's proxy.
 pub(crate) struct ProxySpec {
     pub upstream: String,
-    pub token: String,
+    pub token: LiveToken,
     pub deadline_ms: Option<u64>,
     pub preset: Option<crate::PolicyPreset>,
 }
@@ -422,6 +425,17 @@ fn forward(
         .collect();
     headers.push(("Accept-Encoding".into(), "identity".into()));
     headers.extend(extra.iter().cloned());
+    // A request from this turn is made with the live token, whatever it
+    // carried; another token passes as it is and the gateway refuses it.
+    if presented_is(state, request) {
+        headers.retain(|(n, _)| {
+            !n.eq_ignore_ascii_case("authorization") && !n.eq_ignore_ascii_case("x-api-key")
+        });
+        headers.push((
+            "Authorization".into(),
+            format!("Bearer {}", state.token.current()),
+        ));
+    }
     let mut response = upstream::send(&root, &request.method, &path, &headers, body)?;
     let mut bytes = Vec::new();
     (&mut response.body)
@@ -800,8 +814,11 @@ fn handle(stream: TcpStream, state: &ProxyState) {
     }
 }
 
+/// Whether the request may be made with this turn's live token: it presents
+/// a token this turn issued (the file's now, or one it read earlier), or
+/// none, as a harness whose client leaves the header to the proxy does.
 fn presented_is(state: &ProxyState, request: &Request) -> bool {
-    presented(request).is_some_and(|token| same(token, &state.token))
+    presented(request).is_none_or(|token| state.token.issued(token))
 }
 
 /// One call, as the proxy sees it.

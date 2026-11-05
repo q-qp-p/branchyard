@@ -1718,3 +1718,131 @@ fn the_audit_log_settles_a_lost_answer_and_records_calls_around_the_proxy() {
     f.yard.ingest_connector_audit().unwrap();
     assert_eq!(f.yard.effects(Some("audited")).unwrap().len(), 2);
 }
+
+/// What a long-running harness does: calls the gateway with the token it
+/// read when it started, then waits on a named pipe the test opens only
+/// once that token has expired, and calls again with the stale token, with
+/// none, and with the file's token. Prints the status of each.
+const LONG_PY: &str = r#"import os, sys, urllib.error, urllib.request
+base = os.environ["ANVIL_GATEWAY_URL"][:-len("/mcp")]
+path = os.environ["ANVIL_GATEWAY_TOKEN_FILE"]
+def read():
+    return open(path).read().strip()
+def rest(tool, token):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(base + "/call/" + tool, method="POST",
+                                     data=b'{"arguments": {}}', headers=headers)
+    try:
+        return urllib.request.urlopen(request, timeout=60).status
+    except urllib.error.HTTPError as e:
+        return e.code
+first = read()
+print("a-first", rest("github__issues_list", first))
+open(sys.argv[1]).read()
+print("b-stale", rest("github__issues_list", first))
+print("c-none", rest("github__issues_list", None))
+fresh = read()
+print("d-file", rest("github__issues_list", fresh))
+print("e-stale-effect", rest("slack__chat_post", first))
+print("changed", fresh != first)
+"#;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn jwks_of(root: &Path) -> serde_json::Value {
+    let path = root.join(".branchyard/gateway/jwks.json");
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn a_turn_longer_than_its_token_keeps_calling_the_gateway_on_renewed_tokens() {
+    let f = Fixture::new();
+    let (mock, _) = setup(&f, ApprovalSettings::default());
+    // A two-second token, renewed every second: the turn outlives several.
+    let mut gateway =
+        Gateway::local(&f.yard, &mock.url, Arc::new(FakePackager)).expect("a local gateway");
+    gateway.token_ttl = Duration::from_secs(2);
+    f.yard.use_connectors(gateway);
+    let script = f.dir.join("long.py");
+    fs::write(&script, LONG_PY).unwrap();
+    let gate = f.dir.join("gate");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&gate)
+        .status()
+        .unwrap()
+        .success());
+    mock.on_call(|_| Some(now_secs().to_string()));
+    let mock = Arc::new(mock);
+    let releaser = {
+        let (mock, gate, root) = (mock.clone(), gate.clone(), f.root.clone());
+        std::thread::spawn(move || {
+            let first = wait::until("the first call", || {
+                mock.calls_to("github__issues_list")
+                    .first()
+                    .map(|c| c.token.clone())
+            });
+            // Release the harness only once its first token has lapsed.
+            let jwks = jwks_of(&root);
+            let claims = branchyard::connectors::keys::verify(&jwks, &first).unwrap();
+            let exp = claims["exp"].as_u64().unwrap();
+            wait::until("the first token to expire", || now_secs() > exp);
+            fs::write(&gate, "go").unwrap();
+            first
+        })
+    };
+    let branch = f
+        .task(&format!(
+            "SH python3 {} {}",
+            script.display(),
+            gate.display()
+        ))
+        .options(granted(&f))
+        .name("long")
+        .run()
+        .unwrap();
+    let first = releaser.join().unwrap();
+    let said = text(&branch.events().unwrap());
+    for line in [
+        "a-first 200",
+        "b-stale 200",
+        "c-none 200",
+        "d-file 200",
+        "e-stale-effect 200",
+        "changed True",
+    ] {
+        assert!(said.contains(line), "{line} not in {said}");
+    }
+    // Every call the gateway saw carried a token that was valid when it
+    // arrived and names the session's manifest; none after the first token
+    // lapsed was that token.
+    let jwks = jwks_of(&f.root);
+    let calls = mock.calls();
+    assert!(calls.len() >= 5, "{calls:?}");
+    let digest = branch.manifest().unwrap().expect("a manifest").digest();
+    for call in &calls {
+        let claims = branchyard::connectors::keys::verify(&jwks, &call.token).expect("signed");
+        let arrived: u64 = call.seen.as_deref().unwrap().parse().unwrap();
+        assert!(
+            claims["exp"].as_u64().unwrap() >= arrived,
+            "{claims} at {arrived}"
+        );
+        assert_eq!(claims["by_manifest"], digest.as_str(), "{claims}");
+    }
+    for call in calls.iter().skip(1) {
+        assert_ne!(call.token, first, "a lapsed token reached the gateway");
+    }
+    // The turn is over: the token file is gone, and nothing renews it.
+    let home = PathBuf::from(
+        common::stored_record(&f.root, "long")["home"]
+            .as_str()
+            .unwrap(),
+    );
+    assert!(!home.join(".branchyard/gateway-token").exists());
+}

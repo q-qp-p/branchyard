@@ -527,8 +527,12 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             skills,
             managed,
             permissions,
+            manifest,
         } => {
             let mut parts = Vec::new();
+            if let Some(manifest) = manifest {
+                parts.push(format!("manifest {manifest}"));
+            }
             if let Some(auth) = auth {
                 parts.push(format!("auth {auth}"));
             }
@@ -2369,6 +2373,7 @@ mod tests {
                 skills: SkillSet::default(),
                 managed: None,
                 permissions: None,
+                manifest: None,
             };
             assert_eq!(
                 activity_line(&provisioned, PLAIN).unwrap(),
@@ -2410,6 +2415,7 @@ mod tests {
             skills: SkillSet::default(),
             managed: None,
             permissions: None,
+            manifest: None,
         };
         assert_eq!(
             activity_line(&provisioned, PLAIN).unwrap(),
@@ -2437,6 +2443,7 @@ mod tests {
             skills,
             managed: None,
             permissions: None,
+            manifest: None,
         };
         let staged = SkillSet {
             set: "3f2a9c1d0e4b5a6978".into(),
