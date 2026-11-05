@@ -1466,6 +1466,11 @@ body.sheet-open { overflow: hidden; }
 .tool-action { white-space: nowrap; }
 .tool-action .hint { display: block; margin: 4px 0 0; }
 .tool-ask { font-size: 12px; color: var(--ink-2); white-space: normal; }
+.tool-mine { white-space: nowrap; }
+.tool-mine .hint { white-space: normal; }
+.install-output { margin: 6px 0 0; max-height: 160px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.helper-limit, .policy-limit { margin-top: 10px; }
+.helper-limit input, .policy-limit input { width: 6em; }
 .policy { margin-top: 20px; }
 .policy > summary { font-weight: 650; cursor: pointer; }
 .policy-body { margin-top: 12px; }

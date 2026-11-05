@@ -13,6 +13,12 @@
 //!   path is in [`super::connections`] and returns them as `defaults`.)
 //! - A session start's `tools` field, which [`expand`] turns into the
 //!   `connectors`, `skills` and `helpers` fields the start already takes.
+//!   The helper entry `{"kind": "helper", "id": "*", "max_children": N}`
+//!   carries the helper limit.
+//! - `POST` and `GET /v1/tools/helpers/{id}/install`: install a helper's
+//!   harness on the server's host ([`super::installs`]).
+//! - A person's own `GET` and `PUT /v1/me/policy` ([`super::policy`]) turn
+//!   a tool off for themselves; the catalogue reports it as `off_by_me`.
 //!
 //! A built-in skill is ready when allowed: installing skills per person
 //! comes later. A helper is ready when an environment offered to the tenant
@@ -67,13 +73,43 @@ pub(super) fn skill_usable(catalogue: &Catalogue, policy: &ToolPolicy, id: &str)
     policy::skill_allowed(policy, id) && catalogue.skills.iter().any(|s| s.id == id)
 }
 
+const TURNED_OFF: &str = "You turned this off for yourself. Turn it back on in Settings > Tools.";
+
+/// Whether the person's own record, and not the administrator's policy,
+/// switches `id` off: it is off in their record and the administrator's
+/// result alone would have allowed it.
+fn turned_off(resolved: &policy::Resolved, kind: ToolKind, id: &str) -> bool {
+    let mine = resolved
+        .own
+        .as_ref()
+        .is_some_and(|own| policy::is_off(own, kind, id));
+    // What the administrator and the server allow without the person's
+    // record: a tool they block stays "ask your administrator".
+    let blocked = match kind {
+        ToolKind::Skill => !policy::skill_allowed(&resolved.admin, id),
+        ToolKind::Helper if id == "*" => !policy::delegation_allowed(&resolved.admin),
+        ToolKind::Helper => !policy::helper_allowed(&resolved.admin, id),
+        ToolKind::Connector => {
+            policy::is_off(&resolved.admin, kind, id)
+                || policy::connector_mode(resolved.admin_effective().connectors.as_deref(), id)
+                    .is_none()
+        }
+    };
+    mine && !blocked
+}
+
 /// Why helpers are off for the caller, or `None` when they are on.
 pub(super) fn helper_state(resolved: &policy::Resolved) -> Option<String> {
     if !resolved.allow_delegation {
         return Some("Helpers are turned off on this server.".to_owned());
     }
-    (!policy::delegation_allowed(&resolved.store))
-        .then(|| "Your administrator has not turned helpers on for you.".to_owned())
+    if policy::delegation_allowed(&resolved.store) {
+        return None;
+    }
+    Some(match turned_off(resolved, ToolKind::Helper, "*") {
+        true => "You turned helpers off for yourself.".to_owned(),
+        false => "Your administrator has not turned helpers on for you.".to_owned(),
+    })
 }
 
 struct Facts {
@@ -109,6 +145,8 @@ fn entry(kind: ToolKind, id: &str, name: String, facts: &Facts) -> ToolEntry {
         accounts: Vec::new(),
         action: None,
         reason: None,
+        off_by_me: false,
+        installable: false,
     }
 }
 
@@ -126,6 +164,7 @@ fn build(app: &App, caller: &Caller, workspace: Option<&str>) -> Result<ToolCata
     let list = connections::connections(app, caller, &resolved);
     let mut tools = Vec::new();
     for c in &list.connections {
+        let off_by_me = turned_off(&resolved, ToolKind::Connector, &c.connector);
         let allowed = c.max_mode.is_some();
         let facts = Facts {
             allowed,
@@ -138,7 +177,9 @@ fn build(app: &App, caller: &Caller, workspace: Option<&str>) -> Result<ToolCata
         tool.max_mode = c.max_mode;
         tool.accounts = c.accounts.clone();
         tool.reason = c.reason.clone();
+        tool.off_by_me = off_by_me;
         tool.action = match (allowed, c.state) {
+            (false, _) if off_by_me => Some(ToolAction::TurnOn),
             (false, _) => Some(ToolAction::AskAdmin),
             (_, ConnectionState::NotConnected | ConnectionState::NeedsReconnect) => {
                 Some(ToolAction::Connect)
@@ -163,12 +204,22 @@ fn build(app: &App, caller: &Caller, workspace: Option<&str>) -> Result<ToolCata
             .find(|t| t.id == skill.topic)
             .map(|t| t.title.clone());
         if !allowed {
-            tool.action = Some(ToolAction::AskAdmin);
-            tool.reason = Some(format!("Your administrator has not allowed {}.", skill.id));
+            match turned_off(&resolved, ToolKind::Skill, &skill.id) {
+                true => {
+                    tool.off_by_me = true;
+                    tool.action = Some(ToolAction::TurnOn);
+                    tool.reason = Some(TURNED_OFF.to_owned());
+                }
+                false => {
+                    tool.action = Some(ToolAction::AskAdmin);
+                    tool.reason = Some(format!("Your administrator has not allowed {}.", skill.id));
+                }
+            }
         }
         tools.push(tool);
     }
     let off = helper_state(&resolved);
+    let admin = caller.0.allows("admin");
     for helper in presets::helper_harnesses(app, caller.tenant())? {
         let allowed = off.is_none() && policy::helper_allowed(&effective, &helper.id);
         let facts = Facts {
@@ -178,16 +229,46 @@ fn build(app: &App, caller: &Caller, workspace: Option<&str>) -> Result<ToolCata
         };
         let mut tool = entry(ToolKind::Helper, &helper.id, helper.id.clone(), &facts);
         if !allowed {
-            tool.action = Some(ToolAction::AskAdmin);
-            tool.reason = Some(off.clone().unwrap_or_else(|| {
-                format!(
-                    "Your administrator has not allowed {} as a helper.",
-                    helper.id
-                )
-            }));
+            let mine = turned_off(&resolved, ToolKind::Helper, &helper.id)
+                || turned_off(&resolved, ToolKind::Helper, "*");
+            match (&off, mine) {
+                (_, true) => {
+                    tool.off_by_me = true;
+                    tool.action = Some(ToolAction::TurnOn);
+                    tool.reason = Some(TURNED_OFF.to_owned());
+                }
+                (reason, false) => {
+                    tool.action = Some(ToolAction::AskAdmin);
+                    tool.reason = Some(reason.clone().unwrap_or_else(|| {
+                        format!(
+                            "Your administrator has not allowed {} as a helper.",
+                            helper.id
+                        )
+                    }));
+                }
+            }
         } else if !helper.ready {
-            tool.action = helper.install.then_some(ToolAction::Install);
-            tool.reason = helper.reason;
+            // Installing is an administrator's act on the server's host.
+            let installable = helper.install && admin && app.config.harness_install.allow;
+            tool.installable = installable;
+            tool.action = installable.then_some(ToolAction::Install);
+            tool.reason = Some(match (helper.install, installable) {
+                (true, false) => format!(
+                    "{} Installing from the console is {}.",
+                    helper
+                        .reason
+                        .as_deref()
+                        .unwrap_or("This harness is not installed."),
+                    match app.config.harness_install.allow {
+                        true => "for an administrator",
+                        false => "turned off on this server",
+                    }
+                ),
+                _ => helper
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "This harness is not installed.".to_owned()),
+            });
         }
         tools.push(tool);
     }
@@ -197,7 +278,8 @@ fn build(app: &App, caller: &Caller, workspace: Option<&str>) -> Result<ToolCata
             GatewayState::Ready => None,
             _ => list.reason,
         },
-        max_children: connections::MAX_HELPERS,
+        max_children: policy::helper_limit(&effective),
+        default_children: connections::DEFAULT_HELPERS.min(policy::helper_limit(&effective)),
         tools,
     })
 }
@@ -304,6 +386,12 @@ pub(super) fn validate(choices: &[ToolChoice]) -> Result<(), ApiError> {
                 choice.id
             )));
         }
+        if choice.max_children.is_some() && !is_limit(choice) {
+            return Err(ApiError::bad_request(format!(
+                "{}: max_children belongs to the helper entry with id \"*\"",
+                choice.id
+            )));
+        }
         match choice.kind {
             ToolKind::Connector => {
                 grant(choice).check().map_err(ApiError::bad_request)?;
@@ -313,6 +401,16 @@ pub(super) fn validate(choices: &[ToolChoice]) -> Result<(), ApiError> {
                     return Err(ApiError::bad_request(format!(
                         "{}: mode and account belong to connectors",
                         choice.id
+                    )));
+                }
+            }
+        }
+        if choice.kind == ToolKind::Helper && choice.id == LIMIT_ID {
+            if let Some(n) = choice.max_children {
+                if !(1..=connections::MAX_HELPERS).contains(&n) {
+                    return Err(ApiError::bad_request(format!(
+                        "max_children must be from 1 to {}",
+                        connections::MAX_HELPERS
                     )));
                 }
             }
@@ -327,7 +425,19 @@ pub(super) fn validate(choices: &[ToolChoice]) -> Result<(), ApiError> {
     };
     built_in::check(&ids(ToolKind::Skill))
         .map_err(|why| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why))?;
-    known_harnesses(&ids(ToolKind::Helper))
+    known_harnesses(
+        &ids(ToolKind::Helper)
+            .into_iter()
+            .filter(|id| id != LIMIT_ID)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The helper entry that carries the limit instead of naming a harness.
+const LIMIT_ID: &str = "*";
+
+fn is_limit(choice: &ToolChoice) -> bool {
+    choice.kind == ToolKind::Helper && choice.id == LIMIT_ID
 }
 
 // ---------------------------------------------------------------------------
@@ -392,9 +502,17 @@ pub(super) fn expand(body: &mut Value) -> Result<(), ApiError> {
     if !skills.is_empty() {
         object.insert("skills".into(), json!(skills));
     }
-    let helpers = ids(ToolKind::Helper);
-    if !helpers.is_empty() {
-        object.insert("helpers".into(), json!({ "harnesses": helpers }));
+    let limit = choices.iter().find(|c| is_limit(c));
+    let helpers: Vec<&str> = ids(ToolKind::Helper)
+        .into_iter()
+        .filter(|id| *id != LIMIT_ID)
+        .collect();
+    if !helpers.is_empty() || limit.is_some() {
+        let mut chosen = json!({ "harnesses": helpers });
+        if let Some(n) = limit.and_then(|c| c.max_children) {
+            chosen["max_children"] = json!(n);
+        }
+        object.insert("helpers".into(), chosen);
     }
     Ok(())
 }
@@ -409,6 +527,7 @@ mod tests {
             id: id.into(),
             mode: None,
             account: None,
+            max_children: None,
         }
     }
 
@@ -447,6 +566,47 @@ mod tests {
         );
         assert_eq!(bare["connectors"], json!([]));
         assert!(bare.get("helpers").is_none());
+    }
+
+    #[test]
+    fn the_helper_entry_with_a_star_carries_the_limit_and_names_no_harness() {
+        let limit = |n: Option<u32>| ToolChoice {
+            max_children: n,
+            ..choice(ToolKind::Helper, "*")
+        };
+        let mut body = json!({"tools":[
+            {"kind":"helper","id":"*","max_children":2},
+            {"kind":"helper","id":"claude-code-acp"}
+        ]});
+        expand(&mut body).unwrap();
+        assert_eq!(
+            body["helpers"],
+            json!({"harnesses":["claude-code-acp"],"max_children":2})
+        );
+        let mut alone = json!({"tools":[{"kind":"helper","id":"*","max_children":3}]});
+        expand(&mut alone).unwrap();
+        assert_eq!(alone["helpers"], json!({"harnesses":[],"max_children":3}));
+        let mut unset = json!({"tools":[{"kind":"helper","id":"*"}]});
+        expand(&mut unset).unwrap();
+        assert_eq!(
+            unset["helpers"],
+            json!({"harnesses":[]}),
+            "the default applies"
+        );
+        assert!(
+            validate(&[limit(Some(1)), limit(Some(2))]).is_err(),
+            "listed twice"
+        );
+        for n in [0, 17] {
+            assert_eq!(
+                validate(&[limit(Some(n))]).unwrap_err().body.code,
+                "invalid_request"
+            );
+        }
+        let mut on_a_harness = choice(ToolKind::Helper, "claude-code-acp");
+        on_a_harness.max_children = Some(2);
+        assert!(validate(&[on_a_harness]).is_err());
+        assert!(validate(&[limit(Some(16)), choice(ToolKind::Helper, "claude-code-acp")]).is_ok());
     }
 
     #[test]

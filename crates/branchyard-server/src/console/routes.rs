@@ -50,6 +50,7 @@ pub(crate) fn router() -> Router<Shared> {
         .merge(super::connections::router())
         .merge(super::policy::router())
         .merge(super::tools::router())
+        .merge(super::installs::router())
 }
 pub(super) fn project_access(
     app: &App,

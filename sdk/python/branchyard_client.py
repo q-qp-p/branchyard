@@ -130,6 +130,7 @@ __all__ = [
     "branch_name",
     "connect",
     "error_for_code",
+    "helper_limit",
     "new_key",
 ]
 
@@ -616,6 +617,13 @@ class Grant:
         if self.operations != ("*",):
             text += ":" + ",".join(self.operations)
         return text
+
+
+def helper_limit(max_children: int) -> JSON:
+    """The `tools` entry that limits a session's helpers to `max_children` at
+    once: `{"kind": "helper", "id": "*", "max_children": n}`. Give it beside
+    the helper harnesses, or alone for helpers on the session's own harness."""
+    return {"kind": "helper", "id": "*", "max_children": max_children}
 
 
 def grants_json(grants: Optional[Grants]) -> list[JSON]:
@@ -1631,9 +1639,12 @@ class Client:
         unset stages all) and `helpers` (harness IDs it may delegate to, at
         most `max_helpers` at once) are the choices `session_tools()` offers;
         the server checks each again. `tools` is the same choice as one list
-        of `{"kind", "id", "mode"?}` from `tools_catalogue()`; the server
-        refuses it beside the three fields above, and a kind it leaves out is
-        not chosen."""
+        of `{"kind", "id", "mode"?}` from `tools()`; the server refuses it
+        beside the three fields above, and a kind it leaves out is not
+        chosen. With `tools`, the helper limit is the entry
+        `helper_limit(n)` (`{"kind": "helper", "id": "*", "max_children": n}`),
+        at most `tools()["max_children"]`, which an administrator's
+        `max_helpers` may lower; `max_helpers=` is for the `helpers` form."""
         chosen: JSON = {}
         if connectors is not None:
             chosen["connectors"] = grants_json(connectors)
@@ -1667,8 +1678,12 @@ class Client:
     def tools(self, workspace: Optional[str] = None) -> Record:
         """`GET /v1/tools`: every connector, skill and helper as the caller
         sees it: `state` (`not_allowed`, `not_ready`, `ready`, `default`),
-        `allowed`, `ready`, `default`, `max_mode`, `action` and `reason`.
-        With `workspace`, `default` reflects that workspace's defaults."""
+        `allowed`, `ready`, `default`, `max_mode`, `action` and `reason`, and
+        `off_by_me` (you switched it off, see `put_my_policy`) and
+        `installable` (an administrator can install the helper's harness,
+        see `install_helper`). `max_children` and `default_children` are
+        the most helpers a session may have for you, and its default. With
+        `workspace`, `default` reflects that workspace's defaults."""
         return Record(self.get("/v1/tools", workspace=workspace) if workspace else self.get("/v1/tools"))
 
     def workspace_tool_defaults(self, workspace: str, tools: Sequence[JSON], *, revision: int = 0) -> Record:
@@ -1685,7 +1700,9 @@ class Client:
     def put_policy(self, key: str, policy: JSON, *, revision: Optional[int] = None) -> Record:
         """`PUT /v1/admin/policies/{key}` (`tenant:T`, `group:T:G` or
         `principal:T:SUBJECT`): `policy` holds optional `connectors`, `skills`,
-        `helpers` and `delegation`. `revision` is the stored one; unset creates."""
+        `helpers`, `delegation`, `max_helpers` (1 to 16) and `off` (a list of
+        `{"kind", "id"}` switched off). `revision` is the stored one; unset
+        creates."""
         body = _drop_none({"policy": policy, "revision": revision})
         return Record(self.put(f"/v1/admin/policies/{_q(key)}", body))
 
@@ -1693,6 +1710,36 @@ class Client:
         """`DELETE /v1/admin/policies/{key}`, guarded by `revision` when given."""
         suffix = f"?revision={revision}" if revision is not None else ""
         return Record(self.delete(f"/v1/admin/policies/{_q(key)}{suffix}"))
+
+    def my_policy(self) -> Record:
+        """`GET /v1/me/policy`: your own policy record (`key` is
+        `self:T:SUBJECT`), an empty `policy` at `revision` 0 before the first
+        save. It only narrows what the administrator's policy allows."""
+        return Record(self.get("/v1/me/policy"))
+
+    def put_my_policy(self, policy: JSON, *, revision: Optional[int] = None) -> Record:
+        """`PUT /v1/me/policy`: replace your own policy, for example
+        `{"off": [{"kind": "skill", "id": "docx"}]}` to switch a tool off for
+        yourself, or `{"max_helpers": 2}`. Whatever it lists, the
+        administrator's policy stays the ceiling. `revision` is the saved one
+        (0 or unset before the first save); a stale one is `revision_conflict`.
+        Needs the `run` scope."""
+        body = _drop_none({"policy": policy, "revision": revision})
+        return Record(self.put("/v1/me/policy", body))
+
+    def install_helper(self, harness: str) -> Record:
+        """`POST /v1/tools/helpers/{harness}/install` (`admin` scope): install
+        a helper's harness on the server's own host. Needs
+        `harness_install.allow` in the server's configuration. Returns at once
+        with `state` `queued`; follow it with `helper_install`. A worker on
+        another machine keeps what it has."""
+        return Record(self.post(f"/v1/tools/helpers/{_q(harness)}/install"))
+
+    def helper_install(self, harness: str) -> Record:
+        """`GET /v1/tools/helpers/{harness}/install`: the latest install's
+        `state` (`queued`, `running`, `succeeded`, `failed`), `command`,
+        `problem` and `output_tail`."""
+        return Record(self.get(f"/v1/tools/helpers/{_q(harness)}/install"))
 
     def connections(self) -> Record:
         """`GET /v1/connections`: `gateway` (`ready`, `not_configured` or

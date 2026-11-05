@@ -674,6 +674,22 @@ impl Default for ManagedKnowledge {
     }
 }
 
+/// Whether an administrator may install a helper's harness on this server's
+/// own host from the console (`POST /v1/tools/helpers/{id}/install`).
+/// Installing runs the harness catalog's install command (`npm install -g`,
+/// a vendor's installer script) as the server's user, so it is off until the
+/// operator turns it on. See docs/server.md#install-a-helpers-harness.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct HarnessInstall {
+    /// Explicit operator opt-in; disabled by default.
+    pub allow: bool,
+    /// The `PATH` the install commands run with and their programs (`npm`,
+    /// `curl`) are looked for on; the server's own `PATH` when unset.
+    pub path: Option<String>,
+}
+
 /// An operator-approved execution environment for workspace sessions, one
 /// entry of `execution_presets`. A session start names its `id`; the server
 /// supplies the provider, secrets and worker labels, and then applies the
@@ -795,6 +811,8 @@ pub struct Config {
     pub repos: Vec<(String, PathBuf)>,
     /// Operator-owned knowledge workspace storage and limits.
     pub managed_knowledge: ManagedKnowledge,
+    /// Whether the console may install a helper's harness on this host.
+    pub harness_install: HarnessInstall,
     pub tokens: Vec<Token>,
     /// The token file serving made or used because the configuration and
     /// the flags gave no credential (`<data_dir>/token`): what a client
@@ -1140,6 +1158,7 @@ impl Config {
             data_dir,
             repos: Vec::new(),
             managed_knowledge: ManagedKnowledge::default(),
+            harness_install: HarnessInstall::default(),
             tokens: Vec::new(),
             default_token_file: None,
             principals: BTreeMap::new(),
@@ -1850,6 +1869,8 @@ pub(crate) struct FileConfig {
     #[serde(default)]
     managed_knowledge: ManagedKnowledge,
     #[serde(default)]
+    harness_install: HarnessInstall,
+    #[serde(default)]
     repos: BTreeMap<String, PathBuf>,
     #[serde(default)]
     tokens: Vec<FileToken>,
@@ -2343,6 +2364,8 @@ pub struct Partial {
     pub data_dir: Option<PathBuf>,
     /// Operator knowledge storage settings from the config file.
     pub managed_knowledge: ManagedKnowledge,
+    /// Whether the console may install a helper's harness on this host.
+    pub harness_install: HarnessInstall,
     pub repos: Vec<(String, PathBuf)>,
     pub tokens: Vec<Token>,
     pub principals: BTreeMap<String, Principal>,
@@ -2626,6 +2649,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             root: file.managed_knowledge.root.map(resolve),
             ..file.managed_knowledge
         },
+        harness_install: file.harness_install,
         repos: file
             .repos
             .into_iter()

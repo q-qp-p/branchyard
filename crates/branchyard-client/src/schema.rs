@@ -142,6 +142,9 @@ pub fn contract() -> Value {
     entry::<crate::workspace_api::SessionTools>("workspace.SessionTools", &mut types);
     entry::<crate::workspace_api::ToolKind>("workspace.ToolKind", &mut types);
     entry::<crate::workspace_api::ToolChoice>("workspace.ToolChoice", &mut types);
+    entry::<crate::workspace_api::ToolRef>("workspace.ToolRef", &mut types);
+    entry::<crate::workspace_api::InstallState>("workspace.InstallState", &mut types);
+    entry::<crate::workspace_api::HelperInstall>("workspace.HelperInstall", &mut types);
     entry::<crate::workspace_api::ToolPolicy>("workspace.ToolPolicy", &mut types);
     entry::<crate::workspace_api::PolicyRecord>("workspace.PolicyRecord", &mut types);
     entry::<crate::workspace_api::PolicyList>("workspace.PolicyList", &mut types);

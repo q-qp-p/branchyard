@@ -30,7 +30,7 @@ use branchyard::connectors::{GrantEntry, GrantMode, CONNECT_TTL};
 use branchyard_client::http;
 use branchyard_client::workspace_api::{
     ApiKeyRequest, ConnectRequest, ConnectStart, ConnectedAccount, Connection, ConnectionList,
-    ConnectionState, GatewayState, HelperOptions, SessionTools, SkillOption,
+    ConnectionState, GatewayState, HelperOptions, SessionTools, SkillOption, ToolKind,
 };
 use serde_json::{json, Value};
 
@@ -105,7 +105,7 @@ async fn session_tools(
             helpers: HelperOptions {
                 allowed: helpers.is_none(),
                 reason: helpers,
-                max_children: MAX_HELPERS,
+                max_children: policy::helper_limit(&effective),
             },
             defaults: tools::defaults(&app, &caller, &wid)?,
         }))
@@ -239,7 +239,10 @@ pub(super) fn connections(
     let effective = resolved.effective();
     let connections = served
         .iter()
-        .map(|id| connection(id, &accounts, state, effective.connectors.as_deref()))
+        .map(|id| {
+            let off = policy::is_off(&effective, ToolKind::Connector, id);
+            connection(id, &accounts, state, effective.connectors.as_deref(), off)
+        })
         .collect();
     ConnectionList {
         gateway: state,
@@ -263,6 +266,7 @@ fn connection(
     accounts: &Value,
     gateway: GatewayState,
     ceiling: Option<&[GrantEntry]>,
+    off: bool,
 ) -> Connection {
     let listed = branchyard_controls::catalog::connectors()
         .iter()
@@ -285,7 +289,10 @@ fn connection(
             })
         })
         .collect();
-    let max_mode = policy::connector_mode(ceiling, id);
+    let max_mode = match off {
+        true => None,
+        false => policy::connector_mode(ceiling, id),
+    };
     let state = if max_mode.is_none() {
         ConnectionState::Blocked
     } else if gateway != GatewayState::Ready {
@@ -298,6 +305,7 @@ fn connection(
         ConnectionState::NeedsReconnect
     };
     let reason = match state {
+        ConnectionState::Blocked if off => Some(format!("{name} is turned off for you.")),
         ConnectionState::Blocked => Some(format!("Your administrator has not allowed {name}.")),
         ConnectionState::NotConnected => Some(format!("Connect {name} to use it.")),
         ConnectionState::NeedsReconnect => Some(format!(

@@ -5,6 +5,7 @@ mod decisions;
 mod discovery;
 mod harness_input;
 mod inputs;
+mod people;
 mod presets;
 mod services;
 mod titles;

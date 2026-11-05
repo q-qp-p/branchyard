@@ -325,6 +325,25 @@ pub struct ToolChoice {
     /// Refused on a skill or helper.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The most helpers the session may have at once, 1 to 16. Only the
+    /// helper entry with `id` `*` carries it (`{"kind": "helper", "id": "*",
+    /// "max_children": 2}`); that entry names no harness, and alone it
+    /// gives helpers that run the session's own harness. Unset is the
+    /// default of 4, within the administrator's `max_helpers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
+/// A tool named without its settings: what a policy turns off.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRef {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The connector id, built-in skill id or harness id; `*` with kind
+    /// `helper` stands for delegation as a whole.
+    pub id: String,
 }
 
 /// What an administrator allows, at one level (tenant, group or person).
@@ -347,6 +366,14 @@ pub struct ToolPolicy {
     /// Whether sessions may delegate at all. `false` turns helpers off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<bool>,
+    /// The most helpers a session may have at once, 1 to 16 (default
+    /// ceiling 16). Two records' limits narrow to the lesser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_helpers: Option<u32>,
+    /// Tools switched off whatever the lists above allow. A person's own
+    /// policy (`/v1/me/policy`) uses it to turn a tool off for themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<Vec<ToolRef>>,
 }
 
 /// One stored policy.
@@ -354,7 +381,8 @@ pub struct ToolPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyRecord {
     /// `tenant:<tenant>`, `group:<tenant>:<group>` or
-    /// `principal:<tenant>:<subject>`.
+    /// `principal:<tenant>:<subject>`; a person's own is
+    /// `self:<tenant>:<subject>`.
     pub key: String,
     /// The policy.
     pub policy: ToolPolicy,
@@ -436,6 +464,8 @@ pub enum ToolAction {
     AskAdmin,
     /// Connect an account.
     Connect,
+    /// Turn it back on in Settings > Tools: the person switched it off.
+    TurnOn,
     /// Install it.
     Install,
     /// Sign in.
@@ -481,6 +511,15 @@ pub struct ToolEntry {
     /// One plain sentence when it is not ready.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The caller switched it off for themselves (their own policy,
+    /// `/v1/me/policy`). `allowed` is then false, `state` is `not_allowed`
+    /// and `action` is `turn_on`; the administrator's policy would allow it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off_by_me: bool,
+    /// A helper's harness can be installed on the server's host by an
+    /// administrator now (`POST /v1/tools/helpers/{id}/install`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub installable: bool,
 }
 
 /// `GET /v1/tools`: every tool of the three kinds.
@@ -492,8 +531,12 @@ pub struct ToolCatalogue {
     /// One plain sentence when it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// The most children a session's helpers may have at once.
+    /// The most children a session's helpers may have at once for the
+    /// caller: 16, or the administrator's lower `max_helpers`.
     pub max_children: u32,
+    /// The children a session has when its `tools` give no number.
+    #[serde(default)]
+    pub default_children: u32,
     /// Connectors, then skills, then helpers.
     pub tools: Vec<ToolEntry>,
 }
@@ -1170,6 +1213,38 @@ impl crate::Client {
         self.delete(&path)
     }
 
+    /// The caller's own policy: what they have switched off for themselves.
+    /// An empty policy at revision 0 before the first save.
+    pub fn my_policy(&self) -> Result<PolicyRecord, crate::Error> {
+        self.get("/v1/me/policy")
+    }
+
+    /// Replace the caller's own policy. It can only narrow what the
+    /// administrator's allows; `request.revision` is the saved one (unset
+    /// or 0 before the first save).
+    pub fn put_my_policy(&self, request: &PutPolicyRequest) -> Result<PolicyRecord, crate::Error> {
+        self.put("/v1/me/policy", request)
+    }
+
+    /// Ask the server to install helper `harness` on its own host (`admin`
+    /// scope, and `harness_install.allow` in the server's configuration).
+    /// Returns at once; follow it with `helper_install`.
+    pub fn install_helper(&self, harness: &str) -> Result<HelperInstall, crate::Error> {
+        self.post(
+            &format!("/v1/tools/helpers/{}/install", crate::http::encode(harness)),
+            &serde_json::json!({}),
+            &crate::new_key(),
+        )
+    }
+
+    /// Where the latest install of helper `harness` on the server stands.
+    pub fn helper_install(&self, harness: &str) -> Result<HelperInstall, crate::Error> {
+        self.get(&format!(
+            "/v1/tools/helpers/{}/install",
+            crate::http::encode(harness)
+        ))
+    }
+
     /// Start a named attempt through the existing operation queue.
     pub fn start_workspace_session(
         &self,
@@ -1349,4 +1424,54 @@ mod tests {
         .unwrap();
         assert_eq!(request.title, "Research");
     }
+}
+
+/// Where a helper harness's install on the server's host stands.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallState {
+    /// Accepted; waiting to start.
+    Queued,
+    /// The install command is running.
+    Running,
+    /// The harness was found after the install.
+    Succeeded,
+    /// The command failed, or the harness was not found afterwards.
+    Failed,
+}
+
+impl InstallState {
+    /// Whether it has ended.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, InstallState::Succeeded | InstallState::Failed)
+    }
+}
+
+/// `POST` and `GET /v1/tools/helpers/{id}/install`: one install of a
+/// helper's harness. It runs on the server's own host only; a worker on
+/// another machine keeps what it has.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperInstall {
+    /// The harness being installed.
+    pub harness: String,
+    /// Where it stands.
+    pub state: InstallState,
+    /// The machine it installs on: always `server` for now.
+    pub host: String,
+    /// The shell command the catalog gave, once chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// When it was accepted, in epoch milliseconds.
+    pub created_at_ms: u64,
+    /// When it ended, in epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// The end of the command's output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
 }

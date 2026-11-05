@@ -729,7 +729,12 @@ fn chosen_tools(
                 .iter()
                 .find(|id| !super::policy::skill_allowed(&resolved.store, id))
             {
-                return Err(super::policy::not_allowed(ToolKind::Skill, id, None));
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Skill,
+                    id,
+                    None,
+                ));
             }
         }
         // No choice means every built-in skill the policy allows.
@@ -761,9 +766,12 @@ fn chosen_tools(
             ))
         }
         Some(helpers) => {
+            // The most the policy allows; a start that names no number gets
+            // the default, or that most when it is lower.
+            let most = super::policy::helper_limit(&resolved.store);
             let max_children = helpers
                 .max_children
-                .unwrap_or(super::connections::DEFAULT_HELPERS);
+                .unwrap_or_else(|| super::connections::DEFAULT_HELPERS.min(most));
             if !(1..=super::connections::MAX_HELPERS).contains(&max_children) {
                 return Err(ApiError::bad_request(format!(
                     "helpers.max_children must be from 1 to {}",
@@ -772,14 +780,27 @@ fn chosen_tools(
             }
             super::tools::known_harnesses(&helpers.harnesses)?;
             if !super::policy::delegation_allowed(&resolved.store) {
-                return Err(super::policy::not_allowed(ToolKind::Helper, "*", None));
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Helper,
+                    "*",
+                    None,
+                ));
             }
             if let Some(id) = helpers
                 .harnesses
                 .iter()
                 .find(|h| !super::policy::helper_allowed(&resolved.store, h))
             {
-                return Err(super::policy::not_allowed(ToolKind::Helper, id, None));
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Helper,
+                    id,
+                    None,
+                ));
+            }
+            if max_children > most {
+                return Err(super::policy::over_limit(&resolved.store));
             }
             Some(branchyard::Envelope {
                 max_depth: 1,

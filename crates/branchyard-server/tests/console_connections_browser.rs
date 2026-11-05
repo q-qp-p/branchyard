@@ -8,7 +8,13 @@
 //! make changes, GitHub read only, one skill and one helper sent as the
 //! single `tools` field, and saves that choice as the workspace's default,
 //! which a browser with empty local storage reads back from the server (a
-//! stale save is refused). The menu is a popover wide and a modal bottom
+//! stale save is refused). The helpers group has a number for the most
+//! helpers at once, which the start sends as the `*` helper entry and an
+//! administrator's `max_helpers` caps. A person switches a skill off for
+//! themselves in the Mine column and sees why it is off, and cannot switch
+//! on what the administrator withholds. An administrator installs a helper's
+//! harness from its row, with a fake `npm` on the server's install `PATH`,
+//! and the row becomes ready. The menu is a popover wide and a modal bottom
 //! sheet at 390 pixels, where Tab stays inside it and Escape closes it.
 //! Driven by Playwright (`console_connections_browser.js`); skipped, saying
 //! so, when Node or Playwright's module is not installed.
@@ -117,6 +123,23 @@ fn tools_page_and_composer_control_in_the_browser() {
         )
         .unwrap();
     }
+    // The install `PATH`: a fake `npm` that "installs" codex by copying the
+    // fake agent to the path the configuration says codex lives at.
+    let fakebin = f.dir.join("fakebin");
+    let installed = f.dir.join("installed").join("codex");
+    std::fs::create_dir_all(&fakebin).unwrap();
+    let npm = fakebin.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            "#!/bin/sh\nmkdir -p {}\ncp {} {}\n",
+            installed.parent().unwrap().display(),
+            fake_agent().display(),
+            installed.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&npm, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = f.dir.join("server.json");
     std::fs::write(
         &path,
@@ -127,6 +150,10 @@ fn tools_page_and_composer_control_in_the_browser() {
             "app": { "push": false },
             "managed_knowledge": { "enabled": true },
             "allow_delegation": true,
+            "harness_install": {
+                "allow": true,
+                "path": format!("{}:/usr/bin:/bin", fakebin.display()),
+            },
             "connectors": {
                 "gateway": format!("{}/mcp", mock.url()),
                 "issuer": "https://by.example",
@@ -137,7 +164,7 @@ fn tools_page_and_composer_control_in_the_browser() {
                 {"id": "local", "label": "Local workers",
                  "description": "Runs on this Branchyard server.",
                  "provider": {"kind": "local"},
-                 "harnesses": [{"harness": "gemini-cli"}]}
+                 "harnesses": [{"harness": "gemini-cli"}, {"harness": "codex"}]}
             ],
         })
         .to_string(),
@@ -150,6 +177,9 @@ fn tools_page_and_composer_control_in_the_browser() {
         "gemini-cli".into(),
         vec![fake_agent().display().to_string()],
     );
+    config
+        .harness_commands
+        .insert("codex".into(), vec![installed.display().to_string()]);
     config.shutdown_grace = Duration::from_secs(10);
     config.poll_interval = Duration::from_millis(100);
     config.log_requests = false;
@@ -222,6 +252,9 @@ fn tools_page_and_composer_control_in_the_browser() {
         "CONTROL",
         "STARTED",
         "DEFAULTS",
+        "HELPERS",
+        "MINE",
+        "INSTALL",
         "PHONE",
         "DONE",
     ] {
