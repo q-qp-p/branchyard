@@ -348,6 +348,7 @@ fn main() -> Result<()> {
         runtime,
         network,
         store: None,
+        credential_proxy: None,
     };
     let provider = AgentSandboxProvider::new(config.clone(), &state)?;
     let name = format!("gke-live-{}-{}", args[2], args[3]);

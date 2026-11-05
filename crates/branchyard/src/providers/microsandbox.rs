@@ -81,6 +81,12 @@ impl ProviderKind for SandboxOptions {
         true
     }
 
+    /// The engine starts the proxy in the guest, as a process of the
+    /// guest's `by`, before the harness.
+    fn credential_site(&self) -> crate::connectors::CredentialSite {
+        crate::connectors::CredentialSite::Guest
+    }
+
     fn prepare(
         &self,
         yard: &Yard,

@@ -229,6 +229,12 @@ pub(crate) struct Record {
     /// `crate::manifest`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<crate::manifest::TurnManifest>,
+    /// While a turn runs whose sandbox holds its own credential proxy with
+    /// a per-turn secret: the hash of the secret, and the turn and manifest
+    /// it is bound to. Cleared when the turn ends. See
+    /// `crate::connectors::issue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<crate::connectors::TurnCredential>,
 }
 
 /// A delegated child that was removed, as its parent's record remembers it.

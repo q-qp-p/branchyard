@@ -309,72 +309,75 @@ pub(crate) fn pod(
             "Pod gained extra containers or image credentials",
         )?;
     }
-    let container = &spec["containers"][0];
-    let security = &container["securityContext"];
-    check(
-        security.get("privileged").is_none_or(|v| v == false),
-        "container became privileged",
-    )?;
-    check(
-        security.get("procMount").is_none_or(|v| v == "Default"),
-        "container gained unmasked proc mounts",
-    )?;
-    check(
-        security
-            .get("seccompProfile")
-            .is_none_or(|v| v["type"] == "RuntimeDefault"),
-        "container overrides seccomp",
-    )?;
-    check(
-        container
-            .get("args")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained command arguments",
-    )?;
-    check(
-        container.get("lifecycle").is_none(),
-        "container gained lifecycle commands",
-    )?;
-    let mounts = container
-        .get("volumeMounts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| runtime_error("container mounts are missing"))?;
-    check(
-        mounts.iter().all(|mount| {
-            mount.get("subPath").is_none()
-                && mount.get("subPathExpr").is_none()
-                && mount.get("mountPropagation").is_none_or(|v| v == "None")
-        }),
-        "container mount gained a subpath or propagation",
-    )?;
-    for key in ["runAsUser", "runAsGroup"] {
+    // The runtime container and, with a credential proxy, its sidecar: the
+    // same limits hold for both.
+    for container in spec["containers"].as_array().into_iter().flatten() {
+        let security = &container["securityContext"];
         check(
-            security.get(key).is_none_or(|v| v == 1000),
-            "container overrides the non-root identity",
+            security.get("privileged").is_none_or(|v| v == false),
+            "container became privileged",
+        )?;
+        check(
+            security.get("procMount").is_none_or(|v| v == "Default"),
+            "container gained unmasked proc mounts",
+        )?;
+        check(
+            security
+                .get("seccompProfile")
+                .is_none_or(|v| v["type"] == "RuntimeDefault"),
+            "container overrides seccomp",
+        )?;
+        check(
+            container
+                .get("args")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained command arguments",
+        )?;
+        check(
+            container.get("lifecycle").is_none(),
+            "container gained lifecycle commands",
+        )?;
+        let mounts = container
+            .get("volumeMounts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| runtime_error("container mounts are missing"))?;
+        check(
+            mounts.iter().all(|mount| {
+                mount.get("subPath").is_none()
+                    && mount.get("subPathExpr").is_none()
+                    && mount.get("mountPropagation").is_none_or(|v| v == "None")
+            }),
+            "container mount gained a subpath or propagation",
+        )?;
+        for key in ["runAsUser", "runAsGroup"] {
+            check(
+                security.get(key).is_none_or(|v| v == 1000),
+                "container overrides the non-root identity",
+            )?;
+        }
+        check(
+            security.get("runAsNonRoot").is_none_or(|v| v == true),
+            "container disables non-root enforcement",
+        )?;
+        check(
+            security
+                .pointer("/capabilities/add")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained capabilities",
+        )?;
+        check(
+            container
+                .get("envFrom")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained environment credentials",
+        )?;
+        check(
+            container
+                .get("ports")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained ports outside the exec-only contract",
         )?;
     }
-    check(
-        security.get("runAsNonRoot").is_none_or(|v| v == true),
-        "container disables non-root enforcement",
-    )?;
-    check(
-        security
-            .pointer("/capabilities/add")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained capabilities",
-    )?;
-    check(
-        container
-            .get("envFrom")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained environment credentials",
-    )?;
-    check(
-        container
-            .get("ports")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained ports outside the exec-only contract",
-    )?;
     check(
         text(object, "/status/phase")? == "Running" && ready(object),
         "Pod is not running and ready",
@@ -383,10 +386,12 @@ pub(crate) fn pod(
         .pointer("/status/containerStatuses")
         .and_then(Value::as_array)
         .ok_or_else(|| runtime_error("Pod has no container status"))?;
+    let expected_containers = 1 + usize::from(receipt.target.credential_proxy.is_some());
     check(
-        statuses.len() == 1
-            && statuses[0]["ready"] == true
-            && statuses[0]["state"].get("running").is_some(),
+        statuses.len() == expected_containers
+            && statuses
+                .iter()
+                .all(|s| s["ready"] == true && s["state"].get("running").is_some()),
         "runtime container is not ready",
     )?;
     let digest = receipt

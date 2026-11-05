@@ -15,10 +15,14 @@
 //! [`ingest`] records each line of its audit log on the branch it names as
 //! an [`Activity::ConnectorCall`].
 
+pub mod credential;
 pub mod gateway;
+pub(crate) mod guest;
+pub mod issue;
 pub mod keys;
 pub mod packager;
 pub(crate) mod renewal;
+pub mod sandbox_proxy;
 
 use branchyard_support::best_effort;
 use std::fs;
@@ -35,6 +39,11 @@ use branchyard_provision::EnvVar;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use credential::{CredentialProxy, CredentialSite};
+pub use issue::{
+    Proof, Refusal, RefusalKind, TokenRequest, TokenResponse, TurnCredential, SECRET_HEADER,
+    TOKEN_PATH,
+};
 pub use keys::{jws_finish, jws_input, Claims, KeyFileSigner, KeyRing, TokenSigner};
 pub use packager::{AnvilPackager, Bundle, Packager};
 
@@ -105,6 +114,10 @@ pub struct Gateway {
     /// How each turn's ledger proxy runs in front of the gateway
     /// (`docs/effects.md`).
     pub effects: EffectsProxy,
+    /// Whether a sandbox runs its own credential proxy and fetches the
+    /// turn's token from the server, instead of the host's proxy holding it
+    /// (`docs/connectors.md#the-credential-proxy-in-the-sandbox`).
+    pub credential_proxy: CredentialProxy,
 }
 
 /// Where each turn's effect-ledger proxy listens: the harness is given it
@@ -154,6 +167,7 @@ impl Gateway {
             token_ttl: RENEWED_TTL,
             packager,
             effects: EffectsProxy::default(),
+            credential_proxy: CredentialProxy::default(),
         })
     }
 
@@ -402,9 +416,12 @@ impl ConnectorCall {
 /// What a turn's connectors give its harness.
 pub(crate) struct Prepared {
     pub env: Vec<EnvVar>,
-    /// The gateway's URL as the harness is given it, which a restricted
+    /// The gateway's URL as the turn's proxy reaches it, which a restricted
     /// network policy allows (`crate::egress`).
     pub gateway_url: String,
+    /// Other URLs the turn's credentials need to reach (the server a
+    /// sandbox's proxy fetches tokens from), for the same policy.
+    pub reach: Vec<String>,
     pub connectors: Vec<String>,
     /// What the turn should know but did not fail on (a composite Anvil
     /// could not write), recorded as warnings.
@@ -414,16 +431,31 @@ pub(crate) struct Prepared {
     /// The turn's long token (an hour at most, and not past its deadline).
     /// The harness holds it only when nothing renews: once
     /// [`Prepared::renewing`] has run, the file holds a short one and this
-    /// is for nobody.
-    pub token: String,
-    /// What signs the turn's next short token.
-    mint: renewal::Mint,
+    /// is for nobody. `None` when the sandbox holds the credentials.
+    token: Option<String>,
+    /// What signs the turn's next short token; `None` when the sandbox holds
+    /// the credentials.
+    mint: Option<renewal::Mint>,
     /// The renewing thread, once started; dropped (stopped) before the
     /// token file is removed.
     renewer: Option<renewal::Renewer>,
     /// The token file on this host, removed when the turn ends (held for
-    /// its drop).
-    pub _token: TokenFile,
+    /// its drop). `None` when the sandbox holds the credentials: there is
+    /// no file for the harness to read.
+    pub _token: Option<TokenFile>,
+    /// Set when the turn's credential proxy runs in its sandbox.
+    pub sandbox: Option<SandboxCredentials>,
+}
+
+/// A turn whose credential proxy runs in its sandbox.
+pub(crate) struct SandboxCredentials {
+    pub site: CredentialSite,
+    /// What the proxy is started with.
+    pub config: sandbox_proxy::ProxyConfig,
+    /// The per-turn secret for a guest's proxy, and what the branch's
+    /// record keeps of it. `None` for a sidecar, which proves the turn with
+    /// its workload identity.
+    pub secret: Option<(String, TurnCredential)>,
 }
 
 impl Prepared {
@@ -432,16 +464,19 @@ impl Prepared {
     /// until the turn ends. Returns the live token the effect proxy calls
     /// the gateway with. Call it once, after the proxy is certain to run.
     pub(crate) fn renewing(&mut self) -> Result<renewal::LiveToken, String> {
-        let first = self.mint.token()?;
-        let path = self._token.0.clone();
+        let (Some(mint), Some(file)) = (&self.mint, &self._token) else {
+            return Err("the turn's credentials are held in its sandbox".into());
+        };
+        let first = mint.token()?;
+        let path = file.0.clone();
         keys::write_private(&path, first.as_bytes())
             .map_err(|e| format!("could not write the gateway token: {e}"))?;
         let live = renewal::LiveToken::new(first);
         let mint = renewal::Mint {
-            keys: Arc::clone(&self.mint.keys),
-            claims: self.mint.claims.clone(),
-            ttl: self.mint.ttl,
-            deadline_s: self.mint.deadline_s,
+            keys: Arc::clone(&mint.keys),
+            claims: mint.claims.clone(),
+            ttl: mint.ttl,
+            deadline_s: mint.deadline_s,
         };
         self.renewer = Some(
             renewal::Renewer::start(mint, live.clone(), path)
@@ -452,9 +487,14 @@ impl Prepared {
 
     /// The token the model gateway may share with the connector gateway:
     /// the turn's long one, unless renewal has made the harness's short.
-    /// (A renewing turn's model gateway signs a token of its own.)
+    /// (A renewing turn's model gateway signs a token of its own, and so
+    /// does one whose sandbox holds the credentials: the harness never
+    /// holds the connector token.)
     pub(crate) fn shared_token(&self) -> Option<&str> {
-        self.renewer.is_none().then_some(self.token.as_str())
+        match self.renewer {
+            None => self.token.as_deref(),
+            Some(_) => None,
+        }
     }
 }
 
@@ -505,6 +545,19 @@ pub(crate) fn prepare(
                     .into(),
             )
         }
+    };
+    let holder = match manifest {
+        Some(digest) => credential::choose(
+            crate::placement::credential_site(record.provider.as_ref()),
+            &gateway.credential_proxy,
+            &url,
+            (
+                digest,
+                &gateway.by_branch(&record.info.name),
+                record.info.turns + 1,
+            ),
+        ),
+        None => credential::Holder::Host,
     };
     let served = gateway.packager.served()?;
     let mut bundles = Vec::new();
@@ -580,6 +633,45 @@ pub(crate) fn prepare(
         branchyard_support::cleanup_dir(&staged);
     }
     placed.map_err(|e| format!("could not place connector packages: {e}"))?;
+    if let credential::Holder::Sandbox { site, config } = holder {
+        // The sandbox holds the credentials: the harness is given the
+        // proxy's loopback address and nothing else. No token is signed
+        // here and no token file is written.
+        let mut files = vec![format!("{HOME_DIR}/")];
+        let mut secret = None;
+        match site {
+            CredentialSite::Sidecar => {
+                // A sidecar finds its settings in the home, which holds no
+                // secret.
+                let text = credential::config_text(&config)?;
+                keys::write_private(&home.join(credential::PROXY_CONFIG_FILE), text.as_bytes())
+                    .map_err(|e| format!("could not write the credential proxy's settings: {e}"))?;
+                files.push(credential::PROXY_CONFIG_FILE.to_owned());
+            }
+            _ => secret = Some(TurnCredential::new(&config.manifest, config.turn)?),
+        }
+        let harness_url = sandbox_proxy::ProxyConfig::harness_url(gateway.credential_proxy.port);
+        return Ok(Some(Prepared {
+            env: vec![EnvVar::plain(ENV_GATEWAY_URL, harness_url.clone())],
+            connectors: names,
+            warnings,
+            gateway_url: url,
+            // The server the proxy fetches from, and the proxy itself on
+            // loopback, which a network policy confining the harness must
+            // let it reach.
+            reach: vec![config.server.clone(), harness_url],
+            files,
+            token: None,
+            mint: None,
+            renewer: None,
+            _token: None,
+            sandbox: Some(SandboxCredentials {
+                site,
+                config,
+                secret,
+            }),
+        }));
+    }
     // The token: this turn's, for at most an hour and not past the
     // turn's deadline.
     let now = branchyard_support::time::now_ms() / 1000;
@@ -614,11 +706,11 @@ pub(crate) fn prepare(
         ttl: gateway.token_ttl.min(MAX_TTL),
         deadline_s: deadline_ms.map(|d| d / 1000),
     };
+    let (_, guest_home) = crate::placement::guest_paths(record);
+    let guest = |rel: &str| format!("{}/{rel}", guest_home.trim_end_matches('/'));
     let token_path = home.join(TOKEN_FILE);
     keys::write_private(&token_path, token.as_bytes())
         .map_err(|e| format!("could not write the gateway token: {e}"))?;
-    let (_, guest_home) = crate::placement::guest_paths(record);
-    let guest = |rel: &str| format!("{}/{rel}", guest_home.trim_end_matches('/'));
     Ok(Some(Prepared {
         env: vec![
             EnvVar::plain(ENV_GATEWAY_URL, url.clone()),
@@ -627,11 +719,13 @@ pub(crate) fn prepare(
         connectors: names,
         warnings,
         gateway_url: url,
+        reach: Vec::new(),
         files: vec![format!("{HOME_DIR}/"), TOKEN_FILE.to_owned()],
-        token,
-        mint,
+        token: Some(token),
+        mint: Some(mint),
         renewer: None,
-        _token: TokenFile(token_path),
+        _token: Some(TokenFile(token_path)),
+        sandbox: None,
     }))
 }
 

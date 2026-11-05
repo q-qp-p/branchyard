@@ -14,6 +14,39 @@ pub(crate) const GCSFUSE_ANNOTATION: &str = "gke-gcsfuse/volumes";
 pub(crate) const GCSFUSE_SIDECAR: &str = "gke-gcsfuse-sidecar";
 pub(crate) const GCSFUSE_VOLUME_PREFIX: &str = "gke-gcsfuse-";
 
+/// The credential proxy sidecar's container name, and where in the pod it
+/// finds its settings (the home the engine copies in; the same file as
+/// `branchyard::connectors::credential::PROXY_CONFIG_FILE`).
+pub(crate) const SIDECAR: &str = "credential-proxy";
+pub(crate) const SIDECAR_CONFIG: &str = "/branchyard/home/.branchyard/credential-proxy.json";
+/// The GKE metadata server's address: where the sidecar's Workload Identity
+/// ID token comes from.
+const METADATA_SERVER: &str = "169.254.169.254";
+
+/// The sidecar container: `by credential-proxy` on the pod's loopback,
+/// reading its settings from the home (mounted read-only) once the engine
+/// has copied them in.
+fn sidecar(receipt: &Receipt, sidecar: &crate::config::CredentialSidecar) -> Value {
+    let image = sidecar.image.as_deref().unwrap_or(&receipt.image);
+    json!({
+        "name":SIDECAR, "image":image, "imagePullPolicy":"IfNotPresent",
+        "command":["by","credential-proxy","--config",SIDECAR_CONFIG,"--wait"],
+        "env":[
+            {"name":"PATH","value":"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+            {"name":"GCE_METADATA_HOST","value":METADATA_SERVER}
+        ],
+        "resources":{
+            "requests":{"cpu":"50m","memory":"64Mi"},
+            "limits":{"cpu":"250m","memory":"128Mi"}
+        },
+        "securityContext":{
+            "allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,
+            "capabilities":{"drop":["ALL"]}
+        },
+        "volumeMounts":[{"name":"home","mountPath":"/branchyard/home","readOnly":true}]
+    })
+}
+
 pub(crate) fn sandbox(receipt: &Receipt) -> Value {
     let runtime = receipt.target.runtime.name();
     let mut mounts = vec![
@@ -39,6 +72,26 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
         }}));
         pod_annotations[GCSFUSE_ANNOTATION] = json!("true");
     }
+    let mut containers = vec![json!({
+        "name":"runtime", "image":receipt.image, "imagePullPolicy":"IfNotPresent",
+        "command":["setpriv","--no-new-privs","--","sh","-c","exec tail -f /dev/null"],
+        "workingDir":"/workspace", "env":[
+            {"name":"HOME","value":"/branchyard/home"},
+            {"name":"PATH","value":"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+        ],
+        "resources":{
+            "requests":{"cpu":receipt.cpus.to_string(), "memory":format!("{}Mi",receipt.memory_mib)},
+            "limits":{"cpu":receipt.cpus.to_string(), "memory":format!("{}Mi",receipt.memory_mib)}
+        },
+        "securityContext":{
+            "allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,
+            "capabilities":{"drop":["ALL"]}
+        },
+        "volumeMounts":mounts
+    })];
+    if let Some(proxy) = &receipt.target.credential_proxy {
+        containers.push(sidecar(receipt, proxy));
+    }
     json!({
         "apiVersion":"agents.x-k8s.io/v1beta1", "kind":"Sandbox",
         "metadata": {
@@ -60,23 +113,7 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
                         "runAsNonRoot":true, "runAsUser":1000, "runAsGroup":1000,
                         "fsGroup":1000, "seccompProfile":{"type":"RuntimeDefault"}
                     },
-                    "containers":[{
-                        "name":"runtime", "image":receipt.image, "imagePullPolicy":"IfNotPresent",
-                        "command":["setpriv","--no-new-privs","--","sh","-c","exec tail -f /dev/null"],
-                        "workingDir":"/workspace", "env":[
-                            {"name":"HOME","value":"/branchyard/home"},
-                            {"name":"PATH","value":"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
-                        ],
-                        "resources":{
-                            "requests":{"cpu":receipt.cpus.to_string(), "memory":format!("{}Mi",receipt.memory_mib)},
-                            "limits":{"cpu":receipt.cpus.to_string(), "memory":format!("{}Mi",receipt.memory_mib)}
-                        },
-                        "securityContext":{
-                            "allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,
-                            "capabilities":{"drop":["ALL"]}
-                        },
-                        "volumeMounts":mounts
-                    }],
+                    "containers":containers,
                     "volumes":volumes
                 }
             }
@@ -85,6 +122,13 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
 }
 
 pub(crate) fn policy(receipt: &Receipt, sandbox_uid: &str) -> Value {
+    // A pod's containers share one network policy: with a credential proxy
+    // sidecar the GKE metadata server (Workload Identity) is reachable by
+    // the whole pod, the harness included; without one it stays closed.
+    let except: &[&str] = match receipt.target.credential_proxy {
+        Some(_) => &["169.254.169.252/32"],
+        None => &["169.254.169.254/32", "169.254.169.252/32"],
+    };
     json!({
         "apiVersion":"networking.k8s.io/v1", "kind":"NetworkPolicy",
         "metadata":{
@@ -96,7 +140,7 @@ pub(crate) fn policy(receipt: &Receipt, sandbox_uid: &str) -> Value {
         "spec":{
             "podSelector":{"matchLabels":{OWNER:receipt.owner}},"policyTypes":["Egress"],
             "egress":[
-                {"to":[{"ipBlock":{"cidr":"0.0.0.0/0","except":["169.254.169.254/32","169.254.169.252/32"]}}]},
+                {"to":[{"ipBlock":{"cidr":"0.0.0.0/0","except":except}}]},
                 {"to":[{
                     "namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}},
                     "podSelector":{"matchExpressions":[{"key":"k8s-app","operator":"In","values":["kube-dns","node-local-dns"]}]}

@@ -984,6 +984,19 @@ See [up](up.md) and [configuration](setup.md#configuration).
 | Bring the configured backends up | `Yard::up_plan`, `Yard::up_apply`, `Yard::up` over `branchyard::up::Machine` (`LocalMachine` is this machine) | `up [--plan] [--yes] [--json]` | refused: a server brings up its own machine | none | Python `Local(root).up()`, `doctor()`, `harnesses()`, `run()` | refused inside a harness |
 | A server of the process's own | n/a | `serve` | n/a | n/a | Python `Client.local(root)`: `by serve` on a free loopback port with a fresh token, stopped on `close()` | n/a |
 
+## Added with the credential proxy in the sandbox
+
+Hermetic: mock servers and a fake sandbox provider; not run on a cluster, a VM or a Microsandbox guest.
+
+| Surface | Before | Now |
+|---|---|---|
+| `by credential-proxy [--config FILE [--wait]] [--listen ADDR] --server URL --upstream URL --manifest DIGEST --branch REPO/BRANCH --turn N [--identity workload\|secret] [--audience AUD]` (hidden plumbing) | none: the proxy that attaches the gateway token ran on the host that ran the turn | runs in a sandbox beside the harness: listens on loopback, prints `listening ADDR` once it holds its first token, fetches the turn's five-minute token from the server and renews it at half its life, and forwards calls to `--upstream` with it; `--identity secret` reads the per-turn secret from `BRANCHYARD_CREDENTIAL_SECRET`, `--identity workload` a Google ID token for `--audience` from the metadata server; `--config` reads the same settings from a file (no secret in it) and `--wait` waits for it and keeps retrying the first token ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)) |
+| `POST /v1/turns/token` | none | a running turn's sandbox fetches its gateway token as its workload identity or with the turn's secret; the claims are the turn's recorded grant's ([server](server.md#turn-tokens-for-sandboxes)) |
+| `connectors.sandbox_server`, `sandbox_identities`, `sandbox_audience`, `sandbox_jwks_url`, `sandbox_by`, `sandbox_proxy_image` (server configuration) | none | switch on, and configure, the credential proxy in a sandbox; the published schema has them |
+| `branchyard::connectors::{CredentialProxy, CredentialSite, Proof, TokenRequest, TokenResponse, TurnCredential, sandbox_proxy::{ProxyConfig, IdentityKind, CredentialProxy::start}}`, `Yard::issue_turn_token`, `Gateway::credential_proxy` | none | the SDK side of the above |
+| `branchyard_agent_sandbox::{Config::credential_proxy, CredentialSidecar}` | one container per pod | a `credential-proxy` container beside `runtime` ([the pod](agent-sandbox-gke.md#credential-proxy-sidecar)) |
+| `Record::credential` (stored; not on the wire) | none | the hash, turn and manifest of a guest proxy's per-turn secret while its turn runs |
+
 ## Added with the Claude Code plugin's hooks, status line and marketplace
 
 See [harness integration](harness-integration.md#claude-code) and [distribution](distribution.md#install-for-claude-code). Both commands are the CLI's alone: they serve a Claude Code session on this machine, read its local store, and have no SDK operation, route, client call or delegation tool beyond `branchyard::glance`.

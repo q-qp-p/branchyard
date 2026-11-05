@@ -44,6 +44,13 @@ impl ProviderKind for SubstrateOptions {
         true
     }
 
+    /// The actor's template runs `by credential-proxy` beside the harness,
+    /// reading its settings from the home (configuration only: no
+    /// template here does yet).
+    fn credential_site(&self) -> crate::connectors::CredentialSite {
+        crate::connectors::CredentialSite::Sidecar
+    }
+
     /// A Substrate tag belongs to its atespace and is created from with its
     /// template.
     fn key(&self) -> String {

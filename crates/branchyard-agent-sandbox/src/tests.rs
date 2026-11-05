@@ -6,7 +6,7 @@ use branchyard_sandbox::{ExecSpec, Mount, Resources, SandboxProvider, SandboxSpe
 use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
-use super::{AgentSandboxProvider, Config, Network, Runtime, StoreVolume};
+use super::{AgentSandboxProvider, Config, CredentialSidecar, Network, Runtime, StoreVolume};
 
 fn config() -> Config {
     Config {
@@ -15,6 +15,7 @@ fn config() -> Config {
         runtime: Runtime::Gvisor,
         network: Network::Deny,
         store: None,
+        credential_proxy: None,
     }
 }
 
@@ -37,10 +38,19 @@ impl Fixture {
     }
 
     fn build(network: Network, store: Option<StoreVolume>) -> Self {
+        Self::build_full(network, store, None)
+    }
+
+    fn build_full(
+        network: Network,
+        store: Option<StoreVolume>,
+        sidecar: Option<CredentialSidecar>,
+    ) -> Self {
         let scratch = Scratch::new("agent-sandbox");
         let mut config = config();
         config.network = network;
         config.store = store;
+        config.credential_proxy = sidecar;
         let mut provider = AgentSandboxProvider::new(config, scratch.join("receipts")).unwrap();
         provider.control.binary = scratch.join("kubectl");
         // Share the immutable fixture inode. Writing executable scripts while
@@ -796,4 +806,111 @@ fn the_sidecar_gke_injects_for_the_store_is_accepted_and_nothing_else_is() {
     let name = plain.name();
     plain.edit(|state| inject(state, &name, None));
     assert!(true_in(&plain).is_err());
+}
+
+fn with_sidecar(sidecar: CredentialSidecar) -> Fixture {
+    Fixture::build_full(Network::Unrestricted, None, Some(sidecar))
+}
+
+#[test]
+fn a_credential_proxy_sidecar_runs_beside_the_harness_with_the_home_read_only() {
+    let image = format!("example.test/by@sha256:{}", "b".repeat(64));
+    for (sidecar, expected) in [
+        (CredentialSidecar::default(), spec().image.unwrap()),
+        (
+            CredentialSidecar {
+                image: Some(image.clone()),
+            },
+            image,
+        ),
+    ] {
+        let fixture = with_sidecar(sidecar);
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        let state = fixture.state();
+        let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+        let containers = pod["containers"].as_array().unwrap();
+        assert_eq!(containers.len(), 2, "{containers:?}");
+        assert_eq!(containers[0]["name"], "runtime");
+        let sidecar = &containers[1];
+        assert_eq!(sidecar["name"], "credential-proxy");
+        assert_eq!(sidecar["image"], expected.as_str());
+        // It reads its settings from the home the engine copies in, and
+        // can neither change that home nor escalate.
+        assert_eq!(
+            sidecar["command"],
+            json!([
+                "by",
+                "credential-proxy",
+                "--config",
+                "/branchyard/home/.branchyard/credential-proxy.json",
+                "--wait"
+            ])
+        );
+        assert_eq!(
+            sidecar["volumeMounts"],
+            json!([{"name":"home","mountPath":"/branchyard/home","readOnly":true}])
+        );
+        assert_eq!(
+            sidecar["securityContext"]["allowPrivilegeEscalation"],
+            false
+        );
+        assert_eq!(sidecar["securityContext"]["readOnlyRootFilesystem"], true);
+        // The pod's identity is its Workload Identity, from the GKE
+        // metadata server, which the pod's network policy leaves open.
+        assert!(sidecar["env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"name":"GCE_METADATA_HOST","value":"169.254.169.254"})));
+        let policy = &state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"]
+            [0]["ipBlock"]["except"];
+        assert_eq!(*policy, json!(["169.254.169.252/32"]));
+        // The pod with both containers passes the allocation's checks.
+        true_in(&fixture).unwrap();
+    }
+}
+
+#[test]
+fn without_a_sidecar_the_pod_has_one_container_and_the_metadata_server_stays_closed() {
+    let fixture = Fixture::new(Network::Unrestricted);
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+    assert_eq!(pod["containers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"][0]["ipBlock"]
+            ["except"],
+        json!(["169.254.169.254/32", "169.254.169.252/32"])
+    );
+}
+
+#[test]
+fn a_sidecar_needs_a_route_out_and_a_pinned_image_and_a_pod_with_a_stranger_in_it_fails() {
+    let mut target = config();
+    target.credential_proxy = Some(CredentialSidecar::default());
+    let denied = target.validate().unwrap_err().to_string();
+    assert!(denied.contains("network = unrestricted"), "{denied}");
+    target.network = Network::Unrestricted;
+    target.validate().unwrap();
+    target.credential_proxy = Some(CredentialSidecar {
+        image: Some("example.test/by:latest".into()),
+    });
+    assert!(target.validate().is_err(), "an unpinned sidecar image");
+
+    let fixture = with_sidecar(CredentialSidecar::default());
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    fixture.edit(|state| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner"}));
+        pod["status"]["containerStatuses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner","ready":true,"state":{"running":{}}}));
+    });
+    assert!(true_in(&fixture).is_err());
 }

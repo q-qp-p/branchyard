@@ -108,6 +108,35 @@ impl StoreVolume {
     }
 }
 
+/// A container beside the harness that runs `by credential-proxy`, so the
+/// harness holds no gateway token (`docs/agent-sandbox-gke.md#credential-proxy-sidecar`).
+///
+/// It listens on the pod's loopback, reads its settings from the home the
+/// engine copies in (`.branchyard/credential-proxy.json`, which holds no
+/// secret), and fetches each five-minute token from the Branchyard server as
+/// the pod's Workload Identity. Both containers share the pod's network, so
+/// it needs `network: unrestricted` (a route to the server and the GKE
+/// metadata server) and the namespace's service account bound to a Google
+/// service account the server lists.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CredentialSidecar {
+    /// The sidecar's image, `repository@sha256:digest`, with `by` on its
+    /// `PATH`. Default: the allocation's own image, which then must have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+impl CredentialSidecar {
+    fn validate(&self) -> Result<(), ProviderError> {
+        match &self.image {
+            Some(image) => digest_pinned(image),
+            None => Ok(()),
+        }
+    }
+}
+
 /// Operator-selected target, authenticated by the host's kubeconfig.
 /// No workload-supplied PodSpec, command, kubeconfig or credential is accepted.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -129,6 +158,10 @@ pub struct Config {
     /// can read the bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreVolume>,
+    /// A credential proxy to run beside the harness, when the server holds
+    /// the gateway's tokens for sandboxes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_proxy: Option<CredentialSidecar>,
 }
 
 impl Config {
@@ -145,6 +178,14 @@ impl Config {
         }
         if let Some(store) = &self.store {
             store.validate()?;
+        }
+        if let Some(sidecar) = &self.credential_proxy {
+            sidecar.validate()?;
+            if self.network != Network::Unrestricted {
+                return Err(invalid(
+                    "the credential proxy sidecar needs network = unrestricted: it must reach the server and the metadata server",
+                ));
+            }
         }
         Ok(())
     }
@@ -164,28 +205,34 @@ impl Config {
             .image
             .as_deref()
             .ok_or_else(|| invalid("a digest-pinned image is required"))?;
-        let Some((repository, digest)) = image.rsplit_once("@sha256:") else {
-            return Err(invalid(
-                "the image must use repository@sha256:<64 hex digits>",
-            ));
-        };
-        if repository.is_empty()
-            || repository.starts_with('-')
-            || repository
-                .bytes()
-                .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
-            || digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
-            return Err(invalid("invalid digest-pinned image reference"));
-        }
+        digest_pinned(image)?;
         if spec.resources.cpus == Some(0) || spec.resources.memory_mib == Some(0) {
             return Err(invalid("CPU and memory limits must be positive"));
         }
         Ok(())
     }
+}
+
+/// `image` must be an immutable OCI `repository@sha256:digest` reference.
+fn digest_pinned(image: &str) -> Result<(), ProviderError> {
+    let Some((repository, digest)) = image.rsplit_once("@sha256:") else {
+        return Err(invalid(
+            "the image must use repository@sha256:<64 hex digits>",
+        ));
+    };
+    if repository.is_empty()
+        || repository.starts_with('-')
+        || repository
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || b.is_ascii_control())
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(invalid("invalid digest-pinned image reference"));
+    }
+    Ok(())
 }
 
 pub(crate) fn dns_label(value: &str) -> bool {

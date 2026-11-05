@@ -5712,6 +5712,7 @@ Checks on the merged result: \
             metered_from: None,
             skills: None,
             manifest: None,
+            credential: None,
 
             result_contract: None,
         }

@@ -120,6 +120,13 @@ pub(crate) trait ProviderKind {
         false
     }
 
+    /// Where this provider can run the turn's credential proxy, so that the
+    /// harness holds no gateway token ([`crate::connectors::CredentialSite`]).
+    /// The host, unless the provider says it has a place in the sandbox.
+    fn credential_site(&self) -> crate::connectors::CredentialSite {
+        crate::connectors::CredentialSite::Host
+    }
+
     /// Whether the harness sees the yard's tool store
     /// ([`crate::toolstore`]) at the store's own path, so a turn may link
     /// its skills and connector packages there instead of copying them. A

@@ -97,7 +97,7 @@ impl AgentSandboxOptions {
     }
 
     pub(crate) fn config(&self) -> branchyard_agent_sandbox::Config {
-        self.config_with(None)
+        self.config_with(None, None)
     }
 
     /// The target with the shared tool store mounted from `store`, when
@@ -105,6 +105,7 @@ impl AgentSandboxOptions {
     pub(crate) fn config_with(
         &self,
         store: Option<branchyard_agent_sandbox::StoreVolume>,
+        credential_proxy: Option<branchyard_agent_sandbox::CredentialSidecar>,
     ) -> branchyard_agent_sandbox::Config {
         branchyard_agent_sandbox::Config {
             context: self.context.clone(),
@@ -112,6 +113,7 @@ impl AgentSandboxOptions {
             runtime: self.runtime,
             network: self.network,
             store,
+            credential_proxy,
         }
     }
 

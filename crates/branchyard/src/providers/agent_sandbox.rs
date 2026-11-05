@@ -21,6 +21,17 @@ fn store_volume(yard: &Yard) -> Option<branchyard_agent_sandbox::StoreVolume> {
     })
 }
 
+/// The credential proxy to run beside the harness: when the yard's gateway
+/// has a server for sandboxes to fetch tokens from
+/// ([`crate::connectors::CredentialProxy::server`]).
+fn credential_sidecar(yard: &Yard) -> Option<branchyard_agent_sandbox::CredentialSidecar> {
+    let gateway = yard.connectors()?;
+    gateway.credential_proxy.server.as_ref()?;
+    Some(branchyard_agent_sandbox::CredentialSidecar {
+        image: gateway.credential_proxy.sidecar_image.clone(),
+    })
+}
+
 impl ProviderKind for AgentSandboxOptions {
     fn harness_location(&self) -> HarnessLocation<'_> {
         HarnessLocation::Image
@@ -46,6 +57,11 @@ impl ProviderKind for AgentSandboxOptions {
     }
     fn copies_worktree(&self) -> bool {
         true
+    }
+    /// The pod runs the proxy as a container beside the harness
+    /// (`branchyard_agent_sandbox::CredentialSidecar`).
+    fn credential_site(&self) -> crate::connectors::CredentialSite {
+        crate::connectors::CredentialSite::Sidecar
     }
     fn check(&self, _yard: &Yard) -> Result<(), Error> {
         self.validate()
@@ -81,7 +97,7 @@ impl ProviderKind for AgentSandboxOptions {
     }
     fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         branchyard_agent_sandbox::AgentSandboxProvider::new(
-            self.config_with(store_volume(yard)),
+            self.config_with(store_volume(yard), credential_sidecar(yard)),
             native::state_dir(yard, &self.key()),
         )
         .map(|provider| Arc::new(provider) as Arc<dyn SandboxProvider>)

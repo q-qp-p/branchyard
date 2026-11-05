@@ -212,6 +212,42 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 | `run_gateway` | Run `anvil serve mcp <bundles> --fleet --http <port>` in branchyard mode beside the server, supervised and restarted, reading the public keys from the file above; stopped with the server. A worker (`by worker`) never runs it |
 | `listen`, `vault_key` | The address the gateway run here binds when not loopback, and its vault key (default `<data_dir>/gateway/vault.key`, made 0600) |
 | `effects_proxy`, `effects_listen`, `effects_sandbox_host` | Each turn's effect-ledger proxy in front of the gateway (default on, on `127.0.0.1`), and how a sandboxed harness reaches it ([effects](effects.md#begun-before-the-call)) |
+| `sandbox_server` | This server's URL as a sandbox reaches it. When set, a sandbox whose provider can run a credential proxy fetches the turn's token from [`POST /v1/turns/token`](#turn-tokens-for-sandboxes) and the harness holds none ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)). Without it every turn keeps the host's proxy |
+| `sandbox_identities` | `[{"service_account": "NAME@PROJECT.iam.gserviceaccount.com", "tenant": "acme"?}]`: the Google service accounts that may fetch tokens, verified from a Google-signed ID token. `tenant` restricts an account to one tenant's turns. Needs `sandbox_server`; empty admits only a turn's own secret |
+| `sandbox_audience`, `sandbox_jwks_url` | The `aud` of that ID token (default `issuer`), and where Google's signing keys are read from (default Google's) |
+| `sandbox_by`, `sandbox_proxy_image` | The `by` a Microsandbox guest runs (default `by`), and the image of a GKE Agent Sandbox's `credential-proxy` sidecar (`repository@sha256:digest`, with `by` on its `PATH`; default the sandbox's own) |
+
+### Turn tokens for sandboxes
+
+`POST /v1/turns/token` gives a **running turn's** sandbox its gateway token. It is outside the bearer-token check, because the caller is a sandbox and authenticates itself; the credential proxy in the sandbox ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)) calls it every few minutes.
+
+```json
+{"manifest": "blake3:...", "branch": "app/feat-x", "turn": 3}
+```
+
+`manifest` is the digest of the turn manifest the turn was admitted with, `branch` is `<repo>/<branch>` as tokens name it, `turn` its number. Unknown fields are refused: claims are never taken from the request. The caller proves who it is with one of:
+
+- `Authorization: Bearer <Google ID token>`: an ID token for `sandbox_audience` (default `issuer`) of a service account in `sandbox_identities`, fetched by the sandbox from the metadata server (a GKE Workload Identity service account, or a GCE VM's). The server verifies the signature against Google's keys, the audience, the issuer (`accounts.google.com`), the lifetime and `email_verified`, then looks the account up.
+- `X-Branchyard-Turn-Secret: <secret>`: the per-turn secret the engine gave a Microsandbox guest's proxy, checked against the hash in the branch's record.
+
+The answer is `200` `{"token", "expires_at", "expires_in"}`: a gateway token (the same claims as the turn's own: `by_branch` `<repo>/<branch>`, `by_turn`, `by_manifest`, the recorded grant with the person's ceiling applied, the principal's `sub` and `by_tenant`) that lives five minutes. The server logs the branch, turn, manifest and who asked, never a token.
+
+| Code | Status | When |
+|---|---|---|
+| `auth_required` | 401 | Neither credential was presented |
+| `invalid_credential` | 401 | The bearer is not a valid Google ID token for this server (or no `sandbox_identities` are configured), or the secret is not this turn's or the turn has ended |
+| `identity_not_allowed` | 403 | A valid Google ID token of a service account the server does not list |
+| `tenant_mismatch` | 403 | The account is restricted to another tenant than the turn's |
+| `no_connector_grant` | 403 | The turn was granted no connectors |
+| `invalid_request` | 400 | `branch` is not `<repo>/<branch>`, or the body is malformed or names an unknown field |
+| `unknown_turn` | 404 | No such repository or branch |
+| `manifest_mismatch` | 409 | The digest is not the one the turn was admitted with |
+| `turn_not_running` | 409 | The branch is not running a turn (finished, failed, cancelled, queued) |
+| `turn_mismatch` | 409 | `turn` is not the turn that is running |
+| `token_unavailable` | 503 | The gateway is not configured, or signing failed |
+| `not_found` | 404 | The server has no `connectors` |
+
+Hermetic evidence: `crates/branchyard-server/tests/turn_token.rs` (a real server, a turn held open by a named pipe, Google's keys served by a mock and ID tokens signed with a test key). Not done: a run against Google's keys and a real metadata server, from a GKE pod or a GCE VM.
 
 ### Signing on workers
 
@@ -346,6 +382,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 |---|---|---|
 | `GET /healthz` | Liveness, no token | `ok` |
 | `GET /.well-known/jwks.json` | The connector gateway's verification keys, no token; `404` without `connectors` | a JSON Web Key Set |
+| `POST /v1/turns/token` | A running turn's sandbox fetches its five-minute gateway token as its workload identity or with the turn's secret; no bearer token of the server's ([turn tokens for sandboxes](#turn-tokens-for-sandboxes)) | `{"token", "expires_at", "expires_in"}` |
 | `GET /v1/repos` | Served repositories | `{"repos": [{"name", "root"}]}` |
 | `GET /v1/harnesses` | Harness profiles, as found on the server's `PATH` | `{"harnesses": [{"harness", "profile", "default", "available", "qualification"}]}` |
 | `GET /v1/inventory` | Live workers serving repositories the caller can see, this server first, with the harnesses each one's machine has ([worker inventory](#worker-inventory)); `read` scope | `{"workers": [{"id", "host", "labels", "repos", "seen_ms_ago", "this", "inventory"}]}` |
@@ -651,6 +688,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `body_too_large` | 413 | Body over `max_body_bytes`, or an artifact upload over `max_artifact_bytes`; `detail.limit` |
 | `command_not_allowed` | 403 | A request `command`, or `provision.mcp_servers`, on a server that does not allow client commands |
 | `connectors_not_configured` | 403 | `provision.connectors`, a session's `connectors`, or a connect route, on a server without `connectors` |
+| `auth_required`, `invalid_credential`, `identity_not_allowed`, `tenant_mismatch`, `no_connector_grant`, `unknown_turn`, `manifest_mismatch`, `turn_not_running`, `turn_mismatch`, `token_unavailable` | 401, 401, 403, 403, 403, 404, 409, 409, 409, 503 | `POST /v1/turns/token`; see [turn tokens for sandboxes](#turn-tokens-for-sandboxes) |
 | `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
 | `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
 | `tool_not_allowed`, `tools_conflict`, `policy_key_invalid`, `policy_changed` | 403, 400, 400, 403 | See [tool policy](#tool-policy) |

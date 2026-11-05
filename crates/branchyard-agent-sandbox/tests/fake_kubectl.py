@@ -92,8 +92,8 @@ if operation == "create":
             "ownerReferences": [{"kind": "Sandbox", "uid": body["metadata"]["uid"], "controller": True}]})
         pod["spec"]["nodeName"] = "test-node"
         pod["status"] = {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
-            "containerStatuses": [{"ready": True, "state": {"running": {}},
-            "imageID": pod["spec"]["containers"][0]["image"]}]}
+            "containerStatuses": [{"name": c["name"], "ready": True, "state": {"running": {}},
+            "imageID": c["image"]} for c in pod["spec"]["containers"]]}
         state["objects"][f"pod/{name}"] = pod
     save()
     if state.pop("lose_create_response", False):

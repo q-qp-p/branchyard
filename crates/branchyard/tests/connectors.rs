@@ -1201,3 +1201,307 @@ fn a_session_runs_every_turn_on_one_manifest_until_its_tools_change() {
     assert!(!third.same_tools(&second));
     assert!(third.created_at_ms >= second.created_at_ms);
 }
+
+/// The digest of the turn manifest of `name`, once its turn is running.
+fn running_manifest(root: &Path, name: &str) -> Option<String> {
+    let db = rusqlite::Connection::open(root.join(".branchyard/state.db")).ok()?;
+    let text: String = db
+        .query_row("SELECT record FROM branches WHERE name = ?1", [name], |r| {
+            r.get(0)
+        })
+        .ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    (record["info"]["status"]["state"] == "running").then_some(())?;
+    let manifest: branchyard::manifest::TurnManifest =
+        serde_json::from_value(record.get("manifest")?.clone()).ok()?;
+    Some(manifest.digest())
+}
+
+fn mkfifo(path: &Path) {
+    assert!(std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn a_running_turn_is_issued_a_five_minute_token_from_its_recorded_grant_and_a_finished_one_is_not()
+{
+    use branchyard::connectors::{Proof, RefusalKind, TokenRequest};
+    let f = Fixture::new();
+    gateway(&f, &["github"]);
+    let gate = f.dir.join("gate");
+    mkfifo(&gate);
+    let probe = {
+        let (yard, root, gate) = (f.yard.clone(), f.root.clone(), gate.clone());
+        std::thread::spawn(move || {
+            let digest = branchyard_testkit::wait::until("the running turn's manifest", || {
+                running_manifest(&root, "gated")
+            });
+            // The request names the branch as a server does; the yard is
+            // asked about `gated` whatever it says.
+            let ask = |manifest: &str, turn: u32, proof: Proof<'_>| {
+                yard.issue_turn_token(
+                    "gated",
+                    &TokenRequest {
+                        manifest: manifest.into(),
+                        branch: "other/claims-are-not-read-from-here".into(),
+                        turn,
+                    },
+                    proof,
+                )
+            };
+            let account = "sandbox@proj.iam.gserviceaccount.com";
+            let anyone = Proof::Identity {
+                service_account: account,
+                tenant: None,
+            };
+            let kind = |result: Result<_, branchyard::connectors::Refusal>| {
+                result.expect_err("a refusal").kind
+            };
+            assert_eq!(
+                kind(ask("blake3:00", 1, anyone)),
+                RefusalKind::ManifestMismatch
+            );
+            assert_eq!(kind(ask(&digest, 2, anyone)), RefusalKind::TurnMismatch);
+            let other_tenant = Proof::Identity {
+                service_account: account,
+                tenant: Some("globex"),
+            };
+            assert_eq!(
+                kind(ask(&digest, 1, other_tenant)),
+                RefusalKind::TenantMismatch
+            );
+            assert_eq!(
+                kind(ask(&digest, 1, Proof::Secret("a-secret-nobody-recorded"))),
+                RefusalKind::BadSecret
+            );
+            let issued = ask(&digest, 1, anyone).expect("a token for the running turn");
+            // The turn may finish now.
+            fs::write(&gate, "go").unwrap();
+            (digest, issued)
+        })
+    };
+    let branch = f
+        .task(&format!("SH cat {}", gate.display()))
+        .options(granted(&f, &["github:read:issues.*"]))
+        .name("gated")
+        .run()
+        .unwrap();
+    let (digest, issued) = probe.join().unwrap();
+    assert_eq!(branch.info().status, BranchStatus::NoChanges);
+    // Five minutes, signed for this turn with the recorded grant.
+    assert_eq!(issued.expires_in, 300);
+    let claims = connectors::keys::verify(&jwks(&f), &issued.token).expect("a valid token");
+    assert_eq!(
+        claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
+        300
+    );
+    assert_eq!(claims["exp"].as_u64().unwrap(), issued.expires_at);
+    assert_eq!(claims["aud"], URL);
+    assert_eq!(claims["by_manifest"], digest.as_str());
+    assert_eq!(claims["by_branch"], "gated", "{claims}");
+    assert_eq!(claims["by_turn"], "1");
+    assert_eq!(claims["by_grants"][0]["connector"], "github", "{claims}");
+    assert_eq!(claims["by_grants"].as_array().unwrap().len(), 1);
+    // The turn has ended: the same request is refused now.
+    let late = f
+        .yard
+        .issue_turn_token(
+            "gated",
+            &TokenRequest {
+                manifest: digest,
+                branch: "gated".into(),
+                turn: 1,
+            },
+            Proof::Identity {
+                service_account: "sandbox@proj.iam.gserviceaccount.com",
+                tenant: None,
+            },
+        )
+        .expect_err("a finished turn gets no token");
+    assert_eq!(late.kind, RefusalKind::NotRunning, "{late:?}");
+    // And a branch that does not exist is not a turn.
+    let none = f
+        .yard
+        .issue_turn_token(
+            "nobody",
+            &TokenRequest {
+                manifest: "blake3:00".into(),
+                branch: "nobody".into(),
+                turn: 1,
+            },
+            Proof::Secret("x"),
+        )
+        .expect_err("no such branch");
+    assert_eq!(none.kind, RefusalKind::UnknownTurn);
+}
+
+#[test]
+fn a_microsandbox_guest_runs_its_own_credential_proxy_and_the_harness_holds_no_token() {
+    use branchyard::connectors::{CredentialProxy, Proof, RefusalKind, TokenRequest};
+    use branchyard::{Provider, SandboxOptions};
+    let f = Fixture::new();
+    let fake = Arc::new(branchyard_sandbox::fake::FakeProvider::plain(
+        Box::new(branchyard_runtime::LocalProvider::new()),
+        f.dir.join("fake-provider"),
+    ));
+    f.yard.use_sandbox_provider(fake);
+    // `by` in the guest: notes how it was started, says it is ready, and
+    // stays until the engine kills it.
+    let out = f.dir.join("guest-by");
+    fs::create_dir_all(&out).unwrap();
+    let by = out.join("by");
+    fs::write(
+        &by,
+        r#"#!/bin/sh
+out="$(dirname "$0")"
+echo "$$" > "$out/pid"
+echo "$@" > "$out/argv"
+echo "$BRANCHYARD_CREDENTIAL_SECRET" > "$out/secret"
+echo "listening 127.0.0.1:18900"
+exec cat
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&by, fs::Permissions::from_mode(0o755)).unwrap();
+    let packager = Arc::new(FakePackager {
+        bundles: vec!["github"],
+        ..FakePackager::default()
+    });
+    let mut gateway = Gateway::local(&f.yard, URL, packager).unwrap();
+    gateway.sandbox_url = Some("http://192.168.127.1:8931/mcp".into());
+    gateway.credential_proxy = CredentialProxy {
+        server: Some("https://by.example".into()),
+        audience: "https://by.example".into(),
+        guest_command: by.display().to_string(),
+        ..CredentialProxy::default()
+    };
+    f.yard.use_connectors(gateway);
+    let gate = f.dir.join("gate");
+    mkfifo(&gate);
+    let probe = {
+        let (yard, root, gate, out) = (f.yard.clone(), f.root.clone(), gate.clone(), out.clone());
+        std::thread::spawn(move || {
+            let digest = branchyard_testkit::wait::until("the running turn's manifest", || {
+                running_manifest(&root, "boxed")
+            });
+            let secret = branchyard_testkit::wait::until("the guest's proxy to be started", || {
+                fs::read_to_string(out.join("secret"))
+                    .ok()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            });
+            // The branch's record keeps the secret's hash, never the secret.
+            let record = common::stored_record(&root, "boxed");
+            assert!(
+                !record.to_string().contains(&secret),
+                "the record holds the secret"
+            );
+            assert_eq!(record["credential"]["turn"], 1, "{record}");
+            assert_eq!(record["credential"]["manifest"], digest.as_str());
+            let ask = |proof: Proof<'_>| {
+                yard.issue_turn_token(
+                    "boxed",
+                    &TokenRequest {
+                        manifest: digest.clone(),
+                        branch: "boxed".into(),
+                        turn: 1,
+                    },
+                    proof,
+                )
+            };
+            let wrong = ask(Proof::Secret("not-the-secret")).expect_err("a wrong secret");
+            assert_eq!(wrong.kind, RefusalKind::BadSecret);
+            let issued = ask(Proof::Secret(&secret)).expect("the guest's own secret");
+            fs::write(&gate, "go").unwrap();
+            (secret, issued)
+        })
+    };
+    let branch = f
+        .task(&format!(
+            "SH echo url=$ANVIL_GATEWAY_URL file=${{ANVIL_GATEWAY_TOKEN_FILE:-none}}\n\
+             SH ls -A \"$HOME/.branchyard\" | tr '\\n' ' ' | sed 's/^/home=/'; echo\n\
+             SH env | grep -ci credential_secret | sed 's/^/secrets=/'\n\
+             SH cat {}",
+            gate.display()
+        ))
+        .options(TaskOptions {
+            provider: Some(Provider::Microsandbox(SandboxOptions {
+                image: "registry.example/harness:1".into(),
+                ..SandboxOptions::default()
+            })),
+            isolated: false,
+            ..granted(&f, &["github:read"])
+        })
+        .name("boxed")
+        .run()
+        .unwrap();
+    let (secret, issued) = probe.join().unwrap();
+    let events = branch.events().unwrap();
+    let said = text(&events);
+    // The harness is pointed at the proxy on its own loopback, with no token
+    // file named, none in its home, and no secret in its environment.
+    assert_eq!(after(&said, "url="), "http://127.0.0.1:18900/mcp file=none");
+    let home = after(&said, "home=");
+    assert!(home.contains("connectors"), "{home}");
+    assert!(!home.contains("gateway-token"), "{home}");
+    assert_eq!(after(&said, "secrets="), "0", "{said}");
+    // The guest's proxy was started with the turn's coordinates, the secret
+    // in its environment only, and the gateway as the guest reaches it.
+    let argv = fs::read_to_string(out.join("argv")).unwrap();
+    assert!(!argv.contains(&secret), "{argv}");
+    for part in [
+        "credential-proxy",
+        "--server https://by.example",
+        "--upstream http://192.168.127.1:8931/mcp",
+        "--branch boxed",
+        "--turn 1",
+        "--identity secret",
+    ] {
+        assert!(argv.contains(part), "{part} not in {argv}");
+    }
+    // The server-side token is for this turn, from its recorded grant.
+    let claims = connectors::keys::verify(&jwks(&f), &issued.token).expect("a valid token");
+    assert_eq!(claims["by_branch"], "boxed");
+    assert_eq!(claims["by_grants"][0]["connector"], "github", "{claims}");
+    assert_eq!(issued.expires_in, 300);
+    // The host's ledger proxy steps aside, and says so.
+    assert!(
+        events.iter().any(|e| matches!(&e.activity,
+            Activity::Warning(w) if w.contains("held by a proxy in its sandbox"))),
+        "{events:?}"
+    );
+    // The turn ended: the secret is gone from the record and is refused,
+    // and the guest's process is gone with the turn.
+    assert!(common::stored_record(&f.root, "boxed")["credential"].is_null());
+    let late = f
+        .yard
+        .issue_turn_token(
+            "boxed",
+            &TokenRequest {
+                manifest: branch.manifest().unwrap().unwrap().digest(),
+                branch: "boxed".into(),
+                turn: 1,
+            },
+            Proof::Secret(&secret),
+        )
+        .expect_err("a finished turn");
+    assert_eq!(late.kind, RefusalKind::BadSecret);
+    let pid: i32 = fs::read_to_string(out.join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    branchyard_testkit::wait::until("the guest's proxy to be stopped", || {
+        // A zombie is dead: only a running process counts.
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|stat| {
+                stat.rsplit(')')
+                    .next()
+                    .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+            })
+            .unwrap_or(true)
+    });
+}

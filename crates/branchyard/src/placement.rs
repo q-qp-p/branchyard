@@ -77,6 +77,11 @@ pub(crate) fn sandboxed(provider: Option<&Provider>) -> bool {
     providers::of(provider).sandboxed()
 }
 
+/// Where this provider can run the turn's credential proxy.
+pub(crate) fn credential_site(provider: Option<&Provider>) -> crate::connectors::CredentialSite {
+    providers::of(provider).credential_site()
+}
+
 /// Refuse a provider this build or its options cannot run, before anything
 /// is created.
 pub(crate) fn check(yard: &Yard, provider: Option<&Provider>) -> Result<(), Error> {
