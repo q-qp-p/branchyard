@@ -124,6 +124,7 @@ Each turn gets a fresh microVM, destroyed when the turn ends, unless the branch 
 
 - The branch's worktree is mounted read-write at `/workspace`, and the harness runs there; the driver's `cwd` is `/workspace`.
 - The branch's private home, `.branchyard/homes/<name>`, is mounted at `/branchyard/home` and is `HOME`. Harness sessions persist there across sends; a forked session shares its parent's home, as under `--isolated`.
+- The turn's tool tree, `.branchyard/tools` of the home, is also mounted **read-only** at `/tools`, and the harness gets `BRANCHYARD_TOOLS=/tools` ([tools model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)); its links name absolute guest paths. Not run on a live runtime.
 - The repository's git directory is mounted **read-only** at its host path, so `git log` and `git diff` work in the sandbox but the harness cannot move refs. Candidates are still snapshotted on the host.
 - The harness gets `HOME`, the variables named by `--pass-env`, copied from your environment at each turn, and the variables its [provisioning](provisioning.md) sets. Nothing else from your environment crosses: not your login, not `PATH`. The names are stored with the branch; the values are not. A named variable that is unset fails the turn.
 - Before the sandbox is created, [provisioning](provisioning.md) writes the harness's native files into the private home on the host (credentials from `--secret` at mode 0600, settings, MCP configuration where the driver cannot pass it), so the mount carries them in.
@@ -133,6 +134,8 @@ Each turn gets a fresh microVM, destroyed when the turn ends, unless the branch 
 The image must contain the harness executable on its `PATH` (or pass its guest path with `--command`), `sh` for teardown, and whatever the harness needs to authenticate from the passed variables. The engine does not look for the harness on the host.
 
 A delegating turn (`--delegate`, or a delegated child) cannot use `by` or the broker's socket from the guest. Instead the engine serves the turn Branchyard's MCP tools over HTTP from the host, on `[connectors] effects_listen` at the address `effects_sandbox_host` names (the address at which the guest reaches the host, which the effect-ledger proxy uses too), with a bearer token for that turn alone; see [delegation](delegation.md#sandboxed-harnesses). Without that address, a turn asked to delegate fails naming the setting. `ProviderKind::reaches_host` says which providers' sandboxes can reach the host: Microsandbox's only. A Substrate actor or a recipe's machine runs a delegating turn without the tools and records a warning that says why. This is tested with `FakeProvider` on loopback, not in a guest on a KVM host.
+
+`ProviderKind::credential_site` says where a provider can run the turn's [credential proxy](connectors.md#the-credential-proxy-in-the-sandbox), so that the harness holds no gateway token: the host (the default: local, container, recipe), a process the engine starts in the guest (Microsandbox), or a sidecar the sandbox's own definition runs (GKE Agent Sandbox; Substrate by configuration). A new provider declares its site, and `providers/tests.rs` lists every provider's.
 
 ### Prerequisites and the ignored tests
 

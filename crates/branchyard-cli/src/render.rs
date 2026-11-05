@@ -527,6 +527,7 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             skills,
             managed,
             permissions,
+            manifest,
         } => {
             let mut parts = Vec::new();
             if let Some(auth) = auth {
@@ -611,6 +612,10 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
                 ));
             }
             parts.extend(skills_parts(skills));
+            // The session's manifest digest last: a reference, not news.
+            if let Some(manifest) = manifest {
+                parts.push(format!("manifest {manifest}"));
+            }
             style.paint(Tone::Dim, &format!("provisioned: {}", parts.join("; ")))
         }
         Activity::Steered { by, text, .. } => style.paint(
@@ -2369,6 +2374,7 @@ mod tests {
                 skills: SkillSet::default(),
                 managed: None,
                 permissions: None,
+                manifest: None,
             };
             assert_eq!(
                 activity_line(&provisioned, PLAIN).unwrap(),
@@ -2410,6 +2416,7 @@ mod tests {
             skills: SkillSet::default(),
             managed: None,
             permissions: None,
+            manifest: None,
         };
         assert_eq!(
             activity_line(&provisioned, PLAIN).unwrap(),
@@ -2437,6 +2444,7 @@ mod tests {
             skills,
             managed: None,
             permissions: None,
+            manifest: None,
         };
         let staged = SkillSet {
             set: "3f2a9c1d0e4b5a6978".into(),

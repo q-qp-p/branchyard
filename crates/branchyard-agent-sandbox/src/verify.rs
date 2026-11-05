@@ -1,7 +1,7 @@
 use branchyard_sandbox::ProviderError;
 use serde_json::{json, Value};
 
-use crate::config::{runtime_error, Network, Runtime};
+use crate::config::{runtime_error, Runtime};
 use crate::control::Control;
 use crate::manifest;
 use crate::owned::{NodeEvidence, Receipt};
@@ -175,9 +175,45 @@ pub(crate) fn policy(
     Ok(uid)
 }
 
+pub(crate) fn fqdn_policy(
+    object: &Value,
+    receipt: &Receipt,
+    sandbox_uid: &str,
+) -> Result<String, ProviderError> {
+    let uid = owned(object, receipt, receipt.fqdn_policy_uid.as_deref())?;
+    let expected = manifest::fqdn_policy(receipt, sandbox_uid);
+    check(
+        object.get("spec") == expected.get("spec"),
+        "allocation FQDN network policy has drifted",
+    )?;
+    check(
+        object.pointer("/metadata/ownerReferences")
+            == expected.pointer("/metadata/ownerReferences"),
+        "allocation FQDN policy owner UID has drifted",
+    )?;
+    Ok(uid)
+}
+
+/// Whether `item` selects only Pods of another allocation, so it grants this
+/// one nothing.
+fn selects_other_owner(item: &Value, receipt: &Receipt) -> bool {
+    let selector = item.pointer("/spec/podSelector");
+    let other_owner = selector
+        .and_then(|v| v.pointer("/matchLabels/branchyard.io~1owner"))
+        .and_then(Value::as_str);
+    other_owner.is_some_and(|owner| owner != receipt.owner)
+        && selector
+            .and_then(|v| v.get("matchExpressions"))
+            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
+}
+
 // NetworkPolicy is additive. A correctly named deny policy is insufficient if
 // another selector also grants this Pod access. Permit only the one exact
-// receipt-bound egress exception, or policies selecting a different owner.
+// receipt-bound egress policy (the open one under `unrestricted`, the scoped
+// one under `deny` with a gateway, hosts or a tool store), or policies
+// selecting a different owner. The same holds for GKE FQDN policies, which
+// are read only when this allocation has one (the cluster may not have the
+// API otherwise).
 pub(crate) fn network(
     control: &Control,
     receipt: &Receipt,
@@ -195,18 +231,10 @@ pub(crate) fn network(
         if text(item, "/metadata/name")? == "branchyard-default-deny" {
             continue;
         }
-        let selector = item.pointer("/spec/podSelector");
-        let other_owner = selector
-            .and_then(|v| v.pointer("/matchLabels/branchyard.io~1owner"))
-            .and_then(Value::as_str);
-        if other_owner.is_some_and(|owner| owner != receipt.owner)
-            && selector
-                .and_then(|v| v.get("matchExpressions"))
-                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty))
-        {
+        if selects_other_owner(item, receipt) {
             continue;
         }
-        if receipt.target.network == Network::Unrestricted
+        if receipt.target.has_policy()
             && item.pointer("/metadata/name").and_then(Value::as_str)
                 == Some(&receipt.resource_name())
         {
@@ -219,17 +247,88 @@ pub(crate) fn network(
         }
     }
     check(
-        receipt.target.network != Network::Unrestricted || own_allow_seen,
-        "the allocation's IPv4 egress policy is missing",
+        !receipt.target.has_policy() || own_allow_seen,
+        "the allocation's egress policy is missing",
+    )?;
+    if !receipt.target.has_fqdn_policy() {
+        return Ok(());
+    }
+    let list = control
+        .get_here(manifest::FQDN_RESOURCE, "")?
+        .ok_or_else(|| runtime_error("cannot list namespace FQDN network policies"))?;
+    let items = list
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| runtime_error("invalid FQDN network policy list"))?;
+    let mut own_fqdn_seen = false;
+    for item in items {
+        if selects_other_owner(item, receipt) {
+            continue;
+        }
+        if item.pointer("/metadata/name").and_then(Value::as_str) == Some(&receipt.resource_name())
+        {
+            fqdn_policy(item, receipt, sandbox_uid)?;
+            own_fqdn_seen = true;
+        } else {
+            return Err(runtime_error(
+                "an additional FQDNNetworkPolicy could override this allocation's network boundary",
+            ));
+        }
+    }
+    check(
+        own_fqdn_seen,
+        "the allocation's FQDN egress policy is missing",
     )
+}
+
+/// `pod` without what GKE injects for the Cloud Storage FUSE CSI driver
+/// when the allocation mounts the tool store: the driver's sidecar (a
+/// container or an init container, by cluster version), its status, and the
+/// volumes named for it. Only those exact names go; anything else GKE or an
+/// admission webhook adds still fails the checks below.
+fn without_gcsfuse(pod: &Value) -> Value {
+    let mut pod = pod.clone();
+    let named = |item: &Value, prefix: bool, name: &str| {
+        item["name"]
+            .as_str()
+            .is_some_and(|n| n == name || (prefix && n.starts_with(name)))
+    };
+    for (path, name, prefix) in [
+        ("/spec/containers", manifest::GCSFUSE_SIDECAR, false),
+        ("/spec/initContainers", manifest::GCSFUSE_SIDECAR, false),
+        ("/spec/volumes", manifest::GCSFUSE_VOLUME_PREFIX, true),
+        (
+            "/status/containerStatuses",
+            manifest::GCSFUSE_SIDECAR,
+            false,
+        ),
+        (
+            "/status/initContainerStatuses",
+            manifest::GCSFUSE_SIDECAR,
+            false,
+        ),
+    ] {
+        if let Some(items) = pod.pointer_mut(path).and_then(Value::as_array_mut) {
+            items.retain(|item| !named(item, prefix, name));
+        }
+    }
+    pod
 }
 
 pub(crate) fn pod(
     control: &Control,
-    object: &Value,
+    live: &Value,
     receipt: &Receipt,
     sandbox_uid: &str,
 ) -> Result<PodIdentity, ProviderError> {
+    let cleaned;
+    let object = match receipt.target.store {
+        Some(_) => {
+            cleaned = without_gcsfuse(live);
+            &cleaned
+        }
+        None => live,
+    };
     let pod_uid = owned(object, receipt, receipt.pod_uid.as_deref())?;
     check(
         object.pointer("/metadata/deletionTimestamp").is_none(),
@@ -267,72 +366,75 @@ pub(crate) fn pod(
             "Pod gained extra containers or image credentials",
         )?;
     }
-    let container = &spec["containers"][0];
-    let security = &container["securityContext"];
-    check(
-        security.get("privileged").is_none_or(|v| v == false),
-        "container became privileged",
-    )?;
-    check(
-        security.get("procMount").is_none_or(|v| v == "Default"),
-        "container gained unmasked proc mounts",
-    )?;
-    check(
-        security
-            .get("seccompProfile")
-            .is_none_or(|v| v["type"] == "RuntimeDefault"),
-        "container overrides seccomp",
-    )?;
-    check(
-        container
-            .get("args")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained command arguments",
-    )?;
-    check(
-        container.get("lifecycle").is_none(),
-        "container gained lifecycle commands",
-    )?;
-    let mounts = container
-        .get("volumeMounts")
-        .and_then(Value::as_array)
-        .ok_or_else(|| runtime_error("container mounts are missing"))?;
-    check(
-        mounts.iter().all(|mount| {
-            mount.get("subPath").is_none()
-                && mount.get("subPathExpr").is_none()
-                && mount.get("mountPropagation").is_none_or(|v| v == "None")
-        }),
-        "container mount gained a subpath or propagation",
-    )?;
-    for key in ["runAsUser", "runAsGroup"] {
+    // The runtime container and, with a credential proxy, its sidecar: the
+    // same limits hold for both.
+    for container in spec["containers"].as_array().into_iter().flatten() {
+        let security = &container["securityContext"];
         check(
-            security.get(key).is_none_or(|v| v == 1000),
-            "container overrides the non-root identity",
+            security.get("privileged").is_none_or(|v| v == false),
+            "container became privileged",
+        )?;
+        check(
+            security.get("procMount").is_none_or(|v| v == "Default"),
+            "container gained unmasked proc mounts",
+        )?;
+        check(
+            security
+                .get("seccompProfile")
+                .is_none_or(|v| v["type"] == "RuntimeDefault"),
+            "container overrides seccomp",
+        )?;
+        check(
+            container
+                .get("args")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained command arguments",
+        )?;
+        check(
+            container.get("lifecycle").is_none(),
+            "container gained lifecycle commands",
+        )?;
+        let mounts = container
+            .get("volumeMounts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| runtime_error("container mounts are missing"))?;
+        check(
+            mounts.iter().all(|mount| {
+                mount.get("subPath").is_none()
+                    && mount.get("subPathExpr").is_none()
+                    && mount.get("mountPropagation").is_none_or(|v| v == "None")
+            }),
+            "container mount gained a subpath or propagation",
+        )?;
+        for key in ["runAsUser", "runAsGroup"] {
+            check(
+                security.get(key).is_none_or(|v| v == 1000),
+                "container overrides the non-root identity",
+            )?;
+        }
+        check(
+            security.get("runAsNonRoot").is_none_or(|v| v == true),
+            "container disables non-root enforcement",
+        )?;
+        check(
+            security
+                .pointer("/capabilities/add")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained capabilities",
+        )?;
+        check(
+            container
+                .get("envFrom")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained environment credentials",
+        )?;
+        check(
+            container
+                .get("ports")
+                .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
+            "container gained ports outside the exec-only contract",
         )?;
     }
-    check(
-        security.get("runAsNonRoot").is_none_or(|v| v == true),
-        "container disables non-root enforcement",
-    )?;
-    check(
-        security
-            .pointer("/capabilities/add")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained capabilities",
-    )?;
-    check(
-        container
-            .get("envFrom")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained environment credentials",
-    )?;
-    check(
-        container
-            .get("ports")
-            .is_none_or(|v| v.as_array().is_some_and(Vec::is_empty)),
-        "container gained ports outside the exec-only contract",
-    )?;
     check(
         text(object, "/status/phase")? == "Running" && ready(object),
         "Pod is not running and ready",
@@ -341,10 +443,12 @@ pub(crate) fn pod(
         .pointer("/status/containerStatuses")
         .and_then(Value::as_array)
         .ok_or_else(|| runtime_error("Pod has no container status"))?;
+    let expected_containers = 1 + usize::from(receipt.target.credential_proxy.is_some());
     check(
-        statuses.len() == 1
-            && statuses[0]["ready"] == true
-            && statuses[0]["state"].get("running").is_some(),
+        statuses.len() == expected_containers
+            && statuses
+                .iter()
+                .all(|s| s["ready"] == true && s["state"].get("running").is_some()),
         "runtime container is not ready",
     )?;
     let digest = receipt

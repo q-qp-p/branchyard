@@ -216,7 +216,7 @@ class ComputeGceTests(unittest.TestCase):
 
     def test_iap_plan_is_offline_and_direct_fingerprints_remain_compatible(self):
         legacy = asdict(self.config)
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor", "tools_store"):
             legacy.pop(key)
         self.assertEqual(
             self.config.fingerprint, hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
@@ -612,6 +612,69 @@ class ComputeGceTests(unittest.TestCase):
             self.assertIn("umask 077", configured)
             self.assertNotIn(self.env["GEMINI_API_KEY"], configured)
 
+    def test_host_setup_installs_anvil_guarded_and_pulls_the_store_only_when_asked(self):
+        plain = gce.bootstrap(self.config, None)
+        self.assertIn("sudo anvil install --prefix /opt/anvil", plain)
+        self.assertIn("command -v anvil", plain)
+        self.assertNotIn("by tools pull", plain)
+        self.assertNotIn('config["tools"]', gce.worker_configuration(self.config))
+        asked = replace(self.config, tools_store="gs://acme-tools/store")
+        script = gce.bootstrap(asked, None)
+        self.assertIn("/usr/local/bin/by tools pull --from gs://acme-tools/store --store /opt/branchyard/store", script)
+        configured = gce.worker_configuration(asked)
+        self.assertIn(
+            'config["tools"] = {"store": "/opt/branchyard/store", "store_bucket": "acme-tools/store"}', configured
+        )
+        for text in (script, configured, gce.configure_worker(asked)):
+            syntax = subprocess.run(["bash", "-n"], input=text, text=True, capture_output=True, check=False)
+            self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        report = gce.plan(asked)
+        self.assertTrue(any("by tools pull" in line and "objectViewer" in line for line in report["actions"]))
+        self.assertTrue(any("anvil install" in line for line in report["actions"]))
+        self.assertNotEqual(asked.fingerprint, self.config.fingerprint)
+        for bad in ("acme-tools", "gs://", "gs://Bad_Bucket/x", "gs://acme-tools/", "gs://acme tools/x"):
+            with self.subTest(bad=bad), self.assertRaises(gce.SetupError):
+                gce.plan(replace(self.config, tools_store=bad))
+
+    def test_the_anvil_install_guard_skips_with_a_message_and_otherwise_installs_under_the_prefix(self):
+        with tempfile.TemporaryDirectory() as raw:
+            empty, fakes, log = Path(raw) / "empty", Path(raw) / "fakes", Path(raw) / "calls.log"
+            empty.mkdir()
+            fakes.mkdir()
+            run = lambda path: subprocess.run(  # noqa: E731
+                ["/bin/bash", "-eu", "-c", gce.ANVIL_INSTALL],
+                env={"PATH": str(path)},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            missing = run(empty)
+            self.assertEqual(missing.returncode, 0, missing.stderr)
+            self.assertIn("skipping the Anvil toolchain", missing.stderr)
+            # The contract's mock is `anvil`; ANVIL_MOCK_ROOT keeps its /opt/anvil under the test's directory.
+            mock = Path(__file__).resolve().parent / "fixtures" / "anvil" / "anvil"
+            for name, body in {
+                "sudo": 'exec "$@"',
+                "anvil": f'exec {shlex.quote(sys.executable)} {shlex.quote(str(mock))} "$@"',
+            }.items():
+                tool = fakes / name
+                tool.write_text(f"#!/bin/sh\n{body}\n")
+                tool.chmod(0o755)
+            installed = subprocess.run(
+                ["/bin/bash", "-eu", "-c", gce.ANVIL_INSTALL],
+                env={"PATH": str(fakes), "ANVIL_MOCK_LOG": str(log), "ANVIL_MOCK_ROOT": str(Path(raw) / "root")},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(installed.returncode, 0, installed.stderr)
+            self.assertEqual(
+                log.read_text().splitlines(), ["anvil install --help", "anvil install --prefix /opt/anvil"]
+            )
+            current = Path(raw) / "root/opt/anvil/current"
+            self.assertTrue((current / "manifest.json").is_file(), "the mock laid out a version under the prefix")
+            self.assertTrue((current / "env.sh").is_file())
+
     def test_gvisor_is_explicit_pinned_prerequisites_for_either_backend(self):
         import install_container_runtime as runtime
 
@@ -707,7 +770,7 @@ class ComputeGceTests(unittest.TestCase):
         self.assertEqual(gce.plan(account)["access_scopes"], [gce.DEFAULT_SCOPE])
         self.assertEqual(gce.plan(self.config)["access_scopes"], [])
         legacy = asdict(replace(account, scopes="none"))
-        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor"):
+        for key in ("state_dir", "repo", "forward_secret", "tunnel_through_iap", "scopes", "gvisor", "tools_store"):
             legacy.pop(key)
         self.assertEqual(
             replace(account, scopes="none").fingerprint,

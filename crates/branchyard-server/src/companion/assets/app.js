@@ -185,6 +185,9 @@
     check: 'M3 8.5l3.2 3L13 4.5',
     cross: 'M4 4l8 8M12 4l-8 8',
     merge: 'M2.5 8h7.5M7 5l3 3-3 3M13 2.5v11',
+    skill: 'M3.5 2.5h7a2 2 0 0 1 2 2v9h-7a2 2 0 0 1-2-2zM3.5 11.5a2 2 0 0 1 2-2h7',
+    helper: 'M6 7a2.2 2.2 0 1 0 0-4.4A2.2 2.2 0 0 0 6 7zM1.8 13.5c0-2.3 1.9-4 4.2-4s4.2 1.7 4.2 4M11 2.8a2.2 2.2 0 0 1 0 4.2M12.2 9.6c1.5.5 2.5 1.8 2.5 3.9',
+    chevron: 'M4 6l4 4 4-4',
     wrench: 'M9.6 2.4a3.3 3.3 0 0 0 4 4.2l-5.8 5.8a1.5 1.5 0 0 1-2.2-2.2l5.8-5.8a3.3 3.3 0 0 0-1.8-2z',
   };
   function icon(name, small) {
@@ -1000,7 +1003,7 @@
   // Routing
 
   // Inbox and Approvals became Needs you; push notifications still open them.
-  const ALIASES = { '': 'home', inbox: 'attention', approvals: 'attention' };
+  const ALIASES = { '': 'home', inbox: 'attention', approvals: 'attention', connections: 'settingsTools' };
   const VIEWS = {
     home: renderHome,
     branch: renderBranch,
@@ -1014,6 +1017,7 @@
     triggers: renderTriggers,
     queue: renderQueue,
     settings: renderSettings,
+    settingsTools: renderSettingsTools,
     newProject: renderNewProject,
     project: renderProject,
     workspace: renderWorkspace,
@@ -1028,6 +1032,7 @@
     if (parts[0] === 'p' && parts[1]) return { name: 'project', project: parts[1], creating: parts[2] === 'new' };
     if (parts[0] === 'w' && parts[1] && parts[2] === 'doc' && parts[3]) return { name: 'document', workspace: parts[1], artifact: parts[3] };
     if (parts[0] === 'w' && parts[1]) return { name: 'workspace', workspace: parts[1], session: parts[2] === 's' && parts[3] ? parts[3] : null };
+    if (parts[0] === 'settings' && parts[1] === 'tools') return { name: 'settingsTools' };
     const name = ALIASES[parts[0]] || parts[0];
     return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace', 'document'].includes(name) ? name : 'home' };
   }
@@ -1035,6 +1040,9 @@
   async function route() {
     if (!state.token) return;
     closePreview();
+    document.body.classList.remove('sheet-open');
+    // Connections became a page of Settings; an old link lands there.
+    if (/^#\/connections\/?$/.test(location.hash)) history.replaceState(null, '', '#/settings/tools');
     state.route = parseRoute();
     const r = state.route;
     if (r.name === 'branch' && r.repo && state.repos.includes(r.repo)) {
@@ -1047,7 +1055,7 @@
     document.body.dataset.view = r.name === 'project' && !r.creating ? 'home' : r.name;
     view = null;
     drawn = null;
-    const current = r.name === 'project' && r.creating ? 'newWorkspace' : r.name;
+    const current = r.name === 'project' && r.creating ? 'newWorkspace' : r.name === 'settingsTools' ? 'settings' : r.name;
     for (const link of document.querySelectorAll('#sidebar a[data-route]')) {
       if (link.dataset.route === current) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
@@ -2976,7 +2984,7 @@
   // Everything the new-session form offers for a draft, what is closed and
   // why, and the first thing still missing. Pure: the form draws it and
   // Start checks it.
-  function startChoices(environments, roles, draft, outputs) {
+  function startChoices(environments, roles, draft, outputs, tools = { state: 'loading' }) {
     const envs = environments.list.map((env) => ({ env, why: env.canStart ? null : 'Your role in this workspace cannot start sessions here.' }));
     const open = envs.filter((e) => !e.why);
     const picked = open.find((e) => e.env.key === draft.env) || (open.length === 1 ? open[0] : null);
@@ -3023,20 +3031,21 @@
         return { field: 'harness', text: typed ? 'Type a harness this server runs.' : usable.length ? 'Choose a harness.' : `No harness in ${env.label} can start a session for your role; choose another environment.` };
       }
       if (acknowledgement && !draft.ack) return { field: 'ack', text: `Tick “I accept tools without per-tool approval” to start ${harness.id} as a writer, or choose another harness.` };
-      if (!draft.name.trim()) return { field: 'name', text: 'Name the session.' };
-      if (!draft.prompt.trim()) return { field: 'prompt', text: 'Give it a first prompt.' };
+      if (!draft.prompt.trim()) return { field: 'prompt', text: 'Say what it should do.' };
+      if (t.blocked) return { field: 'tools', text: `${t.blocked.x.name}: ${t.blocked.why} Connect it or remove it under Tools.` };
       if (value === 'reviewer' && !outputs.some((a) => draft.outputs.has(a.id))) {
         return { field: 'outputs', text: outputs.length ? 'Choose at least one output to review (under Advanced).' : 'No outputs to review yet: a reviewer needs at least one.' };
       }
       return null;
     };
-    return { envs, env, harnesses, harness, typed, access, model, effort, acknowledgement, missing: firstMissing() };
+    const t = toolChoices(tools, draft, { access, env });
+    return { envs, env, harnesses, harness, typed, access, model, effort, acknowledgement, tools: t, missing: firstMissing() };
   }
 
   // The body of a start for a draft whose choices miss nothing.
   function startRequest(c, draft, sources, outputs) {
     const writer = c.access.value === 'writer';
-    const body = { name: draft.name.trim(), prompt: draft.prompt.trim(), harness: c.harness.id, access: c.access.value };
+    const body = { name: draft.name.trim() || nameFrom(draft.prompt), prompt: draft.prompt.trim(), harness: c.harness.id, access: c.access.value };
     if (c.env.preset !== null) body.preset = c.env.preset;
     const model = c.model.kind === 'none' ? '' : c.model.value.trim();
     if (model) body.model = model;
@@ -3047,16 +3056,20 @@
     if (writer && draft.collect) body.result_contract = OUTPUT_CONTRACT;
     if (writer && draft.allowAll) body.policy = { mode: 'allow' };
     if (writer && c.acknowledgement && draft.ack) body.unapproved_tools = true;
+    Object.assign(body, toolRequest(c.tools, draft));
     return body;
   }
 
   // A new session's draft. A source missing from `sources` has not been
   // seen by the draft, so it starts ticked.
   function freshDraft(v, keep = {}) {
+    const mode = keep.mode || (v.workspace.result_mode === 'code' ? 'code' : 'work');
+    const kept = rememberedTools(v.id);
     return {
       name: '', prompt: '', env: keep.env || null, harness: keep.harness || null, model: keep.model || '', effort: '',
       access: workspaceCanRun(v) ? 'writer' : 'reviewer', sources: new Map(), outputs: new Set(),
-      collect: v.workspace.result_mode !== 'code', allowAll: false, ack: false,
+      collect: mode === 'work' || v.workspace.result_mode !== 'code', allowAll: false, ack: false,
+      mode, tools: null, remembered: kept, helperLimit: undefined,
     };
   }
 
@@ -3075,6 +3088,7 @@
       sources: new Map(sourcesOf(v).map((src) => [src.id, (s.sources || []).includes(src.id)])),
       outputs: new Set((s.artifacts || []).map((a) => a.id)),
       collect: s.result_contract != null,
+      ...toolsFrom(s),
     };
   }
 
@@ -3148,6 +3162,719 @@
     forbidden: OPERATOR_REFUSED,
   };
 
+  // A refused start that names a connection, a skill or a helper: the
+  // tools are read again, and the Tools step says what to do.
+  const TOOLS_REFUSED = { reload: 'tools', text: (e) => `${said(e.message)} Your draft is kept.` };
+  Object.assign(START_REFUSED, {
+    connector_not_connected: {
+      reload: 'tools',
+      text: (e) => `${said(e.message)} Connect it under Tools, or remove it, then start. Your draft is kept.`,
+    },
+    connector_over_ceiling: TOOLS_REFUSED,
+    connector_not_served: TOOLS_REFUSED,
+    connectors_not_configured: TOOLS_REFUSED,
+    connectors_conflict: TOOLS_REFUSED,
+    gateway_unreachable: TOOLS_REFUSED,
+    skill_unknown: TOOLS_REFUSED,
+    harness_unavailable: TOOLS_REFUSED,
+    reviewer_read_only: TOOLS_REFUSED,
+    delegation_not_allowed: TOOLS_REFUSED,
+  });
+
+  // ---------------------------------------------------------------
+  // Tools: connectors, skills and helpers as one list
+  // (docs/tools-model.md). The server computes where each stands for the
+  // caller; the page words it, and a session start carries the choice as
+  // one `tools` list.
+
+  const TOOL_KINDS = [
+    { kind: 'connector', one: 'Connector', many: 'Connectors' },
+    { kind: 'skill', one: 'Skill', many: 'Skills' },
+    { kind: 'helper', one: 'Helper', many: 'Helpers' },
+  ];
+  const kindWord = (kind) => TOOL_KINDS.find((k) => k.kind === kind) || TOOL_KINDS[0];
+  const toolKey = (kind, id) => `${kind}:${id}`;
+  const domId = (text) => String(text).replace(/[^a-zA-Z0-9_-]/g, '-');
+  const isLimit = (t) => t.kind === 'helper' && t.id === '*';
+  const toolPick = (x, mode) => (x.kind === 'connector' ? { kind: x.kind, id: x.id, mode: mode === 'write' ? 'write' : 'read' } : { kind: x.kind, id: x.id });
+
+  const reconnecting = (x) => (x.accounts || []).some((a) => a.state === 'needs_reconnect');
+  // Where a tool stands, in words. The dot repeats it and is never alone.
+  function toolStateWords(x) {
+    if (x.state === 'not_allowed') return x.off_by_me ? { label: 'Off for you', lane: 'done' } : { label: 'Not allowed', lane: 'done' };
+    if (x.state === 'not_ready') {
+      if (x.kind === 'connector') return { label: reconnecting(x) ? 'Needs reconnecting' : 'Not connected', lane: 'needs' };
+      return { label: 'Not available', lane: 'needs' };
+    }
+    return x.state === 'default' ? { label: 'On by default', lane: 'ready' } : { label: 'Ready', lane: 'ready' };
+  }
+  // The one thing to do about a tool, or null.
+  function toolAction(x) {
+    switch (x.action) {
+      case 'connect': return reconnecting(x) ? { kind: 'reconnect', label: 'Reconnect' } : { kind: 'connect', label: 'Connect' };
+      case 'ask_admin': return { kind: 'ask_admin', label: 'Ask your administrator' };
+      case 'turn_on': return { kind: 'turn_on', label: 'Turn on' };
+      case 'install': return { kind: 'install', label: 'Install' };
+      case 'sign_in': return { kind: 'sign_in', label: 'Sign in' };
+      default: return null;
+    }
+  }
+  const connects = (act) => !!act && (act.kind === 'connect' || act.kind === 'reconnect');
+  const KIND_ORDER = { connector: 0, skill: 1, helper: 2 };
+  const STATE_ORDER = { not_ready: 0, default: 1, ready: 2, not_allowed: 3 };
+  const sortTools = (list) => list.slice().sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]
+    || (a.kind === 'connector' ? STATE_ORDER[a.state] - STATE_ORDER[b.state] : 0) || a.name.localeCompare(b.name));
+
+  const fetchTools = (workspace) => api('GET', workspace ? `/v1/tools?workspace=${enc(workspace)}` : '/v1/tools');
+
+  // The tools a session here may choose, read with the workspace: every
+  // tool as the caller stands with it, and the workspace's saved defaults.
+  // A later read replaces an earlier one, never the reverse.
+  async function loadTools(v) {
+    const asked = (v.toolsAsked = (v.toolsAsked || 0) + 1);
+    v.tools = { ...v.tools, state: v.tools.data ? 'ready' : 'loading', error: null };
+    let next;
+    try {
+      const [data, own] = await Promise.all([fetchTools(v.id), api('GET', `${workspacePath(v.id)}/tools`)]);
+      next = { state: 'ready', data: { ...data, tools: sortTools(data.tools) }, defaults: own.defaults || { tools: [], revision: 0 }, error: null, at: Date.now() };
+    } catch (e) {
+      next = { state: 'failed', data: null, defaults: null, error: e.message, at: 0 };
+    }
+    if (wsView !== v || asked !== v.toolsAsked) return;
+    v.tools = next;
+    if (v.composing && v.syncForm) v.syncForm();
+  }
+
+  // The tools this browser chose last in a workspace: the fallback for a
+  // workspace with no saved defaults. Only names are kept.
+  const TOOLS_KEY = (id) => `branchyard.tools.${id}`;
+  function rememberedTools(id) {
+    try {
+      const kept = JSON.parse(localStorage.getItem(TOOLS_KEY(id)) || 'null');
+      if (!kept || typeof kept !== 'object') return null;
+      const map = new Map();
+      for (const t of Array.isArray(kept.tools) ? kept.tools : []) {
+        if (t && typeof t.id === 'string' && KIND_ORDER[t.kind] != null && !isLimit(t)) map.set(toolKey(t.kind, t.id), toolPick(t, t.mode));
+      }
+      return map.size ? map : null;
+    } catch (_) { return null; }
+  }
+  function rememberTools(id, choices) {
+    try {
+      localStorage.setItem(TOOLS_KEY(id), JSON.stringify({ tools: choices }));
+    } catch (_) { /* private mode: not remembered */ }
+  }
+
+  // The tools a session was started with, as a draft holds them; null when
+  // it was started with none, so the new draft follows the defaults.
+  function toolsFrom(s) {
+    const t = s.tools || {};
+    const map = new Map();
+    for (const c of t.connectors || []) map.set(toolKey('connector', c.connector), toolPick({ kind: 'connector', id: c.connector }, c.mode));
+    for (const id of Array.isArray(t.skills) ? t.skills : []) map.set(toolKey('skill', id), toolPick({ kind: 'skill', id }));
+    for (const id of t.helpers ? t.helpers.harnesses || [] : []) map.set(toolKey('helper', id), toolPick({ kind: 'helper', id }));
+    const limit = t.helpers && Number.isInteger(t.helpers.max_children) ? t.helpers.max_children : undefined;
+    return { tools: map.size || Array.isArray(t.skills) ? map : null, remembered: null, helperLimit: limit };
+  }
+
+  // What the Tools control offers for a draft, what is chosen and what is
+  // closed, and why. Pure. The draft's own choice wins; else the
+  // workspace's saved defaults; else what this browser chose last.
+  function toolChoices(tools, draft, c) {
+    const none = { state: tools.state, error: tools.error, entries: [], selected: new Map(), chosen: [], blocked: null, explicit: false, dirty: false, saveable: [], saveAll: [], limit: null, limitMax: 16, limitDefault: 4, gateway: 'ready', gatewayWhy: null };
+    if (tools.state !== 'ready') return none;
+    const reviewer = c.access.value === 'reviewer';
+    const saved = !!tools.defaults && tools.defaults.revision > 0;
+    const savedList = (tools.defaults && tools.defaults.tools) || [];
+    const defaults = new Map(savedList.filter((t) => !isLimit(t)).map((t) => [toolKey(t.kind, t.id), toolPick(t, t.mode)]));
+    const savedLimit = (savedList.find(isLimit) || {}).max_children;
+    const selected = draft.tools || (saved ? defaults : draft.remembered) || new Map();
+    const entries = tools.data.tools.map((x) => {
+      const pick = selected.get(toolKey(x.kind, x.id));
+      const off = x.kind === 'helper' && reviewer ? 'A reviewer reads only, so it hands no work to helpers.' : null;
+      const on = !!pick && !off;
+      const act = toolAction(x);
+      const ok = x.state === 'ready' || x.state === 'default';
+      const usable = ok || (x.state === 'not_ready' && connects(act));
+      return {
+        x, on, off, act, ok,
+        canWrite: x.kind === 'connector' && x.max_mode === 'write' && !reviewer,
+        mode: pick && pick.mode === 'write' && x.max_mode === 'write' && !reviewer ? 'write' : 'read',
+        why: ok ? null : x.reason || 'It cannot be used now.',
+        disabled: !on && (!!off || !usable),
+      };
+    });
+    // A choice the server no longer offers is dropped quietly; one it offers
+    // but the person cannot use now is shown, with why.
+    const chosen = entries.filter((r) => r.on);
+    const saveable = entries.filter((r) => selected.has(toolKey(r.x.kind, r.x.id))).map((r) => toolPick(r.x, selected.get(toolKey(r.x.kind, r.x.id)).mode));
+    // The helper limit counts only while a helper is chosen.
+    const limit = draft.helperLimit !== undefined ? draft.helperLimit : Number.isInteger(savedLimit) ? savedLimit : null;
+    const limitMax = tools.data.max_children || 16;
+    const limitDefault = tools.data.default_children || Math.min(4, limitMax);
+    const withLimit = (list) => (limit != null && list.some((t) => t.kind === 'helper') ? list.concat({ kind: 'helper', id: '*', max_children: limit }) : list);
+    const norm = (list) => JSON.stringify(list.map((t) => (isLimit(t) ? t : toolPick(t, t.mode))).sort((a, b) => toolKey(a.kind, a.id).localeCompare(toolKey(b.kind, b.id))));
+    const savedAll = Array.from(defaults.values()).concat(savedList.filter((t) => isLimit(t) && Number.isInteger(t.max_children)).map((t) => ({ kind: 'helper', id: '*', max_children: t.max_children })));
+    return {
+      state: 'ready', entries, selected, chosen, saveable, saveAll: withLimit(saveable), limit, limitMax, limitDefault,
+      gateway: tools.data.gateway, gatewayWhy: tools.data.reason || null,
+      blocked: chosen.find((r) => r.why) || null,
+      explicit: !!draft.tools || saved,
+      dirty: norm(withLimit(saveable)) !== norm(savedAll),
+    };
+  }
+
+  // The body's tools for a draft: only what was chosen, so a start that
+  // chose nothing is the start it always was. Connectors and helpers are the
+  // whole choice; skills only narrow, so none chosen keeps them all.
+  function toolRequest(t, draft) {
+    if (!t.explicit && !t.chosen.length) return {};
+    const picks = t.chosen.map((r) => toolPick(r.x, r.mode));
+    if (t.limit != null && t.chosen.some((r) => r.x.kind === 'helper')) picks.push({ kind: 'helper', id: '*', max_children: t.limit });
+    return { tools: picks };
+  }
+
+  // A session's name from its prompt's first line, for a person who gave none.
+  const nameFrom = (prompt) => {
+    const line = prompt.trim().split('\n')[0].replace(/\s+/g, ' ');
+    return line.length > 60 ? `${line.slice(0, 57).trimEnd()}…` : line;
+  };
+
+  // Connect one connector as this person, in place: an OAuth sign-in in a
+  // new tab (the page asks the server until it says connected, at most ten
+  // minutes, and again whenever the tab is shown), or a key typed here.
+  // `ui` draws into `slot` and calls `done(connected)` when it ends.
+  function connectFlow(x, slot, done) {
+    let stopped = false;
+    const stop = (connected) => {
+      if (stopped) return;
+      stopped = true;
+      document.removeEventListener('visibilitychange', check);
+      done(connected);
+    };
+    const status = h('p', { class: 'hint', role: 'status' });
+    const cancel = h('button', { type: 'button', text: 'Cancel', onclick: () => stop(false) });
+    const deadline = Date.now() + 10 * 60 * 1000;
+    let timer = null;
+    async function check() {
+      if (stopped || document.visibilityState === 'hidden') return;
+      clearTimeout(timer);
+      try {
+        const list = await api('GET', '/v1/connections');
+        const now = list.connections.find((c) => c.connector === x.connector);
+        if (now && now.state === 'connected') {
+          toast(`${x.name} connected.`);
+          stop(true);
+          return;
+        }
+      } catch (_) { /* asked again below */ }
+      if (Date.now() > deadline) {
+        status.textContent = 'The sign-in expired. Start again when you are ready.';
+        fill(slot, status, h('div', { class: 'row' }, h('button', { type: 'button', text: 'Close', onclick: () => stop(false) })));
+        return;
+      }
+      timer = setTimeout(check, 2000);
+    }
+    const keyForm = () => {
+      const input = h('input', { type: 'password', id: nextId('conn-key'), autocomplete: 'off', spellcheck: 'false', 'aria-describedby': `${slot.id}-key-hint` });
+      const save = h('button', { type: 'submit', class: 'primary', text: 'Save key' });
+      const form = h('form', { class: 'conn-key' },
+        h('label', { class: 'block', for: input.id, text: `${x.name} API key or token` }), input,
+        h('p', { class: 'hint', id: `${slot.id}-key-hint`, text: 'It goes to the connection service, which keeps it encrypted. This server keeps no copy, and sessions never see it.' }),
+        h('div', { class: 'row form-actions' }, save, cancel), status);
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        if (!input.value.trim()) { status.textContent = 'Paste the key first.'; input.focus(); return; }
+        save.disabled = true;
+        status.textContent = 'Saving…';
+        try {
+          await api('POST', `/v1/connections/${enc(x.connector)}/key`, { api_key: input.value });
+          input.value = '';
+          toast(`${x.name} connected.`);
+          stop(true);
+        } catch (e) {
+          save.disabled = false;
+          status.textContent = `Not saved: ${said(e.message)}`;
+        }
+      });
+      fill(slot, form);
+      input.focus();
+    };
+    (async () => {
+      fill(slot, h('p', { class: 'hint', role: 'status', text: `Asking how to connect ${x.name}…` }));
+      let started;
+      try {
+        started = await api('POST', `/v1/connections/${enc(x.connector)}/connect`, {});
+      } catch (e) {
+        fill(slot, h('p', { class: 'error', role: 'alert', text: `Could not connect ${x.name}: ${said(e.message)}` }),
+          h('div', { class: 'row' }, h('button', { type: 'button', text: 'Close', onclick: () => stop(false) })));
+        return;
+      }
+      if (stopped) return;
+      if (started.kind === 'key') { keyForm(); return; }
+      const opened = window.open(started.url, '_blank');
+      if (opened) opened.opener = null;
+      const link = h('a', { href: started.url, target: '_blank', rel: 'noopener noreferrer', text: `Open the ${x.name} sign-in` });
+      status.textContent = opened
+        ? `Finish signing in to ${x.name} in the new tab. This updates when you are done.`
+        : 'Your browser blocked the new tab. Open the sign-in yourself:';
+      fill(slot, h('div', { class: 'conn-waiting' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), status), opened ? null : link,
+        h('div', { class: 'row' }, opened ? link : null, cancel));
+      document.addEventListener('visibilitychange', check);
+      timer = setTimeout(check, 2000);
+      (opened ? cancel : link).focus();
+    })();
+  }
+
+  // A connector's mark: its icon from the sprite, drawn in the page's ink,
+  // or its initial when the sprite has none.
+  function connectorMark(x, small) {
+    const mark = h('span', { class: small ? 'conn-mark small' : 'conn-mark', 'aria-hidden': 'true' });
+    if (!x.icon) {
+      mark.textContent = x.name.charAt(0).toUpperCase();
+      return mark;
+    }
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    const use = document.createElementNS(SVG, 'use');
+    use.setAttribute('href', `connector-icons.svg#${x.icon}`);
+    svg.append(use);
+    mark.append(svg);
+    return mark;
+  }
+
+  // A tool's mark: a connector's from the sprite, a skill's or helper's
+  // line icon from the console's own set. Decorative; the name is beside it.
+  function toolMark(x, small) {
+    if (x.kind === 'connector') return connectorMark(x, small);
+    const mark = h('span', { class: small ? 'conn-mark small' : 'conn-mark', 'aria-hidden': 'true' });
+    mark.append(icon(x.kind === 'skill' ? 'skill' : 'helper'));
+    return mark;
+  }
+
+  // Settings has two pages; this is how a person moves between them.
+  function settingsNav(current) {
+    return h('nav', { class: 'subnav', 'aria-label': 'Settings sections' },
+      [['account', 'Account', '#/settings'], ['tools', 'Tools', '#/settings/tools']].map(([key, label, href]) =>
+        h('a', { href, text: label, 'aria-current': key === current ? 'page' : null })));
+  }
+
+  // What a stored policy says about one tool, in words. A part it leaves
+  // unset says nothing, so the tool is allowed.
+  function policyWords(policy, x) {
+    const p = policy || {};
+    if (x.kind === 'connector') {
+      if (!Array.isArray(p.connectors)) return 'Allowed';
+      const grants = p.connectors.filter((g) => (typeof g === 'string' ? g.split(/[@:]/)[0] : g.connector) === x.id);
+      if (!grants.length) return 'Not allowed';
+      return grants.some((g) => (typeof g === 'string' ? /:write/.test(g) : g.mode === 'write')) ? 'Read and change' : 'Read only';
+    }
+    if (x.kind === 'helper' && p.delegation === false) return 'Not allowed';
+    const list = x.kind === 'skill' ? p.skills : p.helpers;
+    return !Array.isArray(list) || list.includes(x.id) ? 'Allowed' : 'Not allowed';
+  }
+
+  // Settings > Tools: one table for every connector, skill and helper as the
+  // person stands with it, and for an administrator the policy editor.
+  async function renderSettingsTools() {
+    const me = state.me;
+    const admin = can('admin');
+    const tenantKey = `tenant:${me.tenant}`;
+    const groupKey = (name) => `group:${me.tenant}:${name}`;
+    let all = [];
+    let gateway = 'ready';
+    let reason = null;
+    let policies = null;
+    let scope = tenantKey;
+    let edit = null;
+    // The person's own record: what they switched off for themselves.
+    let mineRec = null;
+
+    const status = h('p', { class: 'muted tools-count', id: 'tools-count', role: 'status', 'aria-live': 'polite', text: 'Loading tools…' });
+    const note = h('div', { class: 'tools-note' });
+    const search = h('input', { type: 'search', id: 'tools-search', placeholder: 'Search tools', autocomplete: 'off', 'aria-label': 'Search tools' });
+    const kinds = h('select', { id: 'tools-kind', 'aria-label': 'Kind' },
+      h('option', { value: 'all', text: 'All kinds' }), TOOL_KINDS.map((k) => h('option', { value: k.kind, text: k.many })));
+    const body = h('tbody');
+    const table = h('table', { class: 'tools-table', id: 'tools-table' },
+      h('caption', { class: 'visually-hidden', text: 'Connectors, skills and helpers' }),
+      h('thead', {}, h('tr', {},
+        h('th', { scope: 'col', text: 'Tool' }), h('th', { scope: 'col', text: 'Kind' }), h('th', { scope: 'col', text: 'State' }),
+        h('th', { scope: 'col', id: 'tools-mine-head', text: 'Mine' }),
+        admin ? h('th', { scope: 'col', id: 'tools-allowed-head', text: 'Allowed' }) : null,
+        h('th', { scope: 'col', text: 'Action' }))),
+      body);
+    const empty = h('p', { class: 'muted', id: 'tools-empty', role: 'status', hidden: true, text: 'No tool matches.' });
+
+    const savedPolicy = () => {
+      const rec = (policies || []).find((p) => p.key === scope);
+      return rec ? rec.policy : null;
+    };
+    const isOff = (x) => !!mineRec && (mineRec.policy.off || []).some((o) => o.kind === x.kind && o.id === x.id);
+    // Switch a tool off, or on again, for this person only. The record keeps
+    // its other parts; the administrator's policy stays the ceiling.
+    const setOff = async (x, off, focusId) => {
+      if (!mineRec) return;
+      const policy = JSON.parse(JSON.stringify(mineRec.policy || {}));
+      const list = (policy.off || []).filter((o) => !(o.kind === x.kind && o.id === x.id));
+      if (off) list.push({ kind: x.kind, id: x.id });
+      if (list.length) policy.off = list; else delete policy.off;
+      try {
+        mineRec = await api('PUT', '/v1/me/policy', { policy, revision: mineRec.revision });
+        toast(off ? `${x.name} is off for you.` : `${x.name} is on for you.`);
+      } catch (e) {
+        if (e.status === 409 && e.code === 'revision_conflict') {
+          toast('Your settings changed in another tab. They are reloaded; try again.');
+          await loadMine();
+        } else {
+          toast(`Not saved: ${said(e.message)}`);
+        }
+      }
+      await reload(focusId);
+    };
+    const mineCell = (x, id) => {
+      const cell = h('td', { 'data-label': 'Mine', class: 'tool-mine' });
+      if (!mineRec) return cell;
+      // What the administrator withholds, a person cannot switch on.
+      if (!x.allowed && !x.off_by_me) return h('td', { 'data-label': 'Mine', class: 'tool-mine' }, h('span', { class: 'hint', text: 'Not allowed' }));
+      const box = h('input', { type: 'checkbox', id: `${id}-mine`, checked: !x.off_by_me, 'aria-label': `Use ${x.name}`, 'aria-describedby': `${id}-state` });
+      box.addEventListener('change', () => setOff(x, !box.checked, `${id}-mine`));
+      cell.append(h('label', { class: 'toggle', for: box.id }, box, h('span', { text: x.off_by_me ? 'Off' : 'On' })));
+      return cell;
+    };
+    // Install a helper's harness on the server's host, then follow it until
+    // it ends. The server runs one install at a time per harness; the page
+    // asks again once a second, for at most twenty minutes.
+    const installHelper = async (x, slot, button, id) => {
+      button.disabled = true;
+      const wording = h('p', { class: 'hint', role: 'status', id: `${id}-install`, text: `Asking the server to install ${x.name}…` });
+      fill(slot, h('div', { class: 'conn-waiting' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), wording));
+      const failed = (why, tail) => {
+        button.disabled = false;
+        fill(slot, h('p', { class: 'error', role: 'alert', id: `${id}-install-error`, text: `Could not install ${x.name}: ${why}` }),
+          tail ? h('details', {}, h('summary', { text: 'What the installer said' }), h('pre', { class: 'install-output', text: tail })) : null);
+        button.focus();
+      };
+      let got;
+      try {
+        got = await api('POST', `/v1/tools/helpers/${enc(x.id)}/install`, {});
+      } catch (e) {
+        failed(said(e.message));
+        return;
+      }
+      const deadline = Date.now() + 20 * 60 * 1000;
+      while (state.route.name === 'settingsTools') {
+        if (got.state === 'succeeded') {
+          toast(`${x.name} installed on the server.`);
+          await reload(`${id}-state`);
+          return;
+        }
+        if (got.state === 'failed') { failed(got.problem || 'The install failed.', got.output_tail); return; }
+        if (Date.now() > deadline) { failed('It is taking too long. Check the server.'); return; }
+        wording.textContent = got.state === 'queued' ? `Waiting to install ${x.name}…` : `Installing ${x.name} on the server…`;
+        await new Promise((done) => setTimeout(done, 1000));
+        try {
+          got = await api('GET', `/v1/tools/helpers/${enc(x.id)}/install`);
+        } catch (e) {
+          failed(said(e.message));
+          return;
+        }
+      }
+    };
+    const row = (x) => {
+      const id = `tool-${x.kind}-${domId(x.id)}`;
+      const st = toolStateWords(x);
+      const act = toolAction(x);
+      const slot = h('div', { class: 'conn-flow', id: `${id}-flow` });
+      let action = null;
+      if (connects(act)) {
+        const button = h('button', {
+          type: 'button', class: act.kind === 'connect' ? 'primary small' : 'small', id: `${id}-action`, text: act.label,
+          'aria-label': `${act.label} ${x.name}`, 'aria-describedby': `${id}-state`,
+          onclick: () => {
+            button.hidden = true;
+            connectFlow({ connector: x.id, name: x.name }, slot, (connected) => {
+              fill(slot);
+              button.hidden = false;
+              if (connected) reload(`${id}-state`); else button.focus();
+            });
+          },
+        });
+        action = button;
+      } else if (act && act.kind === 'install') {
+        const button = h('button', {
+          type: 'button', class: 'small', id: `${id}-action`, text: act.label, 'aria-label': `${act.label} ${x.name}`, 'aria-describedby': `${id}-state`,
+          onclick: () => installHelper(x, slot, button, id),
+        });
+        action = [button, h('span', { class: 'hint', text: 'On the server only' })];
+      } else if (act && act.kind === 'turn_on') {
+        action = h('button', { type: 'button', class: 'small', id: `${id}-action`, text: act.label, 'aria-label': `${act.label} ${x.name}`, onclick: () => setOff(x, false, `${id}-mine`) });
+      } else if (act && act.kind === 'ask_admin') {
+        action = h('span', { class: 'tool-ask', id: `${id}-ask`, text: me.tenant && me.tenant !== 'default' ? `${act.label} (${me.tenant})` : act.label });
+      } else if (act) {
+        action = [h('button', { type: 'button', class: 'small', id: `${id}-action`, text: act.label, disabled: true, 'aria-label': `${act.label} ${x.name}`, 'aria-describedby': `${id}-soon` }),
+          h('span', { class: 'hint', id: `${id}-soon`, text: 'Not available yet' })];
+      }
+      const accounts = (x.accounts || []).filter((a) => a.state === 'connected' && a.account !== 'default').map((a) => a.account);
+      const facts = [
+        accounts.length ? `As ${accounts.join(', ')}` : null,
+        x.kind === 'connector' && x.max_mode === 'read' ? 'Read only, set by your administrator' : null,
+        x.topic || null,
+      ].filter(Boolean);
+      return h('tr', { class: 'tool-row', id, 'data-kind': x.kind, 'data-state': x.state },
+        h('th', { scope: 'row', class: 'tool-name' },
+          h('div', { class: 'tool-id' }, toolMark(x), h('span', { class: 'tool-title', text: x.name })),
+          x.description ? h('p', { class: 'hint tool-about', text: x.description }) : null,
+          facts.length ? h('p', { class: 'hint', text: facts.join(' · ') }) : null,
+          x.state !== 'ready' && x.state !== 'default' && x.reason ? h('p', { class: 'hint conn-why', text: x.reason }) : null,
+          slot),
+        h('td', { 'data-label': 'Kind', text: kindWord(x.kind).one }),
+        h('td', { 'data-label': 'State' }, h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label)),
+        mineCell(x, id),
+        admin ? h('td', { 'data-label': 'Allowed', class: 'tool-allowed', text: policies ? policyWords(savedPolicy(), x) : '…' }) : null,
+        h('td', { 'data-label': 'Action', class: 'tool-action' }, action));
+    };
+    const draw = (focusId) => {
+      const needle = search.value.trim().toLowerCase();
+      const shown = all.filter((x) => (kinds.value === 'all' || x.kind === kinds.value)
+        && (!needle || `${x.name} ${x.id} ${x.description || ''} ${x.topic || ''}`.toLowerCase().includes(needle)));
+      fill(body, shown.map(row));
+      table.hidden = !shown.length;
+      empty.hidden = !!shown.length || !all.length;
+      const ready = all.filter((x) => x.state === 'ready' || x.state === 'default').length;
+      status.textContent = all.length
+        ? `${shown.length === all.length ? plural(all.length, 'tool') : `${shown.length} of ${plural(all.length, 'tool')}`}, ${ready} ready.`
+        : 'This server offers no tools yet.';
+      const back = focusId && $(focusId);
+      if (back) back.focus();
+    };
+    search.addEventListener('input', () => draw());
+    kinds.addEventListener('change', () => draw());
+
+    const loadMine = async () => {
+      try {
+        mineRec = await api('GET', '/v1/me/policy');
+      } catch (_) {
+        mineRec = null;
+      }
+    };
+    const reload = async (focusId) => {
+      let got;
+      try {
+        got = await fetchTools(null);
+      } catch (e) {
+        fill(note, h('p', { class: 'error', text: `Could not read your tools: ${said(e.message)}` }),
+          h('button', { type: 'button', text: 'Retry', onclick: () => reload() }));
+        status.textContent = '';
+        return;
+      }
+      if (state.route.name !== 'settingsTools') return;
+      all = sortTools(got.tools);
+      gateway = got.gateway;
+      reason = got.reason || null;
+      if (gateway === 'not_configured') {
+        fill(note, h('div', { class: 'card empty-state' },
+          h('h2', { text: 'Connectors are not set up here' }),
+          h('p', { text: reason }),
+          h('details', {}, h('summary', { text: 'What your administrator does' }),
+            h('p', { class: 'hint', text: 'They run Anvil\'s connector gateway beside this server and add it under [connectors] in the server\'s configuration. The connectors page of the Branchyard docs walks through it.' }))));
+      } else if (gateway === 'unreachable') {
+        fill(note, h('p', { class: 'error', text: reason }), h('button', { type: 'button', text: 'Retry', onclick: () => reload() }));
+      } else {
+        fill(note);
+      }
+      draw(focusId);
+    };
+
+    // ---- The policy editor (administrators).
+    const policySlot = h('div', { class: 'policy-body', id: 'policy-body' });
+    const policyStatus = h('p', { class: 'form-status', id: 'policy-status', role: 'status' });
+    const policyError = h('p', { class: 'error', id: 'policy-error', role: 'alert' });
+    let newGroup = false;
+    let groupName = '';
+    const clone = (policy) => JSON.parse(JSON.stringify(policy || {}));
+    const selectScope = (key) => {
+      scope = key;
+      const rec = (policies || []).find((p) => p.key === key);
+      edit = { key, revision: rec ? rec.revision : null, policy: clone(rec && rec.policy) };
+      policyStatus.textContent = '';
+      policyError.textContent = '';
+      drawPolicy();
+      draw();
+    };
+    const grantId = (g) => (typeof g === 'string' ? g.split(/[@:]/)[0] : g.connector);
+    const grantWrite = (g) => (typeof g === 'string' ? /:write/.test(g) : g.mode === 'write');
+    const policyFields = [
+      { field: 'connectors', kind: 'connector', title: 'Connectors', all: 'Allow every connector', only: 'Only these connectors' },
+      { field: 'skills', kind: 'skill', title: 'Skills', all: 'Allow every skill', only: 'Only these skills' },
+      { field: 'helpers', kind: 'helper', title: 'Helpers', all: 'Allow every helper', only: 'Only these helpers' },
+    ];
+    const policyKind = (f) => {
+      const p = edit.policy;
+      const listed = all.filter((x) => x.kind === f.kind).map((x) => ({ id: x.id, name: x.name }));
+      // A tool the policy names but this server no longer offers stays in the list.
+      const named = Array.isArray(p[f.field]) ? p[f.field].map((e) => (f.field === 'connectors' ? grantId(e) : e)) : [];
+      for (const id of named) if (!listed.some((l) => l.id === id)) listed.push({ id, name: id });
+      const only = Array.isArray(p[f.field]);
+      const radio = (key, label, checked, to) => {
+        const input = h('input', { type: 'radio', name: `pol-${f.field}`, id: `pol-${f.field}-${key}`, checked });
+        input.addEventListener('change', () => {
+          if (!input.checked) return;
+          if (to) p[f.field] = p[f.field] || []; else delete p[f.field];
+          drawPolicy();
+          $(`pol-${f.field}-${key}`).focus();
+        });
+        return h('label', { class: 'toggle', for: input.id }, input, h('span', { text: label }));
+      };
+      const rows = !only ? null : h('ul', { class: 'policy-list', 'aria-label': f.title }, listed.map((l) => {
+        const id = `pol-${f.field}-item-${domId(l.id)}`;
+        const on = f.field === 'connectors' ? p.connectors.some((g) => grantId(g) === l.id) : p[f.field].includes(l.id);
+        const box = h('input', { type: 'checkbox', id, checked: on });
+        box.addEventListener('change', () => {
+          if (f.field === 'connectors') {
+            p.connectors = p.connectors.filter((g) => grantId(g) !== l.id);
+            if (box.checked) p.connectors.push({ connector: l.id, mode: 'read' });
+          } else {
+            p[f.field] = p[f.field].filter((e) => e !== l.id);
+            if (box.checked) p[f.field].push(l.id);
+          }
+          drawPolicy();
+          $(id).focus();
+        });
+        let mode = null;
+        if (f.field === 'connectors' && on) {
+          const write = p.connectors.some((g) => grantId(g) === l.id && grantWrite(g));
+          const select = h('select', { id: `${id}-mode`, 'aria-label': `What ${l.name} may do` },
+            h('option', { value: 'read', text: 'Read only' }), h('option', { value: 'write', text: 'Read and change' }));
+          select.value = write ? 'write' : 'read';
+          select.addEventListener('change', () => {
+            for (const g of p.connectors) if (grantId(g) === l.id && typeof g === 'object') g.mode = select.value;
+            p.connectors = p.connectors.map((g) => (typeof g === 'string' ? { connector: grantId(g), mode: select.value } : g));
+          });
+          mode = select;
+        }
+        return h('li', {}, h('label', { class: 'toggle', for: id }, box, h('span', { text: l.name })), mode);
+      }));
+      return h('fieldset', { class: 'policy-kind' }, h('legend', { text: f.title }),
+        h('div', { class: 'row', role: 'radiogroup', 'aria-label': `${f.title} allowed` }, radio('all', f.all, !only, false), radio('only', f.only, only, true)),
+        rows,
+        f.field === 'helpers' ? h('label', { class: 'toggle', for: 'pol-delegation' },
+          (() => {
+            const box = h('input', { type: 'checkbox', id: 'pol-delegation', checked: p.delegation !== false });
+            box.addEventListener('change', () => { if (box.checked) delete p.delegation; else p.delegation = false; });
+            return box;
+          })(), h('span', { text: 'Sessions may hand work to helpers' })) : null,
+        f.field === 'helpers' ? (() => {
+          const input = h('input', { type: 'number', id: 'pol-max-helpers', min: '1', max: '16', step: '1', inputmode: 'numeric', placeholder: '16', 'aria-describedby': 'pol-max-helpers-hint' });
+          if (Number.isInteger(p.max_helpers)) input.value = String(p.max_helpers);
+          input.addEventListener('change', () => {
+            const n = Number.parseInt(input.value, 10);
+            if (Number.isNaN(n)) delete p.max_helpers; else p.max_helpers = Math.min(16, Math.max(1, n));
+            input.value = Number.isInteger(p.max_helpers) ? String(p.max_helpers) : '';
+          });
+          return h('div', { class: 'policy-limit' }, h('label', { class: 'block', for: 'pol-max-helpers', text: 'Most helpers at once' }), input,
+            h('p', { class: 'hint', id: 'pol-max-helpers-hint', text: 'From 1 to 16. Left empty, a session may have up to 16.' }));
+        })() : null);
+    };
+    const drawPolicy = () => {
+      if (!policies) {
+        fill(policySlot, h('p', { class: 'muted', text: 'Loading policies…' }));
+        return;
+      }
+      const groups = policies.filter((p) => p.key.startsWith(groupKey(''))).map((p) => p.key.slice(groupKey('').length));
+      const select = h('select', { id: 'pol-scope', 'aria-describedby': 'pol-scope-hint' },
+        h('option', { value: tenantKey, text: `Everyone in ${me.tenant}` }),
+        groups.map((g) => h('option', { value: groupKey(g), text: `Group ${g}` })),
+        h('option', { value: '__new__', text: 'Another group…' }));
+      select.value = newGroup ? '__new__' : scope;
+      select.addEventListener('change', () => {
+        newGroup = select.value === '__new__';
+        if (newGroup) { edit = null; drawPolicy(); $('pol-group').focus(); } else selectScope(select.value);
+      });
+      const picker = h('div', { class: 'policy-scope' },
+        h('label', { class: 'block', for: 'pol-scope', text: 'Who this applies to' }), select,
+        h('p', { class: 'hint', id: 'pol-scope-hint', text: 'A group\'s policy narrows the tenant\'s for its members. A part left on "Allow every" says nothing.' }));
+      if (newGroup) {
+        const input = h('input', { type: 'text', id: 'pol-group', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Group name', placeholder: 'Group name' });
+        input.value = groupName;
+        input.addEventListener('input', () => { groupName = input.value; });
+        picker.append(h('div', { class: 'row' }, input, h('button', {
+          type: 'button', id: 'pol-use-group', text: 'Edit this group',
+          onclick: () => {
+            if (!groupName.trim()) { policyError.textContent = 'Type the group\'s name first.'; input.focus(); return; }
+            newGroup = false;
+            selectScope(groupKey(groupName.trim()));
+          },
+        })));
+      }
+      const save = h('button', {
+        type: 'button', class: 'primary', id: 'pol-save', text: 'Save policy', disabled: !edit,
+        onclick: async () => {
+          save.disabled = true;
+          policyError.textContent = '';
+          policyStatus.textContent = 'Saving…';
+          try {
+            const sent = { policy: edit.policy };
+            if (edit.revision != null) sent.revision = edit.revision;
+            const saved = await api('PUT', `/v1/admin/policies/${enc(edit.key)}`, sent);
+            policies = policies.filter((p) => p.key !== saved.key).concat(saved);
+            toast('Policy saved.');
+            selectScope(saved.key);
+            policyStatus.textContent = 'Policy saved. It applies from the next request.';
+            reload();
+          } catch (e) {
+            save.disabled = false;
+            policyStatus.textContent = '';
+            if (e.status === 409 && e.code === 'revision_conflict') {
+              toast('The policy changed meanwhile. It is reloaded; check it and save again.');
+              await loadPolicies();
+              selectScope(edit.key);
+            } else {
+              policyError.textContent = `Not saved: ${said(e.message)}`;
+            }
+          }
+        },
+      });
+      fill(policySlot, picker,
+        edit ? h('div', { class: 'policy-kinds' }, policyFields.map(policyKind)) : h('p', { class: 'hint', text: 'Name a group to edit its policy.' }),
+        h('div', { class: 'row form-actions' }, save), policyStatus, policyError);
+    };
+    const loadPolicies = async () => {
+      try {
+        const got = await api('GET', '/v1/admin/policies');
+        policies = got.policies;
+      } catch (e) {
+        policies = null;
+        fill(policySlot, h('p', { class: 'error', text: `Could not read the policies: ${said(e.message)}` }),
+          h('button', { type: 'button', text: 'Retry', onclick: async () => { await loadPolicies(); selectScope(scope); } }));
+      }
+    };
+    const policyBox = !admin ? null : h('details', { class: 'card policy', id: 'policy' },
+      h('summary', { text: 'Who may use what' }),
+      h('p', { class: 'hint', text: 'You are an administrator, so you decide which tools people in this tenant may use. The Allowed column shows the policy chosen below.' }),
+      policySlot);
+
+    main(h('div', { class: 'page tools-page' },
+      h('a', { class: 'back', href: '#/', text: '‹ Back' }),
+      h('header', { class: 'page-head' }, h('div', {},
+        h('h1', { text: 'Settings' }),
+        h('p', { class: 'muted', text: 'Connect the tools you work in, such as Jira or Drive, and see which skills and helpers your sessions may use.' }))),
+      settingsNav('tools'),
+      h('h2', { class: 'visually-hidden', text: 'Tools' }),
+      h('div', { class: 'tools-filters' },
+        h('div', { class: 'filter-field tools-search' }, icon('search', true), search),
+        kinds),
+      status, note, table, empty, policyBox));
+    await loadMine();
+    await reload();
+    if (admin) {
+      await loadPolicies();
+      if (state.route.name !== 'settingsTools') return;
+      if (policies) selectScope(tenantKey);
+      draw();
+    }
+  }
+
   // The open workspace, kept across polls and session switches.
   let wsView = null;
 
@@ -3207,6 +3934,7 @@
       // Try again has a prompt that never ran), and the environments.
       draft: null, sent: new Map(), syncForm: null,
       environments: { state: 'loading', list: [], error: null, at: 0 }, environmentsAsked: 0,
+      tools: { state: 'loading', data: null, defaults: null, error: null, at: 0 }, toolsAsked: 0,
     };
     wsView = v;
     main(h('div', { class: 'page' }, h('p', { class: 'muted', role: 'status', text: 'Opening the workspace…' })));
@@ -3223,6 +3951,7 @@
     selectSession(v, session);
     loadArtifacts(v).then(() => { if (wsView === v) drawWorkspace(v); });
     loadEnvironments(v);
+    loadTools(v);
     scheduleWorkspace(v);
   }
 
@@ -3533,6 +4262,21 @@
 
   // What the selected session is: where it runs, on what, what it reads,
   // and where it stands. Hidden while composing.
+  // What a session was given beyond its files, as facts: each connection
+  // and what it may do there, a narrowed set of how-tos, its helpers.
+  function toolFacts(s) {
+    const t = s.tools || {};
+    const named = (id) => {
+      const known = wsView && wsView.tools.data && wsView.tools.data.tools.find((x) => x.kind === 'connector' && x.id === id);
+      return known ? known.name : id;
+    };
+    return [
+      ...(t.connectors || []).map((c) => `${named(c.connector)} ${c.mode === 'write' ? '(can make changes)' : '(read only)'}`),
+      Array.isArray(t.skills) ? `${plural(t.skills.length, 'skill')}` : null,
+      t.helpers ? `helpers${(t.helpers.harnesses || []).length ? `: ${t.helpers.harnesses.join(', ')}` : ''}${Number.isInteger(t.helpers.max_children) ? `${(t.helpers.harnesses || []).length ? ',' : ':'} at most ${t.helpers.max_children} at once` : ''}` : null,
+    ];
+  }
+
   function drawSessionFacts(v) {
     const s = v.composing ? null : selectedSession(v);
     const box = $('session-facts');
@@ -3547,6 +4291,7 @@
       s.access === 'reviewer' ? `reviews ${plural((s.artifacts || []).length, 'output')}` : null,
       `reads ${plural((s.sources || []).length, 'source')}`,
       s.access === 'reviewer' ? null : s.result_contract ? 'collects outputs' : 'collects no outputs',
+      ...toolFacts(s),
     ].filter(Boolean) : [];
     const signature = JSON.stringify([facts, phase && [phase.label, phase.lane]]);
     if (signature === v.drawn.facts) return;
@@ -4027,16 +4772,18 @@
     const box = $('convo');
     if (!box || box.querySelector('#session-form')) return;
     if (!v.draft) v.draft = freshDraft(v);
-    const choices = () => startChoices(v.environments, { run: workspaceCanRun(v), comment: workspaceCanComment(v) }, v.draft, reviewable(v));
+    const choices = () => startChoices(v.environments, { run: workspaceCanRun(v), comment: workspaceCanComment(v) }, v.draft, reviewable(v), v.tools);
     const blocked = (c) => (notReady(v.workspace) ? { field: 'workspace', text: notReady(v.workspace) } : c.missing);
     const heading = h('h2', { id: 'session-form-h', tabindex: '-1', text: 'New session' });
     const sourcesSlot = h('div', { class: 'slot', id: 'sf-sources' });
     const envSlot = h('div', { class: 'slot', id: 'sf-environments' });
     const agentSlot = h('div', { class: 'slot', id: 'sf-agent' });
     const collectSlot = h('div', { class: 'slot', id: 'sf-collect-slot' });
+    const modeSlot = h('div', { class: 'slot', id: 'sf-mode-slot' });
+    const runSlot = h('div', { class: 'slot', id: 'sf-run-slot' });
     const advancedSlot = h('div', { class: 'slot', id: 'sf-advanced-slot' });
     const advanced = h('details', { class: 'advanced', id: 'sf-advanced' }, h('summary', { id: 'sf-advanced-summary', text: 'Advanced' }), advancedSlot);
-    const name = h('input', { id: 'sf-name', type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst' });
+    const name = h('input', { id: 'sf-name', type: 'text', autocomplete: 'off', placeholder: 'For example: Analyst', 'aria-describedby': 'sf-name-hint' });
     name.value = v.draft.name;
     name.addEventListener('input', () => { v.draft.name = name.value; syncForm(); });
     const prompt = h('textarea', { id: 'sf-prompt', rows: '5', placeholder: 'What should this session do?', 'aria-describedby': 'sf-prompt-hint' });
@@ -4147,6 +4894,296 @@
       ];
     };
 
+    // Work or Code: what kind of session this is. Work collects files and
+    // folds where it runs into one line once that is settled; Code shows
+    // every setting and collects no files unless the project mixes both.
+    const drawMode = () => h('div', { class: 'mode-switch', role: 'radiogroup', 'aria-labelledby': 'sf-mode-label' },
+      h('span', { class: 'visually-hidden', id: 'sf-mode-label', text: 'Kind of session' }),
+      [['work', 'Work', 'Documents, research and files to review'], ['code', 'Code', 'Changes to a repository']].map(([key, label, about]) => {
+        const id = `sf-mode-${key}`;
+        const input = h('input', { type: 'radio', name: 'sf-mode', id, value: key, checked: v.draft.mode === key, 'aria-describedby': `${id}-about` });
+        input.addEventListener('change', () => {
+          if (!input.checked) return;
+          v.draft.mode = key;
+          v.draft.collect = key === 'work' || v.workspace.result_mode === 'mixed';
+          runOpen = key === 'code' || !settled(choices());
+          syncForm();
+        });
+        return h('label', { class: 'mode', for: id }, input,
+          h('span', { class: 'mode-name', text: label }), h('span', { class: 'mode-about', id: `${id}-about`, text: about }));
+      }));
+
+    // Where it runs is settled when the server leaves nothing to choose:
+    // one environment, one harness, and nothing there to acknowledge.
+    const settled = (c) => !!c.env && !!c.harness && !c.acknowledgement && !c.typed
+      && c.envs.filter((e) => !e.why).length === 1 && c.harnesses.filter((x) => !x.why).length === 1;
+    // Decided once, when the environments are in, so nothing folds while
+    // the person is choosing.
+    let runOpen = true;
+    let runDecided = false;
+    const openRun = () => {
+      if (runOpen) return;
+      runOpen = true;
+      syncForm();
+    };
+    const drawRun = (c) => (runOpen || !settled(c) ? null : h('p', { class: 'run-line', id: 'sf-run-line' },
+      h('span', { text: `Runs in ${c.env.label} with ${c.harness.id}${c.model.value ? `, ${c.model.value}` : ''}.` }),
+      h('button', {
+        type: 'button', class: 'link-button', id: 'sf-run-change', text: 'Change',
+        onclick: () => { runOpen = true; syncForm(); focusField('environment'); },
+      })));
+
+    // The Tools control: one button that shows what is chosen, as the
+    // chosen tools' marks stacked, and a menu to choose. The menu is a
+    // popover on a wide screen and a modal bottom sheet on a narrow one.
+    const narrow = window.matchMedia('(max-width: 759px)');
+    let toolsOpen = false;
+    let toolsSheet = false;
+    let toolsNeedle = '';
+    const flows = new Map();
+    const flowSlot = (id) => {
+      if (!flows.has(id)) flows.set(id, h('div', { class: 'conn-flow', id: `sf-tool-${domId(id)}-flow` }));
+      return flows.get(id);
+    };
+    const connecting = new Set();
+    const rowId = (x) => `sf-tool-${x.kind}-${domId(x.id)}`;
+    const changeTools = (edit) => {
+      const next = new Map(choices().tools.selected);
+      edit(next);
+      v.draft.tools = next;
+      syncForm();
+    };
+    const matches = (x) => {
+      const needle = toolsNeedle.trim().toLowerCase();
+      return !needle || `${x.name} ${x.id} ${x.description || ''} ${x.topic || ''} ${kindWord(x.kind).one}`.toLowerCase().includes(needle);
+    };
+    const toolRow = (r) => {
+      const x = r.x;
+      const id = rowId(x);
+      const st = toolStateWords(x);
+      const box = h('input', {
+        type: 'checkbox', id, checked: r.on, disabled: r.disabled,
+        'aria-describedby': `${id}-state${r.why || r.off ? ` ${id}-why` : ''}`,
+      });
+      box.addEventListener('change', () => changeTools((m) => {
+        if (box.checked) m.set(toolKey(x.kind, x.id), toolPick(x, 'read')); else m.delete(toolKey(x.kind, x.id));
+      }));
+      let mode = null;
+      if (r.on && r.canWrite) {
+        mode = h('div', { class: 'conn-mode', role: 'radiogroup', 'aria-label': `What ${x.name} may do` },
+          [['read', 'Read only'], ['write', 'Can make changes']].map(([key, label]) => {
+            const mid = `${id}-${key}`;
+            const radio = h('input', { type: 'radio', name: `${id}-mode`, id: mid, value: key, checked: r.mode === key });
+            radio.addEventListener('change', () => { if (radio.checked) changeTools((m) => m.set(toolKey(x.kind, x.id), toolPick(x, key))); });
+            return h('label', { class: 'toggle', for: mid }, radio, h('span', { text: label }));
+          }));
+      }
+      const connect = connects(r.act) && !connecting.has(x.id) ? h('button', {
+        type: 'button', class: 'link-button', id: `${id}-connect`, text: `${r.act.label} ${x.name}`,
+        onclick: () => {
+          connecting.add(x.id);
+          syncForm();
+          connectFlow({ connector: x.id, name: x.name }, flowSlot(x.id), (connected) => {
+            connecting.delete(x.id);
+            fill(flowSlot(x.id));
+            if (connected) changeTools((m) => { if (!m.has(toolKey(x.kind, x.id))) m.set(toolKey(x.kind, x.id), toolPick(x, 'read')); });
+            loadTools(v).then(() => { const back = $(id); if (back) back.focus(); });
+          });
+        },
+      }) : null;
+      return h('li', { class: 'tool-item', 'data-state': x.state },
+        h('label', { class: 'conn-pick', for: id }, box, toolMark(x, true), h('span', { class: 'conn-name', text: x.name })),
+        h('span', { class: 'conn-state', id: `${id}-state` }, dot(st.lane), st.label),
+        x.description ? h('p', { class: 'hint conn-about', text: x.description }) : null,
+        r.off || r.why ? h('p', { class: 'hint conn-why', id: `${id}-why`, text: r.off || r.why }) : null,
+        r.on && r.x.kind === 'connector' && !r.canWrite && x.max_mode === 'read' ? h('p', { class: 'hint', text: 'Read only: your administrator allows no changes.' }) : null,
+        r.on && r.mode === 'write' ? h('p', { class: 'hint', text: `It may change things in ${x.name}. You are asked before anything that needs confirming.` }) : null,
+        mode, connect, flowSlot(x.id));
+    };
+    // How many helpers a session may have at once. It applies to the helpers
+    // chosen above, so it waits for one; empty means the default.
+    const helperLimitControl = (t, c) => {
+      if (c.access.value === 'reviewer' || !t.entries.some((r) => r.x.kind === 'helper')) return null;
+      const anyHelper = t.chosen.some((r) => r.x.kind === 'helper');
+      const input = h('input', {
+        type: 'number', id: 'sf-helper-limit', min: '1', max: String(t.limitMax), inputmode: 'numeric', step: '1',
+        placeholder: String(t.limitDefault), disabled: !anyHelper, 'aria-describedby': 'sf-helper-limit-hint',
+      });
+      if (t.limit != null) input.value = String(t.limit);
+      input.addEventListener('change', () => {
+        const n = Number.parseInt(input.value, 10);
+        v.draft.helperLimit = Number.isNaN(n) ? null : Math.min(t.limitMax, Math.max(1, n));
+        syncForm();
+      });
+      return h('div', { class: 'helper-limit' },
+        h('label', { class: 'block', for: 'sf-helper-limit', text: 'Most helpers at once' }), input,
+        h('p', { class: 'hint', id: 'sf-helper-limit-hint', text: anyHelper
+          ? `From 1 to ${t.limitMax}. Left empty, a session may have ${t.limitDefault}.${t.limitMax < 16 ? ' Your administrator sets the top.' : ''}`
+          : 'Choose a helper first.' }));
+    };
+    const drawToolList = (c) => {
+      const t = c.tools;
+      if (t.state === 'loading') return h('p', { class: 'hint', 'aria-busy': 'true', text: 'Loading your tools…' });
+      if (t.state === 'failed') {
+        return [h('p', { class: 'error', text: `Tools did not load: ${said(t.error)} You can still start without them.` }),
+          h('div', { class: 'row step-tools' }, h('button', { type: 'button', id: 'sf-tools-retry', text: 'Retry', onclick: () => loadTools(v) }))];
+      }
+      const groups = TOOL_KINDS.map((k) => ({ k, rows: t.entries.filter((r) => r.x.kind === k.kind && matches(r.x)), total: t.entries.filter((r) => r.x.kind === k.kind).length }));
+      const notes = {
+        connector: t.gateway === 'ready' ? null : h('p', { class: t.gateway === 'unreachable' ? 'error' : 'hint', text: t.gatewayWhy || 'Connectors are not set up here.' }),
+        skill: h('p', { class: 'hint', text: 'Choose skills to give a session only those. Choose none and it gets every skill it may use.' }),
+        helper: helperLimitControl(t, c),
+      };
+      const shown = groups.reduce((n, g) => n + g.rows.length, 0);
+      return [
+        c.access.value === 'reviewer' ? h('p', { class: 'hint', text: 'A reviewer reads only, so its connectors are read only and it has no helpers.' }) : null,
+        groups.map(({ k, rows, total }) => (!total && !notes[k.kind] ? null : h('section', { class: 'tool-group', 'aria-labelledby': `sf-tools-g-${k.kind}` },
+          h('h4', { id: `sf-tools-g-${k.kind}`, text: `${k.many} (${rows.length})` }),
+          notes[k.kind],
+          rows.length ? h('ul', { class: 'conn-rows' }, rows.map(toolRow)) : (total ? h('p', { class: 'hint', text: `No ${k.many.toLowerCase()} match.` }) : null)))),
+        shown ? null : h('p', { class: 'muted', text: 'No tool matches.' }),
+        h('p', { class: 'hint' }, h('a', { href: '#/settings/tools', text: 'Manage tools in Settings' })),
+      ];
+    };
+
+    const toolsAnchor = h('div', { class: 'tools-anchor' });
+    const toolsButtonSlot = h('span', { class: 'slot', id: 'sf-tools' });
+    const toolsSummary = h('p', { class: 'hint tools-summary', id: 'sf-tools-summary' });
+    const toolsList = h('div', { class: 'tools-scroll', id: 'sf-tools-list' });
+    const toolsSearch = h('input', { type: 'search', id: 'sf-tools-search', placeholder: 'Search tools', autocomplete: 'off', 'aria-label': 'Search tools', 'aria-controls': 'sf-tools-list' });
+    toolsSearch.addEventListener('input', () => { toolsNeedle = toolsSearch.value; syncForm(); });
+    const toolsCount = h('p', { class: 'hint tools-menu-count', id: 'sf-tools-count', role: 'status', 'aria-live': 'polite' });
+    const defaultsStatus = h('p', { class: 'hint tools-menu-status', id: 'sf-tools-default-status', role: 'status', 'aria-live': 'polite' });
+    const saveDefault = h('button', { type: 'button', id: 'sf-tools-save-default', text: 'Save as this workspace\'s default' });
+    // The button stays enabled while it saves, so focus is not dropped.
+    let savingDefault = false;
+    saveDefault.addEventListener('click', async () => {
+      const t = choices().tools;
+      if (t.state !== 'ready' || savingDefault) return;
+      savingDefault = true;
+      defaultsStatus.textContent = 'Saving…';
+      try {
+        const saved = await api('PUT', `${workspacePath(v.id)}/tools`, { tools: t.saveAll, revision: v.tools.defaults.revision });
+        if (wsView !== v) return;
+        v.tools = { ...v.tools, defaults: saved, at: Date.now() };
+        v.draft.tools = null;
+        v.draft.helperLimit = undefined;
+        defaultsStatus.textContent = 'Saved. New sessions here start with these tools.';
+        syncForm();
+      } catch (e) {
+        if (wsView !== v) return;
+        if (e.status === 409 && e.code === 'revision_conflict') {
+          defaultsStatus.textContent = 'The defaults changed meanwhile. They are reloaded; check your choice, then save again.';
+          await loadTools(v);
+        } else {
+          defaultsStatus.textContent = `Not saved: ${said(e.message)}`;
+        }
+        if (wsView === v) syncForm();
+      } finally {
+        savingDefault = false;
+      }
+      // A button that has just become disabled drops focus; give it to Done.
+      if (wsView === v && saveDefault.disabled && (document.activeElement === document.body || document.activeElement === saveDefault)) closeButton.focus();
+    });
+    const closeButton = h('button', { type: 'button', class: 'primary small', id: 'sf-tools-done', text: 'Done', onclick: () => closeMenu() });
+    const menu = h('div', { class: 'tools-menu', id: 'sf-tools-menu', hidden: true },
+      h('div', { class: 'tools-menu-head' },
+        h('h3', { id: 'sf-tools-title', text: 'Tools' }),
+        h('button', { type: 'button', class: 'ghost small tools-close', 'aria-label': 'Close tools', onclick: () => closeMenu() }, icon('cross', true))),
+      h('div', { class: 'filter-field tools-menu-search' }, icon('search', true), toolsSearch),
+      toolsCount, toolsList,
+      h('div', { class: 'tools-menu-foot' }, saveDefault, closeButton, defaultsStatus));
+    const backdrop = h('div', { class: 'tools-backdrop', hidden: true });
+    backdrop.addEventListener('click', () => closeMenu());
+    const onEscape = (ev) => { if (ev.key === 'Escape' && toolsOpen && !ev.defaultPrevented) closeMenu(); };
+    const outside = (ev) => { if (!toolsAnchor.contains(ev.target) && !(ev.target.closest && ev.target.closest('.toasts'))) closeMenu(false); };
+    const focusables = () => Array.from(menu.querySelectorAll('button, input, select, a[href]')).filter((el) => !el.disabled && el.offsetParent !== null);
+    toolsAnchor.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeMenu();
+        return;
+      }
+      if (ev.key !== 'Tab' || !toolsSheet) return;
+      const items = focusables();
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (ev.shiftKey && (document.activeElement === first || !menu.contains(document.activeElement))) { ev.preventDefault(); last.focus(); }
+      else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+    });
+    // Narrow: a dialog that holds focus. Wide: a labelled group beside the
+    // button, closed by Escape or a click elsewhere.
+    function openMenu() {
+      if (toolsOpen) return;
+      toolsOpen = true;
+      toolsSheet = narrow.matches;
+      menu.hidden = false;
+      backdrop.hidden = !toolsSheet;
+      menu.classList.toggle('sheet', toolsSheet);
+      if (toolsSheet) {
+        menu.setAttribute('role', 'dialog');
+        menu.setAttribute('aria-modal', 'true');
+        menu.setAttribute('aria-labelledby', 'sf-tools-title');
+        menu.removeAttribute('aria-label');
+        document.body.classList.add('sheet-open');
+      } else {
+        menu.setAttribute('role', 'group');
+        menu.setAttribute('aria-label', 'Tools');
+        menu.removeAttribute('aria-modal');
+        menu.removeAttribute('aria-labelledby');
+        document.addEventListener('pointerdown', outside);
+      }
+      defaultsStatus.textContent = '';
+      document.addEventListener('keydown', onEscape);
+      syncForm();
+      menu.scrollIntoView({ block: 'nearest' });
+      toolsSearch.focus({ preventScroll: true });
+    }
+    function closeMenu(refocus = true) {
+      if (!toolsOpen) return;
+      toolsOpen = false;
+      menu.hidden = true;
+      backdrop.hidden = true;
+      document.body.classList.remove('sheet-open');
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', onEscape);
+      syncForm();
+      const button = $('sf-tools-button');
+      if (refocus && button) button.focus();
+    }
+    const drawToolsButton = (c) => {
+      const t = c.tools;
+      const chosen = t.chosen;
+      const names = chosen.map((r) => r.x.name);
+      const label = t.state === 'loading' ? 'Tools: loading'
+        : chosen.length ? `Tools: ${names.slice(0, 6).join(', ')}${names.length > 6 ? ` and ${names.length - 6} more` : ''}` : 'Tools: none chosen';
+      return h('button', {
+        type: 'button', id: 'sf-tools-button', class: 'tools-button', 'aria-haspopup': 'dialog', 'aria-expanded': String(toolsOpen),
+        'aria-controls': 'sf-tools-menu', 'aria-label': label,
+        onclick: () => (toolsOpen ? closeMenu() : openMenu()),
+      },
+      chosen.length ? h('span', { class: 'tool-stack', 'aria-hidden': 'true' },
+        chosen.slice(0, 4).map((r) => toolMark(r.x, true)),
+        chosen.length > 4 ? h('span', { class: 'tool-more', text: `+${chosen.length - 4}` }) : null) : icon('wrench', true),
+      h('span', { class: 'tools-label', text: 'Tools' }), icon('chevron', true));
+    };
+    const summaryText = (c) => {
+      const t = c.tools;
+      if (t.state === 'loading') return 'Loading your tools…';
+      if (t.state === 'failed') return 'Tools did not load. You can still start without them.';
+      const blocked = t.blocked;
+      if (blocked) return `${blocked.x.name}: ${blocked.why} Connect it or remove it in Tools.`;
+      if (!t.chosen.length) return t.explicit ? 'No tools chosen: just its files.' : 'Just its files and the skills it starts with. Add Jira, Confluence or another connector.';
+      const words = t.chosen.slice(0, 3).map((r) => (r.x.kind === 'connector' ? `${r.x.name} (${r.mode === 'write' ? 'can make changes' : 'read only'})` : r.x.name));
+      const more = t.chosen.length - words.length;
+      const fromDefaults = !v.draft.tools && v.tools.defaults && v.tools.defaults.revision > 0 ? ' From this workspace\'s defaults.' : '';
+      return `${words.join(', ')}${more > 0 ? ` and ${more} more` : ''}.${fromDefaults}`;
+    };
+    const toolsBar = h('div', { class: 'tools-bar', id: 'sf-tools-bar' }, toolsAnchor, toolsSummary);
+    fill(toolsAnchor, toolsButtonSlot, menu, backdrop);
+
     const drawCollect = (c) => (c.access.value !== 'writer' ? null : [
       toggle('sf-collect', `Collect outputs (${OUTPUT_MANIFEST})`, v.draft.collect, (on) => { v.draft.collect = on; syncForm(); }, 'sf-collect-hint'),
       h('p', { class: 'hint', id: 'sf-collect-hint', text: `Collect outputs asks the session to list its result files in ${OUTPUT_MANIFEST} and end with a JSON summary; the server publishes those files as outputs you can preview and accept.` }),
@@ -4189,9 +5226,14 @@
     const FOCUS = {
       workspace: () => $('strip').querySelector('details.menu > summary'),
       environments: () => $('sf-retry'),
-      environment: () => envSlot.querySelector('input[type="radio"]:not(:disabled)'),
-      harness: () => $('sf-harness'),
-      ack: () => $('sf-ack'),
+      environment: () => { openRun(); return envSlot.querySelector('input[type="radio"]:not(:disabled)'); },
+      harness: () => { openRun(); return $('sf-harness'); },
+      ack: () => { openRun(); return $('sf-ack'); },
+      tools: () => {
+        openMenu();
+        const blocked = choices().tools.blocked;
+        return (blocked && ($(`${rowId(blocked.x)}-connect`) || $(rowId(blocked.x)))) || toolsSearch;
+      },
       name: () => name,
       prompt: () => prompt,
       outputs: () => {
@@ -4228,6 +5270,32 @@
       redraw(agentSlot, JSON.stringify([v.environments.at, c.env && c.env.key, c.typed, harnesses, c.typed || !c.harness ? null : c.harness.id,
         c.model.kind, c.model.options, c.acknowledgement]), () => drawAgent(c));
       redraw(collectSlot, c.access.value, () => drawCollect(c));
+      redraw(modeSlot, v.draft.mode, drawMode);
+      const t = c.tools;
+      redraw(toolsButtonSlot, JSON.stringify([t.state, t.chosen.map((r) => [r.x.kind, r.x.id, r.x.name, r.mode]), toolsOpen]), () => drawToolsButton(c));
+      redraw(toolsList, JSON.stringify([t.state, t.error, v.tools.at, toolsOpen, toolsNeedle, c.access.value,
+        t.entries.map((r) => [r.x.kind, r.x.id, r.x.state, r.on, r.mode, r.disabled]), t.limit, t.limitMax, Array.from(connecting)]), () => (toolsOpen ? drawToolList(c) : null));
+      const summary = summaryText(c);
+      if (toolsSummary.textContent !== summary) toolsSummary.textContent = summary;
+      toolsSummary.classList.toggle('tools-blocked', !!t.blocked);
+      if (toolsOpen) {
+        const shown = t.entries.filter((r) => matches(r.x)).length;
+        const count = t.state === 'ready' ? `${plural(shown, 'tool')} shown, ${t.chosen.length} chosen.` : '';
+        if (toolsCount.textContent !== count) toolsCount.textContent = count;
+      }
+      saveDefault.disabled = t.state !== 'ready' || !workspaceCanRun(v) || !t.dirty;
+      if (!runDecided && v.environments.state === 'ready') {
+        runDecided = true;
+        runOpen = v.draft.mode === 'code' || !settled(c);
+      }
+      const folded = !runOpen && settled(c);
+      envStep.hidden = folded;
+      agentStep.hidden = folded;
+      redraw(runSlot, JSON.stringify([folded, c.env && c.env.label, c.harness && c.harness.id, c.model.value]), () => drawRun(c));
+      const hint = v.draft.mode === 'work'
+        ? 'Say what you want and which files to produce, for example: Summarise the open launch epics in Jira into a one-page brief and a status sheet.'
+        : 'Say what to change and how to check it, for example: Fix the failing login test and add a regression test.';
+      if (promptHint.textContent !== hint) promptHint.textContent = hint;
       redraw(advancedSlot, JSON.stringify([c.access, reviewable(v).map((a) => [a.id, a.label]), c.effort.offered]), () => drawAdvanced(c));
       if (c.access.forced && !forcedShown) {
         advanced.open = true;
@@ -4256,6 +5324,10 @@
         if (wsView === v) drawWorkspace(v);
       }
       if (known && known.reload === 'environments') await loadEnvironments(v);
+      if (known && known.reload === 'tools') {
+        await loadTools(v);
+        if (wsView === v) focusField('tools');
+      }
       if (wsView !== v) return;
       error.textContent = known ? known.text(e, v) : `${said(e.message)} Your draft is kept.`;
     };
@@ -4287,7 +5359,8 @@
         return;
       }
       v.sent.set(op.session_id, body);
-      v.draft = freshDraft(v, { env: c.env.key, harness: c.harness.id, model: c.model.kind === 'none' ? v.draft.model : c.model.value });
+      if (!(v.tools.defaults && v.tools.defaults.revision > 0) && c.tools.state === 'ready') rememberTools(v.id, c.tools.saveable);
+      v.draft = freshDraft(v, { env: c.env.key, harness: c.harness.id, model: c.model.kind === 'none' ? v.draft.model : c.model.value, mode: v.draft.mode });
       toast('Session started.');
       v.composing = false;
       v.drawn.convo = null;
@@ -4296,15 +5369,21 @@
       if (wsView === v) go(workspaceHref(v.id, op.session_id));
     });
 
+    const envStep = h('fieldset', { class: 'step' }, h('legend', { text: 'Where it runs' }), envSlot);
+    const agentStep = h('fieldset', { class: 'step' }, h('legend', { text: 'Agent' }), agentSlot);
+    const promptHint = h('p', { class: 'hint', id: 'sf-prompt-hint' });
     fill(box, h('section', { class: 'card form session-form', id: 'session-form', 'aria-labelledby': 'session-form-h' },
-      heading,
+      h('div', { class: 'form-head' }, heading, modeSlot),
       h('fieldset', { class: 'step' }, h('legend', { text: 'Sources it reads' }), sourcesSlot),
-      h('fieldset', { class: 'step' }, h('legend', { text: 'Where it runs' }), envSlot),
-      h('fieldset', { class: 'step' }, h('legend', { text: 'Agent' }), agentSlot),
+      runSlot,
+      envStep,
+      agentStep,
       h('fieldset', { class: 'step' }, h('legend', { text: 'Task' }),
         field('sf-name', 'Session name', name),
+        h('p', { class: 'hint', id: 'sf-name-hint', text: 'Optional: without one, it is named from the first line of the prompt.' }),
         field('sf-prompt', 'First prompt', prompt),
-        h('p', { class: 'hint', id: 'sf-prompt-hint', text: 'Say what it should do and which files it should produce, for example: Summarise the backlog by owner in an XLSX and a one-page DOCX.' }),
+        promptHint,
+        toolsBar,
         collectSlot),
       advanced,
       h('div', { class: 'row form-actions' }, start, cancel),
@@ -5155,6 +6234,7 @@
     main(h('div', { class: 'page narrow' },
       h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
       h('header', { class: 'page-head' }, h('div', {}, h('h1', { text: 'Settings' }))),
+      settingsNav('account'),
       h('section', { class: 'card', 'aria-label': 'This token' },
         h('dl', { class: 'facts' },
           h('dt', { text: 'Name' }), h('dd', { text: me.name }),

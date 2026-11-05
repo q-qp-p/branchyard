@@ -61,6 +61,7 @@ fn scopes_are_enforced_per_endpoint() {
             tenant: "default".into(),
             scopes: ["read"].into_iter().map(String::from).collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     config.principals.insert(
@@ -71,6 +72,7 @@ fn scopes_are_enforced_per_endpoint() {
             tenant: "default".into(),
             scopes: ["read", "run"].into_iter().map(String::from).collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     let server = Server::start(config);
@@ -170,6 +172,7 @@ fn cross_tenant_isolation() {
                 .map(String::from)
                 .collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     config.principals.insert(
@@ -183,6 +186,7 @@ fn cross_tenant_isolation() {
                 .map(String::from)
                 .collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     config.tenants.insert(
@@ -664,6 +668,7 @@ fn credentials_and_scoped_tokens_compose() {
             tenant: "svc-tenant".into(),
             scopes: ["read"].into_iter().map(String::from).collect(),
             repos: None,
+            groups: Default::default(),
         },
     });
     let server = Server::start(config);
@@ -803,6 +808,7 @@ fn every_read_needs_the_read_scope() {
                 .map(String::from)
                 .collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     let server = Server::start(config);

@@ -14,7 +14,7 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine as _;
@@ -59,6 +59,11 @@ pub struct Claims {
     /// What the turn's branch may delegate. Anvil ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by_delegation: Option<crate::access::DelegationScope>,
+    /// The digest of the turn manifest the turn runs with
+    /// (`crate::manifest`); Anvil records it on every audit line and does
+    /// not enforce it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_manifest: Option<String>,
 }
 
 /// One Ed25519 key: its id and 32-byte seed.
@@ -248,13 +253,87 @@ impl KeyRing {
     /// Sign `claims` with the first key: a compact JWS.
     pub fn sign(&self, claims: &Claims) -> Result<String, Error> {
         let key = &self.keys[0];
-        let header = json!({ "alg": "EdDSA", "typ": "JWT", "kid": key.kid });
-        let encode = |value: &Value| B64.encode(value.to_string());
-        let claims = serde_json::to_value(claims).map_err(|e| Error::State(e.to_string()))?;
-        let input = format!("{}.{}", encode(&header), encode(&claims));
+        let input = jws_input(&key.kid, claims)?;
         let signature = key.pair()?.sign(input.as_bytes());
-        Ok(format!("{input}.{}", B64.encode(signature.as_ref())))
+        Ok(jws_finish(&input, signature.as_ref()))
     }
+}
+
+/// What signs gateway tokens: a local key ring, or a service that holds
+/// the private key (Cloud KMS). The gateway verifies against
+/// [`TokenSigner::jwks`], so every signer publishes the public part of
+/// each key it signs with or has signed with.
+pub trait TokenSigner: Send + Sync + std::fmt::Debug {
+    /// Sign `claims`: a compact JWS (`alg: EdDSA`, `typ: JWT`, the
+    /// signing key's `kid`).
+    fn sign(&self, claims: &Claims) -> Result<String, Error>;
+    /// The public key set the gateway verifies against.
+    fn jwks(&self) -> Result<Value, Error>;
+    /// The id of the key that signs.
+    fn kid(&self) -> Result<String, Error>;
+}
+
+impl TokenSigner for KeyRing {
+    fn sign(&self, claims: &Claims) -> Result<String, Error> {
+        KeyRing::sign(self, claims)
+    }
+
+    fn jwks(&self) -> Result<Value, Error> {
+        KeyRing::jwks(self)
+    }
+
+    fn kid(&self) -> Result<String, Error> {
+        Ok(self.keys[0].kid.clone())
+    }
+}
+
+/// A key file that must already exist, read at each use. A worker uses it
+/// so that a missing file is an error: it never makes a key no other
+/// process knows.
+#[derive(Clone, Debug)]
+pub struct KeyFileSigner {
+    key_file: PathBuf,
+}
+
+impl KeyFileSigner {
+    /// The key file `key_file`, which must exist.
+    pub fn existing(key_file: PathBuf) -> KeyFileSigner {
+        KeyFileSigner { key_file }
+    }
+
+    fn ring(&self) -> Result<KeyRing, Error> {
+        KeyRing::load(&self.key_file)
+    }
+}
+
+impl TokenSigner for KeyFileSigner {
+    fn sign(&self, claims: &Claims) -> Result<String, Error> {
+        self.ring()?.sign(claims)
+    }
+
+    fn jwks(&self) -> Result<Value, Error> {
+        self.ring()?.jwks()
+    }
+
+    fn kid(&self) -> Result<String, Error> {
+        TokenSigner::kid(&self.ring()?)
+    }
+}
+
+/// The JWS signing input for `claims`: the base64url header (with `kid`)
+/// and payload joined by a dot. For a [`TokenSigner`] that signs
+/// elsewhere.
+pub fn jws_input(kid: &str, claims: &Claims) -> Result<String, Error> {
+    let header = json!({ "alg": "EdDSA", "typ": "JWT", "kid": kid });
+    let encode = |value: &Value| B64.encode(value.to_string());
+    let claims = serde_json::to_value(claims).map_err(|e| Error::State(e.to_string()))?;
+    Ok(format!("{}.{}", encode(&header), encode(&claims)))
+}
+
+/// The compact JWS: `input` (from [`jws_input`]) and its Ed25519
+/// `signature`.
+pub fn jws_finish(input: &str, signature: &[u8]) -> String {
+    format!("{input}.{}", B64.encode(signature))
 }
 
 /// Verify a compact JWS against a public key set and return its claims.
@@ -371,6 +450,7 @@ mod tests {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         }
     }
 
@@ -492,6 +572,29 @@ mod tests {
         assert!(verify(&jwks, &old).is_err());
         assert!(verify(&jwks, &new).is_ok());
         assert_eq!(ring.kids()[1], second);
+    }
+
+    #[test]
+    fn a_key_ring_and_a_key_file_signer_sign_alike_and_the_file_one_never_makes_a_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("gw/key");
+        let signer = KeyFileSigner::existing(key.clone());
+        let error = signer.sign(&claims()).unwrap_err().to_string();
+        assert!(error.contains("could not read the signing key"), "{error}");
+        assert!(signer.jwks().is_err() && signer.kid().is_err());
+        assert!(!key.exists() && !key.parent().unwrap().exists());
+
+        let ring = KeyRing::load_or_create(&key, None).unwrap();
+        let dynamic: &dyn TokenSigner = &ring;
+        assert_eq!(dynamic.kid().unwrap(), ring.kids()[0]);
+        assert_eq!(signer.kid().unwrap(), ring.kids()[0]);
+        assert_eq!(signer.jwks().unwrap(), ring.jwks().unwrap());
+        // Ed25519 signatures are deterministic: the same bytes either way.
+        assert_eq!(
+            signer.sign(&claims()).unwrap(),
+            dynamic.sign(&claims()).unwrap()
+        );
+        assert!(verify(&signer.jwks().unwrap(), &signer.sign(&claims()).unwrap()).is_ok());
     }
 
     #[test]

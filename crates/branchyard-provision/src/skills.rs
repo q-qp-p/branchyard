@@ -104,6 +104,11 @@ pub const SKILLS: &[Skill] = &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/docx/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/docx/SKILL.md")),
     ] },
+    Skill { name: "find-tools", files: &[
+        ("INDEX.md", include_str!("../../../plugins/branchyard/skills/find-tools/INDEX.md")),
+        ("SKILL.md", include_str!("../../../plugins/branchyard/skills/find-tools/SKILL.md")),
+        ("scripts/tools.py", include_str!("../../../plugins/branchyard/skills/find-tools/scripts/tools.py")),
+    ] },
     Skill { name: "google-docs", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/google-docs/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/google-docs/SKILL.md")),

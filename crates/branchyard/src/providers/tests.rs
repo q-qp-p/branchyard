@@ -699,3 +699,374 @@ fn each_variant_has_a_banner_of_its_own() {
     assert!(!Provider::is_local(Some(&microsandbox)));
     assert!(!Provider::is_local(Some(&recipe)));
 }
+
+/// Links into the tool store need the store at the same path in the
+/// harness's filesystem: a local harness has it, Microsandbox is given a
+/// read-only mount of it, an Agent Sandbox mounts its bucket, and a
+/// provider that copies the home in has none.
+#[test]
+fn only_a_provider_that_sees_the_store_at_its_path_is_given_links_to_it() {
+    use crate::toolstore::ToolStore;
+    let f = fixture();
+    let store = branchyard_testkit::Scratch::new("provider-store");
+    let sees = |provider: &Provider| of(Some(provider)).sees_store(&f.yard);
+    let usable = samples(&f);
+    let sandbox = |name: &str| {
+        usable
+            .iter()
+            .map(|(ok, _)| ok)
+            .find(|p| p.name() == name)
+            .unwrap()
+            .clone()
+    };
+    assert!(of(None).sees_store(&f.yard));
+    for name in [
+        "microsandbox",
+        "substrate",
+        "recipe",
+        "container",
+        "agent_sandbox",
+    ] {
+        assert!(!sees(&sandbox(name)), "{name} before a store is set");
+    }
+
+    f.yard.use_tool_store(ToolStore::new(store.path()));
+    assert!(sees(&sandbox("microsandbox")));
+    for name in ["substrate", "recipe", "container", "agent_sandbox"] {
+        assert!(!sees(&sandbox(name)), "{name} without a bucket or a mount");
+    }
+
+    // The mount is read-only, at the same path, and only for a store that
+    // exists.
+    let mut record = record(&sandbox("microsandbox"));
+    let home = branchyard_testkit::Scratch::new("provider-home");
+    record.home = Some(home.path().to_path_buf());
+    let options = SandboxOptions {
+        image: "i".into(),
+        ..SandboxOptions::default()
+    };
+    let (spec, env) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    // The tool tree is also at /tools, read-only, and the guest is told so.
+    let tree = spec
+        .mounts
+        .iter()
+        .find(|m| m.guest == std::path::Path::new("/tools"))
+        .expect("the tool tree is mounted at /tools");
+    assert_eq!(tree.host, home.path().join(".branchyard/tools"));
+    assert!(!tree.writable);
+    assert!(
+        tree.host.is_dir(),
+        "made now, for the mount to have a source"
+    );
+    assert_eq!(
+        env.get(std::ffi::OsStr::new("BRANCHYARD_TOOLS")).unwrap(),
+        "/tools"
+    );
+    let mount = spec
+        .mounts
+        .iter()
+        .find(|m| m.guest == store.path())
+        .expect("the store is mounted");
+    assert_eq!(mount.host, store.path());
+    assert!(!mount.writable);
+    f.yard.use_tool_store(ToolStore::new(store.join("absent")));
+    assert!(!sees(&sandbox("microsandbox")));
+    let (spec, _) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    assert!(spec.mounts.iter().all(|m| m.guest != store.join("absent")));
+
+    // A bucket makes the Agent Sandbox's pod mount it at the store's path.
+    f.yard.use_tool_store(ToolStore {
+        root: store.path().to_path_buf(),
+        bucket: Some("acme-tools/store".into()),
+    });
+    assert!(sees(&sandbox("agent_sandbox")));
+    assert!(!sees(&sandbox("container")));
+    assert!(!sees(&sandbox("substrate")));
+}
+
+/// A provider that controls the guest filesystem exposes the tool tree at
+/// `/tools`; a local harness and the copies that cannot (a Substrate actor,
+/// a recipe's machine) keep it under the home.
+#[test]
+fn the_providers_that_control_the_guest_filesystem_expose_the_tool_tree_at_a_root() {
+    let f = fixture();
+    let usable = samples(&f);
+    let root = |name: &str| {
+        let provider = usable
+            .iter()
+            .map(|(ok, _)| ok)
+            .find(|p| p.name() == name)
+            .unwrap();
+        of(Some(provider)).tools_root()
+    };
+    for name in ["microsandbox", "container", "agent_sandbox"] {
+        assert_eq!(root(name), Some("/tools"), "{name}");
+    }
+    for name in ["substrate", "recipe"] {
+        assert_eq!(root(name), None, "{name}");
+    }
+    assert_eq!(of(None).tools_root(), None);
+}
+
+/// A `deny` Agent Sandbox may reach, by name, the worker's `egress_hosts`
+/// (`[agent_sandbox]`) and the package mirrors a name policy can hold (a name
+/// or `*.suffix` on 443), once each and sorted, and the gateway Service it
+/// names; a mirror on another port or at an address is left out. The branch
+/// carries none of it.
+#[test]
+fn an_agent_sandbox_may_reach_the_workers_hosts_and_mirrors_by_name() {
+    let f = fixture();
+    let text = format!(
+        "version = 1\n[network]\nallow = []\nmirrors = [\"pypi.org\", \"*.pythonhosted.org\", \
+         \"registry.npmjs.org:443\", \"mirror.internal:8080\", \"api.anthropic.com\"]\n\
+         [agent_sandbox]\ncontext = \"c\"\nnamespace = \"n\"\nimage = \"example.test/r@sha256:{}\"\n\
+         egress_hosts = [\"api.anthropic.com\", \"gateway.example.com\"]\n\
+         gateway_service = {{ namespace = \"branchyard-system\", name = \"anvil-gateway\", port = 8931 }}\n",
+        "a".repeat(64)
+    );
+    // No configuration, nothing to reach.
+    assert!(super::agent_sandbox::yard_egress(&f.yard).is_empty());
+    f.yard
+        .configure(&crate::config::parse(&text).unwrap())
+        .unwrap();
+    let egress = super::agent_sandbox::yard_egress(&f.yard);
+    assert_eq!(
+        egress.hosts,
+        [
+            "*.pythonhosted.org",
+            "api.anthropic.com",
+            "gateway.example.com",
+            "pypi.org",
+            "registry.npmjs.org"
+        ]
+    );
+    assert_eq!(egress.gateway.as_ref().unwrap().port, 8931);
+    let options = AgentSandboxOptions {
+        context: "c".into(),
+        namespace: "n".into(),
+        image: format!("example.test/r@sha256:{}", "a".repeat(64)),
+        ..AgentSandboxOptions::default()
+    };
+    let config = options.config_with(None, egress, None);
+    config.validate().unwrap();
+    assert_eq!(config.fqdn_hosts().len(), 5);
+}
+
+/// Serves one bundle, `github`, and packages it as a `SKILL.md`.
+#[derive(Debug)]
+struct OneBundle;
+
+impl crate::connectors::Packager for OneBundle {
+    fn served(&self) -> Result<Vec<crate::connectors::Bundle>, String> {
+        Ok(vec![crate::connectors::Bundle {
+            id: "github".into(),
+            path: "/bundles/github".into(),
+            hash: "hash-github".into(),
+        }])
+    }
+
+    fn package(&self, _: &crate::connectors::Bundle, out: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+        std::fs::write(out.join("SKILL.md"), "# github\n").map_err(|e| e.to_string())
+    }
+
+    fn index(
+        &self,
+        _: &std::path::Path,
+        _: &[crate::connectors::Bundle],
+        out: &std::path::Path,
+    ) -> Result<(), String> {
+        std::fs::write(out, "# Connectors\n").map_err(|e| e.to_string())
+    }
+}
+
+#[test]
+fn each_provider_declares_where_it_can_run_the_credential_proxy() {
+    use crate::connectors::CredentialSite::{Guest, Host, Sidecar};
+    let fixture = fixture();
+    let sites: Vec<_> = samples(&fixture)
+        .iter()
+        .map(|(good, _)| (good.name(), of(Some(good)).credential_site()))
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("local", Host),
+            ("microsandbox", Guest),
+            ("substrate", Sidecar),
+            ("recipe", Host),
+            ("container", Host),
+            ("agent_sandbox", Sidecar),
+        ]
+    );
+    assert_eq!(of(None).credential_site(), Host);
+}
+
+#[test]
+fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_token() {
+    use crate::connectors::{
+        credential, sandbox_proxy::IdentityKind, CredentialSite, GrantEntry,
+        ENV_GATEWAY_TOKEN_FILE, ENV_GATEWAY_URL, TOKEN_FILE,
+    };
+    const UPSTREAM: &str = "http://192.168.127.1:8931/mcp";
+    let fixture = fixture();
+    for (provider, _) in samples(&fixture) {
+        let site = of(Some(&provider)).credential_site();
+        for server in [None, Some("https://by.example")] {
+            let home = tempfile::Builder::new()
+                .prefix("by-credential-home-")
+                .tempdir()
+                .unwrap();
+            let mut gateway = crate::connectors::Gateway::local(
+                &fixture.yard,
+                "http://127.0.0.1:9/mcp",
+                Arc::new(OneBundle),
+            )
+            .unwrap();
+            gateway.sandbox_url = Some(UPSTREAM.into());
+            gateway.credential_proxy = crate::connectors::CredentialProxy {
+                server: server.map(str::to_owned),
+                audience: "https://by.example".into(),
+                ..crate::connectors::CredentialProxy::default()
+            };
+            fixture.yard.use_connectors(gateway);
+            let mut record = record(&provider);
+            record.home = Some(home.path().to_path_buf());
+            record.provision = Some(crate::Provisioning {
+                connectors: vec![GrantEntry::parse("github:read").unwrap()],
+                ..crate::Provisioning::default()
+            });
+            let scopes = crate::access::TokenScopes::default();
+            let manifest = crate::manifest::settle(&fixture.yard, &record, &scopes, Some(0), false);
+            let prepared =
+                crate::connectors::prepare(&fixture.yard, &record, None, &scopes, Some(&manifest))
+                    .unwrap()
+                    .expect("a granted turn");
+            let named = |name: &str| prepared.env.iter().find(|v| v.name == name);
+            let held_here = server.is_none() || site == CredentialSite::Host;
+            let what = format!("{} with server {server:?}", provider.name());
+            if held_here {
+                // The host's proxy holds the token, as before.
+                assert!(prepared.sandbox.is_none(), "{what}");
+                assert!(named(ENV_GATEWAY_TOKEN_FILE).is_some(), "{what}");
+                assert!(home.path().join(TOKEN_FILE).is_file(), "{what}");
+                continue;
+            }
+            let sandbox = prepared.sandbox.as_ref().expect(&what);
+            assert_eq!(sandbox.site, site, "{what}");
+            // The harness is given the proxy on its own loopback and no
+            // token, and no file with one is in its home.
+            let url = named(ENV_GATEWAY_URL).expect(&what);
+            assert_eq!(url.value, "http://127.0.0.1:18900/mcp", "{what}");
+            assert_eq!(prepared.env.len(), 1, "{what}: {:?}", prepared.env);
+            assert!(!home.path().join(TOKEN_FILE).exists(), "{what}");
+            assert!(!prepared.files.iter().any(|f| f == TOKEN_FILE), "{what}");
+            assert_eq!(prepared.shared_token(), None, "{what}");
+            // The proxy reaches the gateway as the sandbox does, and the
+            // server it fetches from is allowed through the sandbox's
+            // network policy.
+            assert_eq!(prepared.gateway_url, UPSTREAM, "{what}");
+            assert_eq!(
+                prepared.reach,
+                ["https://by.example", "http://127.0.0.1:18900/mcp"],
+                "{what}"
+            );
+            assert_eq!(sandbox.config.upstream, UPSTREAM, "{what}");
+            assert_eq!(sandbox.config.manifest, manifest.digest(), "{what}");
+            let settings = home.path().join(credential::PROXY_CONFIG_FILE);
+            match site {
+                CredentialSite::Guest => {
+                    // A secret for the guest's process, never in the home.
+                    let (secret, kept) = &sandbox.secret;
+                    assert_eq!(sandbox.config.identity, IdentityKind::Secret, "{what}");
+                    assert!(!settings.exists(), "{what}");
+                    assert_eq!(
+                        (kept.manifest.as_str(), kept.turn),
+                        (manifest.digest().as_str(), 1)
+                    );
+                    assert!(!format!("{kept:?}").contains(secret.as_str()), "{what}");
+                    let mut files = String::new();
+                    for entry in walk(home.path()) {
+                        // Binary files cannot hold a text secret.
+                        if let Ok(text) = std::fs::read_to_string(entry) {
+                            files.push_str(&text);
+                        }
+                    }
+                    assert!(
+                        !files.contains(secret.as_str()),
+                        "{what}: the home holds it"
+                    );
+                }
+                CredentialSite::Sidecar => {
+                    // A sidecar proves the turn with the turn's secret, read
+                    // from settings in the home, and as its workload.
+                    let (secret, kept) = &sandbox.secret;
+                    assert_eq!(
+                        (kept.manifest.as_str(), kept.turn),
+                        (manifest.digest().as_str(), 1)
+                    );
+                    assert!(!format!("{kept:?}").contains(secret.as_str()), "{what}");
+                    assert_eq!(
+                        sandbox.settings.as_deref(),
+                        Some(settings.as_path()),
+                        "{what}"
+                    );
+                    assert_eq!(
+                        sandbox.config.identity,
+                        IdentityKind::Workload {
+                            audience: "https://by.example".into()
+                        },
+                        "{what}"
+                    );
+                    let text = std::fs::read_to_string(&settings).expect(&what);
+                    let on_disk = credential::parse_config(&text).unwrap();
+                    assert_eq!(on_disk.secret.as_deref(), Some(secret.as_str()), "{what}");
+                    assert_eq!(
+                        credential::parse_config(&text).unwrap().secret,
+                        Some(secret.clone())
+                    );
+                    assert_eq!(
+                        crate::connectors::sandbox_proxy::ProxyConfig {
+                            secret: None,
+                            ..on_disk
+                        },
+                        sandbox.config
+                    );
+                    // The file is the only place, and goes when the turn ends.
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        let mode = std::fs::metadata(&settings).unwrap().permissions().mode();
+                        assert_eq!(mode & 0o077, 0, "{what}: readable beyond its owner");
+                    }
+
+                    assert!(
+                        prepared
+                            .files
+                            .iter()
+                            .any(|f| f == credential::PROXY_CONFIG_FILE),
+                        "{what}"
+                    );
+                    let mut prepared = prepared;
+                    prepared.retire();
+                    assert!(!settings.exists(), "{what}");
+                }
+                CredentialSite::Host => unreachable!("held on the host above"),
+            }
+        }
+    }
+}
+
+/// Every file under `dir`, links not followed.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        match std::fs::symlink_metadata(&path).unwrap().file_type() {
+            t if t.is_dir() => found.extend(walk(&path)),
+            t if t.is_file() => found.push(path),
+            _ => {}
+        }
+    }
+    found
+}

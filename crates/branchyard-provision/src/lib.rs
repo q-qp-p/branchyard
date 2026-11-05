@@ -48,6 +48,7 @@
 pub mod apply;
 pub mod approvals;
 pub mod auth;
+pub mod built_in;
 pub mod connectors;
 pub mod edit;
 pub mod gcloud;
@@ -186,6 +187,13 @@ pub struct Provisioning {
     /// stricter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approvals: Option<approvals::ApprovalPolicy>,
+    /// The built-in skills to stage, by id (`docx`, `pptx`, ...), each
+    /// with the skills it needs; the skill index lists only those. Unset:
+    /// every built-in skill. Guidance, not access: it changes what the
+    /// harness is told about, not what its policy allows. See
+    /// [`built_in`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
 }
 
 impl Provisioning {

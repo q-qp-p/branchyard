@@ -16,6 +16,7 @@ integrity and visual review, with progressively loaded design guidance.
 | Skill | Purpose | Requires |
 |---|---|---|
 | `artifact-tools` | Find and run knowledge artifact tools, check dependencies, prepare the runtime and capture output files. | none |
+| `find-tools` | Search the tools mounted for this turn (skills, connector operations, helpers) with BM25, then show one or print an operation's schema. | none |
 | `docx` | Create, inspect, update and validate editable Word DOCX documents, preserving source files and checking layout when needed. | `artifact-tools` |
 | `xlsx` | Create, inspect, update and validate Excel workbooks, formulas, calculated values and native pivot tables. | `artifact-tools` |
 | `pdf` | Create, extract, overlay and validate PDFs, with rendered checks and explicit limits on document editing. | `artifact-tools` |

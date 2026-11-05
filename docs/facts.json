@@ -72,7 +72,7 @@
     }
   },
   "http": {
-    "route_count": 134,
+    "route_count": 144,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -83,13 +83,19 @@
       "/app/{file}",
       "/healthz",
       "/metrics",
+      "/v1/admin/policies",
+      "/v1/admin/policies/{key}",
       "/v1/app/me",
       "/v1/app/push",
       "/v1/app/push/subscriptions",
       "/v1/app/push/test",
+      "/v1/connections",
+      "/v1/connections/{connector}/connect",
+      "/v1/connections/{connector}/key",
       "/v1/execution-presets",
       "/v1/harnesses",
       "/v1/inventory",
+      "/v1/me/policy",
       "/v1/operations",
       "/v1/operations/{id}",
       "/v1/problems",
@@ -169,6 +175,8 @@
       "/v1/services",
       "/v1/services/gc",
       "/v1/services/{id}",
+      "/v1/tools",
+      "/v1/tools/helpers/{id}/install",
       "/v1/triggers",
       "/v1/triggers/{t}",
       "/v1/triggers/{t}/disable",
@@ -197,6 +205,7 @@
       "/v1/workspaces/{workspace}/sessions/{session}/messages",
       "/v1/workspaces/{workspace}/sessions/{session}/pr",
       "/v1/workspaces/{workspace}/sessions/{session}/pr/refresh",
+      "/v1/workspaces/{workspace}/sessions/{session}/readmit",
       "/v1/workspaces/{workspace}/sessions/{session}/runtime",
       "/v1/workspaces/{workspace}/sessions/{session}/runtime/actions/{action}",
       "/v1/workspaces/{workspace}/sessions/{session}/terminals",
@@ -207,7 +216,8 @@
       "/v1/workspaces/{workspace}/sources",
       "/v1/workspaces/{workspace}/sources/{source}/content",
       "/v1/workspaces/{workspace}/sources/{source}/preview",
-      "/v1/workspaces/{workspace}/sources/{source}/preview/assets/{asset}"
+      "/v1/workspaces/{workspace}/sources/{source}/preview/assets/{asset}",
+      "/v1/workspaces/{workspace}/tools"
     ]
   },
   "runtime": {
@@ -664,6 +674,12 @@
     {
       "id": "artifact-tools",
       "description": "Find and run knowledge artifact tools, check dependencies, prepare the runtime and capture output files.",
+      "requires": [],
+      "topic": "runtime"
+    },
+    {
+      "id": "find-tools",
+      "description": "Search the tools mounted for this turn (skills, connector operations, helpers) with BM25, then show one or print an operation's schema.",
       "requires": [],
       "topic": "runtime"
     },

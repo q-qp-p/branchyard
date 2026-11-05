@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->134<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->144<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -457,6 +457,22 @@ A branch's harness calls GitHub, Slack or an internal API through Anvil's gatewa
 | `GET /.well-known/jwks.json` | none | the server's public keys, no token; `404` without `connectors` |
 | `[connectors]` in `branchyard.toml`, `connectors` in the server configuration | none | in `schema/branchyard.config.json` and `schema/server.config.json`; a rig seat's `connectors` in `schema/rig.json` |
 
+## Added with console connections
+
+A person connects accounts and chooses, per session, its connectors, skills and helpers from the console; see [connecting from the console](server.md#connecting-from-the-console).
+
+| Surface | Before | Now |
+|---|---|---|
+| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | `by connect` on the server's host only | the caller's connections and connecting one through the server (`ConnectionList`, `ConnectStart`, `ApiKeyRequest`); the console's Tools page; `Client::connections`, `connect`, `connect_key`; Python `connections()`, `connect()`, `connect_key()` |
+| `GET /v1/workspaces/{workspace}/tools` (`SessionTools`) | none | what a session may choose; `Client::session_tools`; Python `session_tools()` |
+| `StartSessionRequest::connectors`, `skills`, `helpers` (`Helpers`) | `provision.connectors`, refused beside a preset | per-session connectors beside a preset, checked at admission (`connector_not_connected`, `connector_over_ceiling`, `connector_not_served`, `connectors_conflict`, `reviewer_read_only`); built-in skills; helpers as a one-level envelope; the console's Tools step; Python `start_workspace_session(connectors=, skills=, helpers=, max_helpers=)`; a session's `tools` |
+| `GET /v1/tools`, `StartSessionRequest::tools` (`ToolChoice`), `PUT /v1/workspaces/{workspace}/tools` (`PutToolDefaults`, `ToolDefaults`) | connectors, skills and helpers each on their own route and field | one catalogue (`ToolCatalogue`: `state`, `allowed`, `ready`, `default`, `action`), one start field and workspace defaults, stored by revision; the helper limit as the helper entry `*` with `max_children` (`ToolChoice::max_children`), and `ToolEntry::off_by_me`, `installable`, `ToolCatalogue::max_children`, `default_children`; `Client::tools`, `workspace_tool_defaults`; Python `tools()`, `workspace_tool_defaults()`, `start_workspace_session(tools=)`, `helper_limit()`; `tool_not_allowed`, `tools_conflict` |
+| `GET/PUT/DELETE /v1/admin/policies[/{key}]` (`ToolPolicy`, `PolicyRecord`), `Principal::groups` | ceilings by principal name in server JSON | policy by tenant, group and person in the store, with `admin` scope ([tool policy](server.md#tool-policy)); `ToolPolicy::max_helpers` and `off`; `Client::policies`, `put_policy`, `delete_policy`; Python `policies()`, `put_policy()`, `delete_policy()` |
+| `GET/PUT /v1/me/policy` (`PolicyRecord`, `self:<tenant>:<subject>`) | none | a person narrows their own tools, never beyond the administrator's policy ([tool policy](server.md#tool-policy)); the Tools page's Mine column; `Client::my_policy`, `put_my_policy`; Python `my_policy()`, `put_my_policy()` |
+| `POST/GET /v1/tools/helpers/{id}/install` (`HelperInstall`), `harness_install` | `by harnesses install ID` on the machine | an administrator installs a helper's harness on the server's host from the console, closed until `harness_install.allow` ([install a helper's harness](server.md#install-a-helpers-harness)); `Client::install_helper`, `helper_install`; Python `install_helper()`, `helper_install()` |
+| `helpers/INDEX.md` in the tool tree | none | a turn with helpers lists the harnesses it may delegate to and its limits; `tools search --kind helper` ([tools-model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)) |
+| `Provisioning::skills`, `branchyard_provision::built_in` | every built-in skill staged | only the chosen built-in skills and what they need, with indexes listing only those; `provision.skills` over HTTP; refused when unknown |
+
 ## Added with the ports
 
 Ports from emdash and Orca ([roadmap](roadmap.md), Wave 1). The review and catalog commands are the CLI's; thread resolution is the pull-request watch's, and stays local only with it.
@@ -661,7 +677,7 @@ A branch's harness reaches only the hosts its policy allows, through an allowlis
 | Refusals | | `unsupported` before anything is created when a `required` policy cannot be enforced (a sandbox provider, or a host without confinement); a turn fails naming the reason when that is found only as it starts |
 | `PolicyPreset` (`PresetRules`, `EDIT_TOOLS`, `SHELL_TOOLS`, `WEB_TOOLS`) | none: rigs refused `permission_policy` | `--permissions read-only\|edit-worktree\|full` wherever `--yes` is; `[defaults] permissions` takes the presets; `policy.preset` in a request (`PolicySpec::preset`); a seat's `permission_policy` in a rig (a top-level one is refused); `plan::read_only` is the `read-only` preset |
 | `RigPlan`'s `root.policy` | `default`, `deny`, `allow`, `delegation_commands` | adds `preset` when a seat names one; the rules include its expansion |
-| `[network]` and `[defaults] permissions` in `branchyard.toml`; `network` and `permission_policy` on a rig seat | none; `ask` or `yes` | in `schema/branchyard.config.json` and `schema/rig.json` |
+| `[network]` (`allow`, `enforce`, `mirrors`) and `[defaults] permissions` in `branchyard.toml`; `network` and `permission_policy` on a rig seat | none; `ask` or `yes` | in `schema/branchyard.config.json` and `schema/rig.json` |
 
 ## Added with the model gateway
 
@@ -971,6 +987,19 @@ See [up](up.md) and [configuration](setup.md#configuration).
 | Bring the configured backends up | `Yard::up_plan`, `Yard::up_apply`, `Yard::up` over `branchyard::up::Machine` (`LocalMachine` is this machine) | `up [--plan] [--yes] [--json]` | refused: a server brings up its own machine | none | Python `Local(root).up()`, `doctor()`, `harnesses()`, `run()` | refused inside a harness |
 | A server of the process's own | n/a | `serve` | n/a | n/a | Python `Client.local(root)`: `by serve` on a free loopback port with a fresh token, stopped on `close()` | n/a |
 
+## Added with the credential proxy in the sandbox
+
+Hermetic: mock servers and a fake sandbox provider; not run on a cluster, a VM or a Microsandbox guest.
+
+| Surface | Before | Now |
+|---|---|---|
+| `by credential-proxy [--config FILE [--wait]] [--listen ADDR] --server URL --upstream URL --manifest DIGEST --branch REPO/BRANCH --turn N [--identity workload\|secret] [--audience AUD]` (hidden plumbing) | none: the proxy that attaches the gateway token ran on the host that ran the turn | runs in a sandbox beside the harness: listens on loopback, prints `listening ADDR` once it holds its first token, fetches the turn's five-minute token from the server and renews it at half its life, and forwards calls to `--upstream` with it; `--identity secret` reads the per-turn secret from `BRANCHYARD_CREDENTIAL_SECRET`, `--identity workload` a Google ID token for `--audience` from the metadata server; `--config` reads the same settings from a file (no secret in it) and `--wait` waits for it and keeps retrying the first token ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)) |
+| `POST /v1/turns/token` | none | a running turn's sandbox fetches its gateway token as its workload identity or with the turn's secret; the claims are the turn's recorded grant's ([server](server.md#turn-tokens-for-sandboxes)) |
+| `connectors.sandbox_server`, `sandbox_identities`, `sandbox_audience`, `sandbox_jwks_url`, `sandbox_by`, `sandbox_proxy_image` (server configuration) | none | switch on, and configure, the credential proxy in a sandbox; the published schema has them |
+| `branchyard::connectors::{CredentialProxy, CredentialSite, Proof, TokenRequest, TokenResponse, TurnCredential, sandbox_proxy::{ProxyConfig, IdentityKind, CredentialProxy::start}}`, `Yard::issue_turn_token`, `Gateway::credential_proxy` | none | the SDK side of the above |
+| `branchyard_agent_sandbox::{Config::credential_proxy, CredentialSidecar}` | one container per pod | a `credential-proxy` container beside `runtime` ([the pod](agent-sandbox-gke.md#credential-proxy-sidecar)) |
+| `Record::credential` (stored; not on the wire) | none | the hash, turn and manifest of a guest proxy's per-turn secret while its turn runs |
+
 ## Added with the Claude Code plugin's hooks, status line and marketplace
 
 See [harness integration](harness-integration.md#claude-code) and [distribution](distribution.md#install-for-claude-code). Both commands are the CLI's alone: they serve a Claude Code session on this machine, read its local store, and have no SDK operation, route, client call or delegation tool beyond `branchyard::glance`.
@@ -1031,6 +1060,9 @@ IAP allows TCP 22 from `35.235.240.0/20` only to the dedicated VM tag.
 `--service-account EMAIL` gives the VM that account with the `cloud-platform`
 scope, so its IAM roles decide API access; `--scopes LIST` (comma-separated
 names or URLs) replaces the default, and `--scopes none` gives no scopes.
+`--tools-store gs://BUCKET/PREFIX` pulls the shared tool store onto the worker at
+setup and points its server at it ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery));
+setup also installs Anvil's CLI and SDKs once when `anvil` has an `install` command.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified
 forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
@@ -1124,3 +1156,15 @@ A running branch says whether its engine is still heard from ([durability](durab
 |---|---|---|
 | `Resolved::layer` (`Layer::Unsettleable`, `unsettleable`) | none | the layer an ask carries when a policy allowed an irreversible operation that declares no lookup and it was asked about instead; in `by approvals`, the ledger's `decided`, `schema/contract.json` |
 | `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for every running branch, with zero timing fields and a lost reason when no held lease exists, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |
+
+## Added with the shared tool store
+
+Skills and connector packages can be published once as a content-addressed store and linked by every turn, not copied into each turn's home ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)). Setup and configuration are the CLI's and the configuration file's, so there is no SDK, HTTP or delegation counterpart; `by tools` is refused inside a harness's branch and with `--remote`.
+
+| Surface | Before | Now |
+|---|---|---|
+| `by tools publish [--store DIR] [--oci REGISTRY/REPO] [--gcs gs://BUCKET/PREFIX] [--json]` | none: each turn staged the built-in skills and copied Anvil's packages from the yard's cache | builds `skills/NAME@DIGEST` and `connectors/ID@BUNDLE-HASH` under the store and its `store.json` (`id`, `kind`, `digest`, `size`, `path`), running Anvil's packager for the bundles under `[connectors] bundles`; `--gcs` mirrors it with `gcloud storage rsync`, `--oci` pushes each entry and the index with `oras` |
+| `by tools pull (--from gs://BUCKET/PREFIX \| --oci REGISTRY/REPO) [--store DIR] [--json]` | none | fills a local store from a bucket or a registry and checks every entry against the index; a mismatch fails naming its path |
+| `[tools] store`, `store_bucket` in `branchyard.toml`; `tools.store`, `tools.store_bucket` in server JSON (`schema/branchyard.config.json`, `schema/server.config.json`) | none | the store's root and its Cloud Storage mirror. A turn links the store's entry for its skill or connector when its provider sees the store at the same path: a local harness, Microsandbox (a read-only volume of the root), a GKE Agent Sandbox with `store_bucket` (a Cloud Storage FUSE CSI volume and the `gke-gcsfuse/volumes` annotation). Container, Substrate and recipe sandboxes copy, as before |
+| `by compute gce --tools-store gs://BUCKET/PREFIX` | none | the worker pulls the store to `/opt/branchyard/store` at setup and its `server.json` names it |
+| `tools/session_setup.sh --tools-only` with `BRANCHYARD_TOOLS_FROM` or `BRANCHYARD_TOOLS_OCI` | none | pulls the store and runs `anvil install --prefix /opt/anvil` once, each skipped with a message when its program is absent |

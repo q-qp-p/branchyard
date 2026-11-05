@@ -47,6 +47,7 @@ mod cloud_setup;
 mod commands;
 mod config_cmd;
 mod console;
+mod credential_proxy_cmd;
 mod defaults;
 mod detach;
 mod doctor_cmd;
@@ -91,6 +92,7 @@ mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
 mod task_cmd;
+mod tools_cmd;
 mod trackers;
 mod trigger_cmd;
 mod up_cmd;
@@ -148,6 +150,12 @@ fn main() -> ExitCode {
     match &command {
         Command::Hook { harness, event } => return hook_cmd::hook(harness.as_deref(), event),
         Command::Statusline { harness } => return hook_cmd::statusline(harness.as_deref()),
+        Command::CredentialProxy { .. } => {
+            return errors::finish(
+                credential_proxy_cmd::run(&command),
+                errors::wants_json(&argv),
+            );
+        }
         Command::Mcp {
             action: Some(args::McpCommand::Manager { url, .. }),
             ..
@@ -646,6 +654,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Workspace { json, action } => workspace_cmd::main(env, target, &action, json),
         Command::Recipe { json, action } => recipe_cmd::main(env, target, &action, json),
         Command::Skills { json, action } => skills_cmd::main(target, &action, json),
+        Command::Tools { json, action } => tools_cmd::main(target, &action, json),
         Command::Env { json, action } => env_cmd::main(env, target, &action, json),
         Command::Trigger { json, action } => trigger_cmd::main(env, target, &action, json),
         Command::Rm {
@@ -854,6 +863,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         | Command::Sync(_)
         | Command::Connectors { .. }
         | Command::Hook { .. }
+        | Command::CredentialProxy { .. }
         | Command::Statusline { .. } => unreachable!("handled before choosing a target"),
     }
 }

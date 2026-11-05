@@ -20,6 +20,39 @@ budget, enforced by the generator for the built-in skills and at run time for
 a repository's own (below). The canonical catalog and dependency list are
 generated into the [toolkit reference](artifact-toolkit.md).
 
+## Choosing built-in skills
+
+A task may stage only some built-in skills: `provision.skills` on a task, or
+`skills` on a console session start (the console's Tools step, "How-tos").
+Each chosen skill brings the skills it needs (`pptx` brings `artifact-tools`),
+the rest are not staged, and a skill an earlier, wider turn left in the home is
+removed. The root and topic indexes are rebuilt from the catalog in the
+generator's own format, so they list only what was staged and a topic with
+nothing staged is left out. Without a choice they are the shipped indexes, byte
+for byte. An id that is not built in is refused before the branch exists.
+
+This narrows what a harness is told about, not what it may do: a skill is
+guidance, and the branch's policy still decides every tool call. Connector skills
+follow the connector grant instead, and repository skills their own gate below.
+`crates/branchyard-provision/src/built_in.rs` holds the rule;
+`crates/branchyard/src/capabilities.rs` stages it.
+
+## The tool tree and `tools search`
+
+Status: built, hermetic only (fakes and unit tests; no harness was run with a model against it). Each turn the chosen skills and connectors are mounted as one tree, `.branchyard/tools/` in the branch's home, and the harness is told about it in one line instead of one line for skills and one for connectors. Where a provider controls the guest filesystem (Microsandbox, a container, a GKE Agent Sandbox) the tree is also at `/tools`, `BRANCHYARD_TOOLS=/tools` is set, the two links name absolute guest paths, and the line names `/tools`; a local harness keeps the home path ([tools model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)).
+
+```text
+.branchyard/tools/
+  INDEX.md     at most 4 KB: one `- name: description` per skill and connector, how to search
+  bin/tools    stdlib Python; `search WORDS`, `show ID`, `schema CONNECTOR.OP`
+  skills       -> ../capabilities     (built-in, and repository/<name> when staged)
+  connectors   -> ../connectors       (Anvil's packages, and _compose)
+```
+
+`tools search` ranks with BM25 over each skill's frontmatter and headings, each connector's description and operations, and helper lines when a `helpers/INDEX.md` exists, which a turn gets when its grant has helpers: the envelope's limits and one line for each harness it may delegate to ([tools-model](tools-model.md)). A package that has a `search.json` (Anvil's operation search index, [contract v2 item 3](anvil-contract-v2.md#3-operation-search-index-and-a-lean-skillmd)) is read from it, strictly: every field is checked, `tools schema` prints the file its `schema` field names, and a malformed index is refused with its file and field named, none of that connector's operations are searched, the rest still answer, and `tools` exits 3. Only a package without one is read tolerantly: from `harness.json` or `compose.json` (an `operations` list or map), its `schemas/*.json` file names and its `reference/*.md` headings and table rows; `tools schema` then prints the schema from `schemas/` or the JSON catalogs, and when a package records none it says so and names the connector's own `--schema`. The strict format was written from the contract and tested against the [Anvil mock](anvil-contract-v2.md#the-mock), the tolerant one from `docs/connectors.md`; neither was read from a real Anvil package. The `find-tools` skill (under 600 characters of instructions) teaches the habit. Descriptions in `INDEX.md` are cut, then dropped, then the list cut, to stay in 4 KB.
+
+The built-in skills are not yet chosen per turn: every turn lists all of them. Choosing is phase 1 of [tools-model.md](tools-model.md). Helpers have no listing yet either.
+
 ## Your repository's skills
 
 A repository can carry its own skills in `.agents/skills/<name>/`, the folder

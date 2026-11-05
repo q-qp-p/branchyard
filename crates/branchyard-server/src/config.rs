@@ -39,6 +39,71 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// What `database_auth` checks in a PostgreSQL URL.
+struct DatabaseUrl {
+    /// The URL carries a password.
+    password: bool,
+    /// `sslmode=require`.
+    require_tls: bool,
+    /// Every host is loopback or a Unix socket.
+    loopback: bool,
+}
+
+impl DatabaseUrl {
+    fn parse(url: &str) -> DatabaseUrl {
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let (before_query, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let authority = before_query.split('/').next().unwrap_or_default();
+        let (user, hosts) = authority.rsplit_once('@').unwrap_or(("", authority));
+        let pairs: Vec<(&str, &str)> = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .collect();
+        let query_value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+        let password = user.split_once(':').is_some_and(|(_, p)| !p.is_empty())
+            || query_value("password").is_some_and(|p| !p.is_empty());
+        let require_tls = query_value("sslmode") == Some("require");
+        let hosts = match (hosts.is_empty(), query_value("host")) {
+            (true, Some(host)) => host,
+            _ => hosts,
+        };
+        let loopback = !hosts.is_empty()
+            && hosts.split(',').all(|entry| {
+                let entry = entry.trim();
+                let name = match entry.strip_prefix('[') {
+                    Some(v6) => v6.split(']').next().unwrap_or_default(),
+                    None => entry.split(':').next().unwrap_or_default(),
+                };
+                name.starts_with('/')
+                    || name.starts_with("%2F")
+                    || name.starts_with("%2f")
+                    || name.eq_ignore_ascii_case("localhost")
+                    || name
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        DatabaseUrl {
+            password,
+            require_tls,
+            loopback,
+        }
+    }
+}
+
+/// How the server logs in to its PostgreSQL `database`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseAuth {
+    /// The password in the URL, or none (the default).
+    #[default]
+    Password,
+    /// A Google OAuth access token from the metadata server, as the
+    /// password, at every new connection: AlloyDB and Cloud SQL IAM
+    /// database authentication.
+    GcpIam,
+}
+
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8421";
 
 /// Which repositories' workspace scripts a server runs: its operator's
@@ -96,9 +161,12 @@ pub fn check_scope_name(name: &str) -> Result<(), String> {
 }
 
 pub(crate) fn check_principal(principal: &Principal) -> Result<(), String> {
-    if principal.origin == AuthenticationOrigin::Configured && principal.name.starts_with("google:")
+    if principal.origin == AuthenticationOrigin::Configured
+        && ["google:", "iap:", "oidc:"]
+            .iter()
+            .any(|prefix| principal.name.starts_with(prefix))
     {
-        return Err("the google: principal prefix is reserved for authenticated external identities; rename this static principal".into());
+        return Err("the google:, iap: and oidc: principal prefixes are reserved for authenticated external identities; rename this static principal".into());
     }
     if principal.name.is_empty() || principal.name.len() > 128 {
         return Err(format!(
@@ -110,6 +178,20 @@ pub(crate) fn check_principal(principal: &Principal) -> Result<(), String> {
         .map_err(|e| format!("principal {}: {e}", principal.name))?;
     for scope in &principal.scopes {
         check_scope_name(scope).map_err(|e| format!("principal {}: {e}", principal.name))?;
+    }
+    for group in &principal.groups {
+        check_group_name(group).map_err(|e| format!("principal {}: {e}", principal.name))?;
+    }
+    Ok(())
+}
+
+/// A group name: 1 to 256 characters and no control characters, so it can
+/// sit inside a policy key.
+pub fn check_group_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(format!(
+            "group {name:?} is not a usable group name (1 to 256 characters, no control characters)"
+        ));
     }
     Ok(())
 }
@@ -157,6 +239,50 @@ pub enum AuthenticationOrigin {
         /// The server audience against which the token was verified.
         audience: String,
     },
+    /// A Google Cloud IAP assertion matched an operator-configured binding.
+    Iap {
+        /// The verified email address, for audit. Never the identity key.
+        email: String,
+        /// The verified IAP subject, such as `accounts.google.com:1234`.
+        sub: String,
+        /// When the groups this principal holds were read from Cloud
+        /// Identity (milliseconds since the Unix epoch); absent when they
+        /// came from the token or the provider has none. A recheck of
+        /// queued work looks them up again once they are older than the
+        /// lookup's cache (`docs/identity.md`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        groups_at_ms: Option<u64>,
+    },
+    /// A federated OIDC token (Workforce or Workload Identity Federation, or
+    /// a plain issuer) matched an operator-configured binding.
+    Oidc {
+        /// The verified issuer.
+        issuer: String,
+        /// The verified subject claim.
+        sub: String,
+        /// The verified email, when the token carried one. Kept so a
+        /// queued operation is rechecked against the binding that admitted
+        /// it; never the identity key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email: Option<String>,
+        /// When the groups this principal holds were read from Cloud
+        /// Identity (milliseconds since the Unix epoch); absent when they
+        /// came from the token's claim or the provider has no lookup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        groups_at_ms: Option<u64>,
+    },
+}
+
+impl AuthenticationOrigin {
+    /// Whether an external identity provider vouched for this origin.
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(
+            self,
+            AuthenticationOrigin::GoogleIdToken { .. }
+                | AuthenticationOrigin::Iap { .. }
+                | AuthenticationOrigin::Oidc { .. }
+        )
+    }
 }
 
 /// An exact external identity mapped to existing server authorization policy.
@@ -270,6 +396,12 @@ pub struct Principal {
     /// `None` allows every repository its tenant allows.
     #[serde(default)]
     pub repos: Option<BTreeSet<String>>,
+    /// Groups this subject belongs to, matched against group tool policies
+    /// (`docs/server.md`, "Tool policy"). Static entries name them; IAP and
+    /// federated sign-in fill them from the token's groups claim or from
+    /// Cloud Identity. A paired device carries its issuer's groups.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub groups: BTreeSet<String>,
 }
 
 impl Principal {
@@ -288,9 +420,7 @@ impl Principal {
             }
             origin = parent;
         }
-        if matches!(self.origin, AuthenticationOrigin::Paired { .. })
-            && matches!(origin, AuthenticationOrigin::GoogleIdToken { .. })
-        {
+        if matches!(self.origin, AuthenticationOrigin::Paired { .. }) && origin.is_external() {
             let mut root = self.clone();
             root.origin = origin.clone();
             if root.connector_subject() != subject {
@@ -304,6 +434,7 @@ impl Principal {
     pub(crate) fn within_policy(&self, issuer: &Principal) -> bool {
         self.tenant == issuer.tenant
             && self.scopes.is_subset(&issuer.scopes)
+            && self.groups.is_subset(&issuer.groups)
             && match (&self.repos, &issuer.repos) {
                 (_, None) => true,
                 (Some(asked), Some(allowed)) => asked.is_subset(allowed),
@@ -320,6 +451,7 @@ impl Principal {
             tenant: DEFAULT_TENANT.to_owned(),
             scopes: SCOPES.iter().map(|s| s.to_string()).collect(),
             repos: None,
+            groups: BTreeSet::new(),
         }
     }
 
@@ -334,6 +466,14 @@ impl Principal {
             } => {
                 let identity = serde_json::json!([issuer, subject]).to_string();
                 format!("google:{}", sha256_hex(identity.as_bytes()))
+            }
+            AuthenticationOrigin::Iap { sub, .. } => {
+                let identity = serde_json::json!(["https://cloud.google.com/iap", sub]).to_string();
+                format!("iap:{}", sha256_hex(identity.as_bytes()))
+            }
+            AuthenticationOrigin::Oidc { issuer, sub, .. } => {
+                let identity = serde_json::json!([issuer, sub]).to_string();
+                format!("oidc:{}", sha256_hex(identity.as_bytes()))
             }
         }
     }
@@ -534,6 +674,22 @@ impl Default for ManagedKnowledge {
     }
 }
 
+/// Whether an administrator may install a helper's harness on this server's
+/// own host from the console (`POST /v1/tools/helpers/{id}/install`).
+/// Installing runs the harness catalog's install command (`npm install -g`,
+/// a vendor's installer script) as the server's user, so it is off until the
+/// operator turns it on. See docs/server.md#install-a-helpers-harness.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct HarnessInstall {
+    /// Explicit operator opt-in; disabled by default.
+    pub allow: bool,
+    /// The `PATH` the install commands run with and their programs (`npm`,
+    /// `curl`) are looked for on; the server's own `PATH` when unset.
+    pub path: Option<String>,
+}
+
 /// An operator-approved execution environment for workspace sessions, one
 /// entry of `execution_presets`. A session start names its `id`; the server
 /// supplies the provider, secrets and worker labels, and then applies the
@@ -655,6 +811,8 @@ pub struct Config {
     pub repos: Vec<(String, PathBuf)>,
     /// Operator-owned knowledge workspace storage and limits.
     pub managed_knowledge: ManagedKnowledge,
+    /// Whether the console may install a helper's harness on this host.
+    pub harness_install: HarnessInstall,
     pub tokens: Vec<Token>,
     /// The token file serving made or used because the configuration and
     /// the flags gave no credential (`<data_dir>/token`): what a client
@@ -670,6 +828,10 @@ pub struct Config {
     pub credentials: Vec<Credential>,
     /// Optional Google-only verified caller admission.
     pub google_identity: Option<GoogleIdTokenConfig>,
+    /// Sign-in through Google Cloud IAP (`x-goog-iap-jwt-assertion`).
+    pub iap: Option<crate::federated::IapConfig>,
+    /// Federated OIDC issuers whose bearer ID tokens are accepted.
+    pub oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     #[cfg(test)]
     pub(crate) google_jwks_url: Option<String>,
     /// Each tenant's resource ceilings and repositories, keyed by tenant
@@ -755,6 +917,12 @@ pub struct Config {
     /// A PostgreSQL URL: keep branch state and operations there instead of
     /// SQLite. Only in a build with the `postgres` feature.
     pub database: Option<String>,
+    /// PEM file of the certificates that sign the database's server
+    /// certificate (an AlloyDB instance's server CA), for
+    /// `sslmode=require`.
+    pub database_ca_file: Option<PathBuf>,
+    /// How the server logs in to `database`.
+    pub database_auth: DatabaseAuth,
     /// How often the feed looks in the repository's store for activity
     /// recorded by other processes.
     pub poll_interval: Duration,
@@ -772,6 +940,9 @@ pub struct Config {
     /// The connector gateway its branches' turns are given, and whether
     /// this server runs it; see `docs/connectors.md`. `None`: off.
     pub connectors: Option<ConnectorsConfig>,
+    /// The shared tool store its turns link skills and connector packages
+    /// from (docs/tools-model.md). `None`: every turn copies.
+    pub tools: Option<ToolsConfig>,
     /// The model gateway (docs/model-gateway.md), as `[models]` in
     /// branchyard.toml says it. `None`: off.
     pub models: Option<branchyard_setup::config::ModelsConfig>,
@@ -896,6 +1067,28 @@ impl AppConfig {
     }
 }
 
+/// Whether the connector gateway at `url` is on this host's loopback.
+fn gateway_is_loopback(url: &str) -> bool {
+    let Some((host, _)) = branchyard::connectors::gateway::host_port(url) else {
+        return false;
+    };
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// `tools` in the configuration file: the shared tool store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolsConfig {
+    /// The store's root, filled by `by tools pull`; a sandbox sees it at
+    /// the same path.
+    pub store: PathBuf,
+    /// The Cloud Storage bucket (`BUCKET` or `BUCKET/PREFIX`) that mirrors
+    /// the store, which a GKE Agent Sandbox mounts read-only.
+    pub store_bucket: Option<String>,
+}
+
 /// `connectors` in the configuration file: the connector gateway.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectorsConfig {
@@ -906,8 +1099,11 @@ pub struct ConnectorsConfig {
     /// Every token's issuer. Default: this server's URL.
     pub issuer: Option<String>,
     /// The signing key file (a private JWKS, made if missing). Default:
-    /// `<data_dir>/gateway/key`.
+    /// `<data_dir>/gateway/key`. A worker never makes it. Not with
+    /// `signing_kms`.
     pub signing_key: Option<PathBuf>,
+    /// Sign with Cloud KMS keys instead of a key file.
+    pub signing_kms: Option<KmsSigning>,
     /// The gateway's audit log, read into `connector_call` events.
     /// Default: `<data_dir>/gateway/audit.jsonl`.
     pub audit_file: Option<PathBuf>,
@@ -932,6 +1128,104 @@ pub struct ConnectorsConfig {
     /// How a sandboxed harness reaches this host: its ledger proxy and its
     /// delegation endpoint.
     pub effects_sandbox_host: Option<String>,
+    /// This server's URL as a sandbox reaches it. When set, a sandbox whose
+    /// provider can run a credential proxy fetches the turn's gateway token
+    /// from here (`POST /v1/turns/token`) instead of the host holding it.
+    pub sandbox_server: Option<String>,
+    /// The audience of the Google ID token a sandbox presents. Default: the
+    /// issuer.
+    pub sandbox_audience: Option<String>,
+    /// The Google service accounts a sandbox must also present, besides the
+    /// turn's secret, to fetch a token. Empty: the secret alone.
+    pub sandbox_identities: Vec<SandboxIdentity>,
+    /// Where Google's signing keys are read from. Default Google's.
+    pub sandbox_jwks_url: Option<String>,
+    /// The image of a GKE Agent Sandbox's credential proxy sidecar.
+    pub sandbox_proxy_image: Option<String>,
+    /// The `by` a Microsandbox guest runs. Default `by`.
+    pub sandbox_by: Option<String>,
+}
+
+impl ConnectorsConfig {
+    /// The sandbox credential settings, or what is wrong with them.
+    fn check_sandbox(&self) -> Result<(), String> {
+        for (key, url) in [
+            ("sandbox_server", &self.sandbox_server),
+            ("sandbox_jwks_url", &self.sandbox_jwks_url),
+        ] {
+            if let Some(url) = url {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err(format!(
+                        "connectors.{key}: {url:?} is not an http:// or https:// URL"
+                    ));
+                }
+            }
+        }
+        if let Some(image) = &self.sandbox_proxy_image {
+            if self.sandbox_server.is_none() {
+                return Err(
+                    "connectors.sandbox_proxy_image needs connectors.sandbox_server".into(),
+                );
+            }
+            if !image.contains("@sha256:") || image.contains(char::is_whitespace) {
+                return Err(format!(
+                    "connectors.sandbox_proxy_image: {image:?} is not repository@sha256:<digest>"
+                ));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for identity in &self.sandbox_identities {
+            let account = &identity.service_account;
+            let plain = account.len() <= 256
+                && account
+                    .split_once('@')
+                    .is_some_and(|(name, domain)| !name.is_empty() && domain.contains('.'))
+                && !account.chars().any(|c| c.is_whitespace() || c.is_control());
+            if !plain {
+                return Err(format!(
+                    "connectors.sandbox_identities: {account:?} is not a service account email"
+                ));
+            }
+            if identity.tenant.as_deref().is_some_and(str::is_empty) {
+                return Err(format!(
+                    "connectors.sandbox_identities: the tenant of {account} is empty"
+                ));
+            }
+            if !seen.insert(account.to_ascii_lowercase()) {
+                return Err(format!(
+                    "connectors.sandbox_identities names {account} twice"
+                ));
+            }
+        }
+        if !self.sandbox_identities.is_empty() && self.sandbox_server.is_none() {
+            return Err(
+                "connectors.sandbox_identities needs connectors.sandbox_server, the URL a \
+                 sandbox fetches from"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// One Google service account a sandbox may fetch gateway tokens as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxIdentity {
+    /// Its email, `NAME@PROJECT.iam.gserviceaccount.com` (a GKE Workload
+    /// Identity service account, or a GCE VM's).
+    pub service_account: String,
+    /// The one tenant it serves; any tenant when unset.
+    pub tenant: Option<String>,
+}
+
+/// `connectors.signing`: the Cloud KMS keys that sign gateway tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KmsSigning {
+    /// `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`
+    /// of `EC_SIGN_ED25519` keys: the first signs, all are published.
+    pub key_versions: Vec<String>,
+    /// The KMS API's address. Default `https://cloudkms.googleapis.com`.
+    pub base_url: Option<String>,
 }
 
 /// What a build without the `postgres` feature says to a configuration that
@@ -952,11 +1246,14 @@ impl Config {
             data_dir,
             repos: Vec::new(),
             managed_knowledge: ManagedKnowledge::default(),
+            harness_install: HarnessInstall::default(),
             tokens: Vec::new(),
             default_token_file: None,
             principals: BTreeMap::new(),
             credentials: Vec::new(),
             google_identity: None,
+            iap: None,
+            oidc_issuers: Vec::new(),
             #[cfg(test)]
             google_jwks_url: None,
             tenants: BTreeMap::new(),
@@ -985,12 +1282,15 @@ impl Config {
             execution_presets: Vec::new(),
             require_workspace_execution_presets: false,
             database: None,
+            database_ca_file: None,
+            database_auth: DatabaseAuth::Password,
             poll_interval: Duration::from_millis(500),
             recover_interval: crate::serve::RECOVER_EVERY,
             log_requests: true,
             webhooks: Vec::new(),
             webhook_insecure: false,
             connectors: None,
+            tools: None,
             models: None,
             ceilings: BTreeMap::new(),
             approvals: branchyard::effects::ApprovalSettings::default(),
@@ -1101,6 +1401,15 @@ impl Config {
                 return Err("managed_knowledge quotas must be positive".into());
             }
         }
+        if let Some(t) = &self.tools {
+            let checked = branchyard_setup::config::Tools {
+                store: Some(t.store.display().to_string()),
+                store_bucket: t.store_bucket.clone(),
+            };
+            if let Some((key, why)) = checked.problems() {
+                return Err(format!("{key}: {why}"));
+            }
+        }
         if let Some(c) = &self.connectors {
             for url in std::iter::once(&c.gateway).chain(&c.sandbox_gateway) {
                 if !(url.starts_with("http://") || url.starts_with("https://")) {
@@ -1112,14 +1421,52 @@ impl Config {
             if c.anvil.is_empty() {
                 return Err("connectors.anvil names no command".into());
             }
+            c.check_sandbox()?;
+            if let Some(kms) = &c.signing_kms {
+                if c.signing_key.is_some() {
+                    return Err(
+                        "connectors.signing and connectors.signing_key both name a signer; \
+                         keep one"
+                            .into(),
+                    );
+                }
+                crate::kms::check_versions(&kms.key_versions)?;
+                if let Some(base) = &kms.base_url {
+                    branchyard_client::http::Endpoint::parse(base)
+                        .map_err(|e| format!("connectors.signing.kms_base_url: {e}"))?;
+                }
+            }
+            if c.issuer.is_none() && (self.worker_only || !gateway_is_loopback(&c.gateway)) {
+                return Err(format!(
+                    "connectors.issuer is required {}: a default taken from this process's \
+                     address would differ between processes, and the gateway checks every \
+                     token against one issuer; set it to the URL the gateway is told to trust",
+                    if self.worker_only {
+                        "on a worker"
+                    } else {
+                        "when connectors.gateway is not on loopback"
+                    }
+                ));
+            }
+            if self.worker_only && c.signing_kms.is_none() && c.signing_key.is_none() {
+                return Err(
+                    "a worker needs connectors.signing (Cloud KMS) or connectors.signing_key, \
+                     the same key file as the server's: it would otherwise make a key of its \
+                     own and sign tokens the gateway does not trust"
+                        .into(),
+                );
+            }
         }
         self.app.validate()?;
         if let Some(identity) = &self.google_identity {
             identity.validate()?;
         }
+        crate::federated::validate(self.iap.as_ref(), &self.oidc_issuers)?;
         if self.tokens.is_empty()
             && self.credentials.is_empty()
             && self.google_identity.is_none()
+            && self.iap.is_none()
+            && self.oidc_issuers.is_empty()
             && !self.worker_only
         {
             return Err("no tokens or credentials configured; every request needs one".into());
@@ -1246,6 +1593,7 @@ impl Config {
                 return Err("database must be a PostgreSQL URL, postgres://user@host/name".into());
             }
         }
+        self.check_database_login()?;
         if self.worker_only && self.database.is_none() {
             return Err(
                 "a worker needs --database: it runs operations other servers queued there".into(),
@@ -1354,6 +1702,36 @@ impl Config {
 
     /// Refuse an execution preset that could not run as written, after the
     /// flags merged `allow_providers` and `secrets` in.
+    /// `database_ca_file` and `database_auth` against the `database` URL.
+    fn check_database_login(&self) -> Result<(), String> {
+        if self.database.is_none() {
+            if self.database_ca_file.is_some() || self.database_auth != DatabaseAuth::Password {
+                return Err("database_ca_file and database_auth need a database".into());
+            }
+            return Ok(());
+        }
+        if self.database_auth != DatabaseAuth::GcpIam {
+            return Ok(());
+        }
+        let url = self.database.as_deref().unwrap_or_default();
+        let parts = DatabaseUrl::parse(url);
+        if parts.password {
+            return Err(
+                "database_auth gcp_iam takes the password from Google: remove the password from \
+                 the database URL"
+                    .into(),
+            );
+        }
+        if !parts.require_tls && !parts.loopback {
+            return Err(
+                "database_auth gcp_iam sends a token: the database URL needs sslmode=require \
+                 (or a loopback host, the AlloyDB Auth Proxy)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     fn check_execution_presets(&self) -> Result<(), String> {
         if self.require_workspace_execution_presets && self.execution_presets.is_empty() {
             return Err(
@@ -1580,12 +1958,17 @@ pub(crate) struct FileConfig {
     #[serde(default)]
     managed_knowledge: ManagedKnowledge,
     #[serde(default)]
+    harness_install: HarnessInstall,
+    #[serde(default)]
     repos: BTreeMap<String, PathBuf>,
     #[serde(default)]
     tokens: Vec<FileToken>,
     #[serde(default)]
     credentials: Vec<FileCredential>,
     google_identity: Option<GoogleIdTokenConfig>,
+    iap: Option<crate::federated::IapConfig>,
+    #[serde(default)]
+    oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     #[serde(default)]
     tenants: BTreeMap<String, FileTenantPolicy>,
     tls: Option<FileTls>,
@@ -1625,6 +2008,18 @@ pub(crate) struct FileConfig {
     #[serde(default)]
     require_workspace_execution_presets: bool,
     database: Option<String>,
+    /// PEM file of the certificates that sign the database server's
+    /// certificate (an AlloyDB instance's server CA), added to the public
+    /// roots for `sslmode=require`. A relative path is relative to this
+    /// file. See docs/server.md#alloydb.
+    database_ca_file: Option<PathBuf>,
+    /// `"password"` (default): the password in the `database` URL, if any.
+    /// `"gcp_iam"`: a Google access token from the metadata server, as the
+    /// password at each connection (AlloyDB and Cloud SQL IAM
+    /// authentication); the URL then has no password and `sslmode=require`
+    /// unless the host is loopback. See docs/server.md#alloydb.
+    #[serde(default)]
+    database_auth: DatabaseAuth,
     /// The labels this server's worker carries; it claims only operations
     /// whose `require_labels` are all among them. See
     /// docs/server.md#worker-labels.
@@ -1644,6 +2039,9 @@ pub(crate) struct FileConfig {
     /// The connector gateway (docs/connectors.md): where it is, which
     /// bundles it serves, and whether this server runs it.
     connectors: Option<FileConnectors>,
+    /// The shared tool store (docs/tools-model.md): where it is, and the
+    /// bucket that mirrors it.
+    tools: Option<FileTools>,
     /// The model gateway (docs/model-gateway.md): backends, routes,
     /// budgets and prices, as `[models]` in branchyard.toml. A backend's
     /// `key` names an entry of `secrets`, else a variable of this server.
@@ -1811,6 +2209,22 @@ impl FileCeiling {
     }
 }
 
+/// `tools`: the shared tool store; see `docs/tools-model.md`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileTools {
+    /// The store's root, such as `/opt/branchyard/store`: it holds
+    /// `skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`. A
+    /// turn links the entries it needs instead of copying them, and a
+    /// sandbox sees the store at this path.
+    store: PathBuf,
+    /// The Cloud Storage bucket that mirrors the store, `BUCKET` or
+    /// `BUCKET/PREFIX`, which a GKE Agent Sandbox mounts read-only with the
+    /// Cloud Storage FUSE CSI driver.
+    store_bucket: Option<String>,
+}
+
 /// `connectors`: the connector gateway; see `docs/connectors.md`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1823,10 +2237,13 @@ pub(crate) struct FileConnectors {
     sandbox_gateway: Option<String>,
     /// Every token's issuer. Default: this server's URL.
     issuer: Option<String>,
-    /// The signing key, a private JSON Web Key Set made if missing.
-    /// Default: `<data_dir>/gateway/key`. Its public keys are served at
-    /// `GET /.well-known/jwks.json`.
+    /// The signing key, a private JSON Web Key Set made if missing (never
+    /// by a worker). Default: `<data_dir>/gateway/key`. Its public keys
+    /// are served at `GET /.well-known/jwks.json`.
     signing_key: Option<PathBuf>,
+    /// Sign with Cloud KMS instead of a key file; refused together with
+    /// `signing_key`.
+    signing: Option<FileSigning>,
     /// The gateway's audit log. Default: `<data_dir>/gateway/audit.jsonl`.
     audit_file: Option<PathBuf>,
     /// The bundle root the gateway serves.
@@ -1855,6 +2272,60 @@ pub(crate) struct FileConnectors {
     /// its effects reach the ledger only from the audit log, and a
     /// sandboxed harness gets no delegation tools.
     effects_sandbox_host: Option<String>,
+    /// This server's URL as a sandbox reaches it. With it, a sandbox that can
+    /// run a credential proxy (a GKE Agent Sandbox's sidecar, a Microsandbox
+    /// guest's process) fetches the turn's five-minute gateway token from
+    /// `POST /v1/turns/token` and the harness holds none
+    /// (`docs/connectors.md#the-credential-proxy-in-the-sandbox`). Without
+    /// it every turn keeps the host's proxy.
+    sandbox_server: Option<String>,
+    /// The audience of the Google ID token a sandbox presents. Default: the
+    /// issuer.
+    sandbox_audience: Option<String>,
+    /// The Google service accounts a sandbox must also present, besides the
+    /// turn's secret, to fetch a token. Each is verified from a
+    /// Google-signed ID token the sandbox gets from the metadata server.
+    /// Empty: the turn's secret alone fetches.
+    #[serde(default)]
+    sandbox_identities: Vec<FileSandboxIdentity>,
+    /// Where Google's signing keys are read from. Default Google's.
+    sandbox_jwks_url: Option<String>,
+    /// The image of a GKE Agent Sandbox's credential proxy sidecar
+    /// (`repository@sha256:digest`, with `by` on its `PATH`). Default: the
+    /// sandbox's own image.
+    sandbox_proxy_image: Option<String>,
+    /// The `by` a Microsandbox guest runs, on its `PATH` or an absolute
+    /// guest path. Default `by`.
+    sandbox_by: Option<String>,
+}
+
+/// `connectors.sandbox_identities`: one Google service account.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileSandboxIdentity {
+    /// The account's email, `NAME@PROJECT.iam.gserviceaccount.com`.
+    service_account: String,
+    /// The one tenant it serves. Default: any.
+    tenant: Option<String>,
+}
+
+/// `connectors.signing`: sign gateway tokens with Cloud KMS
+/// (`docs/server.md#signing-with-cloud-kms`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileSigning {
+    /// Cloud KMS key versions of `EC_SIGN_ED25519` keys, as
+    /// `projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`.
+    /// The first signs; all are published at `GET /.well-known/jwks.json`,
+    /// so a rotation lists the new version first and drops the old one
+    /// once its tokens have expired. The server's and each worker's
+    /// service account needs `roles/cloudkms.signerVerifier` on the key.
+    kms_key_versions: Vec<String>,
+    /// The Cloud KMS API's address. Default `https://cloudkms.googleapis.com`;
+    /// for tests.
+    kms_base_url: Option<String>,
 }
 
 /// `approvals`: the administrator's locked policy and the people's
@@ -1942,6 +2413,9 @@ pub(crate) struct FileToken {
     scopes: Vec<String>,
     #[serde(default)]
     repos: Option<Vec<String>>,
+    /// Groups this principal belongs to, for group tool policies.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1956,6 +2430,10 @@ pub(crate) struct FileCredential {
     scopes: Vec<String>,
     #[serde(default)]
     repos: Option<Vec<String>>,
+    /// Groups this credential's principal belongs to, for group tool
+    /// policies.
+    #[serde(default)]
+    groups: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -2011,12 +2489,18 @@ pub struct Partial {
     pub data_dir: Option<PathBuf>,
     /// Operator knowledge storage settings from the config file.
     pub managed_knowledge: ManagedKnowledge,
+    /// Whether the console may install a helper's harness on this host.
+    pub harness_install: HarnessInstall,
     pub repos: Vec<(String, PathBuf)>,
     pub tokens: Vec<Token>,
     pub principals: BTreeMap<String, Principal>,
     pub credentials: Vec<Credential>,
     /// Optional Google-only verified caller admission.
     pub google_identity: Option<GoogleIdTokenConfig>,
+    /// Optional Google Cloud IAP sign-in.
+    pub iap: Option<crate::federated::IapConfig>,
+    /// Federated OIDC issuers.
+    pub oidc_issuers: Vec<crate::federated::OidcIssuerConfig>,
     pub tenants: BTreeMap<String, TenantPolicy>,
     pub tls: Option<TlsFiles>,
     pub max_body_bytes: Option<usize>,
@@ -2038,12 +2522,18 @@ pub struct Partial {
     /// `require_workspace_execution_presets`.
     pub require_workspace_execution_presets: bool,
     pub database: Option<String>,
+    /// `database_ca_file`, its relative path resolved.
+    pub database_ca_file: Option<PathBuf>,
+    /// `database_auth`.
+    pub database_auth: DatabaseAuth,
     pub labels: Vec<String>,
     pub inventory: Option<bool>,
     pub unclaimable_after: Option<Duration>,
     pub webhooks: Vec<WebhookConfig>,
     pub webhook_insecure: bool,
     pub connectors: Option<ConnectorsConfig>,
+    /// `tools`, its relative store path resolved.
+    pub tools: Option<ToolsConfig>,
     pub models: Option<branchyard_setup::config::ModelsConfig>,
     pub ceilings: BTreeMap<String, branchyard::Ceiling>,
     pub approvals: branchyard::effects::ApprovalSettings,
@@ -2118,7 +2608,11 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                 ))
             }
         };
-        if token.tenant.is_some() || !token.scopes.is_empty() || token.repos.is_some() {
+        if token.tenant.is_some()
+            || !token.scopes.is_empty()
+            || token.repos.is_some()
+            || !token.groups.is_empty()
+        {
             let principal = Principal {
                 origin: Default::default(),
                 name: token.name.clone(),
@@ -2128,6 +2622,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => token.scopes.into_iter().collect(),
                 },
                 repos: token.repos.map(|r| r.into_iter().collect()),
+                groups: token.groups.into_iter().collect(),
             };
             principals.insert(token.name.clone(), principal);
         }
@@ -2152,6 +2647,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
                     false => credential.scopes.into_iter().collect(),
                 },
                 repos: credential.repos.map(|r| r.into_iter().collect()),
+                groups: credential.groups.into_iter().collect(),
             },
         });
     }
@@ -2278,6 +2774,7 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             root: file.managed_knowledge.root.map(resolve),
             ..file.managed_knowledge
         },
+        harness_install: file.harness_install,
         repos: file
             .repos
             .into_iter()
@@ -2287,6 +2784,8 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
         principals,
         credentials,
         google_identity: file.google_identity,
+        iap: file.iap,
+        oidc_issuers: file.oidc_issuers,
         tenants,
         tls: file.tls.map(|t| TlsFiles {
             cert: resolve(t.cert),
@@ -2320,6 +2819,8 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             .collect(),
         require_workspace_execution_presets: file.require_workspace_execution_presets,
         database: file.database,
+        database_ca_file: file.database_ca_file.map(resolve),
+        database_auth: file.database_auth,
         labels: file.labels,
         inventory: file.inventory,
         unclaimable_after,
@@ -2356,6 +2857,10 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             sandbox_gateway: c.sandbox_gateway,
             issuer: c.issuer,
             signing_key: c.signing_key.map(resolve),
+            signing_kms: c.signing.map(|s| KmsSigning {
+                key_versions: s.kms_key_versions,
+                base_url: s.kms_base_url,
+            }),
             audit_file: c.audit_file.map(resolve),
             bundles: resolve(c.bundles),
             anvil: c.anvil.unwrap_or_else(|| vec!["anvil".to_owned()]),
@@ -2365,6 +2870,23 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             effects_proxy: c.effects_proxy,
             effects_listen: c.effects_listen,
             effects_sandbox_host: c.effects_sandbox_host,
+            sandbox_server: c.sandbox_server,
+            sandbox_audience: c.sandbox_audience,
+            sandbox_identities: c
+                .sandbox_identities
+                .into_iter()
+                .map(|i| SandboxIdentity {
+                    service_account: i.service_account,
+                    tenant: i.tenant,
+                })
+                .collect(),
+            sandbox_jwks_url: c.sandbox_jwks_url,
+            sandbox_proxy_image: c.sandbox_proxy_image,
+            sandbox_by: c.sandbox_by,
+        }),
+        tools: file.tools.map(|t| ToolsConfig {
+            store: resolve(t.store),
+            store_bucket: t.store_bucket,
         }),
         models: match file.models {
             Some(models) => {
@@ -2465,6 +2987,270 @@ mod tests {
         c
     }
 
+    const KMS_V1: &str = "projects/p/locations/global/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1";
+
+    fn with_connectors(gateway: &str) -> Config {
+        let mut c = config("127.0.0.1:0");
+        c.connectors = Some(ConnectorsConfig {
+            gateway: gateway.into(),
+            sandbox_gateway: None,
+            issuer: Some("https://by.example".into()),
+            signing_key: None,
+            signing_kms: None,
+            audit_file: None,
+            bundles: PathBuf::from("/nonexistent/bundles"),
+            anvil: vec!["anvil".into()],
+            run_gateway: false,
+            listen: None,
+            vault_key: None,
+            effects_proxy: None,
+            effects_listen: None,
+            effects_sandbox_host: None,
+            sandbox_server: None,
+            sandbox_audience: None,
+            sandbox_identities: Vec::new(),
+            sandbox_jwks_url: None,
+            sandbox_proxy_image: None,
+            sandbox_by: None,
+        });
+        c
+    }
+
+    /// Whether `validate` gets past the connector checks (a worker is next
+    /// refused for having no `--database`, which these tests do not set).
+    fn connectors_pass(c: &Config) -> bool {
+        match c.validate() {
+            Ok(_) => true,
+            Err(e) => e.contains("a worker needs --database"),
+        }
+    }
+
+    fn connectors_mut(c: &mut Config) -> &mut ConnectorsConfig {
+        c.connectors.as_mut().unwrap()
+    }
+
+    #[test]
+    fn sandbox_credential_settings_are_read_and_checked() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().join("server.json");
+        let write = |connectors: &str| {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {{"app": "repo"}},
+                    "connectors": {{"gateway": "http://127.0.0.1:8931/mcp", "bundles": "b",
+                                    {connectors}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(
+            r#""sandbox_server": "https://by.example", "sandbox_audience": "https://aud.example",
+               "sandbox_jwks_url": "https://keys.example/certs", "sandbox_by": "/opt/by",
+               "sandbox_proxy_image": "gcr.io/p/by@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+               "sandbox_identities": [
+                 {"service_account": "sb@p.iam.gserviceaccount.com"},
+                 {"service_account": "gx@p.iam.gserviceaccount.com", "tenant": "globex"}]"#,
+        );
+        let connectors = load_file(&path).unwrap().connectors.unwrap();
+        assert_eq!(
+            connectors.sandbox_server.as_deref(),
+            Some("https://by.example")
+        );
+        assert_eq!(connectors.sandbox_by.as_deref(), Some("/opt/by"));
+        assert_eq!(
+            connectors.sandbox_identities,
+            [
+                SandboxIdentity {
+                    service_account: "sb@p.iam.gserviceaccount.com".into(),
+                    tenant: None
+                },
+                SandboxIdentity {
+                    service_account: "gx@p.iam.gserviceaccount.com".into(),
+                    tenant: Some("globex".into())
+                },
+            ]
+        );
+        // The audience a sandbox's identity token is for is the configured
+        // one, else the issuer.
+        let mut c = with_connectors("http://127.0.0.1:8931/mcp");
+        let configured = c.connectors.as_mut().unwrap();
+        configured.sandbox_server = Some("https://by.example".into());
+        configured.sandbox_identities = connectors.sandbox_identities.clone();
+        assert!(connectors_pass(&c));
+        let configured = c.connectors.clone().unwrap();
+        assert_eq!(
+            crate::connectors::sandbox_audience(&c, &configured),
+            "https://by.example"
+        );
+        c.connectors.as_mut().unwrap().sandbox_audience = Some("https://aud.example".into());
+        let configured = c.connectors.clone().unwrap();
+        assert_eq!(
+            crate::connectors::sandbox_audience(&c, &configured),
+            "https://aud.example"
+        );
+        // And it reaches the gateway the engine uses.
+        let gateway = crate::connectors::gateway_for(&c, "app").unwrap();
+        assert_eq!(
+            gateway.credential_proxy.server.as_deref(),
+            Some("https://by.example")
+        );
+        assert_eq!(gateway.credential_proxy.audience, "https://aud.example");
+
+        // What is refused, by name.
+        let refused = |change: &dyn Fn(&mut ConnectorsConfig)| {
+            let mut bad = with_connectors("http://127.0.0.1:8931/mcp");
+            let connectors = bad.connectors.as_mut().unwrap();
+            connectors.sandbox_server = Some("https://by.example".into());
+            change(connectors);
+            bad.validate().unwrap_err()
+        };
+        let account = |email: &str| SandboxIdentity {
+            service_account: email.into(),
+            tenant: None,
+        };
+        assert!(
+            refused(&|c| c.sandbox_server = Some("by.example".into())).contains("sandbox_server")
+        );
+        assert!(
+            refused(&|c| c.sandbox_identities = vec![account("not-an-email")])
+                .contains("not a service account email")
+        );
+        assert!(refused(
+            &|c| c.sandbox_identities = vec![account("a@p.example"), account("A@p.example")]
+        )
+        .contains("twice"));
+        assert!(refused(&|c| c.sandbox_identities = vec![SandboxIdentity {
+            service_account: "a@p.example".into(),
+            tenant: Some(String::new()),
+        }])
+        .contains("tenant"));
+        assert!(
+            refused(&|c| c.sandbox_proxy_image = Some("gcr.io/p/by:latest".into()))
+                .contains("sha256")
+        );
+        let mut orphan = with_connectors("http://127.0.0.1:8931/mcp");
+        orphan.connectors.as_mut().unwrap().sandbox_identities = vec![account("a@p.example")];
+        assert!(orphan
+            .validate()
+            .unwrap_err()
+            .contains("needs connectors.sandbox_server"));
+    }
+
+    #[test]
+    fn the_issuer_is_required_off_loopback_and_on_a_worker() {
+        for url in [
+            "http://127.0.0.1:8931/mcp",
+            "http://localhost:8931/mcp",
+            "http://[::1]:8931/mcp",
+        ] {
+            let mut c = with_connectors(url);
+            connectors_mut(&mut c).issuer = None;
+            assert_eq!(c.validate(), Ok(None), "{url}");
+        }
+        for url in ["https://gateway.example/mcp", "http://10.0.0.7:8931/mcp"] {
+            let mut c = with_connectors(url);
+            connectors_mut(&mut c).issuer = None;
+            let error = c.validate().unwrap_err();
+            assert!(
+                error.contains("connectors.issuer is required"),
+                "{url}: {error}"
+            );
+            assert!(error.contains("not on loopback"), "{error}");
+            connectors_mut(&mut c).issuer = Some("https://by.example".into());
+            assert_eq!(c.validate(), Ok(None), "{url}");
+        }
+        let mut worker = with_connectors("http://127.0.0.1:8931/mcp");
+        worker.worker_only = true;
+        connectors_mut(&mut worker).issuer = None;
+        connectors_mut(&mut worker).signing_key = Some("/keys/gw.key".into());
+        let error = worker.validate().unwrap_err();
+        assert!(error.contains("required on a worker"), "{error}");
+        connectors_mut(&mut worker).issuer = Some("https://by.example".into());
+        assert!(connectors_pass(&worker));
+    }
+
+    #[test]
+    fn a_worker_needs_a_shared_signing_key_or_kms_and_a_server_may_not_have_both() {
+        let mut worker = with_connectors("http://127.0.0.1:8931/mcp");
+        worker.worker_only = true;
+        let error = worker.validate().unwrap_err();
+        assert!(
+            error.contains("a worker needs connectors.signing"),
+            "{error}"
+        );
+        connectors_mut(&mut worker).signing_key = Some("/keys/gw.key".into());
+        assert!(connectors_pass(&worker));
+        connectors_mut(&mut worker).signing_key = None;
+        connectors_mut(&mut worker).signing_kms = Some(KmsSigning {
+            key_versions: vec![KMS_V1.into()],
+            base_url: None,
+        });
+        assert!(connectors_pass(&worker));
+        // A server without either keeps making its own key.
+        assert_eq!(
+            with_connectors("http://127.0.0.1:8931/mcp").validate(),
+            Ok(None)
+        );
+
+        let mut both = with_connectors("http://127.0.0.1:8931/mcp");
+        connectors_mut(&mut both).signing_key = Some("/keys/gw.key".into());
+        connectors_mut(&mut both).signing_kms = Some(KmsSigning {
+            key_versions: vec![KMS_V1.into()],
+            base_url: None,
+        });
+        assert!(both.validate().unwrap_err().contains("keep one"));
+        for (versions, needle) in [
+            (vec![], "names no key version"),
+            (vec!["projects/p".to_owned()], "not a Cloud KMS key version"),
+        ] {
+            let mut bad = with_connectors("http://127.0.0.1:8931/mcp");
+            connectors_mut(&mut bad).signing_kms = Some(KmsSigning {
+                key_versions: versions,
+                base_url: None,
+            });
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains(needle), "{error}");
+        }
+    }
+
+    #[test]
+    fn signing_loads_from_the_file_and_not_beside_a_key_file() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().join("server.json");
+        let write = |connectors: &str| {
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"listen": "127.0.0.1:0", "repos": {{"app": "repo"}},
+                        "tokens": [{{"name": "ci", "token": "0123456789abcdef"}}],
+                        "connectors": {{"gateway": "http://127.0.0.1:8931/mcp", "bundles": "b",
+                                        {connectors}}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(&format!(
+            r#""signing": {{"kms_key_versions": ["{KMS_V1}"], "kms_base_url": "http://127.0.0.1:1"}}"#
+        ));
+        let partial = load_file(&path).unwrap();
+        assert_eq!(
+            partial.connectors.unwrap().signing_kms,
+            Some(KmsSigning {
+                key_versions: vec![KMS_V1.into()],
+                base_url: Some("http://127.0.0.1:1".into()),
+            })
+        );
+        write(r#""signing": {"kms_key_versions": [], "typo": 1}"#);
+        assert!(load_file(&path).is_err());
+    }
+
     #[test]
     fn non_loopback_needs_tls_or_the_flag() {
         assert_eq!(config("127.0.0.1:0").validate(), Ok(None));
@@ -2562,6 +3348,59 @@ mod tests {
     }
 
     #[test]
+    fn principals_carry_groups_from_tokens_and_credentials_and_pass_them_to_devices() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let dir = temp.path();
+        fs::write(dir.join("t.token"), "0123456789abcdef\n").unwrap();
+        let path = dir.join("server.json");
+        fs::write(
+            &path,
+            format!(
+                r#"{{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {{"app": "repo"}},
+                "tokens": [{{"name": "ci", "token_file": "t.token", "groups": ["eng", "ops"]}}],
+                "credentials": [{{"token_sha256": "{}", "tenant": "acme", "groups": ["eng"]}}]}}"#,
+                sha256_hex(b"another-token")
+            ),
+        )
+        .unwrap();
+        let partial = load_file(&path).unwrap();
+        let ci = &partial.principals["ci"];
+        assert_eq!(
+            ci.groups,
+            ["eng".to_owned(), "ops".to_owned()].into_iter().collect()
+        );
+        assert_eq!(
+            partial.credentials[0].principal.groups,
+            ["eng".to_owned()].into_iter().collect()
+        );
+        // A device keeps its issuer's groups and can never claim more.
+        let device = ci.delegated_to("phone".into());
+        assert_eq!(device.groups, ci.groups);
+        assert!(device.within_policy(ci));
+        let mut wider = device.clone();
+        wider.groups.insert("admins".into());
+        assert!(!wider.within_policy(ci));
+        // Without groups the principal serializes as before.
+        let plain = Principal::default_for("plain");
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("groups")
+            .is_none());
+        assert!(
+            serde_json::from_value::<Principal>(serde_json::to_value(&plain).unwrap())
+                .unwrap()
+                .groups
+                .is_empty()
+        );
+        let mut bad = plain.clone();
+        bad.groups.insert("bad\ngroup".into());
+        assert!(check_principal(&bad).unwrap_err().contains("group"));
+    }
+
+    #[test]
     fn the_model_gateway_and_ceilings_load_and_are_checked() {
         let temp = tempfile::Builder::new()
             .prefix("branchyard-config-")
@@ -2608,6 +3447,11 @@ mod tests {
         // The repository's gateway: the key from the server's secrets,
         // branches named under the repository.
         let mut config = Config::new(dir.join("data"));
+        config.repos.push(("app".into(), dir.join("repo")));
+        config.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
         config.secrets = partial.secrets.clone();
         config.models = partial.models.clone();
         let gateway = crate::models::gateway_for(&config, "app").unwrap().unwrap();
@@ -2711,6 +3555,49 @@ mod tests {
             let error = load_file(&path).unwrap_err();
             assert!(error.contains(needle), "{approvals}: {error}");
         }
+    }
+
+    #[test]
+    fn the_tool_store_is_read_resolved_and_checked() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let dir = temp.path();
+        let path = dir.join("server.json");
+        fs::write(
+            &path,
+            r#"{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {"app": "repo"},
+                "tokens": [{"name": "ci", "token": "0123456789abcdef"}],
+                "tools": {"store": "store", "store_bucket": "acme-tools/store"}}"#,
+        )
+        .unwrap();
+        let tools = load_file(&path).unwrap().tools.unwrap();
+        assert_eq!(tools.store, dir.join("store"));
+        assert_eq!(tools.store_bucket.as_deref(), Some("acme-tools/store"));
+        let mut config = Config::new(dir.join("data"));
+        config.repos.push(("app".into(), dir.join("repo")));
+        config.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
+        config.tools = Some(tools);
+        config.validate().unwrap();
+        config.tools = Some(ToolsConfig {
+            store: dir.join("store"),
+            store_bucket: Some("gs://acme".into()),
+        });
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("tools.store_bucket"));
+        fs::write(
+            &path,
+            r#"{"repos": {"app": "repo"}, "tokens": [{"name": "ci", "token": "0123456789abcdef"}],
+                "tools": {"store": "s", "bucket": "b"}}"#,
+        )
+        .unwrap();
+        assert!(load_file(&path).is_err());
     }
 
     #[test]
@@ -2970,5 +3857,99 @@ mod execution_presets_tests {
             let error = config.validate().unwrap_err();
             assert!(error.contains(expected), "{expected:?} in {error:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod database_login_tests {
+    use super::*;
+
+    fn with(database: Option<&str>, auth: DatabaseAuth) -> Config {
+        let mut c = Config::new(PathBuf::from("/nonexistent/x"));
+        c.listen = "127.0.0.1:0".parse().unwrap();
+        c.repos.push(("app".into(), PathBuf::from("/srv/app")));
+        c.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
+        c.database = database.map(str::to_owned);
+        c.database_auth = auth;
+        c
+    }
+
+    #[test]
+    fn gcp_iam_accepts_tls_and_a_loopback_proxy() {
+        for url in [
+            "postgres://sa@10.1.2.3/app?sslmode=require",
+            "postgres://sa@alloydb.internal:5432/app?sslmode=require",
+            "postgres://sa@127.0.0.1:5432/app",
+            "postgres://sa@localhost/app",
+            "postgres://sa@[::1]:5432/app",
+            "postgres://sa@%2Ftmp%2Fsock/app",
+        ] {
+            with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[test]
+    fn gcp_iam_refuses_a_url_with_a_password() {
+        for url in [
+            "postgres://sa:secret@127.0.0.1/app",
+            "postgres://sa@127.0.0.1/app?password=secret",
+        ] {
+            let error = with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_err();
+            assert!(error.contains("remove the password"), "{url}: {error}");
+        }
+    }
+
+    #[test]
+    fn gcp_iam_refuses_a_remote_host_without_tls() {
+        for url in [
+            "postgres://sa@10.1.2.3/app",
+            "postgres://sa@10.1.2.3/app?sslmode=prefer",
+            "postgres://sa@127.0.0.1,10.1.2.3/app",
+        ] {
+            let error = with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_err();
+            assert!(error.contains("sslmode=require"), "{url}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_login_settings_need_a_database() {
+        let error = with(None, DatabaseAuth::GcpIam).validate().unwrap_err();
+        assert!(error.contains("need a database"), "{error}");
+        let mut config = with(None, DatabaseAuth::Password);
+        config.database_ca_file = Some("/etc/ca.pem".into());
+        assert!(config.validate().unwrap_err().contains("need a database"));
+    }
+
+    #[test]
+    fn the_password_default_keeps_a_url_password() {
+        with(Some("postgres://u:p@db/app"), DatabaseAuth::Password)
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn the_file_form_reads_both_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.json");
+        std::fs::write(
+            &path,
+            r#"{"database": "postgres://sa@db/app?sslmode=require",
+                "database_ca_file": "ca.pem", "database_auth": "gcp_iam"}"#,
+        )
+        .unwrap();
+        let partial = load_file(&path).unwrap();
+        assert_eq!(partial.database_auth, DatabaseAuth::GcpIam);
+        assert_eq!(partial.database_ca_file, Some(dir.path().join("ca.pem")));
+        std::fs::write(&path, r#"{"database_auth": "kerberos"}"#).unwrap();
+        assert!(load_file(&path).is_err());
     }
 }

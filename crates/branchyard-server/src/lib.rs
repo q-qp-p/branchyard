@@ -79,7 +79,10 @@ pub mod console_runtime;
 pub mod console_store;
 pub mod effects_routes;
 pub mod error;
+pub mod federated;
 pub mod feed;
+pub mod gcp;
+pub mod kms;
 pub mod knowledge_routes;
 pub mod logging;
 pub mod map_routes;
@@ -87,6 +90,8 @@ pub mod metrics;
 pub mod models;
 pub mod observe;
 pub mod ops;
+#[cfg(feature = "postgres")]
+mod pg_connect;
 pub mod preview;
 mod problems;
 pub mod serve;
@@ -97,6 +102,7 @@ pub mod sync;
 mod task_routes;
 pub mod telemetry;
 pub mod triggers;
+mod turn_token;
 pub mod webhook;
 pub mod work;
 

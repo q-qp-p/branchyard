@@ -55,6 +55,7 @@ jiff = { version = "0.2.37", default-features = false }
 libc = "0.2"
 percent-encoding = "2"
 postgres = "0.19"
+tokio-postgres-rustls = { version = "0.13", default-features = false }
 prost = "0.14"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 ring = "0.17"

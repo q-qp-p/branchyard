@@ -158,9 +158,13 @@ fn create_inner(
         tenant: request.tenant.clone(),
         scopes: request.scopes.iter().cloned().collect(),
         repos: request.repos.as_ref().map(|r| r.iter().cloned().collect()),
+        groups: Default::default(),
     };
     if let Some(issuer) = issuer {
-        principal.origin = issuer.delegated_to(name.clone()).origin;
+        let delegated = issuer.delegated_to(name.clone());
+        principal.origin = delegated.origin;
+        // A device acts with its issuer's groups, so its policy follows them.
+        principal.groups = delegated.groups;
     }
     config::check_principal(&principal)?;
     if config

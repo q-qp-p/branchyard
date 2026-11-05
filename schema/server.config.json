@@ -33,6 +33,13 @@
         "max_upload_bytes": 8388608
       }
     },
+    "harness_install": {
+      "$ref": "#/$defs/HarnessInstall",
+      "default": {
+        "allow": false,
+        "path": null
+      }
+    },
     "repos": {
       "type": "object",
       "additionalProperties": {
@@ -61,6 +68,23 @@
           "type": "null"
         }
       ]
+    },
+    "iap": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IapConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "oidc_issuers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OidcIssuerConfig"
+      },
+      "default": []
     },
     "tenants": {
       "type": "object",
@@ -191,6 +215,17 @@
         "null"
       ]
     },
+    "database_ca_file": {
+      "description": "PEM file of the certificates that sign the database server's\ncertificate (an AlloyDB instance's server CA), added to the public\nroots for `sslmode=require`. A relative path is relative to this\nfile. See docs/server.md#alloydb.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "database_auth": {
+      "description": "`\"password\"` (default): the password in the `database` URL, if any.\n`\"gcp_iam\"`: a Google access token from the metadata server, as the\npassword at each connection (AlloyDB and Cloud SQL IAM\nauthentication); the URL then has no password and `sslmode=require`\nunless the host is loopback. See docs/server.md#alloydb.",
+      "$ref": "#/$defs/DatabaseAuth"
+    },
     "labels": {
       "description": "The labels this server's worker carries; it claims only operations\nwhose `require_labels` are all among them. See\ndocs/server.md#worker-labels.",
       "type": "array",
@@ -229,6 +264,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/FileConnectors"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tools": {
+      "description": "The shared tool store (docs/tools-model.md): where it is, and the\nbucket that mirrors it.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FileTools"
         },
         {
           "type": "null"
@@ -375,6 +421,26 @@
       },
       "additionalProperties": false
     },
+    "HarnessInstall": {
+      "description": "Whether an administrator may install a helper's harness on this server's\nown host from the console (`POST /v1/tools/helpers/{id}/install`).\nInstalling runs the harness catalog's install command (`npm install -g`,\na vendor's installer script) as the server's user, so it is off until the\noperator turns it on. See docs/server.md#install-a-helpers-harness.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Explicit operator opt-in; disabled by default.",
+          "type": "boolean",
+          "default": false
+        },
+        "path": {
+          "description": "The `PATH` the install commands run with and their programs (`npm`,\n`curl`) are looked for on; the server's own `PATH` when unset.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "FileToken": {
       "type": "object",
       "properties": {
@@ -416,6 +482,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups this principal belongs to, for group tool policies.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -455,6 +529,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups this credential's principal belongs to, for group tool\npolicies.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -546,6 +628,14 @@
             "type": "string"
           },
           "default": null
+        },
+        "groups": {
+          "description": "Groups this subject belongs to, matched against group tool policies\n(`docs/server.md`, \"Tool policy\"). Static entries name them; IAP and\nfederated sign-in fill them from the token's groups claim or from\nCloud Identity. A paired device carries its issuer's groups.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": [
@@ -622,7 +712,310 @@
             "subject",
             "audience"
           ]
+        },
+        {
+          "description": "A Google Cloud IAP assertion matched an operator-configured binding.",
+          "type": "object",
+          "properties": {
+            "email": {
+              "description": "The verified email address, for audit. Never the identity key.",
+              "type": "string"
+            },
+            "sub": {
+              "description": "The verified IAP subject, such as `accounts.google.com:1234`.",
+              "type": "string"
+            },
+            "groups_at_ms": {
+              "description": "When the groups this principal holds were read from Cloud\nIdentity (milliseconds since the Unix epoch); absent when they\ncame from the token or the provider has none. A recheck of\nqueued work looks them up again once they are older than the\nlookup's cache (`docs/identity.md`).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "iap"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "email",
+            "sub"
+          ]
+        },
+        {
+          "description": "A federated OIDC token (Workforce or Workload Identity Federation, or\na plain issuer) matched an operator-configured binding.",
+          "type": "object",
+          "properties": {
+            "issuer": {
+              "description": "The verified issuer.",
+              "type": "string"
+            },
+            "sub": {
+              "description": "The verified subject claim.",
+              "type": "string"
+            },
+            "email": {
+              "description": "The verified email, when the token carried one. Kept so a\nqueued operation is rechecked against the binding that admitted\nit; never the identity key.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "groups_at_ms": {
+              "description": "When the groups this principal holds were read from Cloud\nIdentity (milliseconds since the Unix epoch); absent when they\ncame from the token's claim or the provider has no lookup.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "oidc"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "issuer",
+            "sub"
+          ]
         }
+      ]
+    },
+    "IapConfig": {
+      "description": "Sign-in behind Google Cloud IAP.",
+      "type": "object",
+      "properties": {
+        "audience": {
+          "description": "The exact IAP audience: `/projects/NUMBER/global/backendServices/ID`,\nor `/projects/NUMBER/apps/PROJECT` for App Engine and Cloud Run.",
+          "type": "string"
+        },
+        "keys_url": {
+          "description": "Where to fetch the signing keys. Defaults to Google's published IAP\nkey set. Set it only to a mirror or, in tests, a local server.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant of a binding that names none. Defaults to the default tenant.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes of a binding that names none. Defaults to `read`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "bindings": {
+          "description": "Who may sign in, and as what.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IdentityBinding"
+          }
+        },
+        "groups_from": {
+          "description": "Where to look up groups. IAP assertions carry no groups claim.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupsFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "groups_url": {
+          "description": "The Cloud Identity base URL. Defaults to Google's. For tests.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "audience",
+        "bindings"
+      ]
+    },
+    "IdentityBinding": {
+      "description": "One rule mapping a verified identity to server authorization policy.\nBindings are tried in order and the first match wins.",
+      "type": "object",
+      "properties": {
+        "match": {
+          "description": "An exact email address, `domain:example.com`, or `group:eng@example.com`.\nEmail, domain and group names compare without regard to case.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The principal's name. Defaults to the email, else the subject.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant. Defaults to the provider's `tenant`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes. Defaults to the provider's `scopes`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "repos": {
+          "description": "A repository allowlist. Absent allows every repository of the tenant.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "match"
+      ]
+    },
+    "GroupsFrom": {
+      "description": "Where groups come from when the token carries none.",
+      "oneOf": [
+        {
+          "description": "The Cloud Identity Groups API, called with the server's metadata token.",
+          "type": "string",
+          "const": "cloud_identity"
+        }
+      ]
+    },
+    "OidcIssuerConfig": {
+      "description": "A federated OIDC issuer whose bearer ID tokens are accepted.",
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "description": "The exact `iss` claim.",
+          "type": "string"
+        },
+        "audience": {
+          "description": "The exact audience this server expects in `aud`.",
+          "type": "string"
+        },
+        "jwks_url": {
+          "description": "Where the issuer publishes its signing keys (a JWKS document).",
+          "type": "string"
+        },
+        "subject_claim": {
+          "description": "The claim that names the subject. Defaults to `sub`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "email_claim": {
+          "description": "The claim that holds the email. Defaults to `email`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "groups_claim": {
+          "description": "The claim that holds the groups. Defaults to `groups`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tenant": {
+          "description": "The tenant of a binding that names none. Defaults to the default tenant.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "scopes": {
+          "description": "The scopes of a binding that names none. Defaults to `read`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "default": null
+        },
+        "bindings": {
+          "description": "Who may sign in, and as what.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IdentityBinding"
+          }
+        },
+        "groups_from": {
+          "description": "Where to look up groups when the token carries none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GroupsFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "groups_url": {
+          "description": "The Cloud Identity base URL. Defaults to Google's. For tests.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "audience",
+        "jwks_url",
+        "bindings"
       ]
     },
     "FileTenantPolicy": {
@@ -1431,6 +1824,21 @@
         "harness"
       ]
     },
+    "DatabaseAuth": {
+      "description": "How the server logs in to its PostgreSQL `database`.",
+      "oneOf": [
+        {
+          "description": "The password in the URL, or none (the default).",
+          "type": "string",
+          "const": "password"
+        },
+        {
+          "description": "A Google OAuth access token from the metadata server, as the\npassword, at every new connection: AlloyDB and Cloud SQL IAM\ndatabase authentication.",
+          "type": "string",
+          "const": "gcp_iam"
+        }
+      ]
+    },
     "FileWebhook": {
       "type": "object",
       "properties": {
@@ -1492,10 +1900,21 @@
           ]
         },
         "signing_key": {
-          "description": "The signing key, a private JSON Web Key Set made if missing.\nDefault: `<data_dir>/gateway/key`. Its public keys are served at\n`GET /.well-known/jwks.json`.",
+          "description": "The signing key, a private JSON Web Key Set made if missing (never\nby a worker). Default: `<data_dir>/gateway/key`. Its public keys\nare served at `GET /.well-known/jwks.json`.",
           "type": [
             "string",
             "null"
+          ]
+        },
+        "signing": {
+          "description": "Sign with Cloud KMS instead of a key file; refused together with\n`signing_key`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileSigning"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "audit_file": {
@@ -1559,12 +1978,120 @@
             "string",
             "null"
           ]
+        },
+        "sandbox_server": {
+          "description": "This server's URL as a sandbox reaches it. With it, a sandbox that can\nrun a credential proxy (a GKE Agent Sandbox's sidecar, a Microsandbox\nguest's process) fetches the turn's five-minute gateway token from\n`POST /v1/turns/token` and the harness holds none\n(`docs/connectors.md#the-credential-proxy-in-the-sandbox`). Without\nit every turn keeps the host's proxy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_audience": {
+          "description": "The audience of the Google ID token a sandbox presents. Default: the\nissuer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_identities": {
+          "description": "The Google service accounts a sandbox must also present, besides the\nturn's secret, to fetch a token. Each is verified from a\nGoogle-signed ID token the sandbox gets from the metadata server.\nEmpty: the turn's secret alone fetches.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileSandboxIdentity"
+          }
+        },
+        "sandbox_jwks_url": {
+          "description": "Where Google's signing keys are read from. Default Google's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_proxy_image": {
+          "description": "The image of a GKE Agent Sandbox's credential proxy sidecar\n(`repository@sha256:digest`, with `by` on its `PATH`). Default: the\nsandbox's own image.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox_by": {
+          "description": "The `by` a Microsandbox guest runs, on its `PATH` or an absolute\nguest path. Default `by`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
         "gateway",
         "bundles"
+      ]
+    },
+    "FileSigning": {
+      "description": "`connectors.signing`: sign gateway tokens with Cloud KMS\n(`docs/server.md#signing-with-cloud-kms`).",
+      "type": "object",
+      "properties": {
+        "kms_key_versions": {
+          "description": "Cloud KMS key versions of `EC_SIGN_ED25519` keys, as\n`projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`.\nThe first signs; all are published at `GET /.well-known/jwks.json`,\nso a rotation lists the new version first and drops the old one\nonce its tokens have expired. The server's and each worker's\nservice account needs `roles/cloudkms.signerVerifier` on the key.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "kms_base_url": {
+          "description": "The Cloud KMS API's address. Default `https://cloudkms.googleapis.com`;\nfor tests.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kms_key_versions"
+      ]
+    },
+    "FileSandboxIdentity": {
+      "description": "`connectors.sandbox_identities`: one Google service account.",
+      "type": "object",
+      "properties": {
+        "service_account": {
+          "description": "The account's email, `NAME@PROJECT.iam.gserviceaccount.com`.",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "The one tenant it serves. Default: any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "service_account"
+      ]
+    },
+    "FileTools": {
+      "description": "`tools`: the shared tool store; see `docs/tools-model.md`.",
+      "type": "object",
+      "properties": {
+        "store": {
+          "description": "The store's root, such as `/opt/branchyard/store`: it holds\n`skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`. A\nturn links the entries it needs instead of copying them, and a\nsandbox sees the store at this path.",
+          "type": "string"
+        },
+        "store_bucket": {
+          "description": "The Cloud Storage bucket that mirrors the store, `BUCKET` or\n`BUCKET/PREFIX`, which a GKE Agent Sandbox mounts read-only with the\nCloud Storage FUSE CSI driver.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "store"
       ]
     },
     "ModelsConfig": {

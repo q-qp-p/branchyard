@@ -34,6 +34,10 @@ pub(crate) fn router() -> Router<Shared> {
             "/v1/workspaces/{workspace}/sessions/{session}/cancel",
             post(cancel),
         )
+        .route(
+            "/v1/workspaces/{workspace}/sessions/{session}/readmit",
+            post(readmit),
+        )
         .route("/v1/workspaces/{workspace}/actions/{action}", post(action))
         .route("/v1/execution-presets", get(execution_presets))
         .route(
@@ -43,6 +47,10 @@ pub(crate) fn router() -> Router<Shared> {
         .merge(super::sources::router())
         .merge(super::previews::router())
         .merge(super::collaboration::router())
+        .merge(super::connections::router())
+        .merge(super::policy::router())
+        .merge(super::tools::router())
+        .merge(super::installs::router())
 }
 pub(super) fn project_access(
     app: &App,
@@ -378,7 +386,10 @@ async fn start_session(
 ) -> Result<Json<Value>, ApiError> {
     let body =
         serde_json::to_value(request).map_err(|error| ApiError::internal(error.to_string()))?;
-    super::runtime::start(&app, &caller, &wid, &headers, body).map(Json)
+    // Off the async runtime: admitting connectors asks the gateway.
+    crate::api::blocking(move || super::runtime::start(&app, &caller, &wid, &headers, body))
+        .await?
+        .map(Json)
 }
 async fn execution_presets(
     State(app): State<Shared>,
@@ -474,6 +485,13 @@ async fn cancel(
 ) -> Result<Json<Value>, ApiError> {
     super::runtime::control(&app, &caller, &wid, &sid, &headers, "cancel", json!({})).map(Json)
 }
+async fn readmit(
+    State(app): State<Shared>,
+    Path((wid, sid)): Path<(String, String)>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Value>, ApiError> {
+    super::runtime::readmit(&app, &caller, &wid, &sid).map(Json)
+}
 async fn action(
     State(app): State<Shared>,
     Path((wid, action)): Path<(String, String)>,
@@ -484,7 +502,7 @@ async fn action(
     super::runtime::lifecycle(&app, &caller, &wid, &headers, &action, body).map(Json)
 }
 
-fn query(raw: Option<String>) -> BTreeMap<String, String> {
+pub(super) fn query(raw: Option<String>) -> BTreeMap<String, String> {
     raw.as_deref()
         .unwrap_or("")
         .split('&')

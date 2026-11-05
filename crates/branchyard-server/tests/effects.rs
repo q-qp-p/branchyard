@@ -87,6 +87,7 @@ fn connectors(f: &Fixture, mock: &MockGateway) -> ConnectorsConfig {
         sandbox_gateway: None,
         issuer: Some("https://by.example".into()),
         signing_key: None,
+        signing_kms: None,
         audit_file: None,
         bundles,
         anvil: vec![anvil.display().to_string()],
@@ -96,6 +97,12 @@ fn connectors(f: &Fixture, mock: &MockGateway) -> ConnectorsConfig {
         effects_proxy: None,
         effects_listen: None,
         effects_sandbox_host: None,
+        sandbox_server: None,
+        sandbox_audience: None,
+        sandbox_identities: Vec::new(),
+        sandbox_jwks_url: None,
+        sandbox_proxy_image: None,
+        sandbox_by: None,
     }
 }
 
@@ -433,6 +440,7 @@ fn the_person_answers_a_roots_question_through_the_server() {
             tenant: "default".into(),
             scopes: ["read".to_owned()].into(),
             repos: None,
+            groups: Default::default(),
         },
     );
     let server = Server::start(config);

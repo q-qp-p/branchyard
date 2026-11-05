@@ -4,13 +4,20 @@
 The text is grouped by what one agent receives together, and each group's size in
 characters (Unicode code points) has a cap in tools/model_surface_budget.json:
 
-- `spawning-branch`: a branch whose grant may spawn is given the delegate skill
-  (plugins/branchyard/skills/delegate/SKILL.md without its frontmatter, as
-  `projection::skill_text` strips it) as its instructions, the MCP server's
-  `INSTRUCTIONS` (crates/branchyard-mcp/src/lib.rs), and `WORKSPACE_NOTE`
+- `work-turn-no-helpers`: a turn with no delegation grant has no MCP server and no
+  skill; it is given `WORKSPACE_NOTE` and the one tools line
+  (`tooltree::LINE_BUDGET` characters, counted at its cap).
+- `spawning-branch`: a branch with helpers (its envelope allows a child) is given the
+  delegate skill (plugins/branchyard/skills/delegate/SKILL.md without its frontmatter,
+  as `projection::skill_text` strips it), the MCP server's `INSTRUCTIONS_CORE` and
+  `INSTRUCTIONS_DELEGATION` (crates/branchyard-mcp/src/lib.rs), and `WORKSPACE_NOTE`
   (crates/branchyard/src/provisioning.rs), which follows its assignment.
-- `leaf-branch`: a branch that may not spawn is given plugins/branchyard/leaf.md,
-  trimmed, in place of the skill, with the same two.
+- `leaf-branch`: a branch without helpers is given plugins/branchyard/leaf.md,
+  trimmed, in place of the skill, with `INSTRUCTIONS_CORE` alone and the note.
+- `mcp-tools:CASE`: the size in bytes of the MCP `tools/list` a case is shown. Python
+  cannot build the definitions, so `cargo test -p branchyard-mcp` measures them
+  (`the_tools_list_of_each_case_stays_within_its_cap`) against the caps kept here;
+  this script only requires that every case has a cap.
 - `mcp-manager`: an agent connected to `by mcp manager` is given that server's own
   `INSTRUCTIONS` (crates/branchyard-mcp/src/manager/mod.rs).
 - `generic-agents`: plugins/branchyard/harnesses/generic/AGENTS.md, which a person
@@ -21,7 +28,8 @@ characters (Unicode code points) has a cap in tools/model_surface_budget.json:
 A Rust constant is measured as the string Rust makes of its literal. A file that is
 missing, or a constant that is not found, fails the check; it is never counted as 0.
 
-Not budgeted: the MCP tools' descriptions and schemas, which `tools()` in
+Not budgeted here (the `mcp-tools:` rows cover the branch tools): the MCP tools'
+descriptions and schemas, which `tools()` in
 crates/branchyard-mcp/src/lib.rs (and manager/tools.rs) builds from literals,
 `json!` values and Rust constants (only their names and order come from
 `branchyard::operations`), so measuring them faithfully means running Rust, which a
@@ -133,16 +141,31 @@ class Source(NamedTuple):
 MCP_LIB = "crates/branchyard-mcp/src/lib.rs"
 MANAGER_LIB = "crates/branchyard-mcp/src/manager/mod.rs"
 MANAGER_TOOLS = Source("crates/branchyard-mcp/src/manager/tools.rs")
-MCP = Source(MCP_LIB, rust_const("INSTRUCTIONS"))
+MCP_CORE = Source(MCP_LIB, rust_const("INSTRUCTIONS_CORE"))
+MCP_DELEGATION = Source(MCP_LIB, rust_const("INSTRUCTIONS_DELEGATION"))
 NOTE = Source("crates/branchyard/src/provisioning.rs", rust_const("WORKSPACE_NOTE"))
 MANAGER = Source(MANAGER_LIB, rust_const("INSTRUCTIONS"))
+
+
+TOOLTREE = "crates/branchyard/src/tooltree.rs"
+# The cases whose `tools/list` size `cargo test -p branchyard-mcp` holds to a cap kept in the budget.
+TOOL_CASES = ("mcp-tools:leaf", "mcp-tools:leaf-with-outputs", "mcp-tools:spawning-branch")
+
+
+def reserved_line(source: str) -> str:
+    """The tools line at its cap: `LINE_BUDGET` characters."""
+    found = re.search(r"pub\(crate\) const LINE_BUDGET: usize = (\d+);", source)
+    if found is None:
+        raise Unreadable("no `LINE_BUDGET`")
+    return "x" * int(found.group(1))
 
 
 def groups(root: Path = ROOT) -> dict[str, tuple[Source, ...]]:
     """{group: the text one agent receives together}."""
     table = {
-        "spawning-branch": (Source(DELEGATE, skill_body), MCP, NOTE),
-        "leaf-branch": (Source("plugins/branchyard/leaf.md", str.strip), MCP, NOTE),
+        "work-turn-no-helpers": (NOTE, Source(TOOLTREE, reserved_line)),
+        "spawning-branch": (Source(DELEGATE, skill_body), MCP_CORE, MCP_DELEGATION, NOTE),
+        "leaf-branch": (Source("plugins/branchyard/leaf.md", str.strip), MCP_CORE, NOTE),
         "mcp-manager": (MANAGER,),
         "generic-agents": (Source("plugins/branchyard/harnesses/generic/AGENTS.md"),),
     }
@@ -255,7 +278,11 @@ def over_caps(table: dict[str, tuple[Source, ...]], sizes: dict[str, int], caps:
                 f"{name}: {size} characters, {size - cap} over its cap of {cap}; shorten the text, "
                 f"or raise the cap in {BUDGET} as a deliberate, reviewed edit"
             )
-    problems.extend(f"{BUDGET}: {name} names no group; remove it: --write" for name in caps if name not in table)
+    problems.extend(
+        f"{BUDGET}: {name} names no group; remove it: --write"
+        for name in caps
+        if name not in table and name not in TOOL_CASES
+    )
     return problems
 
 
@@ -268,6 +295,7 @@ def lowered(table: dict[str, tuple[Source, ...]], sizes: dict[str, int], caps: d
             out[name] = min(caps.get(name, rule), rule)
         elif name in caps:
             out[name] = caps[name]
+    out.update({case: caps[case] for case in TOOL_CASES if case in caps})
     return out
 
 
@@ -316,6 +344,11 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
         (root / BUDGET).write_text(json.dumps(caps, indent=2) + "\n", encoding="utf-8")
         print(f"{BUDGET}: caps at size x 1.05, up to the next 500, where lower; none raised")
     problems += over_caps(table, sizes, caps)
+    problems += [
+        f"{BUDGET}: {case} has no cap; `cargo test -p branchyard-mcp` reads it"
+        for case in TOOL_CASES
+        if case not in caps
+    ]
     held, limit_problems = stated_limits(STATED_LIMITS, root)
     problems += limit_problems
     for name in table:

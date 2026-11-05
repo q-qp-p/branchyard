@@ -238,6 +238,18 @@ pub enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// The shared tool store: publish it, pull it
+    ///
+    /// Skills and connector packages named by their content, which turns
+    /// link instead of copy (see docs/tools-model.md).
+    #[command(display_order = 118, subcommand_required = true, after_help = crate::tools_cmd::TOOLS_EXAMPLES)]
+    Tools {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: crate::tools_cmd::ToolsAction,
+    },
     /// Remove a branch and free its name
     ///
     /// Removes the branch's worktree and record. A removed child leaves its parent's
@@ -925,6 +937,50 @@ pub enum Command {
         )]
         /// The server's own options (see `by worker --help`)
         args: Vec<String>,
+    },
+    /// Run a sandbox's credential proxy (the harness holds no gateway token)
+    ///
+    /// Runs inside a sandbox, beside the harness. Listens on loopback, fetches the turn's
+    /// five-minute connector token from the Branchyard server as the sandbox's identity,
+    /// renews it before it expires, and forwards the harness's gateway calls with it, so
+    /// the harness holds no token. The engine starts it; see
+    /// docs/connectors.md#the-credential-proxy-in-the-sandbox.
+    #[command(hide = true, display_order = 503, after_help = CREDENTIAL_PROXY_EXAMPLES)]
+    CredentialProxy {
+        /// Read every setting from this JSON file (it holds no secret); with --wait, wait for it
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with_all = ["listen", "server", "upstream", "manifest", "branch", "turn", "identity", "audience"]
+        )]
+        config: Option<String>,
+        /// Wait for --config to appear, and keep retrying the first token, instead of failing
+        #[arg(long, requires = "config")]
+        wait: bool,
+        /// Address to listen on; port 0 picks one
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:18900")]
+        listen: Option<String>,
+        /// The Branchyard server's URL as this sandbox reaches it
+        #[arg(long, value_name = "URL", required_unless_present = "config")]
+        server: Option<String>,
+        /// The connector gateway's /mcp URL as this sandbox reaches it
+        #[arg(long, value_name = "URL", required_unless_present = "config")]
+        upstream: Option<String>,
+        /// The turn manifest's digest (BRANCHYARD_MANIFEST) the tokens are bound to
+        #[arg(long, value_name = "DIGEST", required_unless_present = "config")]
+        manifest: Option<String>,
+        /// The branch as the server names it: REPO/BRANCH
+        #[arg(long, value_name = "NAME", required_unless_present = "config")]
+        branch: Option<String>,
+        /// The turn's number
+        #[arg(long, value_name = "N", required_unless_present = "config")]
+        turn: Option<u32>,
+        /// How this sandbox proves who it is: its Google service account, or the turn's secret
+        #[arg(long, value_name = "KIND", value_parser = ["workload", "secret"], default_value = "secret")]
+        identity: Option<String>,
+        /// The audience of the Google identity token (--identity workload)
+        #[arg(long, value_name = "AUD", required_if_eq("identity", "workload"))]
+        audience: Option<String>,
     },
     /// Serve branch delegation or authorized workspace management over MCP
     #[command(

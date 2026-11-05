@@ -77,6 +77,11 @@ pub(crate) fn sandboxed(provider: Option<&Provider>) -> bool {
     providers::of(provider).sandboxed()
 }
 
+/// Where this provider can run the turn's credential proxy.
+pub(crate) fn credential_site(provider: Option<&Provider>) -> crate::connectors::CredentialSite {
+    providers::of(provider).credential_site()
+}
+
 /// Refuse a provider this build or its options cannot run, before anything
 /// is created.
 pub(crate) fn check(yard: &Yard, provider: Option<&Provider>) -> Result<(), Error> {
@@ -140,6 +145,47 @@ fn environment(
 ) -> Option<crate::environments::SandboxEnvironment> {
     let workspace = record.workspace.as_ref().filter(|w| !w.ready)?;
     crate::environments::for_sandbox(&yard.root, &workspace.spec, &record.info.worktree, key)
+}
+
+/// Remove the gateway token file from the copied home `guest_home` in a
+/// sandbox, so a paused sandbox keeps no token (`docs/tools-model.md`,
+/// step 7). No file is not an error.
+fn scrub_token(endpoint: &dyn Guest, guest_home: &Path) -> Result<(), String> {
+    let spec = branchyard_sandbox::ExecSpec {
+        argv: vec![
+            "rm".into(),
+            "-f".into(),
+            guest_home
+                .join(crate::connectors::TOKEN_FILE)
+                .display()
+                .to_string(),
+        ],
+        cwd: PathBuf::from("/"),
+        env: BTreeMap::new(),
+        writable: None,
+    };
+    let mut process = endpoint.exec(&spec).map_err(|e| e.to_string())?;
+    let status = process.wait().map_err(|e| e.to_string())?;
+    match status.success() {
+        true => Ok(()),
+        false => Err(format!("rm ended {status}")),
+    }
+}
+
+/// Whether the turn about to run wakes a sandbox its branch kept paused
+/// since its last turn (`keep = "pause"`): the branch holds a kept sandbox
+/// of this run's incarnation. Such a turn resolves its manifest again
+/// ([`crate::manifest::settle`]).
+pub(crate) fn wakes_kept_sandbox(yard: &Yard, record: &Record, fence: &Fence) -> bool {
+    yard.store()
+        .sandboxes()
+        .sandboxes(&record.info.name)
+        .map(|rows| {
+            rows.iter()
+                .any(|row| row.kind == SandboxKind::Kept && row.incarnation == fence.incarnation)
+        })
+        // When the store cannot say, resolving again is the safe answer.
+        .unwrap_or(true)
 }
 
 /// A turn's harness location. A sandbox is destroyed, or parked, by
@@ -326,6 +372,10 @@ struct Copied<'a> {
     workdir: String,
     home: String,
     pass_env: &'a [String],
+    /// Where the guest also sees the tool tree (`ProviderKind::tools_root`):
+    /// the engine copies the tree there after the home and sets
+    /// `BRANCHYARD_TOOLS` to it.
+    tools: Option<&'static str>,
 }
 
 /// A turn's Substrate actor or recipe machine, and what must come back
@@ -387,6 +437,14 @@ impl Actor {
                             "could not bring the home directory back from {noun} {}: {error}",
                             self.name
                         )),
+                    }
+                    // The actor is about to be paused or destroyed: the
+                    // token it was copied in with does not stay in it.
+                    if let Err(error) = scrub_token(endpoint.as_ref(), guest) {
+                        warnings.push(format!(
+                            "could not remove the gateway token from {noun} {}: {error}",
+                            self.name
+                        ));
                     }
                 }
             }
@@ -646,6 +704,7 @@ impl Placement {
                 workdir: options.workdir().to_owned(),
                 home: options.home().to_owned(),
                 pass_env: &options.pass_env,
+                tools: None,
             },
         )
     }
@@ -677,6 +736,7 @@ impl Placement {
                 workdir,
                 home,
                 pass_env: &options.pass_env,
+                tools: None,
             },
         )
     }
@@ -706,6 +766,7 @@ impl Placement {
                 workdir: WORKSPACE.into(),
                 home: HOME.into(),
                 pass_env,
+                tools: providers::of(record.provider.as_ref()).tools_root(),
             },
         )
     }
@@ -739,7 +800,10 @@ impl Placement {
             .home
             .clone()
             .ok_or("a sandboxed branch has no private home")?;
-        let env = sandbox_env(&how.home, how.pass_env)?;
+        let mut env = sandbox_env(&how.home, how.pass_env)?;
+        if let Some(root) = how.tools {
+            env.insert(crate::tooltree::ENV_TOOLS.into(), root.into());
+        }
         let (remote, spec) = (how.remote, how.spec);
         let fresh =
             SandboxPlan::Fresh("native providers allocate a fresh sandbox for every turn".into());
@@ -939,6 +1003,22 @@ impl Placement {
             Ok(sent) => sent,
             Err(error) => return fail(&mut actor, &mut native_registration, error),
         };
+        // The tool tree is also at the guest root (`/tools`): it was written into
+        // the home, so a copy of it goes to its own volume once the home is in.
+        let tree = home.join(crate::tooltree::DIRECTORY);
+        if let (Some(root), true) = (how.tools, tree.is_dir()) {
+            let copied = actor
+                .provider
+                .guest(&name)
+                .and_then(|endpoint| {
+                    transfer::push_tree(endpoint.as_ref(), &tree, Path::new(root))
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(|e| format!("could not copy the tool tree into {noun} {name}: {e}"));
+            if let Err(error) = copied {
+                return fail(&mut actor, &mut native_registration, error);
+            }
+        }
         actor.home = Some((home, guest_home));
         Ok(Placement {
             cwd: how.workdir,

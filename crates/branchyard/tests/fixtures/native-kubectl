@@ -16,7 +16,7 @@ state = root / "state.json"
 if not state.exists():
     state.write_text(json.dumps({"objects": {}, "runtime": "gvisor", "counter": 0,
         "extra_policies": [], "namespace_uid": "namespace-uid"}))
-for name in ("workspace", "home"):
+for name in ("workspace", "home", "tools"):
     (root / name).mkdir(exist_ok=True)
 code = source.read_text().replace(
     "Path(__file__).resolve().parent", f"Path({str(source.parent)!r})"
@@ -25,12 +25,12 @@ code = source.read_text().replace(
     'receipts = list((root.parent / "repo/.branchyard/native").glob("*/*.json"))',
 ).replace(
     'if operation == "create":',
-    'if operation == "create":\n    if body["kind"] == "Sandbox":\n        for directory in ("workspace", "home"):\n            shutil.rmtree(root / directory)\n            (root / directory).mkdir()',
+    'if operation == "create":\n    if body["kind"] == "Sandbox":\n        for directory in ("workspace", "home", "tools"):\n            shutil.rmtree(root / directory)\n            (root / directory).mkdir()',
 )
 execute = "result = subprocess.run(command, check=False)"
 assert execute in code, "the shared fake kubectl execution hook changed"
 code = code.replace(
     execute,
-    "command = [arg.replace('/branchyard/home', str(root / 'home')).replace('/workspace', str(root / 'workspace')) for arg in command]\n    " + execute,
+    "import re\n    command = [re.sub(r'(?<![\\w.\\-/])/tools(?![\\w.\\-])', str(root / 'tools'), arg).replace('/branchyard/home', str(root / 'home')).replace('/workspace', str(root / 'workspace')) for arg in command]\n    " + execute,
 )
 exec(compile(code, str(source), "exec"))

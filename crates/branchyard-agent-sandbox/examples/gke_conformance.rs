@@ -347,6 +347,9 @@ fn main() -> Result<()> {
         namespace: args[1].clone(),
         runtime,
         network,
+        store: None,
+        egress: branchyard_agent_sandbox::Egress::default(),
+        credential_proxy: None,
     };
     let provider = AgentSandboxProvider::new(config.clone(), &state)?;
     let name = format!("gke-live-{}-{}", args[2], args[3]);

@@ -1,6 +1,7 @@
 {
-  "spawning-branch": 46000,
-  "leaf-branch": 14500,
+  "work-turn-no-helpers": 1000,
+  "spawning-branch": 44500,
+  "leaf-branch": 9000,
   "mcp-manager": 2000,
   "generic-agents": 1500,
   "skill:artifact-tools": 2500,
@@ -10,6 +11,7 @@
   "skill:data-clean": 1500,
   "skill:diagram-design": 1500,
   "skill:docx": 2000,
+  "skill:find-tools": 1000,
   "skill:google-docs": 1500,
   "skill:google-sheets": 1500,
   "skill:google-slides": 1500,
@@ -21,5 +23,8 @@
   "skill:source-capture": 1500,
   "skill:table-extract": 1500,
   "skill:visual-design": 1500,
-  "skill:xlsx": 2000
+  "skill:xlsx": 2000,
+  "mcp-tools:leaf": 5800,
+  "mcp-tools:leaf-with-outputs": 9300,
+  "mcp-tools:spawning-branch": 43900
 }

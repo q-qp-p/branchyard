@@ -50,6 +50,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use branchyard::operations::Surface;
 use branchyard::{Delegate, ENV_TOKEN};
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
@@ -68,51 +69,62 @@ pub fn tool_names() -> Vec<&'static str> {
         .collect()
 }
 
-const INSTRUCTIONS: &str = "Branchyard runs you on a git branch. These tools let you \
-delegate. The shortest way: call delegate once with a plan (each task as spawn takes it, with \
-the paths it owns, and a brief they all share), then end your turn; you are woken with a summary \
-when the children have settled. Otherwise: spawn child branches with their own harness and budget, watch them with inspect \
-and events, continue them with send, add to a child's running turn with steer, merge a \
-finished child into your own branch with \
-propose_integration (its check must pass; give several in branches to merge them together and \
-check the result once), run a branch's check on its current work with check (run it on \
-yourself before you finish), stop them with cancel, set a settled one aside with discard (it is never \
-run again), and list them with children. Children run in parallel; spawn returns once a child has \
-started. To wait for them, call wait, or end your turn: when every child has settled, Branchyard \
-starts your next turn with a summary of what each did. A child may \
-depend on its siblings (depends_on): it waits, and starts once they have settled; apply_graph \
-creates several children and dependencies at once, all or nothing, against the revision graph \
-shows. You act only as your own branch and only \
-on your descendants. A branch that may not delegate (its envelope's max_depth is 0) still has \
-inspect, check, the artifact and scratch tools, and ask, report, escalate, report_status and inbox; the other tools \
-refuse it. inspect with no branch shows your remaining budget, and in a rig your seat and the seats you \
-may spawn. You can also message: ask your parent (the person, if you have none) a question (optionally waiting for its \
-answer), report to it (with a result, a JSON value, when your parent gave you a result_contract in inspect: it is checked against the contract's schema, and it is what your parent reads back), escalate to it or, if your rig seat allows, further up; answer a \
-descendant's message; state your own status in a line with report_status (working, idle, blocked, complete or failure; blocked and failure also reach your parent's inbox), which is a claim shown beside the status Branchyard derives, not a message; and read your own inbox. To read a child's answer as JSON, give spawn a result contract ({schema, required}): the child reports a result matching it, and you read it as the result of inspect or of each settled child in wait. Each harness keeps its native planning, subagents and internal task graph; Branchyard depth limits count Branchyard branches only. For native final JSON without requiring the reporting tool, use a result contract with purpose: deliverable and required: true; a valid current-turn answer can complete without a Git diff. For file outputs add capture: {manifest: \"outputs/artifacts.json\"} to a required deliverable contract. Write the declared manifest after checking files; collection publishes producer-owned artifacts after transfer and before acceptance. Missing files or invalid hashes fail the deliverable. Document skills are available through the task capabilities index. The skills your branch runs with, built-in and the repository's .agents/skills when a person trusted them or a server's operator allows them, are fixed when the branch is created and inherited by its children; by skills ls in your shell shows them, staged or withheld and why. Trusting a repository's skills (by skills trust) is a person's decision, made outside any branch. A rig seat can fix owned paths and a result contract: children may narrow ownership and may not replace the contract. Use handoff to freeze a settled descendant result and selected artifact IDs for another descendant; it waits for that recipient's next turn without steering or starting one. An external lead can use operator CLI/SDK calls without adopting or replacing its native session. A child spawned with plan: true writes a plan read-only and escalates it to you: approve_plan runs it (as proposed or edited), reject_plan ends it or, with replan, has it plan again. When a descendant's tool or connector call needs approval, the ask is escalated to you: answer_approval allows or denies it. Substrate setup is an operator action outside a harness: \
-by substrate setup prepares the saved template; by substrate check --smoke verifies bridge execution \
-and cleanup without a model. by up and by doctor report the saved connection and remote credential readiness. \
-They report seven readiness checks; only a verified one was established by that run. \
-by up --plan --smoke also lists Substrate workers, creating no actor and calling no model. \
-An operator can run by setup --guided to select a repository and compute backend. \
-by setup --up --json includes readiness in one report; --directory PATH selects the repository. \
-An operator can use by compute gce --project PROJECT --zone ZONE --name NAME --tunnel-through-iap \
-to review an offline JSON plan; --apply provisions the VM and its dedicated IAP TCP 22 firewall rule. \
-Add --internal-ip to omit an external address. --service-account EMAIL attaches that account with the cloud-platform scope, \
-so its IAM roles decide API access; --scopes narrows it. This operator command refuses harness sessions and --remote. \
-Add --gvisor to install the pinned gVisor Docker runtime; Container execution needs permission to use the worker's local Docker socket. \
-For GKE, an operator can select tools/substrate_gke.py --atenet-dataplane=agentgateway with the target options; it pins a compatible gateway in a private source export before installation. \
-An external operator can run by mcp manager --url URL --token-file FILE, with optional --ca-file FILE, to manage authorized code and knowledge workspaces. \
-For a repository-free console, an operator runs by serve --app --knowledge; this keeps configured storage and quotas and does not expand your grant. \
-BRANCHYARD_MANAGER_TOKEN is reserved for that operator and is never forwarded to native harnesses. \
-Manager tool outputs have a bounded JSON budget, with explicit errors for oversized responses; use focused previews or compute for large documents. \
-The operator manager's start_session accepts explicit unapproved_tools acknowledgment for profiles without routed approvals, still subject to server permission. \
-It also takes preset, an operator execution preset ID that a server can require; the preset then supplies the provider and bounds the harness and model. \
-An operator can select --provider container or --provider agent-sandbox with a digest-pinned --image, --cpus, --memory and --pass-env. \
-Local by obligations [BRANCH] --json lists durable work owed; it refuses --remote. \
-Agent Sandbox also needs --kube-context and --kube-namespace. --sandbox-runtime defaults to gvisor; runc applies only to Container and microvm applies only to Agent Sandbox. \
---sandbox-network defaults to deny; unrestricted permits ordinary networking. Container permits cloud metadata; Agent Sandbox retains its GKE metadata blocks. Native providers destroy allocations after each turn and refuse retention, snapshots and required hostname allowlists. \
-Its workspace_action requires revision from inspect_workspace. On revision_conflict inspect again before explicitly proposing a new action; never automatically refresh and resubmit. \
-That separate manager uses an HTTP principal; it is not added to this branch-scoped delegation server.";
+/// What every branch is told, whatever else it holds: the core tools, the
+/// messaging tools, and how a result is reported.
+const INSTRUCTIONS_CORE: &str = "Branchyard runs you on a git branch. inspect shows your status, \
+your remaining budget and the result_contract you must answer in; events reads your activity; \
+check runs your branch's check on your current work: run it on yourself before you finish. You \
+act only as your own branch. You can message: ask your parent (the person, if you have none) a \
+question (optionally waiting for its answer), report to it (with a result, a JSON value, when \
+your parent gave you a result_contract in inspect: it is checked against the contract's schema, \
+and it is what your parent reads back), escalate to it or, if your rig seat allows, further up; \
+state your own status in a line with report_status (working, idle, blocked, complete or failure; \
+blocked and failure also reach your parent's inbox), which is a claim shown beside the status \
+Branchyard derives, not a message; and read your own inbox. Each harness keeps its native \
+planning, subagents and internal task graph; Branchyard depth limits count Branchyard branches \
+only. For native final JSON without requiring the reporting tool, use a result contract with \
+purpose: deliverable and required: true; a valid current-turn answer can complete without a Git \
+diff. For file outputs add capture: {manifest: \"outputs/artifacts.json\"} to a required \
+deliverable contract. Write the declared manifest after checking files; collection publishes \
+producer-owned artifacts after transfer and before acceptance. Missing files or invalid hashes \
+fail the deliverable. Your skills and connectors are listed in .branchyard/tools/INDEX.md of \
+your home.";
+
+/// What a branch with helpers is also told. It lists the tools of
+/// [`branchyard::operations::Surface::delegation`], so a branch without
+/// them is not given it.
+const INSTRUCTIONS_DELEGATION: &str = " These tools let you delegate. The shortest way: call \
+delegate once with a plan (each task as spawn takes it, with the paths it owns, and a brief they \
+all share), then end your turn; you are woken with a summary when the children have settled. \
+Otherwise: spawn child branches with their own harness and budget, watch them with inspect and \
+events, continue them with send, add to a child's running turn with steer, merge a finished \
+child into your own branch with propose_integration (its check must pass; give several in \
+branches to merge them together and check the result once), stop them with cancel, set a settled \
+one aside with discard (it is never run again), and list them with children. Children run in \
+parallel; spawn returns once a child has started. To wait for them, call wait, or end your turn: \
+when every child has settled, Branchyard starts your next turn with a summary of what each did. \
+A child may depend on its siblings (depends_on): it waits, and starts once they have settled; \
+apply_graph creates several children and dependencies at once, all or nothing, against the \
+revision graph shows. You act only on your descendants. inspect with no branch shows the budget \
+you may grant, and in a rig your seat and the seats you may spawn. Answer a descendant's message \
+with answer. To read a child's answer as JSON, give spawn a result contract ({schema, required}): \
+the child reports a result matching it, and you read it as the result of inspect or of each \
+settled child in wait. A rig seat can fix owned paths and a result contract: children may narrow \
+ownership and may not replace the contract. Use handoff to freeze a settled descendant result \
+and selected artifact IDs for another descendant; it waits for that recipient's next turn \
+without steering or starting one. A child spawned with plan: true writes a plan read-only and \
+escalates it to you: approve_plan runs it (as proposed or edited), reject_plan ends it or, with \
+replan, has it plan again. When a descendant's tool or connector call needs approval, the ask is \
+escalated to you: answer_approval allows or denies it. Children inherit the skills you run \
+with, fixed when the branch was created.";
+
+/// The instructions a server with `surface` gives its client.
+fn instructions(surface: Surface) -> String {
+    match surface.delegation {
+        true => format!("{INSTRUCTIONS_CORE}{INSTRUCTIONS_DELEGATION}"),
+        false => INSTRUCTIONS_CORE.to_owned(),
+    }
+}
 
 fn schema(value: Value) -> Arc<Map<String, Value>> {
     match value {
@@ -125,8 +137,24 @@ fn branch_property(what: &str) -> Value {
     json!({"type": "string", "description": what})
 }
 
-/// The tool definitions this server lists.
+/// The tool definitions this server lists, all of them: what a branch
+/// with every grant is shown. See [`tools_for`].
 pub fn tools() -> Vec<Tool> {
+    tools_for(Surface::ALL)
+}
+
+/// The tool definitions of `surface`: the table's tools its grants reach.
+pub fn tools_for(surface: Surface) -> Vec<Tool> {
+    all_tools()
+        .into_iter()
+        .filter(|tool| {
+            branchyard::operations::by_tool(&tool.name)
+                .is_none_or(|operation| surface.holds(operation))
+        })
+        .collect()
+}
+
+fn all_tools() -> Vec<Tool> {
     let read_only = |title: &str| {
         let mut annotations = ToolAnnotations::default();
         annotations.title = Some(title.to_owned());
@@ -804,6 +832,8 @@ pub struct Server {
     root: PathBuf,
     branch: String,
     token: String,
+    /// The tools it lists, which follow the branch's grants.
+    surface: Surface,
     /// Found on the first call: the turn may not have registered yet when
     /// the harness starts this server.
     delegate: Arc<Mutex<Option<Delegate>>>,
@@ -812,11 +842,20 @@ pub struct Server {
 impl Server {
     /// Serve as the branch whose running turn under `root` holds `token`;
     /// `branch` must be that branch.
+    ///
+    /// It lists the tools of [`Surface::from_env`], which the engine sets
+    /// from the branch's grants: all of them when it is unset.
     pub fn new(root: PathBuf, branch: &str, token: &str) -> Server {
+        Server::with_surface(root, branch, token, Surface::from_env())
+    }
+
+    /// Serve as [`Server::new`] does, listing the tools of `surface`.
+    pub fn with_surface(root: PathBuf, branch: &str, token: &str, surface: Surface) -> Server {
         Server {
             root,
             branch: branch.to_owned(),
             token: token.to_owned(),
+            surface,
             delegate: Arc::default(),
         }
     }
@@ -851,7 +890,7 @@ impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("branchyard", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(instructions(self.surface))
     }
 
     async fn list_tools(
@@ -863,7 +902,7 @@ impl ServerHandler for Server {
         // Claude Code 2.1.293 negotiates it and refuses a list without
         // them: the server shows as connected, with no tools. The tools
         // are this branch's alone and may change with the binary.
-        Ok(ListToolsResult::with_all_items(tools())
+        Ok(ListToolsResult::with_all_items(tools_for(self.surface))
             .with_ttl_ms(0)
             .with_cache_scope(CacheScope::Private))
     }
@@ -1028,7 +1067,12 @@ mod tests {
         );
         assert!(!ask.contains("ask inbox"), "{ask}");
         // A branch nobody delegated asks and escalates to the person.
-        for said in [ask.as_str(), &description("escalate"), INSTRUCTIONS] {
+        for said in [
+            ask.as_str(),
+            &description("escalate"),
+            &instructions(Surface::CORE),
+            &instructions(Surface::ALL),
+        ] {
             assert!(said.contains("(the person, if you have none)"), "{said}");
         }
         let integrate = description("propose_integration");
@@ -1100,6 +1144,99 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The size of a `tools/list` result, as the client receives it.
+    fn listed_bytes(surface: Surface) -> usize {
+        serde_json::to_string(&json!({"tools": tools_for(surface)}))
+            .unwrap()
+            .len()
+    }
+
+    /// What a turn's server lists is held to the caps in
+    /// `tools/model_surface_budget.json`, one per case: a work turn with no
+    /// helpers has no server; a leaf lists the core tools; a leaf with a
+    /// result contract adds the artifact tools; a branch with helpers lists
+    /// all. The text a case is given beside them is capped by
+    /// `tools/check_model_surface.py`.
+    #[test]
+    fn the_tools_list_of_each_case_stays_within_its_cap() {
+        let budget: std::collections::BTreeMap<String, usize> =
+            serde_json::from_str(include_str!("../../../tools/model_surface_budget.json")).unwrap();
+        let storage_only = Surface {
+            storage: true,
+            ..Surface::CORE
+        };
+        let cases = [
+            ("mcp-tools:leaf", Surface::CORE),
+            ("mcp-tools:leaf-with-outputs", storage_only),
+            ("mcp-tools:spawning-branch", Surface::ALL),
+        ];
+        for (name, surface) in cases {
+            let cap = budget
+                .get(name)
+                .unwrap_or_else(|| panic!("no cap for {name} in tools/model_surface_budget.json"));
+            let size = listed_bytes(surface);
+            assert!(size <= *cap, "{name}: {size} bytes, cap {cap}");
+        }
+        assert!(listed_bytes(Surface::CORE) < listed_bytes(storage_only));
+        assert!(listed_bytes(storage_only) < listed_bytes(Surface::ALL));
+        // The point of the surface: a leaf is shown a small fraction.
+        assert!(listed_bytes(Surface::CORE) * 4 < listed_bytes(Surface::ALL));
+    }
+
+    /// The instructions of a branch with no helpers do not mention tools it
+    /// is not shown, nor the operator commands that once rode along.
+    #[test]
+    fn the_instructions_follow_the_surface_and_carry_no_operator_text() {
+        let core = instructions(Surface::CORE);
+        let all = instructions(Surface::ALL);
+        assert!(all.starts_with(&core) && all.len() > core.len());
+        for hidden in ["spawn", "delegate", "apply_graph", "propose_integration"] {
+            assert!(!core.contains(hidden), "{hidden} in a leaf's instructions");
+            assert!(all.contains(hidden), "{hidden}");
+        }
+        for operator in [
+            "Substrate",
+            "compute gce",
+            "BRANCHYARD_MANAGER_TOKEN",
+            "mcp manager",
+            "start_session",
+            "--sandbox-network",
+        ] {
+            assert!(!all.contains(operator), "{operator} is operator text");
+        }
+    }
+
+    #[test]
+    fn a_surface_lists_only_tools_that_are_in_the_table() {
+        for surface in [Surface::CORE, Surface::ALL] {
+            for tool in tools_for(surface) {
+                assert!(
+                    branchyard::operations::by_tool(&tool.name).is_some(),
+                    "{}",
+                    tool.name
+                );
+            }
+        }
+        let mut names: Vec<String> = tools_for(Surface::CORE)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "ask",
+                "check",
+                "escalate",
+                "events",
+                "inbox",
+                "inspect",
+                "report",
+                "report_status"
+            ]
+        );
     }
 
     #[test]

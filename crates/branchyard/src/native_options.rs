@@ -97,11 +97,27 @@ impl AgentSandboxOptions {
     }
 
     pub(crate) fn config(&self) -> branchyard_agent_sandbox::Config {
+        self.config_with(None, branchyard_agent_sandbox::Egress::default(), None)
+    }
+
+    /// The target with the shared tool store mounted from `store`, when
+    /// the yard has a store and a bucket for it, and `egress`: what a
+    /// `deny` allocation may reach besides DNS, which is the worker's to
+    /// say (`[agent_sandbox]` and `[network] mirrors`), not the branch's.
+    pub(crate) fn config_with(
+        &self,
+        store: Option<branchyard_agent_sandbox::StoreVolume>,
+        egress: branchyard_agent_sandbox::Egress,
+        credential_proxy: Option<branchyard_agent_sandbox::CredentialSidecar>,
+    ) -> branchyard_agent_sandbox::Config {
         branchyard_agent_sandbox::Config {
             context: self.context.clone(),
             namespace: self.namespace.clone(),
             runtime: self.runtime,
             network: self.network,
+            store,
+            egress,
+            credential_proxy,
         }
     }
 

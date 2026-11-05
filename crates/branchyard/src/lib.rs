@@ -99,6 +99,7 @@ mod adopt;
 mod assignment;
 mod broker;
 mod bundle;
+pub mod bundles;
 mod capabilities;
 mod capacity;
 mod checkpoint;
@@ -135,6 +136,7 @@ mod land;
 mod lifecycle;
 mod liveness;
 mod lock;
+pub mod manifest;
 mod map;
 mod map_input;
 pub mod models;
@@ -179,6 +181,8 @@ mod tarball;
 pub mod tasks;
 mod timeline;
 mod timers;
+pub mod toolstore;
+mod tooltree;
 pub mod up;
 mod wake;
 mod workspace;
@@ -206,7 +210,9 @@ pub use native_options::{
     ContainerOptions, ContainerRuntime,
 };
 #[cfg(feature = "postgres")]
-pub use pg::postgres_config;
+pub use pg::{
+    postgres_config, postgres_open, set_connection_policy, ConnectionPolicy, PasswordSource,
+};
 pub use placement::{HOME as SANDBOX_HOME, WORKSPACE as SANDBOX_WORKSPACE};
 pub use provider_admission::ProviderAdmission;
 pub use providers::HarnessLocation;
@@ -516,6 +522,34 @@ impl Yard {
     /// set before. Shared by every clone of this `Yard`.
     pub fn use_connectors(&self, gateway: connectors::Gateway) {
         *self.hub.connectors.lock_recovering("connectors") = Some(Arc::new(gateway));
+    }
+
+    /// Give this yard's branches the shared tool store `store`: a turn on a
+    /// provider that sees the store at its path links the skills and
+    /// connector packages the store has instead of copying them into its
+    /// home; see `docs/tools-model.md`. Replaces any store set before.
+    /// Shared by every clone of this `Yard`.
+    pub fn use_tool_store(&self, store: toolstore::ToolStore) {
+        *self.hub.tool_store.lock_recovering("tool store") = Some(Arc::new(store));
+    }
+
+    /// Give this yard's restricted network policies the package mirror hosts
+    /// `mirrors` (`[network] mirrors`): every turn under a restricted policy
+    /// may reach them, beside the connector gateway and the model gateway it is
+    /// given; see `docs/egress.md`. Replaces any set before. Shared by every
+    /// clone of this `Yard`.
+    pub fn use_mirrors(&self, mirrors: Vec<branchyard_provision::network::HostRule>) {
+        *self.hub.mirrors.lock_recovering("mirrors") = mirrors;
+    }
+
+    /// The mirror hosts set with [`Yard::use_mirrors`].
+    pub fn mirrors(&self) -> Vec<branchyard_provision::network::HostRule> {
+        self.hub.mirrors.lock_recovering("mirrors").clone()
+    }
+
+    /// The store set with [`Yard::use_tool_store`], if any.
+    pub fn tool_store(&self) -> Option<Arc<toolstore::ToolStore>> {
+        self.hub.tool_store.lock_recovering("tool store").clone()
     }
 
     /// Give this yard's branches the model gateway `gateway`: a branch on
@@ -1672,6 +1706,12 @@ pub struct TaskOptions {
     /// default (`local:<user>` locally). A server sets it to the request's
     /// principal. See `docs/connectors.md`.
     pub actor: Option<connectors::Actor>,
+    /// The tenant's tool-policy version a server admitted this call under.
+    /// The branch's turn manifest records it when it is resolved, and a
+    /// send that carries a newer one (the server re-checked the session's
+    /// tools against the policy) updates it. `None`: no server, or no
+    /// change. See `docs/connectors.md#the-turn-manifest`.
+    pub policy_version: Option<u64>,
     /// The server trigger run that started a new task, recorded on it
     /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
     /// Read only when a branch starts a new task.
@@ -2267,6 +2307,13 @@ impl Branch {
     /// The structured output contract stored with this branch, when requested.
     pub fn result_contract(&self) -> Result<Option<ResultContract>, Error> {
         Ok(self.yard.store().read(&self.info.name)?.result_contract)
+    }
+
+    /// The turn manifest the session runs with: what it was admitted with,
+    /// resolved when it started and again only when its tools changed.
+    /// `None` until its first turn has started.
+    pub fn manifest(&self) -> Result<Option<manifest::TurnManifest>, Error> {
+        Ok(self.yard.store().read(&self.info.name)?.manifest)
     }
 
     /// Where this branch's harness runs; `None` is a local process.
@@ -3008,6 +3055,12 @@ pub enum Activity {
         /// `docs/provisioning.md#antigravity-permission-rules`. Rules only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permissions: Option<branchyard_provision::PermissionsWritten>,
+        /// The digest of the turn manifest the session runs with (its file
+        /// is `.branchyard/manifest.json`, named by `BRANCHYARD_MANIFEST`,
+        /// and the gateway token's `by_manifest` carries the same value);
+        /// see `docs/connectors.md#the-turn-manifest`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        manifest: Option<String>,
     },
     /// Input from `by` was written into the running turn; see
     /// [`Branch::steer`]. The harness's `steer_accepted` or

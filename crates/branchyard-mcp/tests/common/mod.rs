@@ -114,6 +114,17 @@ impl Client {
         Self::launch(command)
     }
 
+    /// A server the engine started for a branch whose grants reach only
+    /// the tool groups in `surface` (`BRANCHYARD_MCP_SURFACE`).
+    pub fn start_with_surface(root: &Path, branch: &str, token: &str, surface: &str) -> Client {
+        let mut command = Command::new(SERVER);
+        branchyard_testkit::hermetic(&mut command)
+            .args(["--root", &root.display().to_string(), "--branch", branch])
+            .env("BRANCHYARD_DELEGATION", token)
+            .env(branchyard::operations::ENV_SURFACE, surface);
+        Self::launch(command)
+    }
+
     pub fn manager(url: &str, token_file: &Path) -> Client {
         let mut command = Command::new(SERVER);
         branchyard_testkit::hermetic(&mut command)

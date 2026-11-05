@@ -114,7 +114,7 @@ fn an_owned_allocation_is_inspected_reused_stopped_restarted_and_removed(
     assert_eq!(provider.ensure(&spec())?.state, SandboxState::Running);
     let receipt: Value = serde_json::from_slice(&fs::read(fixture.receipt_path())?)?;
     assert_eq!(receipt["id"], "c".repeat(64));
-    assert_eq!(receipt["volumes"].as_array().map(Vec::len), Some(2));
+    assert_eq!(receipt["volumes"].as_array().map(Vec::len), Some(3));
     assert_eq!(
         fs::metadata(fixture.receipt_path())?.permissions().mode() & 0o777,
         0o600
@@ -151,6 +151,11 @@ fn an_owned_allocation_is_inspected_reused_stopped_restarted_and_removed(
         "--pids-limit",
     ] {
         assert!(create.iter().any(|s| s == flag), "{flag}");
+    }
+    // The tool tree has a volume of its own at the guest root, beside the worktree and the home.
+    for destination in ["/workspace", "/branchyard/home", "/tools"] {
+        let wanted = format!("type=volume,destination={destination}");
+        assert!(create.contains(&wanted), "{destination}");
     }
     assert!(!provider.capabilities().egress);
     assert!(!provider.capabilities().pause);

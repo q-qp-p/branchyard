@@ -1,9 +1,12 @@
 //! Durable presentation and access bindings for native tasks and attempts.
 pub(crate) mod auth;
 mod collaboration;
+mod connections;
 mod decisions;
 mod execution;
 mod harness_input;
+mod installs;
+mod policy;
 mod presets;
 mod previews;
 pub(crate) use previews::frame_html;
@@ -16,6 +19,7 @@ pub(crate) mod sources;
 #[cfg(test)]
 mod tests;
 mod titles;
+mod tools;
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
@@ -86,13 +90,16 @@ fn update(mut record: Record, body: Value) -> Mutation {
         expected: Some(expected),
     }
 }
+fn revision_conflict() -> ApiError {
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "revision_conflict",
+        "reload the workspace and retry at its current revision",
+    )
+}
 fn revision(record: &Record, body: &Value) -> Result<(), ApiError> {
     if body.get("revision").and_then(Value::as_u64) != Some(record.revision) {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "revision_conflict",
-            "reload the workspace and retry at its current revision",
-        ));
+        return Err(revision_conflict());
     }
     Ok(())
 }

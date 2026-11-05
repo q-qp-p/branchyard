@@ -199,6 +199,20 @@ pub struct Session {
     /// Execution preset the session started with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
+    /// What it was started with beyond its harness: `connectors` (each
+    /// `connector`, `mode`, `account`), `skills` (unset: every built-in
+    /// skill) and `helpers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<serde_json::Value>,
+    /// The tenant's tool-policy version when the session was admitted, or
+    /// last checked at a claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u64>,
+    /// The digest of the turn manifest the session runs with (what it was
+    /// admitted with, resolved once; `docs/connectors.md#the-turn-manifest`),
+    /// once its first turn has started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<String>,
 }
 
 /// Admit an isolated native session through the durable queue.
@@ -254,6 +268,474 @@ pub struct StartSessionRequest {
     /// A reviewer may select this instead of artifact inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<String>,
+    /// Connectors this session may use, each as an object or the
+    /// `CONNECTOR[@ACCOUNT][:MODE[:OPS]]` form. Works beside `preset`;
+    /// refused beside `provision.connectors`. Each must be served by the
+    /// gateway, connected by the caller and within the caller's ceiling.
+    /// A reviewer's are read only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connectors: Vec<branchyard::connectors::GrantEntry>,
+    /// Built-in skills to stage, by id, from `GET
+    /// /v1/workspaces/{workspace}/tools`. Unset: every built-in skill.
+    /// Connectors bring their own skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// Other harnesses this session may hand parts of its work to. Needs
+    /// the server's `allow_delegation`; refused for a reviewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Helpers>,
+    /// Everything this session chooses, as one list: connectors (with
+    /// `mode`, default `read`), built-in skills and helper harnesses. The
+    /// server expands it into `connectors`, `skills` and `helpers`, so a
+    /// kind left out of the list is not chosen (no `skill` entries stage no
+    /// built-in skills). Refused beside any of those three fields. Each
+    /// entry must be within the caller's effective tool policy
+    /// (`tool_not_allowed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolChoice>>,
+}
+
+/// What a tool is.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    /// An upstream API through the connector gateway.
+    Connector,
+    /// A built-in skill.
+    Skill,
+    /// A harness a session may delegate to.
+    Helper,
+}
+
+/// One tool a session or a workspace default chooses.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolChoice {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The connector id, built-in skill id or harness id.
+    pub id: String,
+    /// A connector's mode: `read` (the default) or `write`. Refused on a
+    /// skill or helper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<branchyard::connectors::GrantMode>,
+    /// A connector's connected account; unset is the person's default.
+    /// Refused on a skill or helper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The most helpers the session may have at once, 1 to 16. Only the
+    /// helper entry with `id` `*` carries it (`{"kind": "helper", "id": "*",
+    /// "max_children": 2}`); that entry names no harness, and alone it
+    /// gives helpers that run the session's own harness. Unset is the
+    /// default of 4, within the administrator's `max_helpers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
+/// A tool named without its settings: what a policy turns off.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRef {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The connector id, built-in skill id or harness id; `*` with kind
+    /// `helper` stands for delegation as a whole.
+    pub id: String,
+}
+
+/// What an administrator allows, at one level (tenant, group or person).
+/// An unset field says nothing: no limit from this record.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPolicy {
+    /// The widest connector grant, in the grant's form. An empty list
+    /// allows no connector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<Vec<branchyard::connectors::GrantEntry>>,
+    /// The built-in skill ids allowed. An empty list allows none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    /// The harness ids a session may delegate to. An empty list allows
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Vec<String>>,
+    /// Whether sessions may delegate at all. `false` turns helpers off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegation: Option<bool>,
+    /// The most helpers a session may have at once, 1 to 16 (default
+    /// ceiling 16). Two records' limits narrow to the lesser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_helpers: Option<u32>,
+    /// Tools switched off whatever the lists above allow. A person's own
+    /// policy (`/v1/me/policy`) uses it to turn a tool off for themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<Vec<ToolRef>>,
+}
+
+/// One stored policy.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRecord {
+    /// `tenant:<tenant>`, `group:<tenant>:<group>` or
+    /// `principal:<tenant>:<subject>`; a person's own is
+    /// `self:<tenant>:<subject>`.
+    pub key: String,
+    /// The policy.
+    pub policy: ToolPolicy,
+    /// Compare-and-set revision, from one.
+    pub revision: u64,
+}
+
+/// `GET /v1/admin/policies`: the caller's tenant's policies.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyList {
+    /// Every stored policy of the caller's tenant, by key.
+    pub policies: Vec<PolicyRecord>,
+    /// The tenant's policy version: it rises by one with every change to any
+    /// of its policies, and a session records the one it was admitted
+    /// under.
+    #[serde(default)]
+    pub version: u64,
+}
+
+/// `PUT /v1/admin/policies/{key}`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutPolicyRequest {
+    /// The new policy, replacing the old.
+    pub policy: ToolPolicy,
+    /// The revision being replaced; unset to create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+}
+
+/// A workspace's tools that sessions start with.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDefaults {
+    /// The default tools.
+    #[serde(default)]
+    pub tools: Vec<ToolChoice>,
+    /// Compare-and-set revision; zero until the first save.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// `PUT /v1/workspaces/{workspace}/tools`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutToolDefaults {
+    /// The default tools, replacing the old.
+    pub tools: Vec<ToolChoice>,
+    /// The revision being replaced; zero (or unset) before the first save.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+/// How far a tool is along the path to use: the first state it fails, else
+/// `ready`, or `default` when the workspace starts sessions with it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolState {
+    /// Policy does not allow it for this person.
+    NotAllowed,
+    /// Allowed, but not set up for this person.
+    NotReady,
+    /// Allowed and set up.
+    Ready,
+    /// Ready, and sessions here start with it.
+    Default,
+}
+
+/// What a person can do about a tool that is not ready.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    /// Ask an administrator to allow it.
+    AskAdmin,
+    /// Connect an account.
+    Connect,
+    /// Turn it back on in Settings > Tools: the person switched it off.
+    TurnOn,
+    /// Install it.
+    Install,
+    /// Sign in.
+    SignIn,
+}
+
+/// One tool, as the caller sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEntry {
+    /// What kind of tool.
+    pub kind: ToolKind,
+    /// The id a `tools` entry takes.
+    pub id: String,
+    /// A display name.
+    pub name: String,
+    /// What it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A connector's icon symbol in the console's sprite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// A skill's topic heading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Where it stands.
+    pub state: ToolState,
+    /// Policy allows it for this caller.
+    pub allowed: bool,
+    /// It is set up for this caller (never true when not allowed).
+    pub ready: bool,
+    /// Sessions in the workspace start with it.
+    pub default: bool,
+    /// A connector's most the caller may do: `read` or `write`.
+    #[serde(default)]
+    pub max_mode: Option<branchyard::connectors::GrantMode>,
+    /// A connector's accounts for the caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<ConnectedAccount>,
+    /// What the caller can do next, if anything.
+    #[serde(default)]
+    pub action: Option<ToolAction>,
+    /// One plain sentence when it is not ready.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// The caller switched it off for themselves (their own policy,
+    /// `/v1/me/policy`). `allowed` is then false, `state` is `not_allowed`
+    /// and `action` is `turn_on`; the administrator's policy would allow it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off_by_me: bool,
+    /// A helper's harness can be installed on the server's host by an
+    /// administrator now (`POST /v1/tools/helpers/{id}/install`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub installable: bool,
+}
+
+/// `GET /v1/tools`: every tool of the three kinds.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCatalogue {
+    /// Whether the connector gateway answers.
+    pub gateway: GatewayState,
+    /// One plain sentence when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The most children a session's helpers may have at once for the
+    /// caller: 16, or the administrator's lower `max_helpers`.
+    pub max_children: u32,
+    /// The children a session has when its `tools` give no number.
+    #[serde(default)]
+    pub default_children: u32,
+    /// Connectors, then skills, then helpers.
+    pub tools: Vec<ToolEntry>,
+}
+
+/// The harnesses a session may delegate to, one level deep.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Helpers {
+    /// Harness IDs its children may run. Empty: only its own harness.
+    #[serde(default)]
+    pub harnesses: Vec<String>,
+    /// Children it may have at once. Default 4, at most 16.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_children: Option<u32>,
+}
+
+/// Whether the connector gateway answers.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayState {
+    /// It answered.
+    Ready,
+    /// This server has no `[connectors]` gateway.
+    NotConfigured,
+    /// It is configured and did not answer.
+    Unreachable,
+}
+
+/// Where the caller stands with one connector.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    /// An account is connected and usable.
+    Connected,
+    /// The provider refused a refresh; connect again.
+    NeedsReconnect,
+    /// No account is connected.
+    NotConnected,
+    /// The caller's ceiling allows nothing of it.
+    Blocked,
+    /// The gateway's status is not known.
+    Unknown,
+}
+
+/// One connected account, without any secret.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectedAccount {
+    /// The account name; `default` unless the caller named one.
+    pub account: String,
+    /// `connected` or `needs_reconnect`.
+    pub state: ConnectionState,
+    /// `oauth` or `static` (an API key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// When the gateway last changed it, as it reports the time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// One connector the gateway serves, as the caller sees it.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connection {
+    /// The connector ID a grant names.
+    pub connector: String,
+    /// Its display name.
+    pub name: String,
+    /// What it gives a session access to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The symbol in the console's `connector-icons.svg` that draws its
+    /// mark (`ci-<id>`), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// The caller's overall state with it.
+    pub state: ConnectionState,
+    /// The caller's accounts.
+    #[serde(default)]
+    pub accounts: Vec<ConnectedAccount>,
+    /// The most a session may do with it under the caller's ceiling;
+    /// absent when blocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_mode: Option<branchyard::connectors::GrantMode>,
+    /// One plain sentence when it cannot be used now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `GET /v1/connections`: the caller's connections.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionList {
+    /// Whether the gateway answered.
+    pub gateway: GatewayState,
+    /// One plain sentence when it is not ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Every connector it serves.
+    pub connections: Vec<Connection>,
+}
+
+/// `POST /v1/connections/{connector}/connect`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectRequest {
+    /// The account to connect; `default` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+/// How to finish connecting.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConnectStart {
+    /// Open `url` to sign in with the provider; it expires at
+    /// `expires_at` (epoch milliseconds).
+    Oauth {
+        /// The provider's authorization URL.
+        url: String,
+        /// When the sign-in expires.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at: Option<u64>,
+    },
+    /// The connector takes an API key: send it to
+    /// `POST /v1/connections/{connector}/key`.
+    Key,
+}
+
+/// `POST /v1/connections/{connector}/key`: an API key or personal token
+/// for a key-based connector. The server passes it to the gateway's vault
+/// once and keeps no copy.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyRequest {
+    /// The key.
+    pub api_key: String,
+    /// The account to store it as; `default` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+}
+
+impl std::fmt::Debug for ApiKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyRequest")
+            .field("api_key", &"<redacted>")
+            .field("account", &self.account)
+            .finish()
+    }
+}
+
+/// One built-in skill a session may choose.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillOption {
+    /// The ID `skills` takes.
+    pub id: String,
+    /// What it does.
+    pub description: String,
+    /// Its topic's heading.
+    pub topic: String,
+    /// The skills it brings with it.
+    #[serde(default)]
+    pub requires: Vec<String>,
+}
+
+/// Whether a session may delegate, and how widely.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperOptions {
+    /// Whether `helpers` is accepted.
+    pub allowed: bool,
+    /// One plain sentence when it is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The most `max_children` may be.
+    pub max_children: u32,
+}
+
+/// `GET /v1/workspaces/{workspace}/tools`: what the caller may choose for
+/// a session here. Advice for the form; starting a session checks again.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTools {
+    /// The caller's connections.
+    pub connections: ConnectionList,
+    /// The built-in skills, in catalogue order.
+    pub skills: Vec<SkillOption>,
+    /// Delegation.
+    pub helpers: HelperOptions,
+    /// The tools sessions in this workspace start with.
+    #[serde(default)]
+    pub defaults: ToolDefaults,
 }
 
 /// Continue, steer or resume one native session.
@@ -636,6 +1118,133 @@ impl crate::Client {
         self.get(&path)
     }
 
+    /// The caller's connections at the connector gateway, without secrets.
+    pub fn connections(&self) -> Result<ConnectionList, crate::Error> {
+        self.get("/v1/connections")
+    }
+
+    /// Start connecting `connector` as the caller: a sign-in URL, or word
+    /// that it takes a key ([`Self::connect_key`]).
+    pub fn connect(
+        &self,
+        connector: &str,
+        request: &ConnectRequest,
+        key: &str,
+    ) -> Result<ConnectStart, crate::Error> {
+        self.post(
+            &format!("/v1/connections/{}/connect", crate::http::encode(connector)),
+            request,
+            key,
+        )
+    }
+
+    /// Store an API key for a key-based connector in the gateway's vault.
+    pub fn connect_key(
+        &self,
+        connector: &str,
+        request: &ApiKeyRequest,
+        key: &str,
+    ) -> Result<serde_json::Value, crate::Error> {
+        self.post(
+            &format!("/v1/connections/{}/key", crate::http::encode(connector)),
+            request,
+            key,
+        )
+    }
+
+    /// What a session in `workspace` may choose: connections, built-in
+    /// skills and helpers.
+    pub fn session_tools(&self, workspace: &str) -> Result<SessionTools, crate::Error> {
+        self.get(&format!(
+            "/v1/workspaces/{}/tools",
+            crate::http::encode(workspace)
+        ))
+    }
+
+    /// Every connector, skill and helper as the caller sees it, with the
+    /// workspace's defaults when `workspace` is given.
+    pub fn tools(&self, workspace: Option<&str>) -> Result<ToolCatalogue, crate::Error> {
+        match workspace {
+            Some(id) => self.get(&format!("/v1/tools?workspace={}", crate::http::encode(id))),
+            None => self.get("/v1/tools"),
+        }
+    }
+
+    /// Replace the tools sessions in `workspace` start with. The workspace's
+    /// owner or an editor may.
+    pub fn workspace_tool_defaults(
+        &self,
+        workspace: &str,
+        request: &PutToolDefaults,
+    ) -> Result<ToolDefaults, crate::Error> {
+        self.put(
+            &format!("/v1/workspaces/{}/tools", crate::http::encode(workspace)),
+            request,
+        )
+    }
+
+    /// The tool policies of the caller's tenant (`admin` scope).
+    pub fn policies(&self) -> Result<PolicyList, crate::Error> {
+        self.get("/v1/admin/policies")
+    }
+
+    /// Create or replace the policy at `key` (`admin` scope).
+    pub fn put_policy(
+        &self,
+        key: &str,
+        request: &PutPolicyRequest,
+    ) -> Result<PolicyRecord, crate::Error> {
+        self.put(
+            &format!("/v1/admin/policies/{}", crate::http::encode(key)),
+            request,
+        )
+    }
+
+    /// Delete the policy at `key` (`admin` scope); `revision` guards it.
+    pub fn delete_policy(
+        &self,
+        key: &str,
+        revision: Option<u64>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let mut path = format!("/v1/admin/policies/{}", crate::http::encode(key));
+        if let Some(revision) = revision {
+            path.push_str(&format!("?revision={revision}"));
+        }
+        self.delete(&path)
+    }
+
+    /// The caller's own policy: what they have switched off for themselves.
+    /// An empty policy at revision 0 before the first save.
+    pub fn my_policy(&self) -> Result<PolicyRecord, crate::Error> {
+        self.get("/v1/me/policy")
+    }
+
+    /// Replace the caller's own policy. It can only narrow what the
+    /// administrator's allows; `request.revision` is the saved one (unset
+    /// or 0 before the first save).
+    pub fn put_my_policy(&self, request: &PutPolicyRequest) -> Result<PolicyRecord, crate::Error> {
+        self.put("/v1/me/policy", request)
+    }
+
+    /// Ask the server to install helper `harness` on its own host (`admin`
+    /// scope, and `harness_install.allow` in the server's configuration).
+    /// Returns at once; follow it with `helper_install`.
+    pub fn install_helper(&self, harness: &str) -> Result<HelperInstall, crate::Error> {
+        self.post(
+            &format!("/v1/tools/helpers/{}/install", crate::http::encode(harness)),
+            &serde_json::json!({}),
+            &crate::new_key(),
+        )
+    }
+
+    /// Where the latest install of helper `harness` on the server stands.
+    pub fn helper_install(&self, harness: &str) -> Result<HelperInstall, crate::Error> {
+        self.get(&format!(
+            "/v1/tools/helpers/{}/install",
+            crate::http::encode(harness)
+        ))
+    }
+
     /// Start a named attempt through the existing operation queue.
     pub fn start_workspace_session(
         &self,
@@ -815,4 +1424,54 @@ mod tests {
         .unwrap();
         assert_eq!(request.title, "Research");
     }
+}
+
+/// Where a helper harness's install on the server's host stands.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallState {
+    /// Accepted; waiting to start.
+    Queued,
+    /// The install command is running.
+    Running,
+    /// The harness was found after the install.
+    Succeeded,
+    /// The command failed, or the harness was not found afterwards.
+    Failed,
+}
+
+impl InstallState {
+    /// Whether it has ended.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, InstallState::Succeeded | InstallState::Failed)
+    }
+}
+
+/// `POST` and `GET /v1/tools/helpers/{id}/install`: one install of a
+/// helper's harness. It runs on the server's own host only; a worker on
+/// another machine keeps what it has.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelperInstall {
+    /// The harness being installed.
+    pub harness: String,
+    /// Where it stands.
+    pub state: InstallState,
+    /// The machine it installs on: always `server` for now.
+    pub host: String,
+    /// The shell command the catalog gave, once chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// When it was accepted, in epoch milliseconds.
+    pub created_at_ms: u64,
+    /// When it ended, in epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// The end of the command's output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
 }

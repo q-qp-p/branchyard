@@ -661,6 +661,44 @@ fn run(
         recorder.record(Activity::Access(Box::new(narrowed)))?;
     }
     let scopes = crate::access::TokenScopes::of(&scoped);
+    // The session's turn manifest: resolved when it started, and again
+    // only when its tools changed (`crate::manifest`). Kept with the
+    // branch, written into its home, and named in its token.
+    // A turn that wakes the branch's kept sandbox resolves it again: what
+    // the person deselected or the policy withdrew while it slept is gone,
+    // and the bundles are the ones this host serves now.
+    let waking = crate::placement::wakes_kept_sandbox(turn.yard, record, fence);
+    let manifest = crate::manifest::settle(
+        turn.yard,
+        &scoped,
+        &scopes,
+        turn.options.policy_version,
+        waking,
+    );
+    if record.manifest.as_ref() != Some(&manifest) {
+        record.manifest = Some(manifest.clone());
+        store.write_fenced(record, fence)?;
+    }
+    let manifest_digest = manifest.digest();
+    let mut manifest_written = false;
+    if let Some(home) = record.home.as_deref() {
+        match manifest.write(home) {
+            Ok(written) => manifest_written = written,
+            Err(error) => {
+                driven.end = End::failed(format!("could not write the turn manifest: {error}"));
+                return Ok(driven);
+            }
+        }
+    }
+    // The skills this host holds are the ones the session was admitted
+    // with (`crate::bundles`); a connector's bundle is held to the manifest
+    // below, where it is linked or copied. Before anything starts.
+    let tool_store = crate::toolstore::for_turn(turn.yard, record);
+    if let Err(mismatch) = crate::bundles::verify_skills(&manifest, tool_store.as_deref()) {
+        recorder.record(Activity::Warning(mismatch.to_string()))?;
+        driven.end = End::failed(mismatch.to_string());
+        return Ok(driven);
+    }
     // A sandboxed harness's delegation tools, served from this host for
     // this turn with a token of its own; stopped, with each session's
     // server, when this function returns, after the harness is gone.
@@ -690,16 +728,34 @@ fn run(
             None
         }
     };
-    let mut connectors = match crate::connectors::prepare(turn.yard, &scoped, deadline_ms, &scopes)
-    {
-        Ok(connectors) => connectors,
-        Err(reason) => {
-            driven.end = End::failed(format!("could not provide connectors: {reason}"));
-            return Ok(driven);
-        }
-    };
+    let mut connectors =
+        match crate::connectors::prepare(turn.yard, &scoped, deadline_ms, &scopes, Some(&manifest))
+        {
+            Ok(connectors) => connectors,
+            Err(reason) if reason.starts_with(crate::bundles::BUNDLE_MISMATCH) => {
+                recorder.record(Activity::Warning(reason.clone()))?;
+                driven.end = End::failed(reason);
+                return Ok(driven);
+            }
+            Err(reason) => {
+                driven.end = End::failed(format!("could not provide connectors: {reason}"));
+                return Ok(driven);
+            }
+        };
     for warning in connectors.iter().flat_map(|prepared| &prepared.warnings) {
         recorder.record(Activity::Warning(warning.clone()))?;
+    }
+    // A sandbox whose proxy holds the credentials proves the turn with its
+    // secret: the server finds the secret's hash in the branch's record, so
+    // it is written before the proxy starts, and cleared when the turn ends
+    // (`conclude`).
+    if let Some((_, credential)) = connectors
+        .as_ref()
+        .and_then(|c| c.sandbox.as_ref())
+        .map(|s| &s.secret)
+    {
+        record.credential = Some(credential.clone());
+        store.write_fenced(record, fence)?;
     }
     // The effect ledger's proxy in front of the gateway: every effectful
     // call is decided and written to the ledger before it is made. It
@@ -726,7 +782,7 @@ fn run(
     let models = match crate::models::prepare(
         turn.yard,
         &scoped,
-        connectors.as_ref().map(|c| c.token.as_str()),
+        connectors.as_ref().and_then(|c| c.shared_token()),
         deadline_ms,
         &scopes,
         bounds.budget.clone(),
@@ -739,7 +795,10 @@ fn run(
         }
     };
     let mut model_gateway = None;
-    let mut egress_extra = Vec::new();
+    let mut turn_hosts = crate::egress::TurnHosts {
+        mirrors: turn.yard.mirrors(),
+        ..crate::egress::TurnHosts::default()
+    };
     let mut model_env = Vec::new();
     let mut model_scrub = Vec::new();
     // The gateway as a provisioner sees it, for a harness whose provider
@@ -749,7 +808,7 @@ fn run(
         None => {}
         Some(crate::models::Prepared::Direct { hosts, activity }) => {
             recorder.record(Activity::Model(Box::new(activity)))?;
-            egress_extra.extend(hosts);
+            turn_hosts.model_endpoints.extend(hosts);
         }
         Some(crate::models::Prepared::Gateway {
             gateway,
@@ -766,7 +825,7 @@ fn run(
                 });
             }
             recorder.record(Activity::Model(Box::new(activity)))?;
-            egress_extra.extend(crate::egress::gateway_rule(&url));
+            turn_hosts.model_gateway = crate::egress::gateway_rule(&url);
             model_env = env;
             model_scrub = scrub;
             model_gateway = Some(*gateway);
@@ -807,6 +866,9 @@ fn run(
             knowledge: Some(&briefing),
             assignment: assignment.as_deref(),
             skills: &skills,
+            manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
+            manifest_written,
+            store: tool_store.as_deref(),
         },
         crate::provisioning::Access {
             policy: &bounds.policy,
@@ -1049,9 +1111,16 @@ fn run(
         .as_ref()
         .and_then(|c| crate::egress::gateway_rule(&c.gateway_url))
     {
-        egress_extra.push(gateway);
+        turn_hosts.connector_gateway = Some(gateway);
     }
-    match crate::egress::prepare(turn.yard, &scoped, egress_extra) {
+    // The server a sandbox's credential proxy fetches from, and the proxy
+    // itself on loopback.
+    for url in connectors.iter().flat_map(|c| &c.reach) {
+        turn_hosts
+            .connector_reach
+            .extend(crate::egress::gateway_rule(url));
+    }
+    match crate::egress::prepare(turn.yard, &scoped, turn_hosts) {
         Ok(None) => {}
         Ok(Some(egress)) => {
             recorder.record(egress.applied())?;
@@ -1062,6 +1131,17 @@ fn run(
             return Ok(driven);
         }
     }
+    // A sandbox that runs its own credential proxy has it started now, in
+    // the sandbox and before the harness, and stopped (killed) when this
+    // function returns. A sidecar is not started here: the sandbox's own
+    // definition runs it, reading the settings file in the home.
+    let _credential_proxy = match start_credential_proxy(turn, &placement, connectors.as_ref()) {
+        Ok(proxy) => proxy,
+        Err(reason) => {
+            driven.end = End::failed(reason);
+            return Ok(driven);
+        }
+    };
     // A per-turn MCP file lives until this function returns, after the
     // harness is gone.
     let _turn_file = provisioned.turn_file;
@@ -1784,6 +1864,10 @@ fn run(
             }
             Err(error) => recorder.record(Activity::Warning(format!("kill failed: {error}")))?,
         }
+        // No token is renewed in, or left beside, a sandbox that is paused.
+        if let Some(prepared) = connectors.as_mut() {
+            prepared.retire();
+        }
         for activity in placement.release(turn.yard, record, fence) {
             recorder.record(activity)?;
         }
@@ -1814,6 +1898,12 @@ fn run(
             }
         }
         Err(error) => recorder.record(Activity::Warning(format!("close failed: {error}")))?,
+    }
+    // The renewer stops and the token file goes before the sandbox is
+    // paused (a copied home returns without it), so a paused sandbox holds
+    // no token; the next turn mints another (`docs/tools-model.md`, step 7).
+    if let Some(prepared) = connectors.as_mut() {
+        prepared.retire();
     }
     for activity in placement.release(turn.yard, record, fence) {
         recorder.record(activity)?;
@@ -2131,6 +2221,36 @@ fn answer(
     }
 }
 
+/// Start the credential proxy in the turn's sandbox when its provider runs
+/// it as a guest process; `None` when the host holds the credentials or a
+/// sidecar does.
+fn start_credential_proxy(
+    turn: &Turn<'_>,
+    placement: &Placement,
+    connectors: Option<&crate::connectors::Prepared>,
+) -> Result<Option<crate::connectors::guest::GuestProxy>, String> {
+    let Some(sandbox) = connectors.and_then(|c| c.sandbox.as_ref()) else {
+        return Ok(None);
+    };
+    if sandbox.site != crate::connectors::CredentialSite::Guest {
+        return Ok(None);
+    }
+    let (Some((provider, name)), Some(gateway)) = (placement.sandbox(), turn.yard.connectors())
+    else {
+        return Err("the turn has no sandbox to run its credential proxy in".into());
+    };
+    crate::connectors::guest::start(
+        provider,
+        name,
+        &placement.cwd(),
+        &gateway.credential_proxy.guest_command,
+        &sandbox.config,
+        Some(sandbox.secret.0.as_str()),
+    )
+    .map(Some)
+    .map_err(|reason| format!("could not start the credential proxy: {reason}"))
+}
+
 /// Start the turn's effect-ledger proxy and give it to the harness as the
 /// gateway. `None` when the yard turned it off, or for a sandboxed turn
 /// with no address a sandbox reaches it at (said in a warning: its calls
@@ -2148,6 +2268,20 @@ fn effects_proxy(
     };
     let settings = &gateway.effects;
     if !settings.enabled {
+        return Ok(None);
+    }
+    if prepared.sandbox.is_some() {
+        // The token is in the sandbox's proxy, which the host's ledger
+        // proxy cannot sit in front of without the harness holding a token
+        // again.
+        recorder
+            .record(Activity::Warning(
+                "this turn's gateway credentials are held by a proxy in its sandbox: its effects \
+                 reach the ledger only from the gateway's audit log, after the fact, and are not \
+                 approved first (docs/connectors.md#the-credential-proxy-in-the-sandbox)"
+                    .into(),
+            ))
+            .map_err(|e| e.to_string())?;
         return Ok(None);
     }
     let sandboxed = crate::placement::sandboxed(record.provider.as_ref());
@@ -2169,13 +2303,16 @@ fn effects_proxy(
             return Ok(None);
         }
     };
+    // The harness's token file now holds a short token, renewed until the
+    // turn ends; the proxy calls the gateway with the live one.
+    let token = prepared.renewing()?;
     let proxy = crate::effects::proxy::EffectProxy::start(
         turn.yard,
         record,
         settings.listen,
         crate::effects::proxy::ProxySpec {
             upstream: gateway.url.clone(),
-            token: prepared.token.clone(),
+            token,
             deadline_ms,
             preset,
         },
@@ -2227,6 +2364,7 @@ pub(crate) fn conclude(
     let store = yard.store();
     let excluded = crate::workspace::excluded(record);
     let merged = record.merged.take();
+    record.credential = None;
     let info = &mut record.info;
     if driven.submitted {
         info.turns += 1;

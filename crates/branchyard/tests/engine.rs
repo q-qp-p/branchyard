@@ -178,7 +178,7 @@ fn a_turn_without_changes_has_no_candidate() {
     let answer = text(&branch.events().unwrap());
     assert!(answer.starts_with("echo: "), "{answer}");
     assert!(
-        answer.contains("/.branchyard/capabilities/INDEX.md"),
+        answer.contains("/.branchyard/tools/INDEX.md") && answer.contains("bin/tools search"),
         "{answer}"
     );
     assert!(answer.ends_with("\n\njust say something"), "{answer}");

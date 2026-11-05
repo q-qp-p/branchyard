@@ -34,15 +34,17 @@ def emit(value):
     sys.exit(0)
 
 
-def kind(value):
+def kind(value, named=True):
     if value.startswith("sandboxes"):
         return "sandbox"
+    if value.startswith("fqdnnetworkpolicies"):
+        return "fqdnnetworkpolicy" if named else "fqdnnetworkpolicies"
     return value
 
 
 if operation == "get":
-    resource = kind(args[0])
     name = args[1] if len(args) > 1 and not args[1].startswith("--") else ""
+    resource = kind(args[0], bool(name))
     runtime = state["runtime"]
     if resource == "namespace":
         emit({"metadata": {"uid": state["namespace_uid"], "labels": {
@@ -71,10 +73,13 @@ if operation == "get":
     if resource == "networkpolicies":
         emit({"items": [default] + [value for key, value in state["objects"].items()
             if key.startswith("networkpolicy/")] + state["extra_policies"]})
+    if resource == "fqdnnetworkpolicies":
+        emit({"items": [value for key, value in state["objects"].items()
+            if key.startswith("fqdnnetworkpolicy/")] + state.get("extra_fqdn_policies", [])})
     emit(state["objects"].get(f"{resource}/{name}"))
 
 if operation == "create":
-    resource = "sandbox" if body["kind"] == "Sandbox" else "networkpolicy"
+    resource = {"Sandbox": "sandbox", "FQDNNetworkPolicy": "fqdnnetworkpolicy"}.get(body["kind"], "networkpolicy")
     name = body["metadata"]["name"]
     key = f"{resource}/{name}"
     if key in state["objects"]:
@@ -92,8 +97,8 @@ if operation == "create":
             "ownerReferences": [{"kind": "Sandbox", "uid": body["metadata"]["uid"], "controller": True}]})
         pod["spec"]["nodeName"] = "test-node"
         pod["status"] = {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
-            "containerStatuses": [{"ready": True, "state": {"running": {}},
-            "imageID": pod["spec"]["containers"][0]["image"]}]}
+            "containerStatuses": [{"name": c["name"], "ready": True, "state": {"running": {}},
+            "imageID": c["image"]} for c in pod["spec"]["containers"]]}
         state["objects"][f"pod/{name}"] = pod
     save()
     if state.pop("lose_create_response", False):
@@ -104,7 +109,8 @@ if operation == "create":
 if operation == "delete":
     path = args[1]
     name = path.rsplit("/", 1)[1]
-    resource = "sandbox" if "/sandboxes/" in path else "pod" if "/pods/" in path else "networkpolicy"
+    resource = ("sandbox" if "/sandboxes/" in path else "pod" if "/pods/" in path
+                else "fqdnnetworkpolicy" if "/fqdnnetworkpolicies/" in path else "networkpolicy")
     key = f"{resource}/{name}"
     if state.get("replace_on_delete"):
         state["objects"][key]["metadata"]["uid"] = "raced-replacement"
@@ -115,6 +121,7 @@ if operation == "delete":
     if resource == "sandbox":
         state["objects"].pop(f"pod/{name}", None)
         state["objects"].pop(f"networkpolicy/{name}", None)
+        state["objects"].pop(f"fqdnnetworkpolicy/{name}", None)
     save()
     emit({"status": "Success"})
 

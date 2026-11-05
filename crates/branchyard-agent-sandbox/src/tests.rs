@@ -6,7 +6,10 @@ use branchyard_sandbox::{ExecSpec, Mount, Resources, SandboxProvider, SandboxSpe
 use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
-use super::{AgentSandboxProvider, Config, Network, Runtime};
+use super::{
+    AgentSandboxProvider, Config, CredentialSidecar, Egress, GatewayService, Network, Runtime,
+    StoreVolume, GOOGLE_API_BLOCKS,
+};
 
 fn config() -> Config {
     Config {
@@ -14,6 +17,9 @@ fn config() -> Config {
         namespace: "branchyard-gvisor".into(),
         runtime: Runtime::Gvisor,
         network: Network::Deny,
+        store: None,
+        egress: Egress::default(),
+        credential_proxy: None,
     }
 }
 
@@ -28,9 +34,35 @@ struct Fixture {
 
 impl Fixture {
     fn new(network: Network) -> Self {
+        Self::build(network, None)
+    }
+
+    fn with_store(store: StoreVolume) -> Self {
+        Self::build(Network::Deny, Some(store))
+    }
+
+    fn with_egress(network: Network, store: Option<StoreVolume>, egress: Egress) -> Self {
+        let mut fixture = Self::build(network, store);
+        let mut config = fixture.provider.control.config.clone();
+        config.egress = egress;
+        fixture.provider.control.config = config;
+        fixture
+    }
+
+    fn build(network: Network, store: Option<StoreVolume>) -> Self {
+        Self::build_full(network, store, None)
+    }
+
+    fn build_full(
+        network: Network,
+        store: Option<StoreVolume>,
+        sidecar: Option<CredentialSidecar>,
+    ) -> Self {
         let scratch = Scratch::new("agent-sandbox");
         let mut config = config();
         config.network = network;
+        config.store = store;
+        config.credential_proxy = sidecar;
         let mut provider = AgentSandboxProvider::new(config, scratch.join("receipts")).unwrap();
         provider.control.binary = scratch.join("kubectl");
         // Share the immutable fixture inode. Writing executable scripts while
@@ -620,4 +652,596 @@ fn managed_microvm_requires_supported_gke_node_version() {
     provider.ensure(&spec()).unwrap();
     provider.stop("allocation").unwrap();
     assert!(provider.inspect("allocation").unwrap().is_none());
+}
+
+fn store(bucket: &str) -> StoreVolume {
+    StoreVolume {
+        bucket: bucket.into(),
+        path: "/opt/branchyard/store".into(),
+    }
+}
+
+fn true_in(fixture: &Fixture) -> Result<(), branchyard_sandbox::ProviderError> {
+    fixture
+        .provider
+        .exec(
+            "allocation",
+            &ExecSpec {
+                argv: vec!["true".into()],
+                cwd: fixture.scratch.path().to_path_buf(),
+                ..ExecSpec::default()
+            },
+        )
+        .map(|_| ())
+}
+
+#[test]
+fn the_tool_store_is_a_read_only_cloud_storage_fuse_volume_at_the_hosts_path() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let sandbox = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"];
+    assert_eq!(
+        sandbox["metadata"]["annotations"]["gke-gcsfuse/volumes"],
+        "true"
+    );
+    let volume = sandbox["spec"]["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == "tool-store")
+        .unwrap();
+    assert_eq!(
+        *volume,
+        json!({"name":"tool-store","csi":{
+            "driver":"gcsfuse.csi.storage.gke.io","readOnly":true,
+            "volumeAttributes":{"bucketName":"acme-tools",
+                "mountOptions":"implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true"}}})
+    );
+    let mounts = &sandbox["spec"]["containers"][0]["volumeMounts"];
+    assert_eq!(
+        mounts[5],
+        json!({"name":"tool-store","mountPath":"/opt/branchyard/store","readOnly":true})
+    );
+    // The first five mounts are the ones every allocation has.
+    assert_eq!(mounts.as_array().unwrap().len(), 6);
+    true_in(&fixture).unwrap();
+
+    // A store below a prefix in the bucket is mounted from there.
+    let prefixed = Fixture::with_store(store("acme-tools/store/v1"));
+    prefixed.provider.ensure(&spec()).unwrap();
+    let state = prefixed.state();
+    let options = &state["objects"][format!("sandbox/{}", prefixed.name())]["spec"]["podTemplate"]
+        ["spec"]["volumes"][5]["csi"]["volumeAttributes"];
+    assert_eq!(options["bucketName"], "acme-tools");
+    assert_eq!(
+        options["mountOptions"],
+        "implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true,only-dir=store/v1"
+    );
+
+    // Without a store the pod is what it was: no volume, no annotation.
+    let plain = Fixture::new(Network::Deny);
+    plain.provider.ensure(&spec()).unwrap();
+    let state = plain.state();
+    let template = &state["objects"][format!("sandbox/{}", plain.name())]["spec"]["podTemplate"];
+    assert_eq!(template["spec"]["volumes"].as_array().unwrap().len(), 5);
+    assert!(template["metadata"]["annotations"]
+        .get("gke-gcsfuse/volumes")
+        .is_none());
+}
+
+#[test]
+fn a_bad_store_volume_is_refused_before_anything_is_created() {
+    for (bucket, path) in [
+        ("", "/opt/branchyard/store"),
+        ("gs://acme", "/opt/branchyard/store"),
+        ("acme tools", "/opt/branchyard/store"),
+        ("acme,x", "/opt/branchyard/store"),
+        ("acme", "relative/store"),
+        ("acme", "/"),
+    ] {
+        let mut target = config();
+        target.store = Some(StoreVolume {
+            bucket: bucket.into(),
+            path: path.into(),
+        });
+        assert!(target.validate().is_err(), "{bucket} {path}");
+    }
+    let mut target = config();
+    target.store = Some(store("acme-tools/store"));
+    target.validate().unwrap();
+}
+
+#[test]
+fn the_sidecar_gke_injects_for_the_store_is_accepted_and_nothing_else_is() {
+    let inject = |state: &mut Value, name: &str, extra: Option<(&str, Value)>| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["initContainers"] =
+            json!([{"name":"gke-gcsfuse-sidecar","image":"gcs-fuse-csi-driver-sidecar-mounter"}]);
+        pod["spec"]["volumes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-tmp","emptyDir":{}}));
+        pod["status"]["initContainerStatuses"] =
+            json!([{"name":"gke-gcsfuse-sidecar","ready":true,"state":{"running":{}}}]);
+        if let Some((key, value)) = extra {
+            match key {
+                "container" => pod["spec"]["containers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(value),
+                "volume" => pod["spec"]["volumes"].as_array_mut().unwrap().push(value),
+                "init" => pod["spec"]["initContainers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(value),
+                _ => unreachable!(),
+            }
+        }
+    };
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    fixture.edit(|state| inject(state, &name, None));
+    true_in(&fixture).unwrap();
+    // As a regular container, as older clusters inject it.
+    fixture.edit(|state| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["initContainers"] = json!([]);
+        pod["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-sidecar"}));
+        pod["status"]["containerStatuses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-sidecar","ready":true,"state":{"running":{}}}));
+    });
+    true_in(&fixture).unwrap();
+
+    for (what, extra) in [
+        ("container", json!({"name":"miner"})),
+        ("init", json!({"name":"miner"})),
+        ("volume", json!({"name":"hostpath","hostPath":{"path":"/"}})),
+    ] {
+        let fixture = Fixture::with_store(store("acme-tools"));
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        fixture.edit(|state| inject(state, &name, Some((what, extra.clone()))));
+        assert!(true_in(&fixture).is_err(), "{what}");
+    }
+
+    // An allocation with no store accepts no sidecar at all.
+    let plain = Fixture::new(Network::Deny);
+    plain.provider.ensure(&spec()).unwrap();
+    let name = plain.name();
+    plain.edit(|state| inject(state, &name, None));
+    assert!(true_in(&plain).is_err());
+}
+
+fn gateway() -> GatewayService {
+    GatewayService {
+        namespace: "branchyard-system".into(),
+        name: "anvil-gateway".into(),
+        port: 8931,
+    }
+}
+
+fn egress_hosts() -> Egress {
+    Egress {
+        gateway: Some(gateway()),
+        hosts: vec![
+            "pypi.org".into(),
+            "api.anthropic.com".into(),
+            "*.pythonhosted.org".into(),
+            "gateway.example.com".into(),
+        ],
+    }
+}
+
+fn object(fixture: &Fixture, kind: &str) -> Value {
+    fixture.state()["objects"][format!("{kind}/{}", fixture.name())].clone()
+}
+
+#[test]
+fn a_deny_allocation_with_a_store_still_reaches_cloud_storage_and_dns_and_nothing_else() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    assert_eq!(policy["spec"]["policyTypes"], json!(["Egress"]));
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    // Cluster DNS, and the Private Google Access ranges on 443: no 0.0.0.0/0, no gateway.
+    assert_eq!(egress.len(), 2, "{egress:?}");
+    assert_eq!(egress[0]["ports"][0]["port"], 53);
+    assert_eq!(
+        egress[1],
+        json!({"to":[
+            {"ipBlock":{"cidr":"199.36.153.4/30"}},
+            {"ipBlock":{"cidr":"199.36.153.8/30"}}
+        ],"ports":[{"protocol":"TCP","port":443}]})
+    );
+    assert_eq!(GOOGLE_API_BLOCKS, ["199.36.153.4/30", "199.36.153.8/30"]);
+    assert!(!policy.to_string().contains("0.0.0.0/0"));
+    // The FQDN policy names the Cloud Storage API and nothing else.
+    let fqdn = object(&fixture, "fqdnnetworkpolicy");
+    assert_eq!(fqdn["apiVersion"], "networking.gke.io/v1alpha1");
+    assert_eq!(fqdn["kind"], "FQDNNetworkPolicy");
+    assert_eq!(
+        fqdn["spec"]["egress"],
+        json!([{"matches":[{"name":"storage.googleapis.com"}],"ports":[{"protocol":"TCP","port":443}]}])
+    );
+    assert_eq!(
+        fqdn["spec"]["podSelector"],
+        json!({"matchLabels":{"branchyard.io/owner": policy["spec"]["podSelector"]["matchLabels"]["branchyard.io/owner"]}})
+    );
+    // Both belong to the Sandbox, so deleting it removes them; and the live pod passes the checks.
+    for object in [&policy, &fqdn] {
+        assert_eq!(object["metadata"]["ownerReferences"][0]["kind"], "Sandbox");
+        assert_eq!(object["metadata"]["ownerReferences"][0]["controller"], true);
+    }
+    true_in(&fixture).unwrap();
+    let state = fixture.state();
+    assert!(
+        state["objects"][format!("networkpolicy/{}", fixture.name())]["metadata"]["uid"]
+            .is_string()
+    );
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(fixture.state()["objects"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn an_orphaned_fqdn_policy_is_deleted_by_its_recorded_uid() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let recorded: Value = serde_json::from_slice(&fs::read(fixture.receipt()).unwrap()).unwrap();
+    let fqdn_uid = recorded["fqdn_policy_uid"].as_str().unwrap().to_owned();
+    fixture.edit(|state| {
+        state["objects"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&format!("sandbox/{}", fixture.name()));
+    });
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(fixture.state()["objects"].as_object().unwrap().is_empty());
+    let calls = fixture.calls();
+    let deleted: Vec<_> = calls
+        .iter()
+        .filter(|call| call["operation"] == "delete")
+        .map(|call| {
+            call["body"]["preconditions"]["uid"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(deleted.contains(&fqdn_uid), "{deleted:?}");
+    assert!(calls.iter().any(|call| call["args"].to_string().contains(
+        "/apis/networking.gke.io/v1alpha1/namespaces/branchyard-gvisor/fqdnnetworkpolicies/"
+    )));
+}
+
+#[test]
+fn a_deny_allocation_lists_the_gateway_and_the_hosts_it_may_reach() {
+    let fixture = Fixture::with_egress(Network::Deny, Some(store("acme-tools")), egress_hosts());
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    assert_eq!(egress.len(), 3, "DNS, the gateway Service, Cloud Storage");
+    assert_eq!(
+        egress[1],
+        json!({"to":[{
+            "namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"branchyard-system"}},
+            "podSelector":{"matchLabels":{"app.kubernetes.io/name":"anvil-gateway"}}
+        }],"ports":[{"protocol":"TCP","port":8931}]})
+    );
+    let fqdn = object(&fixture, "fqdnnetworkpolicy");
+    assert_eq!(
+        fqdn["spec"]["egress"][0]["matches"],
+        json!([
+            {"pattern":"*.pythonhosted.org"},
+            {"name":"api.anthropic.com"},
+            {"name":"gateway.example.com"},
+            {"name":"pypi.org"},
+            {"name":"storage.googleapis.com"}
+        ])
+    );
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn a_deny_allocation_without_a_store_a_gateway_or_hosts_gets_no_policy_of_its_own() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    assert!(fixture.state()["objects"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|key| !key.contains("policy")));
+    // Only hosts: DNS and the names, no gateway rule, no Cloud Storage.
+    let hosts = Egress {
+        gateway: None,
+        hosts: vec!["pypi.org".into()],
+    };
+    let named = Fixture::with_egress(Network::Deny, None, hosts);
+    named.provider.ensure(&spec()).unwrap();
+    assert_eq!(
+        object(&named, "networkpolicy")["spec"]["egress"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        object(&named, "fqdnnetworkpolicy")["spec"]["egress"][0]["matches"],
+        json!([{"name":"pypi.org"}])
+    );
+}
+
+#[test]
+fn unrestricted_keeps_its_open_policy_and_needs_no_name_list() {
+    let fixture = Fixture::with_egress(
+        Network::Unrestricted,
+        Some(store("acme-tools")),
+        egress_hosts(),
+    );
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    assert_eq!(
+        policy["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"],
+        "0.0.0.0/0"
+    );
+    assert!(object(&fixture, "fqdnnetworkpolicy").is_null());
+}
+
+#[test]
+fn a_drifted_or_foreign_egress_policy_is_refused_before_exec() {
+    for mutation in [
+        "fqdn_hosts",
+        "fqdn_extra",
+        "policy_ports",
+        "foreign_fqdn",
+        "fqdn_gone",
+    ] {
+        let fixture = Fixture::with_store(store("acme-tools"));
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        fixture.edit(|state| match mutation {
+            "fqdn_hosts" => state["objects"][format!("fqdnnetworkpolicy/{name}")]["spec"]["egress"]
+                [0]["matches"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"evil.example.com"})),
+            "fqdn_extra" => state["objects"][format!("fqdnnetworkpolicy/{name}")]["spec"]["egress"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"matches":[{"name":"evil.example.com"}]})),
+            "policy_ports" => {
+                state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][1]["ports"][0]
+                    ["port"] = 80.into()
+            }
+            "foreign_fqdn" => {
+                state["extra_fqdn_policies"] =
+                    json!([{"metadata":{"name":"foreign"},"spec":{"podSelector":{}}}])
+            }
+            "fqdn_gone" => {
+                state["objects"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(&format!("fqdnnetworkpolicy/{name}"));
+            }
+            _ => unreachable!(),
+        });
+        assert!(true_in(&fixture).is_err(), "{mutation}");
+        assert!(
+            !fixture
+                .calls()
+                .iter()
+                .any(|call| call["operation"] == "exec"),
+            "{mutation}"
+        );
+    }
+}
+
+fn with_sidecar(sidecar: CredentialSidecar) -> Fixture {
+    Fixture::build_full(Network::Unrestricted, None, Some(sidecar))
+}
+
+#[test]
+fn a_credential_proxy_sidecar_runs_beside_the_harness_with_the_home_read_only() {
+    let image = format!("example.test/by@sha256:{}", "b".repeat(64));
+    for (sidecar, expected) in [
+        (CredentialSidecar::default(), spec().image.unwrap()),
+        (
+            CredentialSidecar {
+                image: Some(image.clone()),
+            },
+            image,
+        ),
+    ] {
+        let fixture = with_sidecar(sidecar);
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        let state = fixture.state();
+        let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+        let containers = pod["containers"].as_array().unwrap();
+        assert_eq!(containers.len(), 2, "{containers:?}");
+        assert_eq!(containers[0]["name"], "runtime");
+        let sidecar = &containers[1];
+        assert_eq!(sidecar["name"], "credential-proxy");
+        assert_eq!(sidecar["image"], expected.as_str());
+        // It reads its settings from the home the engine copies in, and
+        // can neither change that home nor escalate.
+        assert_eq!(
+            sidecar["command"],
+            json!([
+                "by",
+                "credential-proxy",
+                "--config",
+                "/branchyard/home/.branchyard/credential-proxy.json",
+                "--wait"
+            ])
+        );
+        assert_eq!(
+            sidecar["volumeMounts"],
+            json!([{"name":"home","mountPath":"/branchyard/home","readOnly":true}])
+        );
+        assert_eq!(
+            sidecar["securityContext"]["allowPrivilegeEscalation"],
+            false
+        );
+        assert_eq!(sidecar["securityContext"]["readOnlyRootFilesystem"], true);
+        // The pod's identity is its Workload Identity, from the GKE
+        // metadata server, which the pod's network policy leaves open.
+        assert!(sidecar["env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"name":"GCE_METADATA_HOST","value":"169.254.169.254"})));
+        let policy = &state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"]
+            [0]["ipBlock"]["except"];
+        assert_eq!(*policy, json!(["169.254.169.252/32"]));
+        // The pod with both containers passes the allocation's checks.
+        true_in(&fixture).unwrap();
+    }
+}
+
+#[test]
+fn egress_hosts_and_the_gateway_service_are_validated_before_anything_is_created() {
+    for hosts in [
+        vec!["https://pypi.org"],
+        vec!["pypi.org:443"],
+        vec!["PyPI.org"],
+        vec!["localhost"],
+        vec!["10.0.0.1"],
+        vec!["*.com."],
+        vec!["a_b.example.com"],
+        vec!["-x.example.com"],
+        vec!["*"],
+    ] {
+        let mut target = config();
+        target.egress.hosts = hosts.iter().map(|h| (*h).to_owned()).collect();
+        assert!(target.validate().is_err(), "{hosts:?}");
+    }
+    let mut many = config();
+    many.egress.hosts = (0..33).map(|n| format!("h{n}.example.com")).collect();
+    assert!(many.validate().is_err());
+    for bad in [
+        GatewayService {
+            namespace: "Bad".into(),
+            ..gateway()
+        },
+        GatewayService {
+            name: String::new(),
+            ..gateway()
+        },
+        GatewayService {
+            port: 0,
+            ..gateway()
+        },
+    ] {
+        let mut target = config();
+        target.egress.gateway = Some(bad);
+        assert!(target.validate().is_err());
+    }
+    let mut good = config();
+    good.egress = egress_hosts();
+    good.validate().unwrap();
+    // An older receipt, written before `egress` existed, still matches a config without any.
+    assert!(serde_json::to_value(config())
+        .unwrap()
+        .get("egress")
+        .is_none());
+}
+
+#[test]
+fn the_tool_tree_has_a_volume_of_its_own_at_the_guest_root() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    let state = fixture.state();
+    let template =
+        &state["objects"][format!("sandbox/{}", fixture.name())]["spec"]["podTemplate"]["spec"];
+    assert!(template["volumes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","emptyDir":{"sizeLimit":"64Mi"}})));
+    assert!(template["containers"][0]["volumeMounts"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","mountPath":"/tools"})));
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn a_deny_allocation_with_a_sidecar_and_a_tool_store_keeps_its_rules_and_opens_only_the_metadata_server(
+) {
+    let fixture = Fixture::build_full(
+        Network::Deny,
+        Some(store("acme-tools")),
+        Some(CredentialSidecar::default()),
+    );
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+    // The pod has the harness, the credential proxy and the tool store's mount.
+    assert_eq!(pod["containers"].as_array().unwrap().len(), 2);
+    assert!(pod["containers"][0]["volumeMounts"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","mountPath":"/tools"})));
+    let policy = &state["objects"][format!("networkpolicy/{name}")];
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    // DNS, the metadata server on port 80, and the Private Google Access
+    // ranges; no 0.0.0.0/0.
+    assert_eq!(egress.len(), 3, "{egress:?}");
+    assert_eq!(egress[0]["ports"][0]["port"], 53);
+    assert_eq!(
+        egress[1],
+        json!({"to":[{"ipBlock":{"cidr":"169.254.169.254/32"}}],"ports":[{"protocol":"TCP","port":80}]})
+    );
+    assert_eq!(egress[2]["ports"], json!([{"protocol":"TCP","port":443}]));
+    assert!(!policy.to_string().contains("0.0.0.0/0"));
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn without_a_sidecar_the_pod_has_one_container_and_the_metadata_server_stays_closed() {
+    let fixture = Fixture::new(Network::Unrestricted);
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let pod = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"]["spec"];
+    assert_eq!(pod["containers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][0]["to"][0]["ipBlock"]
+            ["except"],
+        json!(["169.254.169.254/32", "169.254.169.252/32"])
+    );
+}
+
+#[test]
+fn a_sidecar_needs_a_pinned_image_and_a_pod_with_a_stranger_in_it_fails() {
+    let mut target = config();
+    target.credential_proxy = Some(CredentialSidecar::default());
+    target.validate().unwrap();
+    target.credential_proxy = Some(CredentialSidecar {
+        image: Some("example.test/by:latest".into()),
+    });
+    assert!(target.validate().is_err(), "an unpinned sidecar image");
+
+    let fixture = with_sidecar(CredentialSidecar::default());
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    fixture.edit(|state| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner"}));
+        pod["status"]["containerStatuses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"miner","ready":true,"state":{"running":{}}}));
+    });
+    assert!(true_in(&fixture).is_err());
 }

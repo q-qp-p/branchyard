@@ -506,6 +506,18 @@ ID prints nothing and exits 0. --harness generic reads {\"cwd\", \"session_id\"}
 See docs/harness-integration.md and docs/harness-hooks.md.
 ";
 
+pub(crate) const CREDENTIAL_PROXY_EXAMPLES: &str = "\
+Prints `listening ADDR` once it holds its first token, then serves until it is killed.
+A sidecar reads its settings from a file in the home and waits for it:
+  by credential-proxy --config /branchyard/home/.branchyard/credential-proxy.json --wait
+A guest the engine started is given everything on the command line, and the turn's secret
+in BRANCHYARD_CREDENTIAL_SECRET (never an argument):
+  by credential-proxy --server https://by.example --upstream https://gw.example/mcp \\
+    --manifest blake3:... --branch app/feat-x --turn 3 --identity secret
+
+See docs/connectors.md.
+";
+
 pub(crate) const STATUSLINE_EXAMPLES: &str = "\
 Prints, for example:  by: feat-x · 2 running · 1 asking · 3 ready
 (the branch whose worktree Claude Code runs in, then the counts that are not zero).

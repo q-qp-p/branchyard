@@ -996,6 +996,153 @@ class WorkspaceRequests(unittest.TestCase):
             query=None,
         )
 
+    def test_tools_policies_and_defaults_reach_their_routes(self):
+        c = self.client
+        self.assert_request(lambda: c.tools("w1"), {"tools": []}, "GET", "/v1/tools", query={"workspace": "w1"})
+        self.assert_request(
+            lambda: c.workspace_tool_defaults("w1", [{"kind": "skill", "id": "docx"}], revision=2),
+            {"tools": [], "revision": 3},
+            "PUT",
+            "/v1/workspaces/w1/tools",
+            {"tools": [{"kind": "skill", "id": "docx"}], "revision": 2},
+        )
+        self.assert_request(
+            lambda: c.put_policy("group:acme:eng", {"delegation": False}, revision=4),
+            {"key": "group:acme:eng", "revision": 5},
+            "PUT",
+            "/v1/admin/policies/group%3Aacme%3Aeng",
+            {"policy": {"delegation": False}, "revision": 4},
+        )
+        self.assert_request(
+            lambda: c.delete_policy("tenant:acme", revision=1),
+            {"deleted": "tenant:acme"},
+            "DELETE",
+            "/v1/admin/policies/tenant%3Aacme?revision=1",
+        )
+
+    def test_the_helper_limit_rides_in_tools_and_a_persons_own_policy_has_its_routes(self):
+        c = self.client
+        self.assertEqual(bc.helper_limit(2), {"kind": "helper", "id": "*", "max_children": 2})
+        self.assert_request(
+            lambda: c.start_workspace_session(
+                "w1",
+                "Analyst",
+                "Summarise",
+                harness="gemini-cli",
+                tools=[{"kind": "helper", "id": "codex"}, bc.helper_limit(3)],
+                key="limit",
+            ),
+            self.operation(),
+            "POST",
+            "/v1/workspaces/w1/sessions",
+            {
+                "name": "Analyst",
+                "prompt": "Summarise",
+                "harness": "gemini-cli",
+                "access": "writer",
+                "tools": [{"kind": "helper", "id": "codex"}, {"kind": "helper", "id": "*", "max_children": 3}],
+            },
+            key="limit",
+            query=None,
+        )
+        mine = self.assert_request(
+            c.my_policy,
+            {"key": "self:acme:ana", "policy": {}, "revision": 0},
+            "GET",
+            "/v1/me/policy",
+            query=None,
+        )
+        self.assertEqual((mine.key, mine.revision), ("self:acme:ana", 0))
+        self.assert_request(
+            lambda: c.put_my_policy({"off": [{"kind": "skill", "id": "docx"}], "max_helpers": 2}, revision=0),
+            {"key": "self:acme:ana", "revision": 1},
+            "PUT",
+            "/v1/me/policy",
+            {"policy": {"off": [{"kind": "skill", "id": "docx"}], "max_helpers": 2}, "revision": 0},
+        )
+        started = self.assert_request(
+            lambda: c.install_helper("gemini-cli"),
+            {"harness": "gemini-cli", "state": "queued", "host": "server"},
+            "POST",
+            "/v1/tools/helpers/gemini-cli/install",
+            {},
+            key=None,
+            query=None,
+        )
+        self.assertEqual(started.state, "queued")
+        self.assert_request(
+            lambda: c.helper_install("gemini-cli"),
+            {"harness": "gemini-cli", "state": "succeeded", "host": "server"},
+            "GET",
+            "/v1/tools/helpers/gemini-cli/install",
+            query=None,
+        )
+
+    def test_connections_and_session_tools_reach_their_routes(self):
+        c = self.client
+        listed = self.assert_request(
+            c.connections,
+            {"gateway": "ready", "connections": [{"connector": "atlassian", "state": "connected"}]},
+            "GET",
+            "/v1/connections",
+            query=None,
+        )
+        self.assertEqual(listed.connections[0]["state"], "connected")
+        self.assert_request(
+            lambda: c.connect("github"),
+            {"kind": "oauth", "url": "https://github.com/login"},
+            "POST",
+            "/v1/connections/github/connect",
+            {},
+            key=None,
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.connect_key("linear", "secret", account="work"),
+            {"connected": True},
+            "POST",
+            "/v1/connections/linear/key",
+            {"api_key": "secret", "account": "work"},
+            key=None,
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.session_tools("w1"),
+            {"skills": [], "helpers": {"allowed": False}},
+            "GET",
+            "/v1/workspaces/w1/tools",
+            query=None,
+        )
+        self.assert_request(
+            lambda: c.start_workspace_session(
+                "w1",
+                "Brief",
+                "Summarise the epic",
+                harness="codex",
+                preset="substrate-gke",
+                connectors=["atlassian"],
+                skills=["docx"],
+                helpers=["claude-code"],
+                max_helpers=2,
+                key="tools",
+            ),
+            self.operation(),
+            "POST",
+            "/v1/workspaces/w1/sessions",
+            {
+                "name": "Brief",
+                "prompt": "Summarise the epic",
+                "harness": "codex",
+                "preset": "substrate-gke",
+                "access": "writer",
+                "connectors": [{"connector": "atlassian", "operations": ["*"], "mode": "read"}],
+                "skills": ["docx"],
+                "helpers": {"harnesses": ["claude-code"], "max_children": 2},
+            },
+            key="tools",
+            query=None,
+        )
+
     def test_native_messages_cancellation_lifecycle_and_acceptance_keep_their_contracts(self):
         c = self.client
         page = {"messages": [{"id": "s1:4", "role": "assistant", "text": "Evidence", "time": 12}], "next_cursor": "5"}
@@ -3554,7 +3701,26 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
         lambda c, _r: c.send_workspace_message("w1", "s1", "Continue"),
     ],
     "/v1/workspaces/{workspace}/sessions/{session}/cancel": [lambda c, _r: c.cancel_workspace_session("w1", "s1")],
+    "/v1/workspaces/{workspace}/sessions/{session}/readmit": [lambda c, _r: c.readmit_workspace_session("w1", "s1")],
     "/v1/execution-presets": [lambda c, _r: c.execution_presets(), lambda c, _r: c.execution_presets("w1")],
+    "/v1/connections": [lambda c, _r: c.connections()],
+    "/v1/connections/{connector}/connect": [lambda c, _r: c.connect("github")],
+    "/v1/connections/{connector}/key": [lambda c, _r: c.connect_key("linear", "key")],
+    "/v1/workspaces/{workspace}/tools": [
+        lambda c, _r: c.session_tools("w1"),
+        lambda c, _r: c.workspace_tool_defaults("w1", [{"kind": "skill", "id": "docx"}]),
+    ],
+    "/v1/tools": [lambda c, _r: c.tools(), lambda c, _r: c.tools("w1")],
+    "/v1/admin/policies": [lambda c, _r: c.policies()],
+    "/v1/me/policy": [lambda c, _r: c.my_policy(), lambda c, _r: c.put_my_policy({"max_helpers": 2})],
+    "/v1/tools/helpers/{id}/install": [
+        lambda c, _r: c.install_helper("gemini-cli"),
+        lambda c, _r: c.helper_install("gemini-cli"),
+    ],
+    "/v1/admin/policies/{key}": [
+        lambda c, _r: c.put_policy("tenant:default", {"skills": ["docx"]}),
+        lambda c, _r: c.delete_policy("tenant:default", revision=1),
+    ],
     "/v1/workspaces/{workspace}/actions/{action}": [lambda c, _r: c.workspace_action("w1", "archive", revision=1)],
     "/v1/workspaces/{workspace}/finalize": [lambda c, _r: c.finalize_workspace("w1", ["a1"], revision=1)],
     "/v1/workspaces/{workspace}/members": [lambda c, _r: c.workspace_members("w1")],

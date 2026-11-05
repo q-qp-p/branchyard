@@ -99,6 +99,7 @@ Configuration file (relative paths resolve against the file's directory; unknown
   "allow_delegation": false,
   "by_path": "/usr/local/bin/by",
   "allow_unapproved_tools": false,
+  "harness_install": { "allow": false, "path": "/usr/local/bin:/usr/bin:/bin" },
   "allow_workspace_scripts": ["app"],
   "allow_repository_skills": ["app"],
   "secrets": { "ANTHROPIC_API_KEY": "ANTHROPIC_API_KEY", "CODEX_AUTH": "@/etc/branchyard/codex-auth.json" },
@@ -144,7 +145,7 @@ Every route except `GET /healthz`, `GET /.well-known/jwks.json` (public keys, [c
 **A request's identity comes only from its verified credential, never from anything the request itself says**: there is no `tenant_id` field anywhere in the wire protocol. Each configured credential names a **principal**: a `tenant` (1 to 128 characters, no `/`), a subject `name` (the caller's identity for idempotency scoping and audit), a set of **scopes**, and, optionally, its own repository allowlist narrower than its tenant's. Two ways to configure one:
 
 - **`tokens`** (unchanged from before tenants existed): `{"name", "token"|"token_file"}`, plus optional `tenant`, `scopes` and `repos`. A `tokens` entry that gives none of those three becomes a principal in the unconfigured `default` tenant with every scope and every repository (**exactly what a single-token server did before this existed**, so old configurations keep working unchanged).
-- **`credentials`**: `{"token_sha256", "tenant", "name"?, "scopes"?, "repos"?}`, storing the token's SHA-256 directly so the plaintext never has to enter the configuration at all. `branchyard-server token new [--tenant T] [--scopes S,...] [--repo R,...]` (also `by serve token new`) generates a fresh token, prints it once (give it to the client, never store it), and prints the `credentials` object to paste in. There is no hot rotation or revocation API for these: replacing or removing a hash and restarting is how a token is rotated or revoked, the same restart a `tokens` change already needed. A third kind, **paired tokens**, exists only with the [companion](companion.md) on: `by serve token new --link` prints a one-time pairing link whose code becomes a token with the scopes, tenant and repositories the link was made with, stored hashed in the server's store, expiring, and revocable at once with `by serve token revoke NAME` (`token list` shows them).
+- **`credentials`**: `{"token_sha256", "tenant", "name"?, "scopes"?, "repos"?, "groups"?}`, storing the token's SHA-256 directly so the plaintext never has to enter the configuration at all. `branchyard-server token new [--tenant T] [--scopes S,...] [--repo R,...]` (also `by serve token new`) generates a fresh token, prints it once (give it to the client, never store it), and prints the `credentials` object to paste in. There is no hot rotation or revocation API for these: replacing or removing a hash and restarting is how a token is rotated or revoked, the same restart a `tokens` change already needed. A third kind, **paired tokens**, exists only with the [companion](companion.md) on: `by serve token new --link` prints a one-time pairing link whose code becomes a token with the scopes, tenant and repositories the link was made with, stored hashed in the server's store, expiring, and revocable at once with `by serve token revoke NAME` (`token list` shows them).
 
 Scopes: `read` (every `GET`, including the event stream), `run` (submitting a task, send, fork, reincarnate or spawn, and acting on a running turn: cancel, steer, ask, report, escalate, answer; and acting for a branch: check, report-status), `merge` (merge, integrate), `admin` (removing a branch). Every endpoint checks the caller's scope and returns `403 scope_required` (`detail.scope`) when it is missing; `read` is checked once for every `GET` and `HEAD` before any handler runs, so a credential with `run`, `merge` or `admin` but not `read` sees nothing. A secret may appear once across `tokens` and `credentials`: the same secret twice (two tokens, or a token and a hash) is refused at startup, naming the entries, since it could otherwise authenticate as either principal.
 
@@ -204,15 +205,173 @@ CPU and memory settings apply to an individual worker or sandbox. Tenant quotas 
 |---|---|
 | `gateway` | The gateway's `/mcp` URL: every token's audience, and what a harness on this host is given. Required |
 | `sandbox_gateway` | The gateway as a sandboxed harness reaches it; without it a sandboxed branch with a grant fails its turn |
-| `issuer` | Every token's `iss`. Default `http(s)://<listen>`; set it to the server's public URL |
-| `signing_key` | The private key set, made on first use. Default `<data_dir>/gateway/key`. Its public half is `GET /.well-known/jwks.json` and `<data_dir>/gateway/jwks.json` |
+| `issuer` | Every token's `iss`. Default `http(s)://<listen>` when the gateway is on loopback; set it to the server's public URL. **Required** when `gateway` is not on loopback, and on a worker (see [signing on workers](#signing-on-workers)) |
+| `signing_key` | The private key set, made on first use by a server (never by a worker). Default `<data_dir>/gateway/key`. Its public half is `GET /.well-known/jwks.json` and `<data_dir>/gateway/jwks.json`. Not with `signing` |
+| `signing` | `{"kms_key_versions": [...], "kms_base_url": "..."}`: sign with [Cloud KMS](#signing-with-cloud-kms) instead of a key file. Not with `signing_key` |
 | `audit_file` | The gateway's audit log, read into `connector_call` events by each repository's poller. Default `<data_dir>/gateway/audit.jsonl` |
 | `bundles`, `anvil` | The bundle root the gateway serves, and Anvil's command (default `["anvil"]`), for packaging and for `run_gateway` |
 | `run_gateway` | Run `anvil serve mcp <bundles> --fleet --http <port>` in branchyard mode beside the server, supervised and restarted, reading the public keys from the file above; stopped with the server. A worker (`by worker`) never runs it |
 | `listen`, `vault_key` | The address the gateway run here binds when not loopback, and its vault key (default `<data_dir>/gateway/vault.key`, made 0600) |
 | `effects_proxy`, `effects_listen`, `effects_sandbox_host` | Each turn's effect-ledger proxy in front of the gateway (default on, on `127.0.0.1`), and how a sandboxed harness reaches it ([effects](effects.md#begun-before-the-call)) |
+| `sandbox_server` | This server's URL as a sandbox reaches it. When set, a sandbox whose provider can run a credential proxy fetches the turn's token from [`POST /v1/turns/token`](#turn-tokens-for-sandboxes) and the harness holds none ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)). Without it every turn keeps the host's proxy |
+| `sandbox_identities` | `[{"service_account": "NAME@PROJECT.iam.gserviceaccount.com", "tenant": "acme"?}]`: the Google service accounts that may fetch tokens, verified from a Google-signed ID token. `tenant` restricts an account to one tenant's turns. Needs `sandbox_server`; empty admits a turn's own secret alone. With accounts listed, a fetch must present a listed account's ID token *and* the turn's secret |
+| `sandbox_audience`, `sandbox_jwks_url` | The `aud` of that ID token (default `issuer`), and where Google's signing keys are read from (default Google's) |
+| `sandbox_by`, `sandbox_proxy_image` | The `by` a Microsandbox guest runs (default `by`), and the image of a GKE Agent Sandbox's `credential-proxy` sidecar (`repository@sha256:digest`, with `by` on its `PATH`; default the sandbox's own) |
+
+### Turn tokens for sandboxes
+
+`POST /v1/turns/token` gives a **running turn's** sandbox its gateway token. It is outside the bearer-token check, because the caller is a sandbox and authenticates itself; the credential proxy in the sandbox ([connectors](connectors.md#the-credential-proxy-in-the-sandbox)) calls it every few minutes.
+
+```json
+{"manifest": "blake3:...", "branch": "app/feat-x", "turn": 3}
+```
+
+`manifest` is the digest of the turn manifest the turn was admitted with, `branch` is `<repo>/<branch>` as tokens name it, `turn` its number. Unknown fields are refused: claims are never taken from the request. None of the three is secret (the digest is on the console's session view and in the `provisioned` event; a harness reads its own), and a Workload Identity service account is normally shared by every sandbox, so the caller proves who it is with the turn's secret **always**, and with an identity **in addition** where the server lists any:
+
+- `X-Branchyard-Turn-Secret: <secret>`, required: the per-turn secret the engine made for this turn and gave its sandbox's proxy (a guest's environment, or the GKE sidecar's settings file in the turn's home), checked against the hash in the branch's record, which is bound to the turn's manifest and number and dropped when the turn ends. A harness in another sandbox, even with the shared service account's ID token and the turn's real coordinates, does not hold it.
+- `Authorization: Bearer <Google ID token>`, required when `sandbox_identities` lists any account: an ID token for `sandbox_audience` (default `issuer`) of a listed service account, fetched by the sandbox from the metadata server (a GKE Workload Identity service account, or a GCE VM's). The server verifies the signature against Google's keys, the audience, the issuer (`accounts.google.com`), the lifetime and `email_verified`, then looks the account up. Where no account is listed, a bearer is not read.
+
+The answer is `200` `{"token", "expires_at", "expires_in"}`: a gateway token (the same claims as the turn's own: `by_branch` `<repo>/<branch>`, `by_turn`, `by_manifest`, the recorded grant with the person's ceiling applied, the principal's `sub` and `by_tenant`) that lives five minutes. The server logs the branch, turn, manifest and who asked, never a token.
+
+| Code | Status | When |
+|---|---|---|
+| `auth_required` | 401 | No `X-Branchyard-Turn-Secret` (an identity alone is not enough), or the server lists `sandbox_identities` and no bearer came with it |
+| `invalid_credential` | 401 | The bearer is not a valid Google ID token for this server, or the secret is not this turn's (or this manifest's and number's) or the turn has ended |
+| `identity_not_allowed` | 403 | A valid Google ID token of a service account the server does not list |
+| `tenant_mismatch` | 403 | The account is restricted to another tenant than the turn's |
+| `no_connector_grant` | 403 | The turn was granted no connectors |
+| `invalid_request` | 400 | `branch` is not `<repo>/<branch>`, or the body is malformed or names an unknown field |
+| `unknown_turn` | 404 | No such repository or branch |
+| `manifest_mismatch` | 409 | The digest is not the one the turn was admitted with |
+| `turn_not_running` | 409 | The branch is not running a turn (finished, failed, cancelled, queued) |
+| `turn_mismatch` | 409 | `turn` is not the turn that is running |
+| `token_unavailable` | 503 | The gateway is not configured, or signing failed |
+| `not_found` | 404 | The server has no `connectors` |
+
+Hermetic evidence: `crates/branchyard-server/tests/turn_token.rs` (a real server, a turn held open by a named pipe, Google's keys served by a mock and ID tokens signed with a test key). Not done: a run against Google's keys and a real metadata server, from a GKE pod or a GCE VM.
+
+### Signing on workers
+
+A worker (`by worker`, `by serve --worker`) signs the turn tokens of the operations it runs, so the gateway must trust the worker's signature as it trusts the server's. A worker therefore never invents a signing key and never guesses an issuer:
+
+- `connectors.issuer` is required on a worker, and on any server whose `gateway` is not on loopback. A default taken from each process's own `listen` address would give the server and its workers different issuers, and the gateway checks one.
+- A worker needs `connectors.signing` (Cloud KMS, below) or an explicit `connectors.signing_key`. With a key file it must be the server's own file, copied or mounted (a secret volume on GKE); the worker reads it and refuses to start if it is missing, instead of making a second key. Prefer KMS: nothing is copied, and a rotation reaches every process at once.
+
+### Signing with Cloud KMS
+
+With `connectors.signing`, the private key never leaves Cloud KMS. Make an asymmetric signing key with the algorithm `EC_SIGN_ED25519` and name its version:
+
+```json
+"connectors": {
+  "gateway": "https://gateway.example/mcp",
+  "issuer": "https://branchyard.example:8421",
+  "bundles": "/srv/connectors",
+  "signing": {
+    "kms_key_versions": [
+      "projects/my-project/locations/europe-west1/keyRings/branchyard/cryptoKeys/gateway/cryptoKeyVersions/2",
+      "projects/my-project/locations/europe-west1/keyRings/branchyard/cryptoKeys/gateway/cryptoKeyVersions/1"
+    ]
+  }
+}
+```
+
+- **Signing.** For each token the server posts its signing input to `https://cloudkms.googleapis.com/v1/{version}:asymmetricSign` as `{"data": base64(input)}` (Ed25519 signs the data itself, not a digest) and joins the answer into the compact JWS. The `kid` is `kms-<keyRing>-<cryptoKey>-<version>`.
+- **Public keys.** `GET /.well-known/jwks.json` serves the public key of every listed version, read once from `{version}/publicKey` (PEM) and kept for the process. The gateway reads that URL (`jwks_uri`) to verify tokens.
+- **Rotation.** The first version signs; all are published. To rotate, create a new version, list it first, and restart the server and its workers. Drop the old version from the list once the tokens it signed have expired (an hour at most).
+- **Credentials.** Requests carry an access token of the service account the process runs as, from the metadata server (`GCE_METADATA_HOST`, else `metadata.google.internal`), with the `cloud-platform` scope: GKE with Workload Identity, Compute Engine and Cloud Run provide it. Grant that account, for the server and for every worker, `roles/cloudkms.signerVerifier` on the key (it signs and reads the public key). An account that only publishes keys, such as a gateway host that reads the JWKS some other way, needs only `roles/cloudkms.publicKeyViewer`.
+- **Refused.** `signing` together with `signing_key`, an empty list, a name that is not a key version name, and the same version twice. A key that is not `EC_SIGN_ED25519` fails when the public key is first read, naming its algorithm.
+- **`kms_base_url`** replaces `https://cloudkms.googleapis.com`; it exists for tests.
+- **The model gateway** signs its turns' tokens with the same keys when `connectors` is set.
+
+Status: hermetic. The signer runs against a fake Cloud KMS (a mock HTTP server holding Ed25519 keys): the sign request's body and headers, the PEM to JWK conversion, several versions, the cache, error answers, and a token verified against the JWKS. Not done: a run against real Cloud KMS, with a real `EC_SIGN_ED25519` key, the metadata server's token and the two IAM roles; a gateway verifying a KMS-signed token end to end.
 
 A branch's token names the principal that created it (`sub` its name, `by_tenant` its tenant; forks and delegated children keep their parent's) and the branch as `<repo>/<branch>`, so one gateway and one audit log can serve every repository; each repository's poller records only its own lines. A request naming connectors on a server without `connectors` is `403 connectors_not_configured`. Requests choose grants freely within what they ask for: the gateway enforces each grant against the person's own connected accounts, and a delegated child's is narrowed to its parent's. `by connect` and `by gateway` act locally only.
+
+### Connecting from the console
+
+A person connects their own accounts through the server, so nobody needs a terminal on its host. The server signs the caller's connect token (`by_purpose: "connect"`, ten minutes, the subject and tenant the caller's console turns carry, so the account connected is the one their sessions use) and asks the gateway's connect routes for them. The token never leaves the server; an API key passes through once to the gateway's vault and is not kept, logged or answered back.
+
+| Route | What it does | Scope |
+|---|---|---|
+| `GET /v1/connections` | `gateway` (`ready`, `not_configured`, `unreachable`) and, for each connector the gateway serves, the caller's `state` (`connected`, `needs_reconnect`, `not_connected`, `blocked` by their ceiling, `unknown` while the gateway does not answer), `accounts`, `max_mode` under their ceiling and a plain `reason` | `read` |
+| `POST /v1/connections/{connector}/connect` | `{"account"?}`: `{"kind": "oauth", "url", "expires_at"}` to open in a browser, or `{"kind": "key"}` | `run` |
+| `POST /v1/connections/{connector}/key` | `{"api_key", "account"?}`: stores a key for a key-based connector; answers `{"connected", "connector", "account"}` | `run` |
+| `GET /v1/workspaces/{workspace}/tools` | What a session form offers: `connections` (as above), the built-in `skills` (id, description, topic, what each brings), and `helpers` (`allowed`, `reason`, `max_children`) | `read` on the workspace |
+
+A console session start (`POST /v1/workspaces/{workspace}/sessions`) takes three more fields, all optional and all checked again at admission:
+
+- `connectors`: grants in the object or `CONNECTOR[@ACCOUNT][:MODE[:OPS]]` form. They sit beside a `preset` (unlike `provision`, which a preset refuses) and are refused beside `provision.connectors`. Each must be served by the gateway, within the caller's ceiling and connected by the caller; a reviewer's are read only.
+- `skills`: the built-in skills to stage, by id; each brings the skills it needs, and the harness's skill index lists only those ([knowledge skills](knowledge-skills.md#choosing-built-in-skills)). Unset: every built-in skill.
+- `helpers`: `{"harnesses", "max_children"?}`, the harnesses the session may delegate to, one level deep, at most 16 at once (default 4). It needs `allow_delegation`; with a preset, each harness must be one the preset offers; a reviewer has none.
+
+The session row keeps what it chose as `tools`, which the console shows beside the session.
+
+### Tool policy
+
+An administrator decides which tools a person may use, in the server's store (SQLite, or PostgreSQL such as AlloyDB), not in each worker's JSON. A policy has four optional parts: `connectors` (a ceiling in the `--connector` form), `skills` (built-in skill IDs), `helpers` (harness IDs a session may delegate to) and `delegation` (`false` turns helpers off). A part that is unset says nothing. An empty list allows nothing.
+
+Policies sit at three levels, keyed by the caller's own tenant:
+
+- `tenant:<tenant>`
+- `group:<tenant>:<group>`, for callers whose principal lists the group in `groups` (a `tokens` or `credentials` entry's `groups`; a paired device carries its issuer's)
+- `principal:<tenant>:<subject>`, for one person, by their stable subject
+
+A connector entry is checked in full, not only by connector and mode. At a session start each requested entry is narrowed to the policy: it keeps only the operations the policy's globs cover, `confirm: allow` only where the policy allows it, and the account it names when the policy entry names that account or none. A connector the policy does not list, a write where it allows reads, or operations it allows none of is refused `tool_not_allowed`. The session records the narrowed entries, operations and confirmation included, and the policy recheck below holds them to the policy the same way; an entry the current policy covers only in part is refused with `detail.allowed`, what it would now allow. A session recorded before operations were kept is checked as every operation without confirmation.
+
+A caller's effective policy is the tenant's, narrowed by the union of their group policies and their own, then by the person's own `self:` record (below), then by the server: the `ceilings` configuration and `allow_delegation`. Each step only narrows. In the union, lists pool, delegation is on when any record allows it, and a record that leaves a part unset adds nothing to it, so a group that sets only `delegation` never lifts another group's limit on skills. A skill brings the skills it needs whether or not the policy lists them. Policy applies on the next request, and every session start checks it again.
+
+A person narrows themselves with a fourth record, `self:<tenant>:<subject>`, which they write through `GET` and `PUT /v1/me/policy` and an administrator does not (`GET /v1/admin/policies` omits it and `PUT /v1/admin/policies/self:...` is `policy_key_invalid`). It has the same parts as any policy, and it is intersected after the administrator's result, so whatever it lists the administrator's policy stays the ceiling: a skill, helper or connector the administrator withholds stays withheld, and a connector stays read only if the administrator says so. Its natural use is `off`, below.
+
+Two parts of a policy are new: `max_helpers` (1 to 16), the most helpers a session may have at once, where two records narrow to the lesser and a group pool takes the widest; and `off`, a list of `{"kind", "id"}` switched off whatever the lists allow (`{"kind": "helper", "id": "*"}` turns every helper off). In the union of groups a tool is off only when every record that sets `off` turns it off. A start meets `off` by name: `tool_not_allowed` with `detail.off: true` and a message saying the tool is turned off for you, not that the administrator has not allowed it.
+
+Each tenant has a **policy version**: a counter, stored in the same collection as the policies (key `version:<tenant>`, never listed as a policy and refused as a policy key), that rises by one in the same transaction as every `PUT` and `DELETE` of any of the tenant's policy records, a person's own included. A refused change does not move it. `GET /v1/admin/policies` returns it as `version`. A session start records the version it was admitted under (`policy_version` on the session). When the session's operation is claimed, and for a send as well as a start, the server compares: if the version has not moved, nothing more is checked. If it has, the session's tools (its connectors with their operations, mode, confirmation and account, its skills, or all of them when it chose none, and its helpers) are checked against the policy as it stands now. A tool no longer allowed fails the operation `policy_changed` and the session keeps the version it was admitted under; the person starts again with allowed tools. If every tool is still allowed, the session records the new version, and the turn's [manifest](connectors.md#the-turn-manifest) takes it. The check is of policy only: it does not look again at whether the person's accounts are connected.
+
+**A claim uses the policy that admitted the session, not the claiming process's.** Several processes share one database and claim operations: `by serve` and its workers. Admission records the server-side limits it applied in the session row, as `server_ceiling`: `{"connectors": [...] | null, "allow_delegation": bool}`, the `ceilings` configuration's connector grants for the caller (`null` when none are set) and whether the server delegates at all. Whichever process claims a start or a send holds the session's tools to three things, each only narrowing the one before:
+
+1. the stored policy as it stands now (read from the shared store; checked when the policy version has moved, as above);
+2. the `server_ceiling` the session was admitted under, checked at every claim, which costs no read; and
+3. the claiming process's own `ceilings` and `allow_delegation`, which can narrow the recorded ceiling and never widen it.
+
+A worker with a looser or older configuration than the admitting server therefore cannot widen a turn: a session that breaks the ceiling it records (a row that was changed) is refused `policy_changed` whatever the worker allows. A worker whose configuration is narrower than the recorded ceiling runs a session that still fits its own, and refuses one that does not with `policy_changed`, `detail.readmit: true` and a message that asks for re-admission. A session admitted before ceilings were recorded has no `server_ceiling` and is held to the claiming process's own, as it was.
+
+`POST /v1/workspaces/{workspace}/sessions/{session}/readmit` (the person the session belongs to, with the scope a send needs) runs the admission check again on the process that answers: the session's stored `tools` against the caller's stored policy as it stands, narrowed by that process's own ceiling. If every tool is allowed the session records that process's ceiling as its `server_ceiling`, the tenant's current `policy_version` and `readmitted_at_ms`, and answers `{id, policy_version, server_ceiling}`; the next turn's manifest takes the version. If not, `policy_changed` with the same `detail` as a refused claim, and the session is unchanged. Re-admission records one process's view: a worker whose configuration is narrower than that process's still refuses, and the way past is to run the session on a worker with the admitting configuration, or to give every process the same `ceilings`.
+
+What still comes from the claiming process's own configuration, because it describes that machine and not the person: the harness commands and `pass_env` it offers, its sandbox providers and the paths and credentials they use, its connector gateway, packager, signing key and tool store (`connectors`, `tools`), the model gateway, its approval settings, `allow_unapproved_tools`, its `by` binary, its repositories and each tenant's repository allowlist, and the identity configuration it rechecks the admitting principal against (`iap`, `oidc_issuers`, `google_identity`, the credentials). A worker that lacks one of these fails the operation by name (a harness it cannot run, a provider it does not offer). Only the connector ceiling and delegation, the two limits on what a person's session may reach, are held to the admitting server's record. Bundles are the engine's: a turn also checks the skills and connector bundles it links or copies against the [digests its manifest recorded](connectors.md#the-turn-manifest) and fails `bundle_mismatch` when this worker holds others.
+
+| Route | What it does | Scope |
+|---|---|---|
+| `GET /v1/admin/policies` | `{"policies": [{"key", "policy", "revision"}]}` for the caller's tenant | `admin` |
+| `GET /v1/admin/policies/{key}` | one policy | `admin` |
+| `PUT /v1/admin/policies/{key}` | `{"policy", "revision"?}`: creates (no `revision`) or replaces at the stored `revision`; `409 revision_conflict` otherwise | `admin` |
+| `DELETE /v1/admin/policies/{key}?revision=N` | removes one; `revision` is optional | `admin` |
+| `GET /v1/me/policy` | the caller's own record: `{"key": "self:<tenant>:<subject>", "policy", "revision"}`, an empty `policy` at revision 0 before the first save | `read` |
+| `PUT /v1/me/policy` | `{"policy", "revision"?}`: creates (no `revision`, or 0) or replaces at the stored `revision`; `409 revision_conflict` otherwise. Raises the tenant's policy version | `run` |
+
+The tenant comes from the credential, never the request: a key naming another tenant is `policy_key_invalid`.
+
+### Tools
+
+`GET /v1/tools?workspace=ID` (scope `read`) lists every connector, skill and helper for the caller, each with `kind`, `id`, `name`, `state`, `allowed`, `ready`, `default`, `max_mode` (connectors), `action` and `reason`. `off_by_me` is true (and `action` is `turn_on`) when the person switched the tool off in their own policy: `allowed` is then false and `state` `not_allowed`, but it is the person's switch, not the administrator's. `installable` is true for a helper whose harness an administrator can install now (below). The list also carries `max_children`, the most helpers a session may have at once for this caller (16, or the administrator's lower `max_helpers`), and `default_children`, the number a start gets when it names none. `state` is the first step the tool fails: `not_allowed` (action `ask_admin`), `not_ready` (`connect` for a connector with no live account, `install` for a helper whose harness no environment has), else `ready`, or `default` when the workspace starts sessions with it. A skill is ready once allowed (installing skills per person comes later). A helper is ready when an environment offered to the tenant can run it; `sign_in` is reserved for per-person harness sign-in. Without `workspace` nothing is `default`.
+
+`PUT /v1/workspaces/{workspace}/tools` stores the workspace's defaults, `{"tools": [{"kind", "id", "mode"?}], "revision"}`, for its owner or an editor (`409 revision_conflict` on a stale `revision`; use `0` before the first save). `GET` on the same path returns them as `defaults`. A client sends them in `tools` when it starts a session; the server does not add them itself.
+
+A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?, "account"?, "max_children"?}]`. The server expands it to `connectors` (mode `read` by default), `skills` and `helpers`. The helper limit is the helper entry with `id` `*`: `{"kind": "helper", "id": "*", "max_children": 2}` names no harness and sets `helpers.max_children` (1 to 16; default 4, or the administrator's `max_helpers` when that is lower). Alone it gives helpers that run the session's own harness. A number above the policy's `max_helpers` is refused `tool_not_allowed` with `detail.max_children` set to the most, and `max_children` on any other entry is `invalid_request`. A workspace's saved defaults may carry the same entry. Connectors and helpers are the whole choice: none listed is none given. Skills narrow: with no `skill` entries the session keeps every built-in skill its policy allows, so choosing a connector alone never removes skills. It is refused beside any of those fields (`tools_conflict`). The old fields still work. With no skill choice at all, a policy that lists skills stages the ones it allows.
+
+#### Install a helper's harness
+
+`POST /v1/tools/helpers/{id}/install` (scope `admin`) installs the harness behind helper `id` on **this server's own host** and answers `202` with `{"harness", "state", "host": "server", "command", "created_at_ms", "finished_at_ms"?, "problem"?, "output_tail"?}`, `state` being `queued`, `running`, `succeeded` or `failed`. `GET` on the same path returns the latest one (`404` when none was started). A worker on another machine keeps what it has: the install is per host, and `host` says `server`. When it succeeds the helper's row in `GET /v1/tools` moves from `not_ready` to `ready` and loses its `install` action.
+
+It is closed until the operator sets `"harness_install": {"allow": true}` (`403 harness_install_disabled`), because it runs the harness catalog's install command (`npm install -g ...`, a vendor's installer script) as the server's user. The command is the first one in `catalog/harnesses.toml` whose programs are on the install `PATH` (`harness_install.path`, else the server's own), pinned to the version the harness was checked against where the installer takes one, the plan `by harnesses install` makes. Only a harness an environment offered to the caller's tenant, that runs on the server's host (a local environment), can be installed (`404 not_found`, `422 install_unsupported`); an installed one is `409 already_installed`. A second `POST` while one is running returns the running one. The command stops after 15 minutes. Each attempt is appended to `<data_dir>/harness-events.jsonl`, the file `by harnesses` keeps, as `by: "console"`. The status is held in the server process: a restart forgets it. Only an administrator installs; a person cannot install a harness for themselves, because the harness is a fact of the host and not of the person.
+
+| Error | Status | Meaning |
+|---|---|---|
+| `tool_not_allowed` | 403 | Policy does not allow a tool; `detail.kind`, `detail.id` (`*` when delegation is off or for the helper limit), `detail.max_mode` for a connector allowed less, `detail.off` when the person's own policy turned it off, and `detail.max_children` for a helper limit above the administrator's |
+| `harness_install_disabled` | 403 | `harness_install.allow` is not set in the server's configuration |
+| `already_installed` | 409 | The helper's harness is already installed on this server |
+| `install_unsupported` | 422 | The helper runs somewhere other than this server's own host, or the harness catalog has no install command the server can run |
+| `tools_conflict` | 400 | `tools` beside `connectors`, `skills` or `helpers` |
+| `policy_key_invalid` | 400 | A policy key that is not one of the three forms for the caller's tenant |
+| `policy_changed` | 403 | The tenant's policy changed after the session was admitted, and a tool it chose is no longer allowed; same `detail` as `tool_not_allowed`. Also a claim by a process whose `ceilings` or `allow_delegation` allow less than the server that admitted the session, with `detail.readmit: true`, and a refused `readmit`. Returned in the failed operation, not on the start |
 
 ## Approvals
 
@@ -251,6 +410,7 @@ All bodies are JSON (`Content-Type: application/json` is required on `POST`, els
 |---|---|---|
 | `GET /healthz` | Liveness, no token | `ok` |
 | `GET /.well-known/jwks.json` | The connector gateway's verification keys, no token; `404` without `connectors` | a JSON Web Key Set |
+| `POST /v1/turns/token` | A running turn's sandbox fetches its five-minute gateway token with the turn's secret, and its workload identity where the server lists any; no bearer token of the server's ([turn tokens for sandboxes](#turn-tokens-for-sandboxes)) | `{"token", "expires_at", "expires_in"}` |
 | `GET /v1/repos` | Served repositories | `{"repos": [{"name", "root"}]}` |
 | `GET /v1/harnesses` | Harness profiles, as found on the server's `PATH` | `{"harnesses": [{"harness", "profile", "default", "available", "qualification"}]}` |
 | `GET /v1/inventory` | Live workers serving repositories the caller can see, this server first, with the harnesses each one's machine has ([worker inventory](#worker-inventory)); `read` scope | `{"workers": [{"id", "host", "labels", "repos", "seen_ms_ago", "this", "inventory"}]}` |
@@ -555,7 +715,18 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `unsupported_media_type` | 415 | `POST` body not declared as JSON |
 | `body_too_large` | 413 | Body over `max_body_bytes`, or an artifact upload over `max_artifact_bytes`; `detail.limit` |
 | `command_not_allowed` | 403 | A request `command`, or `provision.mcp_servers`, on a server that does not allow client commands |
-| `connectors_not_configured` | 403 | `provision.connectors` on a server without `connectors` |
+| `connectors_not_configured` | 403 | `provision.connectors`, a session's `connectors`, or a connect route, on a server without `connectors` |
+| `auth_required`, `invalid_credential`, `identity_not_allowed`, `tenant_mismatch`, `no_connector_grant`, `unknown_turn`, `manifest_mismatch`, `turn_not_running`, `turn_mismatch`, `token_unavailable` | 401, 401, 403, 403, 403, 404, 409, 409, 409, 503 | `POST /v1/turns/token`; see [turn tokens for sandboxes](#turn-tokens-for-sandboxes) |
+| `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
+| `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
+| `tool_not_allowed`, `tools_conflict`, `policy_key_invalid`, `policy_changed` | 403, 400, 400, 403 | See [tool policy](#tool-policy) |
+| `identity_binding_revoked` | 403 | A queued operation's admitting identity no longer passes its provider's bindings, or, for groups read from Cloud Identity, no longer does with its groups read again; see [fresh groups](identity.md#fresh-groups-on-a-recheck) |
+| `identity_unavailable` | 503 | The sign-in dependency (a key set, or the Cloud Identity group lookup of a sign-in or of a recheck) did not answer; the server does not guess |
+| `connector_over_ceiling` | 403 | A connector, or a write, beyond the caller's ceiling; `detail.connector`, and `detail.max_mode` when reads are allowed |
+| `connector_not_connected` | 409 | A session's connector the caller has not connected, or must reconnect; `detail.connector`, `detail.account`, `detail.action` (`connect`) |
+| `gateway_unreachable`, `gateway_refused`, `gateway_unexpected` | 502 | The connector gateway did not answer, refused a connect call (`detail.status`, `detail.code`), or answered something else |
+| `skill_unknown` | 422 | A session's `skills` names one that is not built in; the message lists those that are |
+| `reviewer_read_only` | 422 | A reviewer session asking for a connector write or helpers |
 | `secret_not_allowed` | 403 | A `provision.secrets` name the server's operator did not define; `detail.secret` |
 | `provider_not_allowed` | 403 | A provider the server's operator did not allow; `detail.provider` |
 | `preset_required` | 400 | A workspace session start without `preset` on a server with `require_workspace_execution_presets` |
@@ -579,7 +750,7 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `invalid_name`, `unknown_harness` | 400 | SDK refusals |
 | `denied` | 403 | The envelope or authority refused a delegation operation, as `by --json` reports `denied` |
 | `remote_error` | 502 | An error the engine running a delegating turn returned through its broker; `detail.kind` is its kind |
-| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`, and the refusal of a profile that cannot keep a restricting policy against its harness's own permissions is `unsupported` with `detail` `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}` ([composing](harness-integration.md#composing-with-a-harnesss-own-permissions)); check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
+| `harness_unavailable`, `unsupported`, `config_error`, `check_failed`, `check_timed_out`, `check_not_started`, `invalid_candidate` | 422 | SDK refusals, and a session's `helpers` naming a harness this server does not know (`detail.harness`) (`config_error`: a configuration section that describes nothing usable); `harness_unavailable` has `detail.harness` and `detail.cause` (`not_on_path`, `not_executable`, `no_command` or `no_candidate`), and the refusal of a profile that routes no tool approvals is `unsupported` with `detail` `{"unsupported": "unrouted_approvals", "profile"}`, and the refusal of a profile that cannot keep a restricting policy against its harness's own permissions is `unsupported` with `detail` `{"unsupported": "unbound_policy", "profile", "reason", "private_home_binds"}` ([composing](harness-integration.md#composing-with-a-harnesss-own-permissions)); check failures have `detail.output_tail`, and an integration's `check_failed`, `check_timed_out` and `check_not_started` have `detail.checks`, every check of the branches integrated as `{check, branches, outcome}` (`passed`, `failed`, `timed_out`, `not_started` or `not_run`) |
 
 ## Published schema
 
@@ -658,6 +829,35 @@ by serve --database 'postgres://branchyard@db.internal/branchyard' --repo app=/s
 
 Each served repository's branch records, event log and feed, leases, journaled steps, harness processes, cancels and steered input are kept in the database under the repository's served name, with [the same semantics as SQLite](durability.md#postgresql); the operation registry is the `by_operations`, `by_operation_queue` and `by_branch_locks` tables. Tables are created when missing, in the connection's `search_path` schema: add `?options=-csearch_path%3Dname` to the URL to choose one. Worktrees, private homes and delegation tokens stay in each repository's `.branchyard/`, and the data directory still holds the default token (a `--worker`, which serves no requests, creates none).
 
+### AlloyDB
+
+AlloyDB speaks the PostgreSQL protocol, so the server uses it as any `--database`. Two ways to connect.
+
+**Through the AlloyDB Auth Proxy (recommended on GKE).** Run the proxy beside the server with `--auto-iam-authn`, and point the URL at its loopback port. The proxy encrypts the connection and logs in with the pod's service account, so the server needs no password, no CA file and no TLS setting:
+
+```json
+{ "database": "postgres://my-sa%40my-project.iam@127.0.0.1:5432/branchyard" }
+```
+
+**Directly, with TLS and IAM login.** Connect to the instance's private IP with `sslmode=require`, trust the instance's server CA, and let the server fetch a Google access token as the password:
+
+```json
+{
+  "database": "postgres://my-sa@10.20.0.5/branchyard?sslmode=require",
+  "database_ca_file": "/etc/branchyard/alloydb-server-ca.pem",
+  "database_auth": "gcp_iam"
+}
+```
+
+- **`sslmode=require`** connects over TLS (rustls) and checks the server's certificate against the public roots plus `database_ca_file`. `disable` and `prefer` (the default) stay in the clear. Download the instance's server CA certificate as a PEM file from the AlloyDB console, or from the instance's connection info in the AlloyDB API. A file that is unreadable or holds no certificate stops the connection with an error naming it.
+- **`database_ca_file`** is a PEM file of one or more certificates, relative to the configuration file. It adds to the public roots and replaces none.
+- **`database_auth`** is `"password"` (the default: the URL's password, if any) or `"gcp_iam"`. With `gcp_iam` the server asks the metadata server (`GCE_METADATA_HOST`, else `metadata.google.internal`) for an access token of the service account it runs as, at every new connection, and uses it as the password. It keeps the token until five minutes before it expires. GKE with Workload Identity, Compute Engine and Cloud Run provide the metadata server.
+- **The database user** is an IAM database user. For a service account, it is the account's email without `.gserviceaccount.com`, such as `my-sa@my-project.iam`; write the `@` in the URL as `%40`. Create the user in AlloyDB and grant it the `roles/alloydb.client` and `roles/alloydb.databaseUser` roles.
+- **Refused at start.** `gcp_iam` with a password in the URL (the token replaces it), and `gcp_iam` without `sslmode=require` unless every host is loopback (the Auth Proxy) or a Unix socket, so a token never crosses the network in the clear. `database_ca_file` and `database_auth` without a `database` are refused too.
+- **Workers.** `by worker` and `by serve --worker` read the same configuration file, so they log in the same way.
+
+Status: hermetic only. The token source runs against a mock metadata server, the configuration checks and the CA loading against local files, and no test connects to AlloyDB, Cloud SQL or any TLS-terminating PostgreSQL. Not done: a run against a real AlloyDB instance, with the Auth Proxy or directly; IAM login with a real token; a handshake with a real server CA.
+
 ### Several servers on one database
 
 Servers, and `by worker` processes, started with the same `--database` share its operations, queue and branch locks:
@@ -704,7 +904,7 @@ A task (one branch or a fan) that runs its harnesses by name (no request `comman
 What it is not yet:
 
 - **Shared with local `by`.** A local `by` on a served repository opens its SQLite `state.db` and sees none of the server's branches; use `by --remote`. Nothing is imported from an existing `state.db` when a repository moves to the database.
-- **TLS to the database.** Connections are plain; keep the database on a trusted network or a Unix socket.
+- **TLS for `sslmode=prefer`.** `sslmode=require` connects over TLS ([AlloyDB](#alloydb)); `disable` and `prefer` (the default) connect in the clear, so keep such a database on a trusted network or a Unix socket.
 - **Waits** poll every 100 ms, as SQLite's do across processes; nothing listens for `NOTIFY`. A long poll of an operation another server's worker runs sees it finish within `poll_interval`.
 
 ### Service registry
@@ -887,10 +1087,13 @@ fields. Poll the existing operation route to determine its outcome.
 | `GET /v1/workspaces/{workspace}` | Read revision, task binding, sessions, source provenance, members, accepted outputs, and capabilities |
 | `GET /v1/workspaces/{workspace}/sessions` | Derive named session views from native attempts and operations |
 | `GET /v1/execution-presets?workspace=ID` | List the [execution presets](#execution-presets) offered to the caller's tenant, with readiness and, with a workspace, `can_start` |
+| `GET /v1/workspaces/{workspace}/tools` | The connections, built-in skills and helpers a session here may choose ([connecting from the console](#connecting-from-the-console)) |
+| `GET /v1/connections`, `POST /v1/connections/{connector}/connect`, `POST /v1/connections/{connector}/key` | The caller's connections, and connecting one ([connecting from the console](#connecting-from-the-console)) |
 | `POST /v1/workspaces/{workspace}/sessions` | Start `{name,prompt,harness,preset?,model?,effort?,result_contract?,access,sources?,artifacts?}` |
 | `GET /v1/workspaces/{workspace}/sessions/{session}/messages?after=CURSOR` | Read native prompt, output, and steering text with a cursor |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/messages` | Continue `{prompt,action:"send"|"resume"|"steer"}` in the same native attempt |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/cancel` | Admit attributed native cancellation |
+| `POST /v1/workspaces/{workspace}/sessions/{session}/readmit` | Run the tool admission check again from the session's stored tools and record this server's ceiling and the current policy version, or `policy_changed`; see [tool policy](#tool-policy) |
 | `GET /v1/workspaces/{workspace}/sessions/{session}/runtime` | Inspect the owning provider, retained allocation, capabilities and terminal readiness |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/runtime/actions/{action}` | Admit a supported resource lifecycle action into the durable queue |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/terminals` | Open an explicitly permitted idle writer terminal with a real provider PTY |

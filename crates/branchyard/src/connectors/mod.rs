@@ -15,9 +15,14 @@
 //! [`ingest`] records each line of its audit log on the branch it names as
 //! an [`Activity::ConnectorCall`].
 
+pub mod credential;
 pub mod gateway;
+pub(crate) mod guest;
+pub mod issue;
 pub mod keys;
 pub mod packager;
+pub(crate) mod renewal;
+pub mod sandbox_proxy;
 
 use branchyard_support::best_effort;
 use std::fs;
@@ -34,7 +39,12 @@ use branchyard_provision::EnvVar;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use keys::{Claims, KeyRing};
+pub use credential::{CredentialProxy, CredentialSite};
+pub use issue::{
+    Identity, Proof, Refusal, RefusalKind, TokenRequest, TokenResponse, TurnCredential,
+    SECRET_HEADER, TOKEN_PATH,
+};
+pub use keys::{jws_finish, jws_input, Claims, KeyFileSigner, KeyRing, TokenSigner};
 pub use packager::{AnvilPackager, Bundle, Packager};
 
 use crate::state::Record;
@@ -53,6 +63,9 @@ pub const COMPOSE_DIR: &str = "_compose";
 pub const TOKEN_FILE: &str = ".branchyard/gateway-token";
 /// The longest a token lives, whatever the turn's deadline.
 pub const MAX_TTL: Duration = Duration::from_secs(3600);
+/// How long the token a harness can read lives while its turn's effect
+/// proxy renews it: five minutes. See `docs/connectors.md#token-renewal`.
+pub const RENEWED_TTL: Duration = Duration::from_secs(300);
 /// The longest a connect token lives: ten minutes, which the gateway
 /// enforces too.
 pub const CONNECT_TTL: Duration = Duration::from_secs(600);
@@ -77,6 +90,10 @@ pub struct Gateway {
     /// Where to keep the public set in step with the key file, for a
     /// gateway that reads it as a `file:` URL.
     pub jwks_file: Option<PathBuf>,
+    /// What signs tokens, when not the key file: a server's Cloud KMS key,
+    /// or a worker's existing key file. `None` signs with `key_file`,
+    /// made on first use.
+    pub signer: Option<Arc<dyn TokenSigner>>,
     /// The gateway's audit log (JSON lines), which [`ingest`] reads.
     pub audit_file: Option<PathBuf>,
     /// The subject of a branch that records none (`local:<user>` locally).
@@ -89,10 +106,18 @@ pub struct Gateway {
     pub branch_scope: Option<String>,
     /// The longest a token lives; at most [`MAX_TTL`].
     pub max_ttl: Duration,
+    /// How long the token a harness can read lives while a turn's effect
+    /// proxy renews it ([`RENEWED_TTL`], five minutes). Renewal
+    /// runs every half of it.
+    pub token_ttl: Duration,
     pub packager: Arc<dyn Packager>,
     /// How each turn's ledger proxy runs in front of the gateway
     /// (`docs/effects.md`).
     pub effects: EffectsProxy,
+    /// Whether a sandbox runs its own credential proxy and fetches the
+    /// turn's token from the server, instead of the host's proxy holding it
+    /// (`docs/connectors.md#the-credential-proxy-in-the-sandbox`).
+    pub credential_proxy: CredentialProxy,
 }
 
 /// Where each turn's effect-ledger proxy listens: the harness is given it
@@ -133,13 +158,16 @@ impl Gateway {
             issuer: local_issuer(yard.root())?,
             key_file: dir.join("key"),
             jwks_file: Some(dir.join("jwks.json")),
+            signer: None,
             audit_file: Some(dir.join("audit.jsonl")),
             subject: local_subject(),
             tenant: "local".to_owned(),
             branch_scope: None,
             max_ttl: MAX_TTL,
+            token_ttl: RENEWED_TTL,
             packager,
             effects: EffectsProxy::default(),
+            credential_proxy: CredentialProxy::default(),
         })
     }
 
@@ -148,9 +176,18 @@ impl Gateway {
         KeyRing::load_or_create(&self.key_file, self.jwks_file.as_deref())
     }
 
+    /// What signs this gateway's tokens: its [`Gateway::signer`], else
+    /// the key file.
+    pub fn token_signer(&self) -> Result<Arc<dyn TokenSigner>, Error> {
+        match &self.signer {
+            Some(signer) => Ok(Arc::clone(signer)),
+            None => Ok(Arc::new(self.keys()?)),
+        }
+    }
+
     /// The public key set the gateway verifies against.
     pub fn jwks(&self) -> Result<Value, Error> {
-        self.keys()?.jwks()
+        self.token_signer()?.jwks()
     }
 
     pub(crate) fn by_branch(&self, branch: &str) -> String {
@@ -168,7 +205,8 @@ impl Gateway {
     /// credential; and the gateway refuses it for tools. Lives `ttl`, at most
     /// [`CONNECT_TTL`]. Never give it to a harness.
     pub fn connect_token(&self, subject: Option<&str>, ttl: Duration) -> Result<String, Error> {
-        self.keys()?.sign(&self.connect_claims(subject, ttl)?)
+        self.token_signer()?
+            .sign(&self.connect_claims(subject, ttl)?)
     }
 
     fn connect_claims(&self, subject: Option<&str>, ttl: Duration) -> Result<Claims, Error> {
@@ -189,6 +227,7 @@ impl Gateway {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         })
     }
 
@@ -216,8 +255,9 @@ impl Gateway {
             by_models: None,
             by_network: None,
             by_delegation: None,
+            by_manifest: None,
         };
-        self.keys()?.sign(&claims)
+        self.token_signer()?.sign(&claims)
     }
 }
 
@@ -257,10 +297,11 @@ pub(crate) fn branch_token(
         window: (now, now + ttl),
         grants: grant,
         scopes: &crate::access::TokenScopes::default(),
+        manifest: None,
     })?;
     let token = gateway
-        .keys()
-        .and_then(|keys| keys.sign(&claims))
+        .token_signer()
+        .and_then(|signer| signer.sign(&claims))
         .map_err(|e| format!("could not sign a gateway token: {e}"))?;
     Ok((gateway, token))
 }
@@ -375,23 +416,103 @@ impl ConnectorCall {
 /// What a turn's connectors give its harness.
 pub(crate) struct Prepared {
     pub env: Vec<EnvVar>,
-    /// The gateway's URL as the harness is given it, which a restricted
+    /// The gateway's URL as the turn's proxy reaches it, which a restricted
     /// network policy allows (`crate::egress`).
     pub gateway_url: String,
-    /// One line for the harness's instructions, pointing at `INDEX.md`.
-    pub instruction: String,
+    /// Other URLs the turn's credentials need to reach (the server a
+    /// sandbox's proxy fetches tokens from), for the same policy.
+    pub reach: Vec<String>,
     pub connectors: Vec<String>,
     /// What the turn should know but did not fail on (a composite Anvil
     /// could not write), recorded as warnings.
     pub warnings: Vec<String>,
     /// Written in the home, relative to it.
     pub files: Vec<String>,
-    /// The turn's token, which the model gateway takes too when the
-    /// branch is on it: one token carries every scope.
-    pub token: String,
+    /// The turn's long token (an hour at most, and not past its deadline).
+    /// The harness holds it only when nothing renews: once
+    /// [`Prepared::renewing`] has run, the file holds a short one and this
+    /// is for nobody. `None` when the sandbox holds the credentials.
+    token: Option<String>,
+    /// What signs the turn's next short token; `None` when the sandbox holds
+    /// the credentials.
+    mint: Option<renewal::Mint>,
+    /// The renewing thread, once started; dropped (stopped) before the
+    /// token file is removed.
+    renewer: Option<renewal::Renewer>,
     /// The token file on this host, removed when the turn ends (held for
-    /// its drop).
-    pub _token: TokenFile,
+    /// its drop). `None` when the sandbox holds the credentials: there is
+    /// no file for the harness to read.
+    pub _token: Option<TokenFile>,
+    /// Set when the turn's credential proxy runs in its sandbox.
+    pub sandbox: Option<SandboxCredentials>,
+}
+
+/// A turn whose credential proxy runs in its sandbox.
+pub(crate) struct SandboxCredentials {
+    pub site: CredentialSite,
+    /// What the proxy is started with.
+    pub config: sandbox_proxy::ProxyConfig,
+    /// The turn's secret, and what the branch's record keeps of it. A
+    /// guest's proxy is given the secret in its environment; a sidecar
+    /// reads it from `settings`.
+    pub secret: (String, TurnCredential),
+    /// The sidecar's settings file in the home, removed when the turn ends
+    /// (it holds the secret). `None` for a guest.
+    pub settings: Option<std::path::PathBuf>,
+}
+
+impl Prepared {
+    /// Start renewing the turn's token: the file the harness reads now holds
+    /// a short token (`token_ttl`), replaced by rename before it expires
+    /// until the turn ends. Returns the live token the effect proxy calls
+    /// the gateway with. Call it once, after the proxy is certain to run.
+    pub(crate) fn renewing(&mut self) -> Result<renewal::LiveToken, String> {
+        let (Some(mint), Some(file)) = (&self.mint, &self._token) else {
+            return Err("the turn's credentials are held in its sandbox".into());
+        };
+        let first = mint.token()?;
+        let path = file.0.clone();
+        keys::write_private(&path, first.as_bytes())
+            .map_err(|e| format!("could not write the gateway token: {e}"))?;
+        let live = renewal::LiveToken::new(first);
+        let mint = renewal::Mint {
+            keys: Arc::clone(&mint.keys),
+            claims: mint.claims.clone(),
+            ttl: mint.ttl,
+            deadline_s: mint.deadline_s,
+        };
+        self.renewer = Some(
+            renewal::Renewer::start(mint, live.clone(), path)
+                .map_err(|e| format!("could not start renewing the gateway token: {e}"))?,
+        );
+        Ok(live)
+    }
+
+    /// End the turn's hold on the gateway: stop renewing the token and
+    /// remove the file that holds it. Run before the turn's sandbox is
+    /// paused, so a paused sandbox keeps no token and nothing refreshes one
+    /// in it; the next turn mints another. Safe to run twice.
+    pub(crate) fn retire(&mut self) {
+        self.renewer = None;
+        if let Some(token) = &self._token {
+            branchyard_support::cleanup_file(&token.0);
+        }
+        if let Some(settings) = self.sandbox.as_ref().and_then(|s| s.settings.as_ref()) {
+            branchyard_support::cleanup_file(settings);
+        }
+    }
+
+    /// The token the model gateway may share with the connector gateway:
+    /// the turn's long one, unless renewal has made the harness's short.
+    /// (A renewing turn's model gateway signs a token of its own, and so
+    /// does one whose sandbox holds the credentials: the harness never
+    /// holds the connector token.)
+    pub(crate) fn shared_token(&self) -> Option<&str> {
+        match self.renewer {
+            None => self.token.as_deref(),
+            Some(_) => None,
+        }
+    }
 }
 
 /// The turn's token file, removed when dropped.
@@ -412,10 +533,22 @@ pub(crate) fn prepare(
     record: &Record,
     deadline_ms: Option<u64>,
     scopes: &crate::access::TokenScopes,
+    admitted: Option<&crate::manifest::TurnManifest>,
 ) -> Result<Option<Prepared>, String> {
+    let manifest = admitted.map(crate::manifest::TurnManifest::digest);
+    let manifest = manifest.as_deref();
     let grant = match &record.provision {
         Some(spec) if !spec.connectors.is_empty() => spec.connectors.clone(),
-        _ => return Ok(None),
+        _ => {
+            // A turn without connectors leaves none from an earlier one: a
+            // tool deselected while a kept sandbox slept is gone from its
+            // home, with the token it was served by.
+            if let Some(home) = record.home.as_deref() {
+                branchyard_support::cleanup_dir(home.join(HOME_DIR));
+                branchyard_support::cleanup_file(home.join(TOKEN_FILE));
+            }
+            return Ok(None);
+        }
     };
     let names = branchyard_provision::connectors::connectors(&grant);
     let gateway = yard.connectors().ok_or_else(|| {
@@ -441,6 +574,19 @@ pub(crate) fn prepare(
             )
         }
     };
+    let holder = match manifest {
+        Some(digest) => credential::choose(
+            crate::placement::credential_site(record.provider.as_ref()),
+            &gateway.credential_proxy,
+            &url,
+            (
+                digest,
+                &gateway.by_branch(&record.info.name),
+                record.info.turns + 1,
+            ),
+        ),
+        None => credential::Holder::Host,
+    };
     let served = gateway.packager.served()?;
     let mut bundles = Vec::new();
     for name in &names {
@@ -458,17 +604,38 @@ pub(crate) fn prepare(
             }
         }
     }
-    let store = yard.store();
-    let cache = store.dir().join("connectors").join("cache");
+    // The bundles served now are the ones the session was admitted with,
+    // before anything is linked or copied.
+    if let Some(admitted) = admitted {
+        for bundle in &bundles {
+            crate::bundles::verify_served(admitted, &bundle.id, &bundle.hash)
+                .map_err(|mismatch| mismatch.to_string())?;
+        }
+    }
+    let tool_store = crate::toolstore::for_turn(yard, record);
+    let cache = yard.store().dir().join("connectors").join("cache");
     let staged = home.join(format!(
         ".branchyard/.connectors-{}",
         keys::random_id().map_err(|e| e.to_string())?
     ));
     let mut warnings = Vec::new();
-    let mut composed = false;
     let placed = (|| -> Result<(), String> {
         fs::create_dir_all(&staged).map_err(|e| format!("create {}: {e}", staged.display()))?;
         for bundle in &bundles {
+            // The store's package, linked, when the turn's harness sees
+            // the store; else the cached package, copied.
+            if let Some(entry) = tool_store
+                .as_ref()
+                .and_then(|s| s.connector(&bundle.id, &bundle.hash))
+            {
+                if let Some(admitted) = admitted {
+                    crate::bundles::verify_linked(admitted, &bundle.id, &entry)
+                        .map_err(|mismatch| mismatch.to_string())?;
+                }
+                std::os::unix::fs::symlink(&entry, staged.join(&bundle.id))
+                    .map_err(|e| format!("link {}: {e}", entry.display()))?;
+                continue;
+            }
             let package = cached_package(gateway.packager.as_ref(), &cache, bundle)?;
             packager::copy_tree(&package, &staged.join(&bundle.id))?;
         }
@@ -478,14 +645,11 @@ pub(crate) fn prepare(
         // on its own, so a failure here is a warning, not the turn's.
         if bundles.len() > 1 {
             let out = staged.join(COMPOSE_DIR);
-            match gateway.packager.compose(&bundles, &staged, &out) {
-                Ok(()) => composed = out.join("SKILL.md").is_file(),
-                Err(reason) => {
-                    branchyard_support::cleanup_dir(&out);
-                    warnings.push(format!(
-                        "connectors are provided one by one: the composite could not be written ({reason})"
-                    ));
-                }
+            if let Err(reason) = gateway.packager.compose(&bundles, &staged, &out) {
+                branchyard_support::cleanup_dir(&out);
+                warnings.push(format!(
+                    "connectors are provided one by one: the composite could not be written ({reason})"
+                ));
             }
         }
         let grants = staged.join(".grants.json");
@@ -508,7 +672,59 @@ pub(crate) fn prepare(
     if placed.is_err() {
         branchyard_support::cleanup_dir(&staged);
     }
-    placed.map_err(|e| format!("could not place connector packages: {e}"))?;
+    placed.map_err(|e| match e.starts_with(crate::bundles::BUNDLE_MISMATCH) {
+        true => e,
+        false => format!("could not place connector packages: {e}"),
+    })?;
+    if let credential::Holder::Sandbox { site, config } = holder {
+        // The sandbox holds the credentials: the harness is given the
+        // proxy's loopback address and nothing else. No token is signed
+        // here and no token file is written.
+        let mut files = vec![format!("{HOME_DIR}/")];
+        // Every sandbox proves its turn with a secret made for it alone;
+        // the record keeps only its hash. A guest's proxy is given it in its
+        // environment (`engine::start_credential_proxy`).
+        let (secret, credential) = TurnCredential::new(&config.manifest, config.turn)?;
+        let mut settings = None;
+        if site == CredentialSite::Sidecar {
+            // A sidecar finds its settings, and this turn's secret, in the
+            // file in the home copied in for the turn. The harness can read
+            // its own turn's secret there (it could already fetch its own
+            // turn's token from the metadata server) and no other turn's;
+            // the file goes when the turn ends ([`Prepared::retire`]).
+            let path = home.join(credential::PROXY_CONFIG_FILE);
+            let text = credential::config_text(&sandbox_proxy::ProxyConfig {
+                secret: Some(secret.clone()),
+                ..config.clone()
+            })?;
+            keys::write_private(&path, text.as_bytes())
+                .map_err(|e| format!("could not write the credential proxy's settings: {e}"))?;
+            files.push(credential::PROXY_CONFIG_FILE.to_owned());
+            settings = Some(path);
+        }
+        let harness_url = sandbox_proxy::ProxyConfig::harness_url(gateway.credential_proxy.port);
+        return Ok(Some(Prepared {
+            env: vec![EnvVar::plain(ENV_GATEWAY_URL, harness_url.clone())],
+            connectors: names,
+            warnings,
+            gateway_url: url,
+            // The server the proxy fetches from, and the proxy itself on
+            // loopback, which a network policy confining the harness must
+            // let it reach.
+            reach: vec![config.server.clone(), harness_url],
+            files,
+            token: None,
+            mint: None,
+            renewer: None,
+            _token: None,
+            sandbox: Some(SandboxCredentials {
+                site,
+                config,
+                secret: (secret, credential),
+                settings,
+            }),
+        }));
+    }
     // The token: this turn's, for at most an hour and not past the
     // turn's deadline.
     let now = branchyard_support::time::now_ms() / 1000;
@@ -529,44 +745,40 @@ pub(crate) fn prepare(
         window: (now, exp),
         grants: grant,
         scopes,
+        manifest,
     })?;
-    let token = gateway
-        .keys()
-        .and_then(|keys| keys.sign(&claims))
+    let keys = gateway
+        .token_signer()
         .map_err(|e| format!("could not sign the gateway token: {e}"))?;
+    let token = keys
+        .sign(&claims)
+        .map_err(|e| format!("could not sign the gateway token: {e}"))?;
+    let mint = renewal::Mint {
+        keys,
+        claims,
+        ttl: gateway.token_ttl.min(MAX_TTL),
+        deadline_s: deadline_ms.map(|d| d / 1000),
+    };
+    let (_, guest_home) = crate::placement::guest_paths(record);
+    let guest = |rel: &str| format!("{}/{rel}", guest_home.trim_end_matches('/'));
     let token_path = home.join(TOKEN_FILE);
     keys::write_private(&token_path, token.as_bytes())
         .map_err(|e| format!("could not write the gateway token: {e}"))?;
-    let (_, guest_home) = crate::placement::guest_paths(record);
-    let guest = |rel: &str| format!("{}/{rel}", guest_home.trim_end_matches('/'));
     Ok(Some(Prepared {
         env: vec![
             EnvVar::plain(ENV_GATEWAY_URL, url.clone()),
             EnvVar::plain(ENV_GATEWAY_TOKEN_FILE, guest(TOKEN_FILE)),
         ],
-        instruction: format!(
-            "Connectors ({}) are available through Branchyard's gateway: before using one, read {} \
-             and follow it; never ask for or use upstream credentials. When a call carries out a \
-             decision you might repeat after a restart (a payment, a message), name it: \
-             `_meta.decision_key` on the MCP call, or the `X-Branchyard-Decision-Key` header, \
-             such as `invoice-7-payment`; a repeat of a decision already made is refused with what \
-             is known.{}",
-            names.join(", "),
-            guest(&format!("{HOME_DIR}/INDEX.md")),
-            match composed {
-                true => format!(
-                    " For a task that spans them, {} composes them into one client and flows.",
-                    guest(&format!("{HOME_DIR}/{COMPOSE_DIR}/SKILL.md"))
-                ),
-                false => String::new(),
-            }
-        ),
         connectors: names,
         warnings,
         gateway_url: url,
+        reach: Vec::new(),
         files: vec![format!("{HOME_DIR}/"), TOKEN_FILE.to_owned()],
-        token,
-        _token: TokenFile(token_path),
+        token: Some(token),
+        mint: Some(mint),
+        renewer: None,
+        _token: Some(TokenFile(token_path)),
+        sandbox: None,
     }))
 }
 
@@ -581,6 +793,8 @@ pub(crate) struct TurnToken<'a> {
     pub window: (u64, u64),
     pub grants: Vec<GrantEntry>,
     pub scopes: &'a crate::access::TokenScopes,
+    /// The turn manifest's digest, for `by_manifest`.
+    pub manifest: Option<&'a str>,
 }
 
 /// A turn's claims: the contract's, and the turn's other scopes
@@ -595,6 +809,7 @@ pub(crate) fn turn_claims(token: TurnToken<'_>) -> Result<Claims, String> {
         window: (iat, exp),
         grants,
         scopes,
+        manifest,
     } = token;
     Ok(Claims {
         iss: issuer.to_owned(),
@@ -611,12 +826,13 @@ pub(crate) fn turn_claims(token: TurnToken<'_>) -> Result<Claims, String> {
         by_models: scopes.models.clone(),
         by_network: scopes.network.clone(),
         by_delegation: scopes.delegation.clone(),
+        by_manifest: manifest.map(str::to_owned),
     })
 }
 
 /// A bundle's package from the cache, packaged first if needed; keyed by
 /// the bundle's hash, so a changed bundle is packaged again.
-fn cached_package(
+pub(crate) fn cached_package(
     packager: &dyn Packager,
     cache: &Path,
     bundle: &Bundle,

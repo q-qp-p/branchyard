@@ -7,6 +7,7 @@ use crate::ops::NewOperation;
 use crate::store::{Idempotency, Lane};
 use axum::http::{HeaderMap, StatusCode};
 use branchyard_client::api::{Operation, OperationKind, SendRequest, TaskRequest};
+use branchyard_client::workspace_api::ToolKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -248,6 +249,7 @@ pub(super) fn session_views(
                     view["status"] = status["state"].clone();
                     view["status_detail"] = status;
                     view["native_session"] = json!(branch.info().session);
+                    view["manifest"] = json!(branch.manifest().map_err(sdk)?.map(|m| m.digest()));
                 }
                 Err(branchyard::Error::UnknownBranch(_)) => {
                     let operation_id = text(&r.body, "operation_id")?;
@@ -567,6 +569,14 @@ fn start_once(
         }
         provision.effort = Some(effort);
     }
+    // `tools` is the whole choice in one list; the rest of the start reads
+    // the three fields it expands into.
+    let mut expanded = body.clone();
+    super::tools::expand(&mut expanded)?;
+    // Read before the policy is: a change that lands during admission moves
+    // the version past this one, and the claim checks again.
+    let policy_version = super::policy::current_version(app, caller.tenant())?;
+    let chosen = chosen_tools(app, caller, &expanded, access, &mut provision)?;
     let policy = match body.get("policy").filter(|value| !value.is_null()) {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|error| ApiError::bad_request(error.to_string()))?,
@@ -608,6 +618,8 @@ fn start_once(
         policy,
         provision: Some(provision),
         result,
+        allow_delegation: chosen.delegation.is_some(),
+        delegation: chosen.delegation.clone(),
         ..Default::default()
     };
     match preset.as_ref() {
@@ -631,7 +643,7 @@ fn start_once(
         Collection::Sessions,
         &sid,
         caller,
-        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"created_at_ms":branchyard_support::time::now_ms()}),
+        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"policy_version":policy_version,"server_ceiling":super::policy::Ceiling::of_this_server(app, caller),"created_at_ms":branchyard_support::time::now_ms()}),
     );
     let mutations = vec![
         insert(row),
@@ -652,6 +664,166 @@ fn start_once(
         mutations,
     )
 }
+/// What a start chose beyond its harness: connectors, built-in skills and
+/// helpers, checked and written into `provision`, with the envelope its
+/// helpers need and the view the session row keeps.
+struct Chosen {
+    delegation: Option<branchyard::Envelope>,
+    view: Value,
+}
+
+fn chosen_tools(
+    app: &App,
+    caller: &Caller,
+    body: &Value,
+    access: &str,
+    provision: &mut branchyard::Provisioning,
+) -> Result<Chosen, ApiError> {
+    let field = |key: &str| body.get(key).filter(|value| !value.is_null()).cloned();
+    let resolved = super::policy::resolved(app, caller)?;
+    let connectors: Vec<branchyard::connectors::GrantEntry> = field("connectors")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid connectors: {error}")))?
+        .unwrap_or_default();
+    if !connectors.is_empty() {
+        if !provision.connectors.is_empty() {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "connectors_conflict",
+                "give connectors or provision.connectors, not both",
+            ));
+        }
+        if access == "reviewer"
+            && connectors
+                .iter()
+                .any(|e| e.mode != branchyard::connectors::GrantMode::Read)
+        {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "reviewer_read_only",
+                "A reviewer reads only, so its connectors are read only.",
+            ));
+        }
+        // Narrowed to the policy's operations, confirmation and account
+        // first, so what is admitted and provisioned is what it allows.
+        let connectors = super::policy::fit_connectors(&resolved.store, &connectors)?;
+        super::connections::admit(app, caller, &resolved, &connectors)?;
+        provision.connectors = connectors;
+    }
+    // Connectors given through `provision` meet the same policy.
+    provision.connectors = super::policy::fit_connectors(&resolved.store, &provision.connectors)?;
+    let skills: Option<Vec<String>> = field("skills")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid skills: {error}")))?;
+    if let Some(skills) = skills {
+        provision.skills = Some(skills);
+    }
+    match &provision.skills {
+        Some(asked) => {
+            branchyard_provision::built_in::check(asked).map_err(|why| {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "skill_unknown", why)
+            })?;
+            if let Some(id) = asked
+                .iter()
+                .find(|id| !super::policy::skill_allowed(&resolved.store, id))
+            {
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Skill,
+                    id,
+                    None,
+                ));
+            }
+        }
+        // No choice means every built-in skill the policy allows.
+        None if resolved.store.skills.is_some() => {
+            let catalogue =
+                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+            provision.skills = Some(
+                catalogue
+                    .skills
+                    .iter()
+                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
+                    .map(|s| s.id.clone())
+                    .collect(),
+            );
+        }
+        None => {}
+    }
+    let helpers: Option<branchyard_client::workspace_api::Helpers> = field("helpers")
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(format!("invalid helpers: {error}")))?;
+    let delegation = match &helpers {
+        None => None,
+        Some(_) if access == "reviewer" => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "reviewer_read_only",
+                "A reviewer reads only, so it cannot hand work to helpers.",
+            ))
+        }
+        Some(helpers) => {
+            // The most the policy allows; a start that names no number gets
+            // the default, or that most when it is lower.
+            let most = super::policy::helper_limit(&resolved.store);
+            let max_children = helpers
+                .max_children
+                .unwrap_or_else(|| super::connections::DEFAULT_HELPERS.min(most));
+            if !(1..=super::connections::MAX_HELPERS).contains(&max_children) {
+                return Err(ApiError::bad_request(format!(
+                    "helpers.max_children must be from 1 to {}",
+                    super::connections::MAX_HELPERS
+                )));
+            }
+            super::tools::known_harnesses(&helpers.harnesses)?;
+            if !super::policy::delegation_allowed(&resolved.store) {
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Helper,
+                    "*",
+                    None,
+                ));
+            }
+            if let Some(id) = helpers
+                .harnesses
+                .iter()
+                .find(|h| !super::policy::helper_allowed(&resolved.store, h))
+            {
+                return Err(super::policy::refusal(
+                    &resolved.store,
+                    ToolKind::Helper,
+                    id,
+                    None,
+                ));
+            }
+            if max_children > most {
+                return Err(super::policy::over_limit(&resolved.store));
+            }
+            Some(branchyard::Envelope {
+                max_depth: 1,
+                max_children,
+                harnesses: helpers.harnesses.clone(),
+                ..branchyard::Envelope::default()
+            })
+        }
+    };
+    let view = json!({
+        "connectors": provision.connectors.iter().map(|e| json!({
+            "connector": e.connector,
+            "operations": e.operations,
+            "mode": e.mode,
+            "confirm": e.confirm,
+            "account": e.account,
+        })).collect::<Vec<_>>(),
+        "skills": provision.skills,
+        "helpers": helpers,
+    });
+    Ok(Chosen { delegation, view })
+}
+
 fn review_candidate(
     app: &App,
     caller: &Caller,
@@ -835,6 +1007,26 @@ pub(super) fn control(
         idem,
         mutations,
     )
+}
+/// Admit a session again on this process: its stored tools are checked
+/// against the caller's policy as it stands and this process's ceiling, and
+/// the session records both (`server_ceiling`, `policy_version`). The way
+/// past a `policy_changed` that asked for re-admission.
+pub(super) fn readmit(app: &App, caller: &Caller, wid: &str, sid: &str) -> Result<Value, ApiError> {
+    let row = session(app, caller, wid, sid)?;
+    let required = if row.body["access"] == "reviewer" {
+        "comment"
+    } else {
+        "run"
+    };
+    auth::authorize_workspace(app, caller, wid, required)?;
+    session_subject(&row, caller)?;
+    let version = super::policy::readmit(app, caller, &row)?;
+    Ok(json!({
+        "id": sid,
+        "policy_version": version,
+        "server_ceiling": super::policy::Ceiling::of_this_server(app, caller),
+    }))
 }
 pub(super) fn lifecycle(
     app: &App,

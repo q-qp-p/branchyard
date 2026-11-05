@@ -270,6 +270,14 @@ impl Grant {
     pub fn can_spawn(&self) -> bool {
         self.envelope.max_depth > 0
     }
+
+    /// Whether it has anyone to delegate to: its envelope allows children
+    /// below it and at least one. Only such a branch is given the delegation
+    /// skill and the delegation tools; one without is given the leaf note
+    /// and the core tools, whatever else its token reaches.
+    pub fn has_helpers(&self) -> bool {
+        self.can_spawn() && self.envelope.max_children > 0
+    }
 }
 
 /// A child to create. Unset fields default to the parent's, within its
@@ -5703,6 +5711,8 @@ Checks on the merged result: \
             removed: Vec::new(),
             metered_from: None,
             skills: None,
+            manifest: None,
+            credential: None,
 
             result_contract: None,
         }

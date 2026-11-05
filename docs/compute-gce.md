@@ -215,6 +215,26 @@ actual runtime, firmware and layout; legacy or mismatched references refuse
 before restore or removal and explain how to recover without changing the saved
 artifact. Use a fresh runtime home when changing artifacts.
 
+## Install the shared tool store and Anvil
+
+Skills and connector packages are published once as a shared tool store, then pulled onto the worker when it is set up, so a turn links them instead of packaging or copying them ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)). Build and mirror the store from a machine that has the connector bundles:
+
+```sh
+by tools publish --store ./store --gcs gs://BUCKET/PREFIX
+```
+
+Then ask the worker's setup for it:
+
+```sh
+by compute gce --project PROJECT --zone ZONE --name NAME --tools-store gs://BUCKET/PREFIX
+```
+
+Setup runs `by tools pull --from gs://BUCKET/PREFIX --store /opt/branchyard/store` on the VM, checks every entry against the index, and writes `tools.store` and `tools.store_bucket` into the worker's `server.json` so its server links turns to the store. The plan lists the step. The VM needs `gcloud`, which setup checks before it pulls, and its service account needs `roles/storage.objectViewer` on the bucket; the helper grants no roles. Without `--tools-store` nothing changes and turns copy.
+
+Setup also installs Anvil's CLI and SDKs once under `/opt/anvil` with `anvil install --prefix /opt/anvil` ([Anvil contract v2](anvil-contract-v2.md), item 4) when `anvil` is on the VM and has an `install` command. When it does not, setup says so and goes on. Anvil is not installed by this helper.
+
+Hermetic evidence: `tests/test_compute_gce.py` checks the generated script and plan, and runs the Anvil guard with fake `anvil` and `sudo`. Not done: no worker was set up with `--tools-store`, and no real `anvil install` ran.
+
 ## Remove a temporary worker
 
 Stop its Branchyard SSH server with `by remote ssh stop URL`, retain redacted

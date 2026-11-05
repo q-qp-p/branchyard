@@ -3,6 +3,10 @@ use serde_json::{json, Value};
 
 use crate::receipt::Receipt;
 
+/// The three private volumes of an allocation: the worktree, the home, and
+/// the tool tree the engine copies in after it (docs/tools-model.md).
+const VOLUMES: [&str; 3] = ["/workspace", "/branchyard/home", "/tools"];
+
 pub(crate) fn refused(what: &str) -> ProviderError {
     ProviderError::Runtime(format!("container verification refused: {what}"))
 }
@@ -113,10 +117,10 @@ pub(crate) fn verify(value: &Value, receipt: &Receipt) -> Result<Vec<String>, Pr
     let mounts = host["Mounts"]
         .as_array()
         .ok_or_else(|| refused("missing volume creation settings"))?;
-    if mounts.len() != 2 {
+    if mounts.len() != VOLUMES.len() {
         return Err(refused("unexpected volume creation settings"));
     }
-    for destination in ["/workspace", "/branchyard/home"] {
+    for destination in VOLUMES {
         let mount = mounts
             .iter()
             .find(|mount| mount["Target"] == destination)
@@ -149,7 +153,7 @@ pub(crate) fn verify(value: &Value, receipt: &Receipt) -> Result<Vec<String>, Pr
             || mount["RW"] != true
             || !matches!(
                 mount["Destination"].as_str(),
-                Some("/workspace" | "/branchyard/home")
+                Some("/workspace" | "/branchyard/home" | "/tools")
             )
         {
             return Err(refused("unexpected actual mount"));
@@ -158,9 +162,12 @@ pub(crate) fn verify(value: &Value, receipt: &Receipt) -> Result<Vec<String>, Pr
         destinations.push(mount["Destination"].as_str());
     }
     volumes.sort();
-    if volumes.len() != 2
-        || volumes[0] == volumes[1]
-        || destinations[0] == destinations[1]
+    destinations.sort();
+    destinations.dedup();
+    let distinct = volumes.windows(2).all(|pair| pair[0] != pair[1]);
+    if volumes.len() != VOLUMES.len()
+        || !distinct
+        || destinations.len() != VOLUMES.len()
         || (!receipt.volumes.is_empty() && receipt.volumes != volumes)
     {
         return Err(refused("private volume identities changed"));

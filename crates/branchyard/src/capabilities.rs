@@ -14,12 +14,13 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use branchyard_provision::skillset::{self, SkillEntry};
-use branchyard_provision::{apply, skills, Edit, Plan};
+use branchyard_provision::{apply, built_in, skills, Edit, Plan};
 use serde::Deserialize;
 
 use crate::skills::RepositorySet;
+use crate::tooltree::Tool;
 
-const DIRECTORY: &str = ".branchyard/capabilities";
+pub(crate) const DIRECTORY: &str = ".branchyard/capabilities";
 
 #[derive(Deserialize)]
 struct Catalog {
@@ -33,11 +34,13 @@ struct Capability {
 
 #[derive(Debug)]
 pub(crate) struct Staged {
-    pub instruction: String,
     /// Files written or removed, relative to the home.
     pub written: Vec<String>,
     /// The built-in skills staged, in catalog order.
     pub built_in: Vec<SkillEntry>,
+    /// Every skill staged, built-in then the repository's, as the tool tree
+    /// lists them ([`crate::tooltree`]).
+    pub listed: Vec<Tool>,
 }
 
 /// The directory of the state directory `state` holding the skills of
@@ -91,24 +94,73 @@ pub(crate) fn catalogued() -> Result<Vec<&'static skills::Skill>, String> {
 }
 
 /// Install the embedded payload, and `repository`'s skills when given, on
-/// the host, naming paths as the guest sees them.
+/// the host.
+///
+/// `only` is the task's choice of built-in skills
+/// ([`crate::Provisioning::skills`]): those and the skills they need are
+/// staged and listed, the rest removed, and the indexes list only what was
+/// staged. `None` stages every built-in skill.
+#[cfg(test)]
 pub(crate) fn stage(
     host: &Path,
-    guest: &Path,
     repository: Option<&RepositorySet>,
+    only: Option<&[String]>,
 ) -> Result<Staged, String> {
+    stage_from(host, repository, only, None)
+}
+
+/// [`stage`], linking each built-in skill the shared tool `store` has an
+/// entry for ([`crate::toolstore`]) instead of writing its files: the
+/// skill's directory is a link to the entry. The caller passes the store
+/// only when the harness sees it at the same path. A skill the store lacks
+/// is written as before, and a link left by an earlier turn that had the
+/// store is replaced by the files.
+pub(crate) fn stage_from(
+    host: &Path,
+    repository: Option<&RepositorySet>,
+    only: Option<&[String]>,
+    store: Option<&crate::toolstore::ToolStore>,
+) -> Result<Staged, String> {
+    let chosen = only.map(built_in::closure).transpose()?;
+    let indexes = built_in::indexes(chosen.as_ref())?;
     let mut plan = Plan::default();
     let mut built_in = Vec::new();
+    let mut listed = Vec::new();
+    let mut links = Vec::new();
+    let mut unlinked = Vec::new();
     for skill in catalogued()? {
         let directory = format!("{DIRECTORY}/{}", skill.name);
+        let entry = store
+            .filter(|_| chosen.as_ref().is_none_or(|set| set.contains(skill.name)))
+            .and_then(|store| store.skill(skill));
+        match &entry {
+            Some(entry) => links.push((directory.clone(), entry.clone())),
+            None => unlinked.push(directory.clone()),
+        }
+        if !chosen.as_ref().is_none_or(|set| set.contains(skill.name)) {
+            // A narrower turn than the last removes what it does not give.
+            for stale in files_under(host, &directory)? {
+                plan.edit(&stale, false, Edit::Remove);
+            }
+            continue;
+        }
         for (path, content) in skill.files {
-            plan.edit(
-                &format!("{directory}/{path}"),
-                false,
-                Edit::Put((*content).into()),
-            );
+            // With an entry the link stands for the files, and replaces
+            // any copy an earlier turn made ([`link_skill`]).
+            if entry.is_none() {
+                plan.edit(
+                    &format!("{directory}/{path}"),
+                    false,
+                    Edit::Put((*content).into()),
+                );
+            }
         }
         built_in.push(skillset::built_in_entry(skill));
+        listed.push(Tool {
+            id: skill.name.to_owned(),
+            description: description_of(skill)?,
+            directory: skill.name.to_owned(),
+        });
     }
     let index_path = format!("{DIRECTORY}/INDEX.md");
     let custom_path = format!("{DIRECTORY}/{}", skillset::CUSTOM_TOPIC);
@@ -116,14 +168,19 @@ pub(crate) fn stage(
     let mut custom = BTreeSet::new();
     match repository {
         None => {
-            plan.edit(&index_path, false, Edit::Put(skills::INDEX.into()));
+            plan.edit(&index_path, false, Edit::Put(indexes.root.clone()));
             plan.edit(&custom_path, false, Edit::Remove);
         }
         Some(set) => {
-            let index = skillset::custom_index(skills::INDEX, &set.skills, &set.commit)?;
+            let index = skillset::custom_index(&indexes.root, &set.skills, &set.commit)?;
             plan.edit(&index_path, false, Edit::Put(index.root));
             plan.edit(&custom_path, false, Edit::Put(index.topic));
             for skill in &set.skills {
+                listed.push(Tool {
+                    id: format!("{}:{}", skillset::REPOSITORY_ROOT, skill.name),
+                    description: skill.description.clone(),
+                    directory: format!("{}/{}", skillset::REPOSITORY_ROOT, skill.name),
+                });
                 for (path, content) in &skill.files {
                     let path = format!("{repository_dir}/{}/{path}", skill.name);
                     plan.edit(&path, false, Edit::Put(content.clone()));
@@ -144,23 +201,139 @@ pub(crate) fn stage(
             Edit::Put(skills::UPSTREAM_LOCK.into()),
         );
     }
-    for (path, content) in skills::TOPIC_INDEXES {
-        plan.edit(
-            &format!("{DIRECTORY}/{path}"),
-            false,
-            Edit::Put((*content).into()),
-        );
+    for (path, content) in indexes.topics {
+        let edit = match content {
+            Some(text) => Edit::Put(text),
+            None => Edit::Remove,
+        };
+        plan.edit(&format!("{DIRECTORY}/{path}"), false, edit);
+    }
+    // A link an earlier turn made to a skill this turn writes, or drops, is
+    // removed first: the files are never written through it.
+    let fail = |e: io::Error| format!("could not link document capabilities: {e}");
+    let mut linked = Vec::new();
+    for directory in &unlinked {
+        if unlink_skill(&host.join(directory)).map_err(fail)? {
+            linked.push(directory.clone());
+        }
     }
     let applied = apply::apply(&plan, host)
         .map_err(|e| format!("could not install document capabilities: {e}"))?;
+    for (directory, entry) in &links {
+        if link_skill(&host.join(directory), entry).map_err(fail)? {
+            linked.push(directory.clone());
+        }
+    }
     Ok(Staged {
-        instruction: format!(
-            "Skills and tooling are available. Read {} and load only the relevant topic and skill. Keep your native planning and subagents.",
-            guest.join(index_path).display()
-        ),
-        written: applied.written.into_iter().chain(applied.removed).collect(),
+        written: applied
+            .written
+            .into_iter()
+            .chain(applied.removed)
+            .chain(linked)
+            .collect(),
         built_in,
+        listed,
     })
+}
+
+/// Make `path` a real directory whose entries are links to those of the
+/// store's `entry`, replacing the copy or the other links there. The
+/// directory itself is not a link so that a skill's relative references to
+/// its siblings (`../artifact-tools/INDEX.md`) resolve beside it, not in
+/// the store. Whether anything changed.
+fn link_skill(path: &Path, entry: &Path) -> io::Result<bool> {
+    let mut changed = false;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            std::fs::remove_file(path)?;
+            changed = true;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::create_dir_all(path)?;
+    let mut wanted = BTreeSet::new();
+    for child in std::fs::read_dir(entry)? {
+        let name = child?.file_name();
+        let (link, target) = (path.join(&name), entry.join(&name));
+        match std::fs::symlink_metadata(&link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if std::fs::read_link(&link)? != target {
+                    std::fs::remove_file(&link)?;
+                    std::os::unix::fs::symlink(&target, &link)?;
+                    changed = true;
+                }
+            }
+            Ok(meta) => {
+                match meta.is_dir() {
+                    true => std::fs::remove_dir_all(&link)?,
+                    false => std::fs::remove_file(&link)?,
+                }
+                std::os::unix::fs::symlink(&target, &link)?;
+                changed = true;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                std::os::unix::fs::symlink(&target, &link)?;
+                changed = true;
+            }
+            Err(e) => return Err(e),
+        }
+        wanted.insert(name);
+    }
+    // What the entry no longer holds, or never did, goes.
+    for child in std::fs::read_dir(path)? {
+        let child = child?;
+        if !wanted.contains(&child.file_name()) && child.file_type()?.is_symlink() {
+            std::fs::remove_file(child.path())?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// Remove the links [`link_skill`] made in `dir`, and `dir` when nothing
+/// else is in it: a skill the turn writes as files, or drops, must not be
+/// written through a link into the store. Whether anything changed.
+fn unlink_skill(dir: &Path) -> io::Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::NotADirectory =>
+        {
+            return Ok(false)
+        }
+        Err(e) => return Err(e),
+    };
+    let mut changed = false;
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            std::fs::remove_file(entry.path())?;
+            changed = true;
+        }
+    }
+    // Left when something else is in it.
+    if changed && std::fs::read_dir(dir)?.next().is_none() {
+        std::fs::remove_dir(dir)?;
+    }
+    Ok(changed)
+}
+
+/// A built-in skill's description, from its `SKILL.md` frontmatter.
+fn description_of(skill: &skills::Skill) -> Result<String, String> {
+    let (_, text) = skill
+        .files
+        .iter()
+        .find(|(path, _)| *path == "SKILL.md")
+        .ok_or_else(|| format!("embedded skill {} has no SKILL.md", skill.name))?;
+    let front = skillset::frontmatter(text)
+        .map_err(|why| format!("embedded skill {}: {why}", skill.name))?;
+    Ok(front
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 /// The regular files under `home`'s `dir`, relative to `home`, without
@@ -211,20 +384,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_free_payload_uses_guest_paths_and_repeated_staging_is_unchanged() {
+    fn source_free_payload_is_staged_listed_and_repeated_staging_is_unchanged() {
         let host = tempfile::tempdir().unwrap();
-        let guest = Path::new("/guest/home");
-        let first = stage(host.path(), guest, None).unwrap();
+        let first = stage(host.path(), None, None).unwrap();
         assert!(!first.written.is_empty());
-        assert!(first
-            .instruction
-            .contains("/guest/home/.branchyard/capabilities/INDEX.md"));
+        assert_eq!(first.listed.len(), first.built_in.len());
+        let find = first.listed.iter().find(|t| t.id == "find-tools").unwrap();
+        assert_eq!(find.directory, "find-tools");
+        assert!(find.description.starts_with("Search the tools mounted"));
         let root = host.path().join(DIRECTORY);
         let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
         assert_eq!(index, skills::INDEX);
         assert!(index.len() <= 4096);
-        assert!(first.instruction.len() < 512);
-        assert!(!first.instruction.contains("SKILL.md"));
         for (path, content) in skills::TOPIC_INDEXES {
             assert_eq!(std::fs::read_to_string(root.join(path)).unwrap(), *content);
         }
@@ -279,7 +450,38 @@ mod tests {
         );
         let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(report.is_object());
-        assert!(stage(host.path(), guest, None).unwrap().written.is_empty());
+        assert!(stage(host.path(), None, None).unwrap().written.is_empty());
+    }
+
+    /// A turn that chooses some built-in skills gets those and what they
+    /// need, an index and a listing naming only them, and nothing an
+    /// earlier, wider turn left; a later turn without a choice gets every
+    /// skill back.
+    #[test]
+    fn a_chosen_set_stages_only_those_skills_and_their_needs() {
+        let host = tempfile::tempdir().unwrap();
+        let root = host.path().join(DIRECTORY);
+        stage(host.path(), None, None).unwrap();
+        assert!(root.join("docx/SKILL.md").is_file());
+        let chosen = ["pptx".to_owned()];
+        let narrow = stage(host.path(), None, Some(&chosen)).unwrap();
+        let names: Vec<&str> = narrow.built_in.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["artifact-tools", "pptx"]);
+        let listed: Vec<&str> = narrow.listed.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(listed, ["artifact-tools", "pptx"]);
+        assert!(!root.join("docx/SKILL.md").exists());
+        assert!(!root.join("topics/design/INDEX.md").exists());
+        let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
+        assert!(index.contains("topics/documents/INDEX.md"));
+        assert!(!index.contains("topics/design/INDEX.md"));
+        stage(host.path(), None, None).unwrap();
+        assert!(root.join("docx/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
+            skills::INDEX
+        );
+        let error = stage(host.path(), None, Some(&["nope".to_owned()])).unwrap_err();
+        assert!(error.contains("\"nope\""), "{error}");
     }
 
     fn repository_set(texts: &[(&str, &str)]) -> RepositorySet {
@@ -312,27 +514,27 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let root = host.path().join(DIRECTORY);
         let set = repository_set(&[("style", "references/a.md"), ("tone", "")]);
-        let first = stage(host.path(), host.path(), Some(&set)).unwrap();
+        let first = stage(host.path(), Some(&set), None).unwrap();
         assert_eq!(first.built_in.len(), catalogued().unwrap().len());
         assert!(root.join("repository/style/references/a.md").is_file());
         assert!(root.join("repository/tone/SKILL.md").is_file());
         let index = std::fs::read_to_string(root.join("INDEX.md")).unwrap();
         assert!(index.contains("[Custom](topics/custom/INDEX.md)"));
         assert!(root.join(skillset::CUSTOM_TOPIC).is_file());
-        assert!(stage(host.path(), host.path(), Some(&set))
+        assert!(stage(host.path(), Some(&set), None)
             .unwrap()
             .written
             .is_empty());
 
         let smaller = repository_set(&[("style", "")]);
-        let second = stage(host.path(), host.path(), Some(&smaller)).unwrap();
+        let second = stage(host.path(), Some(&smaller), None).unwrap();
         assert!(!root.join("repository/style/references/a.md").exists());
         assert!(!root.join("repository/tone/SKILL.md").exists());
         assert!(second
             .written
             .contains(&format!("{DIRECTORY}/repository/tone/SKILL.md")));
 
-        let none = stage(host.path(), host.path(), None).unwrap();
+        let none = stage(host.path(), None, None).unwrap();
         assert!(!root.join("repository/style/SKILL.md").exists());
         assert!(!root.join(skillset::CUSTOM_TOPIC).exists());
         assert_eq!(
@@ -349,7 +551,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("keep.txt"), "mine").unwrap();
-        stage(host.path(), host.path(), None).unwrap();
+        stage(host.path(), None, None).unwrap();
         std::os::unix::fs::symlink(
             outside.path(),
             host.path().join(DIRECTORY).join(skillset::REPOSITORY_ROOT),
@@ -358,7 +560,7 @@ mod tests {
         assert!(files_under(host.path(), &format!("{DIRECTORY}/repository"))
             .unwrap()
             .is_empty());
-        stage(host.path(), host.path(), None).unwrap();
+        stage(host.path(), None, None).unwrap();
         assert!(outside.path().join("keep.txt").is_file());
     }
 
@@ -371,7 +573,7 @@ mod tests {
         );
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), state.path().join(".branchyard")).unwrap();
-        assert!(stage(state.path(), Path::new("/home/guest"), None)
+        assert!(stage(state.path(), None, None)
             .unwrap_err()
             .contains("symbolic link"));
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
@@ -391,10 +593,90 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), linked.path().join("state")).unwrap();
         let home = local_home(&linked.path().join("state"), "branch").unwrap();
         assert!(home.starts_with(outside.path().canonicalize().unwrap()));
-        assert!(stage(&home, &home, None).is_ok());
+        assert!(stage(&home, None, None).is_ok());
         assert_eq!(
             local_home(&linked.path().join("state"), "branch").unwrap(),
             home
         );
+    }
+    /// With the shared store, each chosen built-in skill's files are links
+    /// to the store's entry, in a directory of the turn's own so that its
+    /// references to sibling skills resolve; a skill the store lacks, or a
+    /// turn without the store, gets files, and nothing is written through
+    /// a link left by an earlier turn.
+    #[test]
+    fn skills_the_store_has_are_linked_and_the_rest_are_copied() {
+        use crate::toolstore::{publish, ToolStore};
+        let shared = branchyard_testkit::Scratch::new("capabilities-store");
+        publish(shared.path(), None).unwrap();
+        let store = ToolStore::new(shared.path());
+        let host = branchyard_testkit::Scratch::new("capabilities-host");
+        let root = host.path().join(DIRECTORY);
+        let linked = |name: &str| {
+            let skill = root.join(name);
+            let meta = std::fs::symlink_metadata(&skill).unwrap();
+            assert!(meta.is_dir() && !meta.file_type().is_symlink(), "{name}");
+            std::fs::read_link(skill.join("SKILL.md")).ok()
+        };
+        let first = stage_from(host.path(), None, None, Some(&store)).unwrap();
+        assert_eq!(first.listed.len(), first.built_in.len());
+        for tool in &first.listed {
+            let link = linked(&tool.directory).unwrap();
+            assert!(link.starts_with(shared.path().join("skills")), "{link:?}");
+            assert!(link.is_file());
+        }
+        // A sibling reference resolves beside the skill, not in the store.
+        assert!(root
+            .join("source-capture/../artifact-tools/INDEX.md")
+            .is_file());
+        assert!(std::fs::read_to_string(root.join("find-tools/SKILL.md"))
+            .unwrap()
+            .contains("name: find-tools"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
+            skills::INDEX
+        );
+        assert!(stage_from(host.path(), None, None, Some(&store))
+            .unwrap()
+            .written
+            .is_empty());
+
+        // An entry the store lacks is copied beside the links.
+        let digest = crate::toolstore::skill_digest(skills::skill("pptx").unwrap());
+        std::fs::remove_dir_all(shared.join(format!("skills/pptx@{digest}"))).unwrap();
+        let partial = stage_from(host.path(), None, None, Some(&store)).unwrap();
+        assert_eq!(linked("pptx"), None);
+        assert!(root.join("pptx/SKILL.md").is_file());
+        assert!(partial
+            .written
+            .iter()
+            .any(|w| w.starts_with(".branchyard/capabilities/pptx")));
+        assert!(linked("docx").is_some());
+
+        // A narrower turn drops the links of the skills it does not give.
+        let chosen = ["docx".to_owned()];
+        stage_from(host.path(), None, Some(&chosen), Some(&store)).unwrap();
+        assert!(linked("docx").is_some());
+        assert!(!root.join("pptx/SKILL.md").exists());
+        assert!(!root.join("xlsx/SKILL.md").exists());
+        assert!(!root.join("xlsx/SKILL.md").is_symlink());
+
+        // A turn on a provider that does not see the store gets files, and
+        // the store is not written through the links it replaces.
+        let before = crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap();
+        let copied = stage_from(host.path(), None, None, None).unwrap();
+        assert!(!copied.written.is_empty());
+        for tool in &copied.listed {
+            assert_eq!(linked(&tool.directory), None, "{}", tool.id);
+            assert!(root.join(&tool.directory).join("SKILL.md").is_file());
+        }
+        assert_eq!(
+            crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap(),
+            before
+        );
+        assert!(stage_from(host.path(), None, None, None)
+            .unwrap()
+            .written
+            .is_empty());
     }
 }

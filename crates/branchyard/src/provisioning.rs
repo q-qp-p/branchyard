@@ -208,6 +208,9 @@ pub(crate) fn check(spec: Option<&Provisioning>, private_home: bool) -> Result<(
     if let Some(approvals) = &spec.approvals {
         approvals.check().or_else(refuse)?;
     }
+    if let Some(skills) = &spec.skills {
+        branchyard_provision::built_in::check(skills).or_else(refuse)?;
+    }
     if !spec.connectors.is_empty() && !private_home {
         return refuse(
             "connectors are placed only into a home private to the branch; run it --isolated \
@@ -296,27 +299,28 @@ pub(crate) const WORKSPACE_NOTE: &str = "Branchyard runs you on your own git bra
 
 /// The task's own instructions, then what its parent assigned it (the paths
 /// it owns, the shared brief), then the repository knowledge given this
-/// turn, then the connectors' line, then [`WORKSPACE_NOTE`]. The note
-/// alone is given only where a harness takes instructions apart from the
-/// prompt (`note_alone`): an ACP harness gets them prepended to its first
-/// prompt, which a note on its own should not change.
+/// turn, then [`WORKSPACE_NOTE`]. The connectors and skills are one line,
+/// the tool tree's, given with the prompt (`Provisioned::capabilities`); a
+/// turn with connectors still gets the note, as when it had its own line.
+/// The note alone is given only where a harness takes instructions apart
+/// from the prompt (`note_alone`): an ACP harness gets them prepended to
+/// its first prompt, which a note on its own should not change.
 fn own_instructions(
     own: Option<&str>,
     assignment: Option<&str>,
     knowledge: Option<&str>,
-    connectors: Option<&crate::connectors::Prepared>,
+    has_connectors: bool,
     note_alone: bool,
 ) -> Option<String> {
     let mut parts: Vec<&str> = [
         own.filter(|t| !t.trim().is_empty()),
         assignment.filter(|t| !t.trim().is_empty()),
         knowledge.filter(|t| !t.trim().is_empty()),
-        connectors.map(|c| c.instruction.as_str()),
     ]
     .into_iter()
     .flatten()
     .collect();
-    if note_alone || !parts.is_empty() {
+    if note_alone || has_connectors || !parts.is_empty() {
         parts.push(WORKSPACE_NOTE);
     }
     (!parts.is_empty()).then(|| parts.join("\n\n"))
@@ -340,6 +344,16 @@ pub(crate) struct Standing<'a> {
     pub knowledge: Option<&'a crate::knowledge::Briefing>,
     pub assignment: Option<&'a str>,
     pub skills: &'a crate::skills::ForTurn,
+    /// The digest of the turn manifest written into the home
+    /// ([`crate::manifest`]); `None` for a branch without a private home.
+    pub manifest: Option<&'a str>,
+    /// Whether this turn wrote the manifest file (it is rewritten only when
+    /// it changed), so `provisioned.files` names it only then.
+    pub manifest_written: bool,
+    /// The shared tool store, when the turn's harness sees it at its own
+    /// path ([`crate::toolstore::for_turn`]): built-in skills in it are
+    /// linked, not copied.
+    pub store: Option<&'a crate::toolstore::ToolStore>,
 }
 
 /// Plan and apply the turn's provisioning. A failure is the turn's failure
@@ -361,9 +375,17 @@ pub(crate) fn prepare(
         knowledge,
         assignment,
         skills,
+        manifest,
+        manifest_written,
+        store,
     } = standing;
     let spec = record.provision.clone().unwrap_or_default();
     let (workspace, home) = placement::guest_paths(record);
+    let manifest_guest = format!(
+        "{}/{}",
+        home.trim_end_matches('/'),
+        crate::manifest::MANIFEST_FILE
+    );
     let secrets = resolve(&spec.secrets)?;
     let capability_home = match &record.home {
         Some(home) => home.clone(),
@@ -378,7 +400,26 @@ pub(crate) fn prepare(
         crate::skills::ForTurn::Staged(set) => Some(set),
         crate::skills::ForTurn::Nothing | crate::skills::ForTurn::Withheld(_) => None,
     };
-    let capabilities = crate::capabilities::stage(&capability_home, capability_guest, repository)?;
+    let capabilities = crate::capabilities::stage_from(
+        &capability_home,
+        repository,
+        spec.skills.as_deref(),
+        store,
+    )?;
+    let granted_connectors = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
+    let tools = crate::tooltree::mount(
+        &capability_home,
+        capability_guest,
+        &capabilities.listed,
+        &granted_connectors,
+        record.grant.as_ref().map(|g| &g.envelope),
+        // A provider that controls the guest filesystem also exposes the tree at /tools.
+        crate::providers::of(record.provider.as_ref()).tools_root(),
+    )?;
+    let native_links = match record.home.as_deref() {
+        Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.listed)?,
+        None => Vec::new(),
+    };
     let skill_set = crate::skills::skill_set(capabilities.built_in, skills);
     // Branchyard's own server first, then the task's, with the variables
     // they take from secrets. A sandboxed harness gets Branchyard's over
@@ -429,7 +470,7 @@ pub(crate) fn prepare(
                 spec.instructions.as_deref(),
                 assignment,
                 knowledge.and_then(|k| k.text.as_deref()),
-                connectors,
+                connectors.is_some(),
                 // A delegating branch has it in its skill.
                 projection.is_none()
                     && matches!(
@@ -469,10 +510,23 @@ pub(crate) fn prepare(
     };
     let mut files: Vec<String> = applied.written.into_iter().chain(applied.removed).collect();
     files.extend(capabilities.written);
+    files.extend(tools.written);
+    files.extend(native_links);
     let mut plan_env = plan.env;
     if let Some(connectors) = connectors {
         files.extend(connectors.files.iter().cloned());
         plan_env.extend(connectors.env.iter().cloned());
+    }
+    // The turn manifest was written into the home before this; the harness
+    // is told where, by the path it sees.
+    if manifest.is_some() {
+        if manifest_written {
+            files.push(crate::manifest::MANIFEST_FILE.to_owned());
+        }
+        plan_env.push(branchyard_provision::EnvVar::plain(
+            crate::manifest::ENV_MANIFEST,
+            manifest_guest,
+        ));
     }
     let env: Vec<String> = plan_env.iter().map(|e| e.name.clone()).collect();
     let granted = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
@@ -491,6 +545,7 @@ pub(crate) fn prepare(
         // managed settings into a sandbox; nothing writes them now.
         managed: None,
         permissions,
+        manifest: manifest.map(str::to_owned),
     };
     let scrub = spec
         .secrets
@@ -502,7 +557,7 @@ pub(crate) fn prepare(
         })
         .collect();
     Ok(Provisioned {
-        capabilities: capabilities.instruction,
+        capabilities: tools.line,
         env: plan_env,
         session: plan.session,
         mcp_config_file,

@@ -715,6 +715,7 @@ mod tests {
             issuer: "branchyard:test".into(),
             key_file: dir.join("key"),
             jwks_file: None,
+            signer: None,
             subject: PERSON.into(),
             tenant: "local".into(),
         }
@@ -850,6 +851,7 @@ mod tests {
             window: (now, now + 600),
             grants: Vec::new(),
             scopes: &scopes,
+            manifest: None,
         })
         .unwrap();
         let token = keys.sign(&claims).unwrap();

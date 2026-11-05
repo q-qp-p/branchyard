@@ -74,11 +74,20 @@ impl ProviderKind for SandboxOptions {
     fn guest_paths(&self, _: &Record) -> (String, String) {
         (WORKSPACE.into(), HOME.into())
     }
+    fn tools_root(&self) -> Option<&'static str> {
+        Some(crate::tooltree::GUEST_ROOT)
+    }
 
     /// A guest gets the runtime's default network, which routes to this
     /// host (at the address `[connectors] effects_sandbox_host` names).
     fn reaches_host(&self) -> bool {
         true
+    }
+
+    /// The engine starts the proxy in the guest, as a process of the
+    /// guest's `by`, before the harness.
+    fn credential_site(&self) -> crate::connectors::CredentialSite {
+        crate::connectors::CredentialSite::Guest
     }
 
     fn prepare(
@@ -104,6 +113,12 @@ impl ProviderKind for SandboxOptions {
         microsandbox(yard, self)
     }
 
+    /// The guest mounts the store read-only at the host's path
+    /// ([`spec`]).
+    fn sees_store(&self, yard: &Yard) -> bool {
+        store_to_mount(yard).is_some()
+    }
+
     fn destroy(&self, yard: &Yard, sandbox: &str) -> Result<String, String> {
         let said = destroy_orphan(microsandbox(yard, self), sandbox);
         match said.starts_with("could not") {
@@ -127,11 +142,29 @@ pub(crate) fn spec(
         .ok_or("a sandboxed branch has no private home")?;
     let mut env = sandbox_env(HOME, &options.pass_env)?;
     let git_dir = git::common_dir(&yard.root).map_err(|e| e.to_string())?;
+    // The tool tree is also at /tools, read-only: the guest filesystem is ours,
+    // so the harness finds it without a path under its home. The directory
+    // is made now so the mount has a source before provisioning fills it.
+    let tree = home.join(crate::tooltree::DIRECTORY);
+    best_effort(
+        "create the tool tree's mount directory",
+        std::fs::create_dir_all(&tree),
+    );
+    env.insert(
+        crate::tooltree::ENV_TOOLS.into(),
+        crate::tooltree::GUEST_ROOT.into(),
+    );
     let mut mounts = vec![
         Mount::writable(&record.info.worktree, WORKSPACE),
         Mount::writable(home, HOME),
+        Mount::read_only(&tree, crate::tooltree::GUEST_ROOT),
         Mount::read_only(&git_dir, &git_dir),
     ];
+    // The shared tool store, read-only at the same path, so the links a
+    // turn makes into it (`crate::toolstore`) resolve in the guest.
+    if let Some(store) = store_to_mount(yard) {
+        mounts.push(Mount::read_only(&store.root, &store.root));
+    }
     // Every scratch area this branch may reach is mounted read-write at a
     // fixed guest path, named for the harness the same way the local
     // provider's environment variable does; see `docs/storage.md`. One
@@ -165,6 +198,11 @@ pub(crate) fn spec(
         persist: keep,
     };
     Ok((spec, env))
+}
+
+/// The yard's tool store when its root exists here to be mounted.
+fn store_to_mount(yard: &Yard) -> Option<Arc<crate::toolstore::ToolStore>> {
+    yard.tool_store().filter(|store| store.root.is_dir())
 }
 
 /// The provider a Microsandbox branch runs through: the yard's own

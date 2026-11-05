@@ -1110,15 +1110,10 @@ impl PostgresTriggers {
     ) -> io::Result<T> {
         let mut guard = self.conn.lock_recovering("conn");
         let conn: &mut Option<postgres::Client> = &mut guard;
-        let url = &self.url;
+        crate::pg_connect::reconnect(conn, &self.url, "trigger store")?;
         std::thread::scope(|scope| {
             scope
-                .spawn(move || {
-                    if conn.as_ref().is_none_or(postgres::Client::is_closed) {
-                        *conn = Some(branchyard::postgres_config(url)?.connect(postgres::NoTls)?);
-                    }
-                    f(conn.as_mut().expect("connected above"))
-                })
+                .spawn(move || f(conn.as_mut().expect("connected above")))
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
         })

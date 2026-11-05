@@ -3,8 +3,12 @@
 //! independent of where they differ; the verifier holds only hashes, never
 //! a plaintext token, and nothing here logs or echoes one.
 
-use crate::config::{sha256_hex, AuthenticationOrigin, Credential, GoogleIdTokenConfig, Principal};
+use crate::config::{
+    sha256_hex, AuthenticationOrigin, Credential, GoogleIdTokenConfig, Principal, SandboxIdentity,
+};
+use crate::federated::{AccessToken, Federation, IapConfig, OidcIssuerConfig, Refusal};
 use google_cloud_auth::credentials::idtoken::verifier::{Builder, Verifier};
+use std::sync::Arc;
 use std::time::Duration;
 
 mod policy;
@@ -13,6 +17,19 @@ pub(crate) use policy::{origin_allowed, paired_allowed, recheck_caller};
 pub struct Credentials {
     credentials: Vec<Credential>,
     google: Option<GoogleVerifier>,
+    sandbox: Option<SandboxVerifier>,
+    federation: Option<Federation>,
+}
+
+/// What a sandbox's Google ID token came to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SandboxAuth {
+    /// A valid token of a listed service account.
+    Allowed(SandboxIdentity),
+    /// A valid token of an account the server does not list.
+    Unlisted(String),
+    /// Not a valid Google ID token for this server.
+    Invalid,
 }
 
 impl Credentials {
@@ -20,6 +37,51 @@ impl Credentials {
         Credentials {
             credentials,
             google: None,
+            sandbox: None,
+            federation: None,
+        }
+    }
+
+    /// Add IAP and federated OIDC sign-in. `access` supplies the server's
+    /// token for Cloud Identity group lookups; it is only called when a
+    /// provider sets `groups_from`.
+    pub fn with_federation(
+        mut self,
+        iap: Option<IapConfig>,
+        issuers: Vec<OidcIssuerConfig>,
+        access: Arc<dyn AccessToken>,
+    ) -> Self {
+        if iap.is_some() || !issuers.is_empty() {
+            self.federation = Some(Federation::new(iap, issuers, access));
+        }
+        self
+    }
+
+    /// Authenticate by the IAP assertion header. `None` unless IAP is
+    /// configured and the request carries the header; then any failure is
+    /// final and the request must not fall back to a bearer.
+    pub async fn verify_iap(&self, assertion: Option<&str>) -> Option<Result<Principal, Refusal>> {
+        self.federation.as_ref()?.verify_iap(assertion).await
+    }
+
+    /// Authenticate a bearer ID token from a configured federated issuer.
+    /// `None` when the token names no configured issuer.
+    pub async fn verify_oidc(&self, header: Option<&str>) -> Option<Result<Principal, Refusal>> {
+        self.federation.as_ref()?.verify_oidc(header).await
+    }
+
+    /// Whether a federated principal is still allowed with its groups read
+    /// again when they are old ([`Federation::still_allows_fresh`]). True
+    /// for a principal no federated provider vouches for: the ordinary
+    /// recheck decides those. Blocking.
+    pub(crate) fn recheck_groups(
+        &self,
+        principal: &Principal,
+        now_ms: u64,
+    ) -> Result<bool, Refusal> {
+        match &self.federation {
+            Some(federation) => federation.still_allows_fresh(principal, now_ms),
+            None => Ok(true),
         }
     }
 
@@ -41,6 +103,89 @@ impl Credentials {
             GoogleVerifier { config, verifier }
         });
         self
+    }
+
+    /// Admit the Google service accounts a sandbox's credential proxy fetches
+    /// gateway tokens as: an ID token for `audience`, signed by Google (or
+    /// by the keys at `jwks_url`), of an account in `identities`.
+    pub fn with_sandbox_identities(
+        mut self,
+        audience: String,
+        identities: Vec<SandboxIdentity>,
+        jwks_url: Option<&str>,
+    ) -> Self {
+        if identities.is_empty() {
+            return self;
+        }
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            branchyard_support::best_effort(
+                "initialize Google ID-token TLS",
+                rustls::crypto::ring::default_provider()
+                    .install_default()
+                    .map_err(|_| "TLS provider was initialized concurrently"),
+            );
+        }
+        let mut builder = Builder::new([&audience]).with_clock_skew(Duration::from_secs(10));
+        if let Some(url) = jwks_url {
+            builder = builder.with_jwks_url(url);
+        }
+        self.sandbox = Some(SandboxVerifier {
+            identities,
+            verifier: builder.build(),
+        });
+        self
+    }
+
+    /// Whether sandbox identities are configured, in which case a token
+    /// fetch must present one besides the turn's secret.
+    pub fn requires_sandbox_identity(&self) -> bool {
+        self.sandbox.is_some()
+    }
+
+    /// Verify the Google ID token in a bearer `header` as a sandbox's, and
+    /// find its service account in the configured list. `None` when no
+    /// sandbox identities are configured.
+    pub async fn verify_sandbox(&self, header: Option<&str>) -> Option<SandboxAuth> {
+        let sandbox = self.sandbox.as_ref()?;
+        let Some(token) = header
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && t.len() <= 16 * 1024)
+        else {
+            return Some(SandboxAuth::Invalid);
+        };
+        let Ok(Ok(claims)) =
+            tokio::time::timeout(Duration::from_secs(10), sandbox.verifier.verify(token)).await
+        else {
+            return Some(SandboxAuth::Invalid);
+        };
+        let now = branchyard_support::time::now_ms() / 1000;
+        let current = || {
+            let issued = claims.get("iat")?.as_u64()?;
+            let expires = claims.get("exp")?.as_u64()?;
+            (issued <= now.saturating_add(10) && expires > now && expires >= issued).then_some(())
+        };
+        let from_google = matches!(
+            claims.get("iss").and_then(|v| v.as_str()),
+            Some("https://accounts.google.com" | "accounts.google.com")
+        );
+        let email = claims
+            .get("email")
+            .and_then(|v| v.as_str())
+            .filter(|_| claims.get("email_verified").and_then(|v| v.as_bool()) == Some(true));
+        let (true, true, Some(email)) = (current().is_some(), from_google, email) else {
+            return Some(SandboxAuth::Invalid);
+        };
+        Some(
+            match sandbox
+                .identities
+                .iter()
+                .find(|i| i.service_account.eq_ignore_ascii_case(email))
+            {
+                Some(identity) => SandboxAuth::Allowed(identity.clone()),
+                None => SandboxAuth::Unlisted(email.to_owned()),
+            },
+        )
     }
 
     #[cfg(test)]
@@ -125,6 +270,11 @@ impl Credentials {
 
 struct GoogleVerifier {
     config: GoogleIdTokenConfig,
+    verifier: Verifier,
+}
+
+struct SandboxVerifier {
+    identities: Vec<SandboxIdentity>,
     verifier: Verifier,
 }
 

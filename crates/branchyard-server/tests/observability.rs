@@ -115,6 +115,7 @@ fn metrics_config(f: &Fixture, listen: bool) -> branchyard_server::Config {
             tenant: "default".into(),
             scopes: ["read", "run"].into_iter().map(String::from).collect(),
             repos: None,
+            groups: Default::default(),
         },
     );
     config.metrics = Some(MetricsConfig {

@@ -354,11 +354,33 @@ fn tls_acceptor(files: &TlsFiles) -> Result<TlsAcceptor, String> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// How this process connects to the database, before any store opens:
+/// the CA file, and with `database_auth: gcp_iam` a Google access token
+/// from the metadata server as the password at every new connection.
+#[cfg(feature = "postgres")]
+fn install_database_policy(config: &Config) {
+    if config.database.is_none() {
+        return;
+    }
+    let password: Option<branchyard::PasswordSource> = match config.database_auth {
+        crate::config::DatabaseAuth::Password => None,
+        crate::config::DatabaseAuth::GcpIam => {
+            let source = crate::gcp::MetadataToken::new(&[]);
+            Some(Arc::new(move || source.token()))
+        }
+    };
+    branchyard::set_connection_policy(branchyard::ConnectionPolicy {
+        ca_file: config.database_ca_file.clone(),
+        password,
+    });
+}
+
 /// Open every repository (recovering branches whose engine stopped), the
 /// registry and the feeds, bind, and start
 /// serving. Needs a multi-threaded Tokio runtime.
 pub async fn start(config: Config) -> Result<Running, String> {
     config.validate()?;
+    crate::connectors::check_signer(&config)?;
     // Installed once per process, idempotently: our own TLS acceptor
     // already picks `ring` explicitly, but the webhook client's `reqwest`
     // (built with `rustls-no-provider`, so as never to also pull in
@@ -372,6 +394,8 @@ pub async fn start(config: Config) -> Result<Running, String> {
     );
     std::fs::create_dir_all(&config.data_dir)
         .map_err(|e| format!("data directory {}: {e}", config.data_dir.display()))?;
+    #[cfg(feature = "postgres")]
+    install_database_policy(&config);
     // With PostgreSQL, operations, their queue and branch locks are in the
     // database, which several servers may share; otherwise they are in the
     // data directory's SQLite, which one server owns.
@@ -489,10 +513,23 @@ pub async fn start(config: Config) -> Result<Running, String> {
     if let Some(sync) = &sync {
         sync.start()?;
     }
-    let credentials =
-        Credentials::new(config.all_credentials()).with_google(config.google_identity.clone());
+    let credentials = Credentials::new(config.all_credentials())
+        .with_google(config.google_identity.clone())
+        .with_federation(
+            config.iap.clone(),
+            config.oidc_issuers.clone(),
+            std::sync::Arc::new(crate::federated::MetadataAccessToken::new(None)),
+        );
     #[cfg(test)]
     let credentials = credentials.with_google_jwks(config.google_jwks_url.as_deref());
+    let credentials = match &config.connectors {
+        Some(c) => credentials.with_sandbox_identities(
+            crate::connectors::sandbox_audience(&config, c),
+            c.sandbox_identities.clone(),
+            c.sandbox_jwks_url.as_deref(),
+        ),
+        None => credentials,
+    };
     let app = Arc::new(App {
         preview: Arc::new(
             crate::preview::PreviewService::new(config.data_dir.join("previews"))
@@ -866,6 +903,12 @@ pub(crate) fn configure_yard(config: &Config, name: &str, yard: &Yard) -> Result
     }
     if let Some(gateway) = crate::connectors::gateway_for(config, name) {
         yard.use_connectors(gateway);
+    }
+    if let Some(tools) = &config.tools {
+        yard.use_tool_store(branchyard::toolstore::ToolStore {
+            root: tools.store.clone(),
+            bucket: tools.store_bucket.clone(),
+        });
     }
     // The model gateway its branches' turns may use, and each
     // principal's ceiling (docs/model-gateway.md).

@@ -27,11 +27,12 @@ if sys.argv[1:5] == ["--host", "unix:///var/run/docker.sock", "container", "crea
         with sqlite3.connect(root.parent / "repo/.branchyard/registry.db") as registry:
             rows = registry.execute("SELECT body FROM services WHERE kind='sandbox' AND state='live'")
             assert any(json.loads(row[0])["reclaim"]["sandbox"] == name for row in rows)
-    for name in ("workspace", "home"):
+    for name in ("workspace", "home", "tools"):
         shutil.rmtree(root / name, ignore_errors=True)
 (root / "workspace").mkdir(exist_ok=True)
+(root / "tools").mkdir(exist_ok=True)
 code = source.read_text().replace(
     "os.execvp(command[0], command)",
-    "command = [arg.replace('/branchyard/home', str(home)).replace('/workspace', str(root / 'workspace')) for arg in command]\n    os.execvp(command[0], command)",
+    "import re\n    command = [re.sub(r'(?<![\\w.\\-/])/tools(?![\\w.\\-])', str(root / 'tools'), arg).replace('/branchyard/home', str(home)).replace('/workspace', str(root / 'workspace')) for arg in command]\n    os.execvp(command[0], command)",
 )
 exec(compile(code, str(source), "exec"))

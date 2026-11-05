@@ -202,6 +202,7 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             skills,
             managed,
             permissions,
+            manifest,
         } => json!({
             "activity": "provisioned",
             "auth": auth,
@@ -214,6 +215,7 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             "skills": skills,
             "managed": managed,
             "permissions": permissions,
+            "manifest": manifest,
         }),
         Activity::Steered { id, by, text } => json!({
             "activity": "steered",

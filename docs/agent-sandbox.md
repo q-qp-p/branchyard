@@ -54,8 +54,10 @@ digits>`, in `SandboxSpec.image`. The image must provide `sh`, `cat`, `tail`,
 selected harness. Programs
 and their libraries must be readable/executable by UID/GID 1000 without a
 root entrypoint. The root image is read-only. EmptyDir mounts provide private
-writable `/workspace`, `/branchyard/home` and `/tmp`; `HOME` is
-`/branchyard/home`. No host mount, additional container, PodSpec override,
+writable `/workspace`, `/branchyard/home` and `/tmp`, and a fourth, `/tools`, that
+the engine fills with the turn's tool tree after the home (`BRANCHYARD_TOOLS=/tools`;
+see [tools model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted));
+`HOME` is `/branchyard/home`. No host mount, additional container, PodSpec override,
 credential volume or privileged initialization is accepted. Unset resources
 select one CPU and 1024 MiB; requests equal limits. Explicit limits must be
 positive. Mounted workspace/home data is copied out before allocation deletion.

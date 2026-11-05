@@ -19,8 +19,8 @@ mod native;
 mod substrate;
 
 pub use native::{
-    validate_sandbox_image, AgentSandbox, AgentSandboxRuntime, Container, ContainerRuntime,
-    SandboxNetwork,
+    validate_sandbox_image, AgentSandbox, AgentSandboxGateway, AgentSandboxRuntime, Container,
+    ContainerRuntime, SandboxNetwork,
 };
 pub use substrate::{Substrate, SubstrateEgress};
 
@@ -115,6 +115,11 @@ pub struct ProjectConfig {
     /// branch gets when `--connector` names none.
     #[serde(default, skip_serializing_if = "Connectors::is_empty")]
     pub connectors: Connectors,
+    /// The shared, content-addressed tool store (docs/tools-model.md): the
+    /// read-only directory a turn links its skills and connector packages
+    /// from, and the bucket a Kubernetes sandbox mounts it from.
+    #[serde(default, skip_serializing_if = "Tools::is_empty")]
+    pub tools: Tools,
     /// The hosts a new branch's harness may reach (docs/egress.md), when
     /// `--network` gives none: an allowlist enforced through Branchyard's
     /// egress proxy. Unset: open.
@@ -854,6 +859,53 @@ impl Connectors {
     }
 }
 
+/// `[tools]`: the shared tool store.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tools {
+    /// The store's root, such as `/opt/branchyard/store`: it holds
+    /// `skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`,
+    /// filled by `by tools pull` or `by tools publish`. A turn links the
+    /// entries it needs instead of copying them into its home. Sandboxes
+    /// see it at the same path. Without it, every turn copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+    /// The Cloud Storage bucket that mirrors the store, `BUCKET` or
+    /// `BUCKET/PREFIX`. A GKE Agent Sandbox mounts it read-only at `store`
+    /// with the Cloud Storage FUSE CSI driver (docs/agent-sandbox-gke.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_bucket: Option<String>,
+}
+
+impl Tools {
+    /// Whether nothing is set.
+    pub fn is_empty(&self) -> bool {
+        self == &Tools::default()
+    }
+
+    /// The problems in these settings, as `(key, message)`.
+    pub fn problems(&self) -> Option<(&'static str, String)> {
+        if let Some(store) = &self.store {
+            if !store.starts_with('/') && !store.starts_with("~/") {
+                return Some((
+                    "tools.store",
+                    format!("must be an absolute path, not {store:?}"),
+                ));
+            }
+        }
+        if let Some(bucket) = &self.store_bucket {
+            let name = bucket.split('/').next().unwrap_or_default();
+            if name.is_empty() || bucket.starts_with("gs://") || bucket.ends_with('/') {
+                return Some((
+                    "tools.store_bucket",
+                    format!("must be BUCKET or BUCKET/PREFIX, not {bucket:?}"),
+                ));
+            }
+        }
+        None
+    }
+}
+
 /// `[network]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -872,6 +924,13 @@ pub struct NetworkConfig {
     /// run there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enforce: Option<NetworkEnforceMode>,
+    /// Package mirror hosts (`"pypi.org"`, `"*.pythonhosted.org"`,
+    /// `"registry.npmjs.org:443"`) that every restricted policy allows, beside
+    /// the connector gateway and the model gateway a turn is given, so a
+    /// harness can install packages with nothing else open. Hosts only: no
+    /// method, path or address. Unused while `allow` is unset (open).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -884,6 +943,26 @@ pub enum NetworkEnforceMode {
 impl NetworkConfig {
     pub fn is_empty(&self) -> bool {
         self == &NetworkConfig::default()
+    }
+
+    /// The mirror hosts as rules, each checked: a host (and port) only.
+    pub fn mirror_rules(
+        &self,
+    ) -> Result<Vec<branchyard_provision::network::HostRule>, ConfigError> {
+        use branchyard_provision::network::HostRule;
+        self.mirrors
+            .iter()
+            .map(|mirror| {
+                let rule = HostRule::parse(mirror)
+                    .map_err(|e| ConfigError(format!("network.mirrors: {e}")))?;
+                if rule.inspects() || rule.names_address() {
+                    return Err(ConfigError(format!(
+                        "network.mirrors: {mirror:?} must be a host name (and port) only, with no method, path or address"
+                    )));
+                }
+                Ok(rule)
+            })
+            .collect()
     }
 
     /// The policy it describes, checked with the flag's parser; `None`
@@ -2237,6 +2316,9 @@ impl ProjectConfig {
             split_words(anvil).map_err(|e| ConfigError(format!("connectors.anvil: {e}")))?;
         }
         self.connectors.grant_entries()?;
+        if let Some((key, why)) = self.tools.problems() {
+            return fail(key, why);
+        }
         if let Some(listen) = &self.connectors.effects_listen {
             if listen.parse::<std::net::IpAddr>().is_err() {
                 return fail(
@@ -2247,6 +2329,7 @@ impl ProjectConfig {
         }
         self.approvals.policy()?;
         self.network.policy()?;
+        self.network.mirror_rules()?;
         self.models.check()?;
         if !self.connectors.grants.is_empty() && self.connectors.gateway.is_none() {
             return fail(
@@ -2461,6 +2544,7 @@ impl ProjectConfig {
         resolve(&mut self.defaults.instructions);
         resolve(&mut self.connectors.bundles);
         resolve(&mut self.connectors.vault_key);
+        resolve(&mut self.tools.store);
         resolve(&mut self.sync.passphrase_file);
         for source in self.secrets.values_mut() {
             if let Some(path) = source.strip_prefix('@') {
@@ -2894,6 +2978,17 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
             }
         }
     }
+    if !config.tools.is_empty() {
+        out.push_str("\n# The shared tool store; see docs/tools-model.md.\n[tools]\n");
+        for (key, value) in [
+            ("store", &config.tools.store),
+            ("store_bucket", &config.tools.store_bucket),
+        ] {
+            if let Some(value) = value {
+                out.push_str(&format!("{key} = {}\n", toml_string(value)));
+            }
+        }
+    }
     if !config.approvals.is_empty() {
         out.push_str(
             "\n# Your approvals: allow, ask, block or stage, by tool or connector:operation and\n\
@@ -2918,6 +3013,10 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
                 NetworkEnforceMode::Required => "required",
             };
             out.push_str(&format!("enforce = {}\n", toml_string(name)));
+        }
+        if !n.mirrors.is_empty() {
+            let hosts: Vec<String> = n.mirrors.iter().map(|m| toml_string(m)).collect();
+            out.push_str(&format!("mirrors = [{}]\n", hosts.join(", ")));
         }
     }
     if !config.models.is_empty() {
@@ -3259,6 +3358,22 @@ classes = { compensable = "allow" }
             "github.com, *.npmjs.org:443 (required)"
         );
         assert_eq!(parse(&render(&config, "test")).unwrap(), config);
+        let mirrored = parse(
+            "version = 1\n\n[network]\nallow = []\nmirrors = [\"pypi.org\", \"*.pythonhosted.org\", \"registry.npmjs.org:443\"]\n",
+        )
+        .unwrap();
+        let rules: Vec<String> = mirrored
+            .network
+            .mirror_rules()
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rules,
+            ["pypi.org", "*.pythonhosted.org", "registry.npmjs.org:443"]
+        );
+        assert_eq!(parse(&render(&mirrored, "test")).unwrap(), mirrored);
         assert_eq!(
             parse("[network]\nallow = []\n")
                 .unwrap()
@@ -3277,6 +3392,16 @@ classes = { compensable = "allow" }
             ("[network]\nenforce = \"required\"\n", "nothing to enforce"),
             ("[network]\nenforce = \"always\"\n", "best_effort"),
             ("[network]\nports = [1]\n", "ports"),
+            (
+                "[network]\nmirrors = [\"GET pypi.org\"]\n",
+                "network.mirrors",
+            ),
+            (
+                "[network]\nmirrors = [\"pypi.org/simple\"]\n",
+                "network.mirrors",
+            ),
+            ("[network]\nmirrors = [\"10.0.0.1\"]\n", "network.mirrors"),
+            ("[network]\nmirrors = [\"*\"]\n", "network.mirrors"),
             ("[defaults]\npermissions = \"yolo\"\n", "edit-worktree"),
         ] {
             let error = parse(text).unwrap_err().to_string();
@@ -3401,6 +3526,43 @@ classes = { compensable = "allow" }
             ),
         ] {
             let error = parse(text).unwrap_err().to_string();
+            assert!(error.contains(needle), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_tool_store_is_checked_resolved_and_written_back() {
+        let config = parse(
+            "version = 1\n[tools]\nstore = \"/opt/branchyard/store\"\n\
+             store_bucket = \"acme-tools/store\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.tools.store.as_deref(), Some("/opt/branchyard/store"));
+        assert_eq!(
+            config.tools.store_bucket.as_deref(),
+            Some("acme-tools/store")
+        );
+        assert_eq!(config.flatten()["tools.store_bucket"], "acme-tools/store");
+        assert_eq!(parse(&render(&config, "test")).unwrap(), config);
+        assert!(Tools::default().is_empty());
+        assert!(!render(&ProjectConfig::default(), "test").contains("[tools]"));
+
+        let mut relative = parse("version = 1\n[tools]\nstore = \"~/store\"\n").unwrap();
+        relative.resolve_paths(Path::new("/repo"), Some(Path::new("/home/me")));
+        assert_eq!(relative.tools.store.as_deref(), Some("/home/me/store"));
+
+        for (text, needle) in [
+            ("[tools]\nstore = \"store\"\n", "tools.store"),
+            (
+                "[tools]\nstore_bucket = \"gs://acme\"\n",
+                "tools.store_bucket",
+            ),
+            ("[tools]\nstore_bucket = \"acme/\"\n", "tools.store_bucket"),
+            ("[tools]\nstor = \"/s\"\n", "stor"),
+        ] {
+            let error = parse(&format!("version = 1\n{text}"))
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(needle), "{text}: {error}");
         }
     }

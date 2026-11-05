@@ -29,8 +29,10 @@ omitted from errors. Guest stderr after acknowledgement remains byte-exact.
 Containers run as UID/GID `1000:1000`, with a read-only root filesystem, all Linux
 capabilities dropped, no-new-privileges, private PID/IPC/cgroup namespaces and a
 process-count limit. There are no host binds or Docker socket mounts. `/tmp` is
-a bounded, non-executable tmpfs. Two anonymous local volumes supply `/workspace`
-and `/branchyard/home`; Docker initializes their ownership and content from the
+a bounded, non-executable tmpfs. Three anonymous local volumes supply `/workspace`,
+`/branchyard/home` and `/tools`, the last filled by the engine with the turn's tool
+tree after the home ([tools model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted));
+Docker initializes their ownership and content from the
 image. Both directories must already be writable by UID 1000 in the image. The
 provider does not repair ownership using a privileged exec.
 

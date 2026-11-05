@@ -40,6 +40,9 @@ struct FakePackager {
     composed: AtomicUsize,
     /// Fail `compose`, as an Anvil without `connectors compose` does.
     cannot_compose: bool,
+    /// Bumped to have the gateway serve another bundle under each id: the
+    /// hash gains a suffix, as a republished bundle's would change.
+    generation: AtomicUsize,
 }
 
 impl Packager for FakePackager {
@@ -50,7 +53,10 @@ impl Packager for FakePackager {
             .map(|id| Bundle {
                 id: (*id).to_owned(),
                 path: PathBuf::from(format!("/bundles/{id}")),
-                hash: format!("hash-{}", id.replace('/', "-")),
+                hash: match self.generation.load(Ordering::SeqCst) {
+                    0 => format!("hash-{}", id.replace('/', "-")),
+                    n => format!("hash-{}-{n}", id.replace('/', "-")),
+                },
             })
             .collect())
     }
@@ -239,6 +245,13 @@ fn a_granted_turn_gets_packages_an_index_and_a_signed_token() {
     let home = PathBuf::from(stored_record(&f.root, "granted")["home"].as_str().unwrap());
     assert!(!home.join(".branchyard/gateway-token").exists());
     assert!(home.join(".branchyard/connectors/INDEX.md").is_file());
+    // The tool tree lists the connector and carries the rules the
+    // connectors' line used to; its `connectors` link reaches the package.
+    let tools = home.join(".branchyard/tools");
+    let index = fs::read_to_string(tools.join("INDEX.md")).unwrap();
+    assert!(index.contains("- github"), "{index}");
+    assert!(index.contains("X-Branchyard-Decision-Key"), "{index}");
+    assert!(tools.join("connectors/github/SKILL.md").is_file());
     // The yard's key is private.
     let key = f.root.join(".branchyard/gateway/key");
     assert_eq!(
@@ -271,6 +284,66 @@ fn a_granted_turn_gets_packages_an_index_and_a_signed_token() {
         packager.packaged.load(Ordering::SeqCst),
         1,
         "cached by bundle hash"
+    );
+}
+
+/// A store with the bundle's package is linked into the home, not
+/// packaged or copied; a store without it, or a provider that cannot see
+/// the store, leaves the copy path as before.
+#[test]
+fn a_connector_the_store_has_is_linked_and_the_copy_path_stays_the_fallback() {
+    use branchyard::toolstore::ToolStore;
+    let f = Fixture::new();
+    let packager = gateway(&f, &["github", "linear"]);
+    let store = f.dir.join("tool-store");
+    let entry = |id: &str, from: &str| {
+        let dir = store.join(format!("connectors/{id}@hash-{id}"));
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("# {id} from {from}\n")).unwrap();
+        dir
+    };
+    let github = entry("github", "the store");
+    f.yard.use_tool_store(ToolStore::new(&store));
+    let run = |name: &str| {
+        f.task(
+            "SH cat \"$HOME/.branchyard/connectors/github/SKILL.md\"\n\
+             SH cat \"$HOME/.branchyard/connectors/linear/SKILL.md\"",
+        )
+        .options(TaskOptions {
+            name: Some(name.into()),
+            ..granted(&f, &["github:read", "linear:read"])
+        })
+        .run()
+        .unwrap()
+    };
+    let branch = run("linked");
+    let said = text(&branch.events().unwrap());
+    assert!(said.contains("# github from the store"), "{said}");
+    // Linear is not in the store: packaged and copied.
+    assert!(said.contains("# linear\n"), "{said}");
+    assert_eq!(packager.packaged.load(Ordering::SeqCst), 1);
+    let home = PathBuf::from(stored_record(&f.root, "linked")["home"].as_str().unwrap());
+    let connectors = home.join(".branchyard/connectors");
+    assert_eq!(fs::read_link(connectors.join("github")).unwrap(), github);
+    assert!(fs::symlink_metadata(connectors.join("linear"))
+        .unwrap()
+        .is_dir());
+    // The tool tree finds the linked package through its own link.
+    let tools = home.join(".branchyard/tools");
+    assert!(fs::read_to_string(tools.join("INDEX.md"))
+        .unwrap()
+        .contains("- github"));
+    assert!(tools.join("connectors/github/SKILL.md").is_file());
+    // A bundle that changed is another entry: the old one is not used.
+    fs::rename(&github, store.join("connectors/github@hash-old")).unwrap();
+    let again = run("changed");
+    let said = text(&again.events().unwrap());
+    assert!(said.contains("# github\n"), "{said}");
+    let home = PathBuf::from(stored_record(&f.root, "changed")["home"].as_str().unwrap());
+    assert!(
+        fs::symlink_metadata(home.join(".branchyard/connectors/github"))
+            .unwrap()
+            .is_dir()
     );
 }
 
@@ -324,10 +397,9 @@ fn the_token_never_reaches_the_log_or_the_record_and_the_index_is_in_the_instruc
         .unwrap();
     let events = branch.events().unwrap();
     let said = text(&events);
-    assert!(
-        said.contains(".branchyard/connectors/INDEX.md") && said.contains("Connectors (github)"),
-        "{said}"
-    );
+    // The connectors' line is gone from the instructions; the tools line
+    // rides with the prompt (the engine tests read it there).
+    assert!(!said.contains("Connectors (github)"), "{said}");
     let log = serde_json::to_string(&events).unwrap();
     let record = stored_record(&f.root, "quiet").to_string();
     // A token is three base64url parts; neither the log nor the record
@@ -416,10 +488,11 @@ fn antigravity_gets_its_grant_the_delegation_tools_and_its_policy_as_rules() {
         assert!(env.contains(var), "{var} missing from {env}");
     }
 
-    // The skill and the connectors' line, in the CLI's instructions.
+    // The skill, in the CLI's instructions; the connectors have no line of
+    // their own now, the tool tree lists them.
     let instructions = read(".gemini/GEMINI.md");
     assert!(
-        instructions.contains("Connectors (github)"),
+        !instructions.contains("Connectors (github)"),
         "{instructions}"
     );
     assert!(instructions.contains("by spawn"), "{instructions}");
@@ -541,9 +614,17 @@ fn two_granted_connectors_also_get_the_composite() {
         .run()
         .unwrap();
     let said = text(&instructed.events().unwrap());
+    assert!(!said.contains("Connectors (github"), "{said}");
+    let home = PathBuf::from(
+        stored_record(&f.root, "instructed")["home"]
+            .as_str()
+            .unwrap(),
+    );
+    let index = fs::read_to_string(home.join(".branchyard/tools/INDEX.md")).unwrap();
+    assert!(index.contains("- _compose:"), "{index}");
     assert!(
-        said.contains(".branchyard/connectors/_compose/SKILL.md composes them"),
-        "{said}"
+        index.contains("- github") && index.contains("- slack"),
+        "{index}"
     );
     assert_eq!(packager.composed.load(Ordering::SeqCst), 2);
 
@@ -1006,4 +1087,803 @@ fn a_seats_grant_is_narrowed_to_its_parents_too() {
     assert_eq!(child_grant(&f, "w"), ["github:read"]);
     assert!(child_grant(&f, "n").is_empty());
     assert_eq!(child_grant(&f, "w2"), ["github:read:issues.*"]);
+}
+
+/// The session's manifest as a turn left it, from the branch's record.
+fn manifest_of(branch: &branchyard::Branch) -> branchyard::manifest::TurnManifest {
+    branch.manifest().unwrap().expect("a manifest is stored")
+}
+
+#[test]
+fn a_session_runs_every_turn_on_one_manifest_until_its_tools_change() {
+    use branchyard::manifest::{ManifestSkills, MANIFEST_FILE};
+    let f = Fixture::new();
+    gateway(&f, &["github", "linear"]);
+    let branch = f
+        .task(
+            "SH echo manifest=$BRANCHYARD_MANIFEST\n\
+             SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")\n\
+             SH cat \"$BRANCHYARD_MANIFEST\"",
+        )
+        .options(TaskOptions {
+            policy_version: Some(7),
+            budget: Budget {
+                max_duration: Some(Duration::from_secs(120)),
+                ..Budget::default()
+            },
+            ..granted(&f, &["github:read:issues.*"])
+        })
+        .name("manifested")
+        .run()
+        .unwrap();
+    let events = branch.events().unwrap();
+    let said = text(&events);
+    let first = manifest_of(&branch);
+    let digest = first.digest();
+
+    // Resolved from the admission: who, what, the bundles, the version.
+    assert_eq!(first.version, 1);
+    assert_eq!(first.actor.tenant, "local");
+    assert_eq!(
+        first.grants,
+        [GrantEntry::parse("github:read:issues.*").unwrap()]
+    );
+    assert_eq!(first.skills, ManifestSkills::All);
+    assert_eq!(first.connectors.len(), 1);
+    assert_eq!(first.connectors[0].id, "github");
+    assert_eq!(first.connectors[0].digest, "hash-github");
+    assert_eq!(first.policy_version, 7);
+
+    // The harness is told where the file is, the file holds the manifest,
+    // and the token names it.
+    let path = after(&said, "manifest=");
+    assert!(path.ends_with(MANIFEST_FILE), "{path}");
+    assert!(said.contains("\"policy_version\": 7"), "{said}");
+    let claims = connectors::keys::verify(&jwks(&f), after(&said, "token=")).unwrap();
+    assert_eq!(claims["by_manifest"], digest.as_str());
+    let (recorded, env) = events
+        .iter()
+        .find_map(|e| match &e.activity {
+            Activity::Provisioned { manifest, env, .. } => Some((manifest.clone(), env.clone())),
+            _ => None,
+        })
+        .expect("a provisioned event");
+    assert_eq!(recorded.as_deref(), Some(digest.as_str()));
+    assert!(env.contains(&"BRANCHYARD_MANIFEST".to_owned()));
+
+    // A later turn with the same tools uses the same manifest.
+    let again = branch
+        .send(
+            "SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..TaskOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(manifest_of(&again).digest(), digest);
+    let said = text(&again.events().unwrap());
+    let last = said
+        .rsplit("token=")
+        .next()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let claims = connectors::keys::verify(&jwks(&f), last.trim()).unwrap();
+    assert_eq!(claims["by_manifest"], digest.as_str());
+
+    // A newer policy version from the server updates it and nothing else.
+    let checked = branch
+        .send(
+            "SH true",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                policy_version: Some(8),
+                ..TaskOptions::default()
+            },
+        )
+        .unwrap();
+    let second = manifest_of(&checked);
+    assert_eq!(second.policy_version, 8);
+    assert_eq!(second.created_at_ms, first.created_at_ms);
+    assert!(second.same_tools(&first));
+    assert_ne!(second.digest(), digest);
+
+    // Changing the tools resolves it again.
+    let changed = branch
+        .send(
+            "SH true",
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..granted(&f, &["linear:read"])
+            },
+        )
+        .unwrap();
+    let third = manifest_of(&changed);
+    assert_eq!(third.grants, [GrantEntry::parse("linear:read").unwrap()]);
+    assert_eq!(third.connectors[0].id, "linear");
+    assert_eq!(third.policy_version, 8, "no server word keeps the version");
+    assert!(!third.same_tools(&second));
+    assert!(third.created_at_ms >= second.created_at_ms);
+}
+
+/// The turn ended without failing: ready, or with nothing changed.
+fn assert_ran(branch: &branchyard::Branch) {
+    assert!(
+        matches!(
+            branch.info().status,
+            BranchStatus::Ready | BranchStatus::NoChanges
+        ),
+        "{:?}",
+        branch.info().status
+    );
+}
+
+fn failure(branch: &branchyard::Branch) -> String {
+    match &branch.info().status {
+        BranchStatus::Failed { reason } => reason.clone(),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+/// The warnings a branch's log holds.
+fn warnings(branch: &branchyard::Branch) -> Vec<String> {
+    branch
+        .events()
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.activity {
+            Activity::Warning(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn resend(branch: &branchyard::Branch, prompt: &str, options: TaskOptions) -> branchyard::Branch {
+    branch
+        .send(
+            prompt,
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..options
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_host_that_serves_another_bundle_than_the_admitted_one_fails_the_turn_before_the_harness() {
+    let f = Fixture::new();
+    let packager = gateway(&f, &["github"]);
+    let branch = f
+        .task("SH echo marker=one")
+        .options(granted(&f, &["github:read"]))
+        .name("admitted")
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    assert_eq!(manifest_of(&branch).connectors[0].digest, "hash-github");
+
+    // The gateway's packager now serves a republished bundle.
+    packager.generation.store(1, Ordering::SeqCst);
+    let refused = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("connector github"), "{reason}");
+    assert!(reason.contains("hash-github-1"), "found: {reason}");
+    assert!(
+        reason.contains("admitted with hash-github "),
+        "expected: {reason}"
+    );
+    // Before the harness: nothing of the turn ran, and it is an event.
+    assert!(!text(&refused.events().unwrap()).contains("marker=two"));
+    assert!(warnings(&refused)
+        .iter()
+        .any(|w| w.starts_with("bundle_mismatch")));
+    // The manifest on record is still the one admitted.
+    assert_eq!(manifest_of(&refused).connectors[0].digest, "hash-github");
+
+    // Admitting what the host serves is a change of tools: it resolves the
+    // manifest again, and the turn runs.
+    let admitted = resend(
+        &refused,
+        "SH echo marker=three",
+        granted(&f, &["github:write"]),
+    );
+    assert_ran(&admitted);
+    assert!(text(&admitted.events().unwrap()).contains("marker=three"));
+    assert_eq!(manifest_of(&admitted).connectors[0].digest, "hash-github-1");
+}
+
+#[test]
+fn a_store_package_whose_files_changed_is_not_linked_into_the_turn() {
+    use branchyard::toolstore::{self, Entry, Index, Kind, ToolStore};
+    let f = Fixture::new();
+    gateway(&f, &["github"]);
+    let store = f.dir.join("tool-store");
+    let entry = store.join("connectors/github@hash-github");
+    fs::create_dir_all(entry.join("bin")).unwrap();
+    fs::write(entry.join("SKILL.md"), "# github from the store\n").unwrap();
+    let index = Index {
+        version: 1,
+        entries: vec![Entry {
+            id: "github".into(),
+            kind: Kind::Connector,
+            digest: connectors::packager::hash_dir(&entry).unwrap(),
+            size: toolstore::size_of(&entry).unwrap(),
+            path: "connectors/github@hash-github".into(),
+        }],
+    };
+    toolstore::write_index(&store, &index).unwrap();
+    f.yard.use_tool_store(ToolStore::new(&store));
+
+    let branch = f
+        .task("SH cat \"$HOME/.branchyard/connectors/github/SKILL.md\"")
+        .options(granted(&f, &["github:read"]))
+        .name("linked-store")
+        .run()
+        .unwrap();
+    assert!(text(&branch.events().unwrap()).contains("# github from the store"));
+    let admitted = manifest_of(&branch).connectors[0].content.clone();
+    assert_eq!(admitted.as_deref(), Some(index.entries[0].digest.as_str()));
+
+    // Another host's store holds other files under the same name.
+    fs::write(entry.join("SKILL.md"), "# a different github\n").unwrap();
+    let refused = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("connector github"), "{reason}");
+    assert!(
+        reason.contains(&index.entries[0].digest),
+        "expected: {reason}"
+    );
+    assert!(!text(&refused.events().unwrap()).contains("marker=two"));
+}
+
+#[test]
+fn a_skill_this_host_holds_in_other_files_fails_the_turn_naming_both_digests() {
+    use branchyard::toolstore::{self, ToolStore};
+    let f = Fixture::new();
+    let store = f.dir.join("tool-store");
+    toolstore::publish(&store, None).unwrap();
+    f.yard.use_tool_store(ToolStore::new(&store));
+    let branch = f
+        .task("SH echo marker=one")
+        .options(granted(&f, &[]))
+        .name("skilled")
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    let admitted = manifest_of(&branch);
+    assert!(!admitted.skill_digests.is_empty());
+    // The same turn again: nothing differs, and the store is not rehashed
+    // to find out (the unit tests count that); it runs.
+    let again = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    assert_ran(&again);
+
+    // A store entry edited in place.
+    let docx = admitted
+        .skill_digests
+        .iter()
+        .find(|s| s.id == "docx")
+        .unwrap()
+        .clone();
+    let dir = store.join(format!("skills/docx@{}", docx.digest));
+    fs::write(dir.join("SKILL.md"), "# not the admitted docx\n").unwrap();
+    let refused = resend(&again, "SH echo marker=three", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("skill docx"), "{reason}");
+    assert!(reason.contains(&docx.digest), "{reason}");
+    assert!(!text(&refused.events().unwrap()).contains("marker=three"));
+
+    // A build that embeds another docx than the manifest admitted: the
+    // record says a digest this build does not hold.
+    common::edit_record(&f.root, "skilled", |record| {
+        let digests = record["manifest"]["skill_digests"].as_array_mut().unwrap();
+        for skill in digests.iter_mut().filter(|s| s["id"] == "docx") {
+            skill["digest"] = "feedface".into();
+        }
+    });
+    let other = resend(&refused, "SH echo marker=four", TaskOptions::default());
+    let reason = failure(&other);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(
+        reason.contains("skill docx") && reason.contains("feedface"),
+        "{reason}"
+    );
+    assert!(reason.contains(&docx.digest), "found: {reason}");
+}
+
+/// Looks at one file at the moment a sandbox is paused.
+struct PauseWatch {
+    inner: Arc<branchyard_sandbox::fake::FakeProvider>,
+    watched: std::sync::Mutex<Option<PathBuf>>,
+    /// Whether the watched file existed at each pause.
+    seen: std::sync::Mutex<Vec<bool>>,
+}
+
+impl branchyard_sandbox::SandboxProvider for PauseWatch {
+    fn capabilities(&self) -> branchyard_sandbox::Capabilities {
+        self.inner.capabilities()
+    }
+    fn ensure(
+        &self,
+        spec: &branchyard_sandbox::SandboxSpec,
+    ) -> Result<branchyard_sandbox::SandboxInfo, branchyard_sandbox::ProviderError> {
+        self.inner.ensure(spec)
+    }
+    fn inspect(
+        &self,
+        name: &str,
+    ) -> Result<Option<branchyard_sandbox::SandboxInfo>, branchyard_sandbox::ProviderError> {
+        self.inner.inspect(name)
+    }
+    fn exec(
+        &self,
+        name: &str,
+        spec: &branchyard_sandbox::ExecSpec,
+    ) -> Result<Box<dyn branchyard_sandbox::Process>, branchyard_sandbox::ProviderError> {
+        self.inner.exec(name, spec)
+    }
+    fn stop(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        self.inner.stop(name)
+    }
+    fn destroy(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        self.inner.destroy(name)
+    }
+    fn pause(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        let watched = self.watched.lock().unwrap().clone();
+        if let Some(path) = watched {
+            self.seen.lock().unwrap().push(path.exists());
+        }
+        self.inner.pause(name)
+    }
+    fn resume(
+        &self,
+        name: &str,
+    ) -> Result<branchyard_sandbox::SandboxInfo, branchyard_sandbox::ProviderError> {
+        self.inner.resume(name)
+    }
+}
+
+#[test]
+fn a_resumed_sandbox_gets_a_fresh_manifest_a_new_token_and_loses_what_was_deselected() {
+    use branchyard::{Provider, SandboxEvent, SandboxKeep, SandboxOptions, SandboxOrigin};
+    let f = Fixture::new();
+    let fake = Arc::new(branchyard_sandbox::fake::FakeProvider::live(
+        Box::new(branchyard_runtime::LocalProvider::new()),
+        f.dir.join("fake-provider"),
+    ));
+    let watch = Arc::new(PauseWatch {
+        inner: fake.clone(),
+        watched: std::sync::Mutex::new(None),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    f.yard.use_sandbox_provider(watch.clone());
+    let packager = Arc::new(FakePackager {
+        bundles: vec!["github", "linear"],
+        ..FakePackager::default()
+    });
+    let mut gateway = Gateway::local(&f.yard, URL, packager).unwrap();
+    gateway.sandbox_url = Some("http://192.168.127.1:8931/mcp".into());
+    f.yard.use_connectors(gateway);
+    let kept = TaskOptions {
+        provider: Some(Provider::Microsandbox(SandboxOptions {
+            image: "registry.example/harness:1".into(),
+            keep: SandboxKeep::Pause,
+            ..SandboxOptions::default()
+        })),
+        isolated: false,
+        ..granted(&f, &["github:read", "linear:read"])
+    };
+    let token = "SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")";
+    let origins = |branch: &branchyard::Branch| -> Vec<SandboxOrigin> {
+        branch
+            .events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.activity {
+                Activity::Sandbox(event) => match *event {
+                    SandboxEvent::Started { origin, .. } => Some(origin),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    let last_token = |branch: &branchyard::Branch| -> String {
+        let said = text(&branch.events().unwrap());
+        said.rsplit("token=")
+            .next()
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+
+    // First turn: a fresh sandbox, kept paused when the turn ends.
+    let branch = f
+        .task(token)
+        .options(TaskOptions {
+            name: Some("sleeper".into()),
+            ..kept
+        })
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    let home = PathBuf::from(stored_record(&f.root, "sleeper")["home"].as_str().unwrap());
+    let token_file = home.join(".branchyard/gateway-token");
+    let first = manifest_of(&branch);
+    let first_token = last_token(&branch);
+    assert_eq!(first.connectors.len(), 2);
+    assert!(fake
+        .sandboxes()
+        .iter()
+        .any(|(_, state)| *state == branchyard_sandbox::SandboxState::Paused));
+    assert!(!token_file.exists(), "no token beside a paused sandbox");
+
+    // The next turns watch the file at the moment of the pause. The same
+    // tools wake the kept sandbox: the manifest is resolved again anyway.
+    *watch.watched.lock().unwrap() = Some(token_file.clone());
+    let woken = resend(&branch, token, TaskOptions::default());
+    assert_ran(&woken);
+    assert_eq!(origins(&woken).last(), Some(&SandboxOrigin::Resumed));
+    let second = manifest_of(&woken);
+    assert!(second.created_at_ms > first.created_at_ms, "resolved again");
+    assert!(second.same_tools(&first));
+    let second_token = last_token(&woken);
+    assert_ne!(second_token, first_token, "a new token on resume");
+    let claims = connectors::keys::verify(&jwks(&f), &second_token).unwrap();
+    assert_eq!(claims["by_manifest"], second.digest().as_str());
+    // The server's word at the claim reaches the resumed manifest.
+    let versioned = resend(
+        &woken,
+        "SH true",
+        TaskOptions {
+            policy_version: Some(9),
+            ..TaskOptions::default()
+        },
+    );
+    assert_eq!(manifest_of(&versioned).policy_version, 9);
+
+    // While it slept the person deselected linear: it is gone from the
+    // resumed turn's home, and so is its package.
+    assert!(home.join(".branchyard/connectors/linear").is_dir());
+    let narrowed = resend(&versioned, token, granted(&f, &["github:read"]));
+    assert_ran(&narrowed);
+    assert_eq!(origins(&narrowed).last(), Some(&SandboxOrigin::Resumed));
+    let third = manifest_of(&narrowed);
+    assert_eq!(third.connectors.len(), 1);
+    assert_eq!(third.connectors[0].id, "github");
+    assert!(!home.join(".branchyard/connectors/linear").exists());
+    assert!(home
+        .join(".branchyard/connectors/github/SKILL.md")
+        .is_file());
+    assert_ne!(last_token(&narrowed), second_token);
+
+    // The renewer stopped and the token went before every pause.
+    let seen = watch.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3, "three pauses were watched: {seen:?}");
+    assert!(seen.iter().all(|present| !present), "{seen:?}");
+}
+
+/// The digest of the turn manifest of `name`, once its turn is running.
+fn running_manifest(root: &Path, name: &str) -> Option<String> {
+    let db = rusqlite::Connection::open(root.join(".branchyard/state.db")).ok()?;
+    let text: String = db
+        .query_row("SELECT record FROM branches WHERE name = ?1", [name], |r| {
+            r.get(0)
+        })
+        .ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    (record["info"]["status"]["state"] == "running").then_some(())?;
+    let manifest: branchyard::manifest::TurnManifest =
+        serde_json::from_value(record.get("manifest")?.clone()).ok()?;
+    Some(manifest.digest())
+}
+
+fn mkfifo(path: &Path) {
+    assert!(std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap()
+        .success());
+}
+
+#[test]
+fn a_turn_whose_credentials_the_host_holds_is_issued_no_token_whatever_a_sandbox_proves() {
+    use branchyard::connectors::{Identity, Proof, RefusalKind, TokenRequest};
+    let f = Fixture::new();
+    gateway(&f, &["github"]);
+    let gate = f.dir.join("gate");
+    mkfifo(&gate);
+    let probe = {
+        let (yard, root, gate) = (f.yard.clone(), f.root.clone(), gate.clone());
+        std::thread::spawn(move || {
+            let digest = branchyard_testkit::wait::until("the running turn's manifest", || {
+                running_manifest(&root, "gated")
+            });
+            let account = "sandbox@proj.iam.gserviceaccount.com";
+            let mut kinds = Vec::new();
+            for secret in ["", "x", "a-secret-nobody-recorded"] {
+                // An allow-listed identity, the turn's real coordinates and
+                // a secret: this turn recorded none, so nothing is issued.
+                let proof = Proof {
+                    secret,
+                    identity: Some(Identity {
+                        service_account: account,
+                        tenant: None,
+                    }),
+                };
+                kinds.push(
+                    yard.issue_turn_token(
+                        "gated",
+                        &TokenRequest {
+                            manifest: digest.clone(),
+                            branch: "gated".into(),
+                            turn: 1,
+                        },
+                        proof,
+                    )
+                    .expect_err("a refusal")
+                    .kind,
+                );
+            }
+            // The turn may finish now.
+            fs::write(&gate, "go").unwrap();
+            kinds
+        })
+    };
+    let branch = f
+        .task(&format!("SH cat {}", gate.display()))
+        .options(granted(&f, &["github:read:issues.*"]))
+        .name("gated")
+        .run()
+        .unwrap();
+    let kinds = probe.join().unwrap();
+    assert_eq!(branch.info().status, BranchStatus::NoChanges);
+    assert_eq!(kinds, [RefusalKind::BadSecret; 3]);
+    // And a branch that does not exist is not a turn.
+    let none = f
+        .yard
+        .issue_turn_token(
+            "nobody",
+            &TokenRequest {
+                manifest: "blake3:00".into(),
+                branch: "nobody".into(),
+                turn: 1,
+            },
+            Proof {
+                secret: "x",
+                identity: None,
+            },
+        )
+        .expect_err("no such branch");
+    assert_eq!(none.kind, RefusalKind::UnknownTurn);
+}
+
+#[test]
+fn a_microsandbox_guest_runs_its_own_credential_proxy_and_the_harness_holds_no_token() {
+    use branchyard::connectors::{CredentialProxy, Identity, Proof, RefusalKind, TokenRequest};
+    use branchyard::{Provider, SandboxOptions};
+    let f = Fixture::new();
+    let fake = Arc::new(branchyard_sandbox::fake::FakeProvider::plain(
+        Box::new(branchyard_runtime::LocalProvider::new()),
+        f.dir.join("fake-provider"),
+    ));
+    f.yard.use_sandbox_provider(fake);
+    // `by` in the guest: notes how it was started, says it is ready, and
+    // stays until the engine kills it.
+    let out = f.dir.join("guest-by");
+    fs::create_dir_all(&out).unwrap();
+    let by = out.join("by");
+    fs::write(
+        &by,
+        r#"#!/bin/sh
+out="$(dirname "$0")"
+echo "$$" > "$out/pid"
+echo "$@" > "$out/argv"
+echo "$BRANCHYARD_CREDENTIAL_SECRET" > "$out/secret"
+echo "listening 127.0.0.1:18900"
+exec cat
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&by, fs::Permissions::from_mode(0o755)).unwrap();
+    let packager = Arc::new(FakePackager {
+        bundles: vec!["github"],
+        ..FakePackager::default()
+    });
+    let mut gateway = Gateway::local(&f.yard, URL, packager).unwrap();
+    gateway.sandbox_url = Some("http://192.168.127.1:8931/mcp".into());
+    gateway.credential_proxy = CredentialProxy {
+        server: Some("https://by.example".into()),
+        audience: "https://by.example".into(),
+        guest_command: by.display().to_string(),
+        ..CredentialProxy::default()
+    };
+    f.yard.use_connectors(gateway);
+    let gate = f.dir.join("gate");
+    mkfifo(&gate);
+    let probe = {
+        let (yard, root, gate, out) = (f.yard.clone(), f.root.clone(), gate.clone(), out.clone());
+        std::thread::spawn(move || {
+            let digest = branchyard_testkit::wait::until("the running turn's manifest", || {
+                running_manifest(&root, "boxed")
+            });
+            let secret = branchyard_testkit::wait::until("the guest's proxy to be started", || {
+                fs::read_to_string(out.join("secret"))
+                    .ok()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            });
+            // The branch's record keeps the secret's hash, never the secret.
+            let record = common::stored_record(&root, "boxed");
+            assert!(
+                !record.to_string().contains(&secret),
+                "the record holds the secret"
+            );
+            assert_eq!(record["credential"]["turn"], 1, "{record}");
+            assert_eq!(record["credential"]["manifest"], digest.as_str());
+            let ask = |manifest: &str, turn: u32, proof: Proof<'_>| {
+                yard.issue_turn_token(
+                    "boxed",
+                    &TokenRequest {
+                        manifest: manifest.into(),
+                        branch: "other/claims-are-not-read-from-here".into(),
+                        turn,
+                    },
+                    proof,
+                )
+            };
+            let account = "sandbox@proj.iam.gserviceaccount.com";
+            let identity = |tenant| {
+                Some(Identity {
+                    service_account: account,
+                    tenant,
+                })
+            };
+            let kind = |result: Result<_, branchyard::connectors::Refusal>| {
+                result.expect_err("a refusal").kind
+            };
+            let with_secret = Proof {
+                secret: &secret,
+                identity: None,
+            };
+            // The secret alone is enough where no identities are listed.
+            let wrong = Proof {
+                secret: "not-the-secret",
+                identity: None,
+            };
+            assert_eq!(kind(ask(&digest, 1, wrong)), RefusalKind::BadSecret);
+            // Another turn's secret does not open this turn, with the
+            // allow-listed identity beside it or not: the identity, the
+            // manifest digest and the turn number are not secret.
+            let other = "another-turns-secret-0123456789abcdef0123456789abcdef";
+            for identity in [None, identity(None)] {
+                let proof = Proof {
+                    secret: other,
+                    identity,
+                };
+                assert_eq!(kind(ask(&digest, 1, proof)), RefusalKind::BadSecret);
+            }
+            // The right secret still fits only this manifest and this turn.
+            assert_eq!(
+                kind(ask("blake3:00", 1, with_secret)),
+                RefusalKind::BadSecret
+            );
+            assert_eq!(kind(ask(&digest, 2, with_secret)), RefusalKind::BadSecret);
+            // Secret and identity: the tenant of the account is checked.
+            let other_tenant = Proof {
+                secret: &secret,
+                identity: identity(Some("globex")),
+            };
+            assert_eq!(
+                kind(ask(&digest, 1, other_tenant)),
+                RefusalKind::TenantMismatch
+            );
+            let both = Proof {
+                secret: &secret,
+                identity: identity(None),
+            };
+            let issued = ask(&digest, 1, both).expect("the guest's own secret and identity");
+            let alone =
+                ask(&digest, 1, with_secret).expect("the secret where no identity is listed");
+            assert_eq!(alone.expires_in, 300);
+            fs::write(&gate, "go").unwrap();
+            (secret, issued)
+        })
+    };
+    let branch = f
+        .task(&format!(
+            "SH echo url=$ANVIL_GATEWAY_URL file=${{ANVIL_GATEWAY_TOKEN_FILE:-none}}\n\
+             SH ls -A \"$HOME/.branchyard\" | tr '\\n' ' ' | sed 's/^/home=/'; echo\n\
+             SH env | grep -ci credential_secret | sed 's/^/secrets=/'\n\
+             SH cat {}",
+            gate.display()
+        ))
+        .options(TaskOptions {
+            provider: Some(Provider::Microsandbox(SandboxOptions {
+                image: "registry.example/harness:1".into(),
+                ..SandboxOptions::default()
+            })),
+            isolated: false,
+            ..granted(&f, &["github:read"])
+        })
+        .name("boxed")
+        .run()
+        .unwrap();
+    let (secret, issued) = probe.join().unwrap();
+    let events = branch.events().unwrap();
+    let said = text(&events);
+    // The harness is pointed at the proxy on its own loopback, with no token
+    // file named, none in its home, and no secret in its environment.
+    assert_eq!(after(&said, "url="), "http://127.0.0.1:18900/mcp file=none");
+    let home = after(&said, "home=");
+    assert!(home.contains("connectors"), "{home}");
+    assert!(!home.contains("gateway-token"), "{home}");
+    assert_eq!(after(&said, "secrets="), "0", "{said}");
+    // The guest's proxy was started with the turn's coordinates, the secret
+    // in its environment only, and the gateway as the guest reaches it.
+    let argv = fs::read_to_string(out.join("argv")).unwrap();
+    assert!(!argv.contains(&secret), "{argv}");
+    for part in [
+        "credential-proxy",
+        "--server https://by.example",
+        "--upstream http://192.168.127.1:8931/mcp",
+        "--branch boxed",
+        "--turn 1",
+        "--identity secret",
+    ] {
+        assert!(argv.contains(part), "{part} not in {argv}");
+    }
+    // The server-side token is for this turn, from its recorded grant.
+    let claims = connectors::keys::verify(&jwks(&f), &issued.token).expect("a valid token");
+    assert_eq!(claims["by_branch"], "boxed");
+    assert_eq!(claims["by_grants"][0]["connector"], "github", "{claims}");
+    assert_eq!(issued.expires_in, 300);
+    // The host's ledger proxy steps aside, and says so.
+    assert!(
+        events.iter().any(|e| matches!(&e.activity,
+            Activity::Warning(w) if w.contains("held by a proxy in its sandbox"))),
+        "{events:?}"
+    );
+    // The turn ended: the secret is gone from the record and is refused,
+    // and the guest's process is gone with the turn.
+    assert!(common::stored_record(&f.root, "boxed")["credential"].is_null());
+    let late = f
+        .yard
+        .issue_turn_token(
+            "boxed",
+            &TokenRequest {
+                manifest: branch.manifest().unwrap().unwrap().digest(),
+                branch: "boxed".into(),
+                turn: 1,
+            },
+            Proof {
+                secret: &secret,
+                identity: None,
+            },
+        )
+        .expect_err("a finished turn");
+    assert_eq!(late.kind, RefusalKind::BadSecret);
+    let pid: i32 = fs::read_to_string(out.join("pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    branchyard_testkit::wait::until("the guest's proxy to be stopped", || {
+        // A zombie is dead: only a running process counts.
+        fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|stat| {
+                stat.rsplit(')')
+                    .next()
+                    .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+            })
+            .unwrap_or(true)
+    });
 }

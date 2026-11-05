@@ -263,6 +263,20 @@ fn cached<T: Clone>(
     Ok((value, 0))
 }
 
+/// Drop the cached PATH check, so the next one sees a harness just
+/// installed.
+pub(super) fn forget_installed() {
+    INSTALLED.lock_recovering("execution preset checks").clear();
+}
+
+/// Whether this server finds `harness` (an ID or a profile ID) now.
+pub(super) fn is_installed(app: &App, harness: &str) -> Result<bool, ApiError> {
+    let (found, _) = installed(app)?;
+    Ok(found
+        .iter()
+        .any(|i| (i.id == harness || i.profile == harness) && i.available))
+}
+
 /// A harness profile on this server: the ID a request names it by (a
 /// default profile's harness name, else its profile ID), and whether its
 /// executable is found.
@@ -566,6 +580,49 @@ pub(super) fn discover(
     })
 }
 
+/// A harness a session could delegate to, as the tool catalogue lists it.
+pub(super) struct HelperHarness {
+    /// The ID `helpers.harnesses` takes.
+    pub id: String,
+    /// Some environment offered to the tenant can run it, as this server
+    /// sees it.
+    pub ready: bool,
+    /// Why not, when it cannot be run.
+    pub reason: Option<String>,
+    /// An operator can fix that by installing the harness.
+    pub install: bool,
+}
+
+/// The harnesses the environments offered to `tenant` provide, each once,
+/// ready when any environment can run it. Reads what discovery reads and
+/// contacts nothing.
+pub(super) fn helper_harnesses(app: &App, tenant: &str) -> Result<Vec<HelperHarness>, ApiError> {
+    let installed = installed(app)?;
+    let mut found: Vec<HelperHarness> = Vec::new();
+    for (preset, _) in offered(app, tenant)? {
+        let place = Place::of(&preset.provider);
+        for harness in &preset.harnesses {
+            let (state, _, why, action) = place
+                .executable(&installed, &harness.harness)
+                .reason
+                .facts();
+            let ready = state != ReadyState::NotReady;
+            let entry = HelperHarness {
+                id: harness.harness.clone(),
+                ready,
+                reason: (!ready).then(|| why.to_owned()),
+                install: matches!(action, Some(Action::InstallHarness)),
+            };
+            match found.iter_mut().find(|h| h.id == entry.id) {
+                Some(seen) if !seen.ready && entry.ready => *seen = entry,
+                Some(_) => {}
+                None => found.push(entry),
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// What a session start's `preset` resolved to. The session row keeps it
 /// (`_preset`), so every continuation and every error view uses what the
 /// session started with, whatever the configuration says later.
@@ -712,6 +769,14 @@ fn choose(
     if let Some(effort) = &request.effort {
         if !abilities(&harness.harness).effort {
             return Err(unavailable("effort", effort, Vec::new()));
+        }
+    }
+    // A helper runs where the session does, so it must be one the preset
+    // offers.
+    for helper in request.helpers.iter().flat_map(|h| &h.harnesses) {
+        if !preset.harnesses.iter().any(|h| &h.harness == helper) {
+            let allowed = preset.harnesses.iter().map(|h| h.harness.clone()).collect();
+            return Err(unavailable("helper harness", helper, allowed));
         }
     }
     Ok(model)
@@ -1162,6 +1227,25 @@ mod tests {
         assert_eq!(
             chosen(json!({"harness":"codex","effort":"high"})),
             Some("gpt-small".into())
+        );
+        // Helpers run where the session does: only harnesses the preset
+        // offers.
+        assert_eq!(
+            chosen(json!({"harness":"codex","helpers":{"harnesses":["claude-code"]}})),
+            Some("gpt-small".into())
+        );
+        assert_eq!(
+            refused(
+                &gke,
+                json!({"harness":"codex","helpers":{"harnesses":["gemini-cli"]}})
+            )
+            .2,
+            json!({"field":"helper harness","allowed":["antigravity","codex","claude-code"]})
+        );
+        assert_eq!(
+            chosen(json!({"harness":"codex","connectors":["atlassian"]})),
+            Some("gpt-small".into()),
+            "connectors sit beside a preset, unlike provision"
         );
         for conflict in [
             json!({"harness":"antigravity","provider":{"kind":"local"}}),

@@ -24,6 +24,7 @@ Task-focused guides for daily workflows.
 |---|---|
 | [Cooperative teams](cooperative-teams.md) | Coordinate native coding and knowledge workers, validate structured JSON deliverables, and pass frozen handoffs between branches. |
 | [Knowledge and design skills](knowledge-skills.md) | Use built-in skills to gather evidence, analyze tables, and generate and validate documents, spreadsheets, and slide decks. |
+| [Tools: one model](tools-model.md) | How connectors, skills and helpers are chosen, mounted as one searched tool tree, and kept out of the context a turn does not need. |
 | [Document previews](artifact-previews.md) | Preview CSV, Excel, Word, PowerPoint, PDF, and HTML artifacts safely while preserving originals and enforcing read permissions. |
 | [Workspace runtime controls](workspace-runtime.md) | Route interactive terminals and workspace lifecycle actions to the owning worker and sandbox allocation. |
 | [Watching branches](watch.md) | Monitor all branches live in the terminal with `by watch`, run keyboard actions on any branch, and configure desktop or terminal notifications. |
@@ -40,6 +41,7 @@ Task-focused guides for daily workflows.
 | [Wide map](map.md) | Run a prompt across a list of inputs in parallel (`by map`), validate each branch's output against a JSON schema, and collect results into a table. |
 | [Triggers and schedules](triggers.md) | Start tasks on cron schedules, intervals, or signed webhooks from GitHub, Slack, and Linear with deduplication and failure circuit-breakers. |
 | [Connectors](connectors.md) | Give branches scoped access to GitHub, Slack, and internal APIs through a local connector gateway without exposing raw credentials. |
+| [Tools: one model](tools-model.md) | Design, not built: how connectors, skills and helpers are made available, allowed, readied, defaulted and chosen per query; the mounted tool tree that saves context; identity to the gateway; and one turn's lifecycle on GCE, GKE and Substrate. |
 | [Usage and adopting sessions](usage.md) | Check 5-hour and weekly usage limits for Claude Code and Codex (`by usage`), avoid rate-limited logins, and adopt existing local sessions into branches (`by adopt`). |
 | [Web companion](companion.md) | Monitor, steer, approve, and merge branches or manage knowledge workspaces from a desktop or mobile browser with `by serve --app`. |
 | [Harness hooks](harness-hooks.md) | Notify interactive agent sessions about branch completions, questions, and failures through harness hooks and status lines. |
@@ -126,6 +128,7 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |
 | [Durability contract](durability-contract.md) | Which rules about turns, effects, ownership, signals and obligations does a durable agent runtime keep, which does Branchyard keep today, and which test shows each? |
 | [Durability primitives design](superpowers/specs/2026-11-02-durability-primitives-design.md) | Why ideas from Tape and Durable Actors are built inside Branchyard rather than taken as a dependency, what was built (lost-turn effects, liveness, obligations) and what comes next, in order |
+| [Anvil contract v2](anvil-contract-v2.md) | Proposed additions to Anvil for remote tools: a Firestore vault with KMS, disconnect, a search index, host install, a Cloud Run gateway, renewing tokens, `by_manifest` and connector icons. Nothing is built in Anvil yet. |
 
 ## Roadmap and background
 

@@ -220,6 +220,9 @@ impl ContainerProvider {
             "type=volume,destination=/workspace",
             "--mount",
             "type=volume,destination=/branchyard/home",
+            // The tool tree is copied in here after the home (docs/tools-model.md).
+            "--mount",
+            "type=volume,destination=/tools",
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777",
             "--env",
@@ -243,7 +246,7 @@ impl ContainerProvider {
             .as_deref()
             .ok_or_else(|| refused("allocation has no receipt"))?;
         self.docker.run(&["container", "exec", "--user", "1000:1000", "--env", "HOME=/branchyard/home", id,
-            "sh", "-c", "test -w /workspace && test -w /branchyard/home && test \"$(id -u)\" = 1000 && command -v tar >/dev/null && command -v setsid >/dev/null"])?;
+            "sh", "-c", "test -w /workspace && test -w /branchyard/home && test -w /tools && test \"$(id -u)\" = 1000 && command -v tar >/dev/null && command -v setsid >/dev/null"])?;
         Ok(())
     }
 

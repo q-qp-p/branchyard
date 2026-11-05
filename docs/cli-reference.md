@@ -1695,6 +1695,48 @@ Forget the trust decision for this repository's skills
 by skills untrust [OPTIONS]
 ```
 
+## `by tools`
+
+The shared tool store: publish it, pull it
+
+Skills and connector packages named by their content, which turns link instead of copy (see docs/tools-model.md).
+
+```text
+by tools [OPTIONS] <COMMAND>
+```
+
+### `by tools publish`
+
+Build the store's entries and index; push them with --oci, mirror them with --gcs
+
+Writes skills/NAME@DIGEST for each built-in skill and connectors/ID@HASH for each bundle under [connectors] bundles (packaged by Anvil), then store.json. Entries already there are kept.
+
+```text
+by tools publish [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--store <DIR>` | The store directory (default: [tools] store) |
+| `--oci <REGISTRY/REPO>` | Push each entry and the index to REGISTRY/REPOSITORY with oras |
+| `--gcs <GS_URL>` | Mirror the store to gs://BUCKET/PREFIX with gcloud storage rsync |
+
+### `by tools pull`
+
+Fill a local store from a bucket or a registry, then check every entry
+
+Reads store.json, fetches the entries the store lacks and refuses any whose files do not match the digest the index records.
+
+```text
+by tools pull [OPTIONS] <--from <GS_URL>|--oci <REGISTRY/REPO>>
+```
+
+| Option | What it does |
+|---|---|
+| `--from <GS_URL>` | Pull from gs://BUCKET/PREFIX with gcloud storage rsync |
+| `--oci <REGISTRY/REPO>` | Pull from REGISTRY/REPOSITORY with oras |
+| `--store <DIR>` | The store directory (default: [tools] store) |
+
 ## `by ls`
 
 List branches
@@ -2807,6 +2849,7 @@ by compute gce [OPTIONS] --project <PROJECT> --zone <ZONE> --name <NAME>
 | `--internal-ip` | Omit the external IP; needs an existing private route or --tunnel-through-iap, plus outbound access |
 | `--tunnel-through-iap` | SSH through Google Cloud IAP; allow TCP 22 from 35.235.240.0/20 only to this VM's dedicated tag |
 | `--forward-secret <ENV_NAME>` | Read this environment variable into the worker's private keystore over SSH stdin; never pass a key value (one of `GEMINI_API_KEY`, `GOOGLE_API_KEY`) |
+| `--tools-store <GS_URL>` | Pull the shared tool store from gs://BUCKET/PREFIX to /opt/branchyard/store at setup, and have the worker's server link turns to it; the VM's account needs roles/storage.objectViewer on the bucket |
 | `--state-dir <PATH>` | Private deployment records; default is ~/.local/state/branchyard/compute-gce/PROJECT/ZONE/NAME |
 | `--apply` | Create or resume the reviewed billable VM, firewall when using IAP, and owned SSH configuration |
 

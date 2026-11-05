@@ -47,6 +47,11 @@ pub enum Collection {
     Acceptance,
     /// Idempotency for synchronous metadata mutations.
     Idempotency,
+    /// Tool policies, keyed `tenant:<t>`, `group:<t>:<g>` or
+    /// `principal:<t>:<subject>`; the body is a `ToolPolicy`.
+    Policies,
+    /// The tools a workspace's sessions start with, keyed by workspace.
+    ToolDefaults,
 }
 
 impl Collection {

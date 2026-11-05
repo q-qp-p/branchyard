@@ -44,6 +44,23 @@ The lock records the SHA-512 `integrity` of every one of its 128 packages (each 
 
 The release workflow builds it on every `v*` tag and smoke-tests `by`, `claude`, `codex`, `claude-agent-acp`, `ssh`, `git` and a non-root user in it; it pushes to `ghcr.io/<owner>/<repo>-harnesses:<version>` only when the repository variable `PUBLISH_IMAGES` is `true`. **Not built here** (no container daemon, and no `hadolint`): checked statically by `tests/test_distribution.py` and by review.
 
+## Tool store in an image
+
+A server or worker image can link turns to a shared tool store instead of copying skills and connector packages into every turn's home ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)). Fill the store when the image is built or when the host is set up, not when a turn runs:
+
+```dockerfile
+# In a layer you add on top of deploy/Dockerfile.harnesses:
+RUN by tools pull --from gs://BUCKET/PREFIX --store /opt/branchyard/store
+```
+
+A build needs `gcloud` (or `oras`, with `--oci REGISTRY/REPOSITORY`) and a reader for the bucket, so many operators pull at start-up into a volume mounted read-only at the same path instead. Name the store in the server configuration:
+
+```json
+{ "tools": { "store": "/opt/branchyard/store", "store_bucket": "BUCKET/PREFIX" } }
+```
+
+`store_bucket` is only for a GKE Agent Sandbox, which mounts the same bucket read-only at `store` ([Agent Sandbox on GKE](agent-sandbox-gke.md#mount-the-tool-store)). On a host, `BRANCHYARD_TOOLS_FROM=gs://BUCKET/PREFIX sh tools/session_setup.sh --tools-only` pulls the store and, when `anvil` is on the host and has an `install` command, installs Anvil's CLI and SDKs under `/opt/anvil` once. Each skips with a message when its program is absent. **Not built here:** no image with the store was built or run.
+
 ## Compose: server behind PostgreSQL
 
 `deploy/compose.yaml` runs `database` (`postgres:16`, a named volume) and `server` (built from `deploy/Dockerfile`), wired together with a healthcheck-gated `depends_on` so the server never starts against a database that is not yet accepting connections.
