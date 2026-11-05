@@ -896,6 +896,12 @@ pub(crate) fn configure_yard(config: &Config, name: &str, yard: &Yard) -> Result
     if let Some(gateway) = crate::connectors::gateway_for(config, name) {
         yard.use_connectors(gateway);
     }
+    if let Some(tools) = &config.tools {
+        yard.use_tool_store(branchyard::toolstore::ToolStore {
+            root: tools.store.clone(),
+            bucket: tools.store_bucket.clone(),
+        });
+    }
     // The model gateway its branches' turns may use, and each
     // principal's ceiling (docs/model-gateway.md).
     if let Some(gateway) =

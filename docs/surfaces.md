@@ -1044,6 +1044,9 @@ IAP allows TCP 22 from `35.235.240.0/20` only to the dedicated VM tag.
 `--service-account EMAIL` gives the VM that account with the `cloud-platform`
 scope, so its IAM roles decide API access; `--scopes LIST` (comma-separated
 names or URLs) replaces the default, and `--scopes none` gives no scopes.
+`--tools-store gs://BUCKET/PREFIX` pulls the shared tool store onto the worker at
+setup and points its server at it ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery));
+setup also installs Anvil's CLI and SDKs once when `anvil` has an `install` command.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified
 forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
@@ -1137,3 +1140,15 @@ A running branch says whether its engine is still heard from ([durability](durab
 |---|---|---|
 | `Resolved::layer` (`Layer::Unsettleable`, `unsettleable`) | none | the layer an ask carries when a policy allowed an irreversible operation that declares no lookup and it was asked about instead; in `by approvals`, the ledger's `decided`, `schema/contract.json` |
 | `BranchInfo::liveness` (`Liveness`, `LivenessState`) | none | `{state: live\|unknown\|lost, heard_ms, known_until_ms, reason?}` for every running branch, with zero timing fields and a lost reason when no held lease exists, read from the lease on every `Yard::branches`/`branch`; in `by ls --json`, the server's `BranchInfo` and `schema/contract.json`; `by ls` and `by watch` print `running (no heartbeat for 14s)` or `running (engine lost: …)` |
+
+## Added with the shared tool store
+
+Skills and connector packages can be published once as a content-addressed store and linked by every turn, not copied into each turn's home ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)). Setup and configuration are the CLI's and the configuration file's, so there is no SDK, HTTP or delegation counterpart; `by tools` is refused inside a harness's branch and with `--remote`.
+
+| Surface | Before | Now |
+|---|---|---|
+| `by tools publish [--store DIR] [--oci REGISTRY/REPO] [--gcs gs://BUCKET/PREFIX] [--json]` | none: each turn staged the built-in skills and copied Anvil's packages from the yard's cache | builds `skills/NAME@DIGEST` and `connectors/ID@BUNDLE-HASH` under the store and its `store.json` (`id`, `kind`, `digest`, `size`, `path`), running Anvil's packager for the bundles under `[connectors] bundles`; `--gcs` mirrors it with `gcloud storage rsync`, `--oci` pushes each entry and the index with `oras` |
+| `by tools pull (--from gs://BUCKET/PREFIX \| --oci REGISTRY/REPO) [--store DIR] [--json]` | none | fills a local store from a bucket or a registry and checks every entry against the index; a mismatch fails naming its path |
+| `[tools] store`, `store_bucket` in `branchyard.toml`; `tools.store`, `tools.store_bucket` in server JSON (`schema/branchyard.config.json`, `schema/server.config.json`) | none | the store's root and its Cloud Storage mirror. A turn links the store's entry for its skill or connector when its provider sees the store at the same path: a local harness, Microsandbox (a read-only volume of the root), a GKE Agent Sandbox with `store_bucket` (a Cloud Storage FUSE CSI volume and the `gke-gcsfuse/volumes` annotation). Container, Substrate and recipe sandboxes copy, as before |
+| `by compute gce --tools-store gs://BUCKET/PREFIX` | none | the worker pulls the store to `/opt/branchyard/store` at setup and its `server.json` names it |
+| `tools/session_setup.sh --tools-only` with `BRANCHYARD_TOOLS_FROM` or `BRANCHYARD_TOOLS_OCI` | none | pulls the store and runs `anvil install --prefix /opt/anvil` once, each skipped with a message when its program is absent |

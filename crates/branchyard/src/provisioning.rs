@@ -350,6 +350,10 @@ pub(crate) struct Standing<'a> {
     /// Whether this turn wrote the manifest file (it is rewritten only when
     /// it changed), so `provisioned.files` names it only then.
     pub manifest_written: bool,
+    /// The shared tool store, when the turn's harness sees it at its own
+    /// path ([`crate::toolstore::for_turn`]): built-in skills in it are
+    /// linked, not copied.
+    pub store: Option<&'a crate::toolstore::ToolStore>,
 }
 
 /// Plan and apply the turn's provisioning. A failure is the turn's failure
@@ -373,6 +377,7 @@ pub(crate) fn prepare(
         skills,
         manifest,
         manifest_written,
+        store,
     } = standing;
     let spec = record.provision.clone().unwrap_or_default();
     let (workspace, home) = placement::guest_paths(record);
@@ -395,8 +400,12 @@ pub(crate) fn prepare(
         crate::skills::ForTurn::Staged(set) => Some(set),
         crate::skills::ForTurn::Nothing | crate::skills::ForTurn::Withheld(_) => None,
     };
-    let capabilities =
-        crate::capabilities::stage(&capability_home, repository, spec.skills.as_deref())?;
+    let capabilities = crate::capabilities::stage_from(
+        &capability_home,
+        repository,
+        spec.skills.as_deref(),
+        store,
+    )?;
     let granted_connectors = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
     let tools = crate::tooltree::mount(
         &capability_home,

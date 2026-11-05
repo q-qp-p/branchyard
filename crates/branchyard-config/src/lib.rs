@@ -115,6 +115,11 @@ pub struct ProjectConfig {
     /// branch gets when `--connector` names none.
     #[serde(default, skip_serializing_if = "Connectors::is_empty")]
     pub connectors: Connectors,
+    /// The shared, content-addressed tool store (docs/tools-model.md): the
+    /// read-only directory a turn links its skills and connector packages
+    /// from, and the bucket a Kubernetes sandbox mounts it from.
+    #[serde(default, skip_serializing_if = "Tools::is_empty")]
+    pub tools: Tools,
     /// The hosts a new branch's harness may reach (docs/egress.md), when
     /// `--network` gives none: an allowlist enforced through Branchyard's
     /// egress proxy. Unset: open.
@@ -851,6 +856,53 @@ impl Connectors {
                     .map_err(|e| ConfigError(format!("connectors.grants: {e}")))
             })
             .collect()
+    }
+}
+
+/// `[tools]`: the shared tool store.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tools {
+    /// The store's root, such as `/opt/branchyard/store`: it holds
+    /// `skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`,
+    /// filled by `by tools pull` or `by tools publish`. A turn links the
+    /// entries it needs instead of copying them into its home. Sandboxes
+    /// see it at the same path. Without it, every turn copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+    /// The Cloud Storage bucket that mirrors the store, `BUCKET` or
+    /// `BUCKET/PREFIX`. A GKE Agent Sandbox mounts it read-only at `store`
+    /// with the Cloud Storage FUSE CSI driver (docs/agent-sandbox-gke.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store_bucket: Option<String>,
+}
+
+impl Tools {
+    /// Whether nothing is set.
+    pub fn is_empty(&self) -> bool {
+        self == &Tools::default()
+    }
+
+    /// The problems in these settings, as `(key, message)`.
+    pub fn problems(&self) -> Option<(&'static str, String)> {
+        if let Some(store) = &self.store {
+            if !store.starts_with('/') && !store.starts_with("~/") {
+                return Some((
+                    "tools.store",
+                    format!("must be an absolute path, not {store:?}"),
+                ));
+            }
+        }
+        if let Some(bucket) = &self.store_bucket {
+            let name = bucket.split('/').next().unwrap_or_default();
+            if name.is_empty() || bucket.starts_with("gs://") || bucket.ends_with('/') {
+                return Some((
+                    "tools.store_bucket",
+                    format!("must be BUCKET or BUCKET/PREFIX, not {bucket:?}"),
+                ));
+            }
+        }
+        None
     }
 }
 
@@ -2237,6 +2289,9 @@ impl ProjectConfig {
             split_words(anvil).map_err(|e| ConfigError(format!("connectors.anvil: {e}")))?;
         }
         self.connectors.grant_entries()?;
+        if let Some((key, why)) = self.tools.problems() {
+            return fail(key, why);
+        }
         if let Some(listen) = &self.connectors.effects_listen {
             if listen.parse::<std::net::IpAddr>().is_err() {
                 return fail(
@@ -2461,6 +2516,7 @@ impl ProjectConfig {
         resolve(&mut self.defaults.instructions);
         resolve(&mut self.connectors.bundles);
         resolve(&mut self.connectors.vault_key);
+        resolve(&mut self.tools.store);
         resolve(&mut self.sync.passphrase_file);
         for source in self.secrets.values_mut() {
             if let Some(path) = source.strip_prefix('@') {
@@ -2888,6 +2944,17 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
         for (key, value) in [
             ("effects_listen", &c.effects_listen),
             ("effects_sandbox_host", &c.effects_sandbox_host),
+        ] {
+            if let Some(value) = value {
+                out.push_str(&format!("{key} = {}\n", toml_string(value)));
+            }
+        }
+    }
+    if !config.tools.is_empty() {
+        out.push_str("\n# The shared tool store; see docs/tools-model.md.\n[tools]\n");
+        for (key, value) in [
+            ("store", &config.tools.store),
+            ("store_bucket", &config.tools.store_bucket),
         ] {
             if let Some(value) = value {
                 out.push_str(&format!("{key} = {}\n", toml_string(value)));
@@ -3401,6 +3468,43 @@ classes = { compensable = "allow" }
             ),
         ] {
             let error = parse(text).unwrap_err().to_string();
+            assert!(error.contains(needle), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_tool_store_is_checked_resolved_and_written_back() {
+        let config = parse(
+            "version = 1\n[tools]\nstore = \"/opt/branchyard/store\"\n\
+             store_bucket = \"acme-tools/store\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.tools.store.as_deref(), Some("/opt/branchyard/store"));
+        assert_eq!(
+            config.tools.store_bucket.as_deref(),
+            Some("acme-tools/store")
+        );
+        assert_eq!(config.flatten()["tools.store_bucket"], "acme-tools/store");
+        assert_eq!(parse(&render(&config, "test")).unwrap(), config);
+        assert!(Tools::default().is_empty());
+        assert!(!render(&ProjectConfig::default(), "test").contains("[tools]"));
+
+        let mut relative = parse("version = 1\n[tools]\nstore = \"~/store\"\n").unwrap();
+        relative.resolve_paths(Path::new("/repo"), Some(Path::new("/home/me")));
+        assert_eq!(relative.tools.store.as_deref(), Some("/home/me/store"));
+
+        for (text, needle) in [
+            ("[tools]\nstore = \"store\"\n", "tools.store"),
+            (
+                "[tools]\nstore_bucket = \"gs://acme\"\n",
+                "tools.store_bucket",
+            ),
+            ("[tools]\nstore_bucket = \"acme/\"\n", "tools.store_bucket"),
+            ("[tools]\nstor = \"/s\"\n", "stor"),
+        ] {
+            let error = parse(&format!("version = 1\n{text}"))
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(needle), "{text}: {error}");
         }
     }

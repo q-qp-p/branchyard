@@ -5,9 +5,40 @@ use crate::owned::Receipt;
 pub(crate) const OWNER: &str = "branchyard.io/owner";
 pub(crate) const SPEC: &str = "branchyard.io/spec";
 pub(crate) const IDENTITY: &str = "/var/run/branchyard-identity";
+/// The Cloud Storage FUSE CSI driver, the tool store volume's name, the pod
+/// annotation that has GKE inject the driver's sidecar, that sidecar's name
+/// and the prefix of the volumes GKE adds for it.
+pub(crate) const GCSFUSE_DRIVER: &str = "gcsfuse.csi.storage.gke.io";
+pub(crate) const STORE_VOLUME: &str = "tool-store";
+pub(crate) const GCSFUSE_ANNOTATION: &str = "gke-gcsfuse/volumes";
+pub(crate) const GCSFUSE_SIDECAR: &str = "gke-gcsfuse-sidecar";
+pub(crate) const GCSFUSE_VOLUME_PREFIX: &str = "gke-gcsfuse-";
 
 pub(crate) fn sandbox(receipt: &Receipt) -> Value {
     let runtime = receipt.target.runtime.name();
+    let mut mounts = vec![
+        json!({"name":"workspace","mountPath":"/workspace"}),
+        json!({"name":"home","mountPath":"/branchyard/home"}),
+        json!({"name":"tmp","mountPath":"/tmp"}),
+        json!({"name":"identity","mountPath":IDENTITY,"readOnly":true}),
+    ];
+    let mut volumes = vec![
+        json!({"name":"workspace","emptyDir":{}}),
+        json!({"name":"home","emptyDir":{}}),
+        json!({"name":"tmp","emptyDir":{"sizeLimit":"256Mi"}}),
+        json!({"name":"identity","downwardAPI":{"defaultMode":292,"items":[
+            {"path":"pod-uid","fieldRef":{"apiVersion":"v1","fieldPath":"metadata.uid"}}
+        ]}}),
+    ];
+    let mut pod_annotations = json!({SPEC:receipt.digest});
+    if let Some(store) = &receipt.target.store {
+        mounts.push(json!({"name":STORE_VOLUME,"mountPath":store.path,"readOnly":true}));
+        volumes.push(json!({"name":STORE_VOLUME,"csi":{
+            "driver":GCSFUSE_DRIVER,"readOnly":true,
+            "volumeAttributes":{"bucketName":store.bucket_name(),"mountOptions":store.mount_options()}
+        }}));
+        pod_annotations[GCSFUSE_ANNOTATION] = json!("true");
+    }
     json!({
         "apiVersion":"agents.x-k8s.io/v1beta1", "kind":"Sandbox",
         "metadata": {
@@ -17,7 +48,7 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
         "spec": {
             "service":false, "failedPodPolicy":"Retain", "operatingMode":"Running",
             "podTemplate": {
-                "metadata":{"labels":{OWNER:receipt.owner}, "annotations":{SPEC:receipt.digest}},
+                "metadata":{"labels":{OWNER:receipt.owner}, "annotations":pod_annotations},
                 "spec": {
                     "runtimeClassName":runtime,
                     "nodeSelector":{"sandbox.gke.io/runtime":runtime},
@@ -44,20 +75,9 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
                             "allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,
                             "capabilities":{"drop":["ALL"]}
                         },
-                        "volumeMounts":[
-                            {"name":"workspace","mountPath":"/workspace"},
-                            {"name":"home","mountPath":"/branchyard/home"},
-                            {"name":"tmp","mountPath":"/tmp"},
-                            {"name":"identity","mountPath":IDENTITY,"readOnly":true}
-                        ]
+                        "volumeMounts":mounts
                     }],
-                    "volumes":[
-                        {"name":"workspace","emptyDir":{}}, {"name":"home","emptyDir":{}},
-                        {"name":"tmp","emptyDir":{"sizeLimit":"256Mi"}},
-                        {"name":"identity","downwardAPI":{"defaultMode":292,"items":[
-                            {"path":"pod-uid","fieldRef":{"apiVersion":"v1","fieldPath":"metadata.uid"}}
-                        ]}}
-                    ]
+                    "volumes":volumes
                 }
             }
         }

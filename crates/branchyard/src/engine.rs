@@ -823,6 +823,7 @@ fn run(
     // The repository skills fixed for the branch, read again from their
     // commit: never from the worktree its turns change.
     let skills = crate::skills::for_turn(turn.yard.root(), record.skills.as_ref());
+    let tool_store = crate::toolstore::for_turn(turn.yard, record);
     let provisioned = match crate::provisioning::prepare(
         record,
         turn.profile,
@@ -834,6 +835,7 @@ fn run(
             skills: &skills,
             manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
             manifest_written,
+            store: tool_store.as_deref(),
         },
         crate::provisioning::Access {
             policy: &bounds.policy,

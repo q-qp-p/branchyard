@@ -263,6 +263,17 @@
         }
       ]
     },
+    "tools": {
+      "description": "The shared tool store (docs/tools-model.md): where it is, and the\nbucket that mirrors it.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FileTools"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "models": {
       "description": "The model gateway (docs/model-gateway.md): backends, routes,\nbudgets and prices, as `[models]` in branchyard.toml. A backend's\n`key` names an entry of `secrets`, else a variable of this server.",
       "anyOf": [
@@ -1837,21 +1848,10 @@
           ]
         },
         "signing_key": {
-          "description": "The signing key, a private JSON Web Key Set made if missing (never\nby a worker). Default: `<data_dir>/gateway/key`. Its public keys\nare served at `GET /.well-known/jwks.json`.",
+          "description": "The signing key, a private JSON Web Key Set made if missing.\nDefault: `<data_dir>/gateway/key`. Its public keys are served at\n`GET /.well-known/jwks.json`.",
           "type": [
             "string",
             "null"
-          ]
-        },
-        "signing": {
-          "description": "Sign with Cloud KMS instead of a key file; refused together with\n`signing_key`.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FileSigning"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "audit_file": {
@@ -1923,19 +1923,16 @@
         "bundles"
       ]
     },
-    "FileSigning": {
-      "description": "`connectors.signing`: sign gateway tokens with Cloud KMS\n(`docs/server.md#signing-with-cloud-kms`).",
+    "FileTools": {
+      "description": "`tools`: the shared tool store; see `docs/tools-model.md`.",
       "type": "object",
       "properties": {
-        "kms_key_versions": {
-          "description": "Cloud KMS key versions of `EC_SIGN_ED25519` keys, as\n`projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/V`.\nThe first signs; all are published at `GET /.well-known/jwks.json`,\nso a rotation lists the new version first and drops the old one\nonce its tokens have expired. The server's and each worker's\nservice account needs `roles/cloudkms.signerVerifier` on the key.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        "store": {
+          "description": "The store's root, such as `/opt/branchyard/store`: it holds\n`skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`. A\nturn links the entries it needs instead of copying them, and a\nsandbox sees the store at this path.",
+          "type": "string"
         },
-        "kms_base_url": {
-          "description": "The Cloud KMS API's address. Default `https://cloudkms.googleapis.com`;\nfor tests.",
+        "store_bucket": {
+          "description": "The Cloud Storage bucket that mirrors the store, `BUCKET` or\n`BUCKET/PREFIX`, which a GKE Agent Sandbox mounts read-only with the\nCloud Storage FUSE CSI driver.",
           "type": [
             "string",
             "null"
@@ -1944,7 +1941,7 @@
       },
       "additionalProperties": false,
       "required": [
-        "kms_key_versions"
+        "store"
       ]
     },
     "ModelsConfig": {

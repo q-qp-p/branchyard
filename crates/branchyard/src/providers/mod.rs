@@ -120,6 +120,15 @@ pub(crate) trait ProviderKind {
         false
     }
 
+    /// Whether the harness sees the yard's tool store
+    /// ([`crate::toolstore`]) at the store's own path, so a turn may link
+    /// its skills and connector packages there instead of copying them. A
+    /// local harness does; a provider that copies the home in does not
+    /// (the links would dangle), and one that mounts the store says so.
+    fn sees_store(&self, _yard: &Yard) -> bool {
+        !self.sandboxed()
+    }
+
     /// Whether a network policy can be enforced on this host for a
     /// harness run by this provider, rather than only for a local one.
     fn confines_egress(&self) -> bool {

@@ -851,6 +851,7 @@ fn build(flags: Flags) -> Result<(Config, Vec<String>), String> {
     }
     config.webhook_insecure = partial.webhook_insecure || flags.webhook_insecure;
     config.connectors = partial.connectors;
+    config.tools = partial.tools;
     config.models = partial.models;
     config.ceilings = partial.ceilings;
     config.approvals = partial.approvals;

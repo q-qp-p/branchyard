@@ -146,6 +146,8 @@ pub(crate) struct Hub {
     pub provider_admission: Mutex<Option<crate::ProviderAdmission>>,
     /// Set by [`crate::Yard::use_connectors`].
     pub connectors: Mutex<Option<Arc<crate::connectors::Gateway>>>,
+    /// Set by [`crate::Yard::use_tool_store`].
+    pub tool_store: Mutex<Option<Arc<crate::toolstore::ToolStore>>>,
     /// Set by [`crate::Yard::use_knowledge`].
     pub knowledge: Mutex<Option<Arc<crate::KnowledgeSettings>>>,
     /// Set by [`crate::Yard::use_models`].
@@ -182,6 +184,7 @@ impl Default for Hub {
             sandbox_provider: Default::default(),
             provider_admission: Default::default(),
             connectors: Default::default(),
+            tool_store: Default::default(),
             knowledge: Default::default(),
             models: Default::default(),
             ceilings: Default::default(),

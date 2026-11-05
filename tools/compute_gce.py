@@ -56,6 +56,7 @@ class Config:
     tunnel_through_iap: bool = False
     forward_secret: str | None = None
     gvisor: bool = False
+    tools_store: str | None = None
 
     @property
     def remote_path(self) -> str:
@@ -79,6 +80,8 @@ class Config:
             target.pop(key)
         if not self.gvisor:
             target.pop("gvisor")
+        if self.tools_store is None:
+            target.pop("tools_store")
         if self.access_scopes:
             target["scopes"] = list(self.access_scopes)
         if self.tunnel_through_iap:
@@ -86,6 +89,11 @@ class Config:
         else:
             target.pop("tunnel_through_iap")
         return hashlib.sha256(json.dumps(target, sort_keys=True).encode()).hexdigest()
+
+    @property
+    def tools_store_bucket(self) -> str | None:
+        """The bucket and prefix of --tools-store, as the server's tools.store_bucket names them."""
+        return self.tools_store[len("gs://") :] if self.tools_store else None
 
     @property
     def iap_firewall(self) -> dict[str, Any]:
@@ -129,6 +137,10 @@ class Config:
                 raise SetupError("--scopes must be none, or comma-separated scope names or googleapis.com/auth URLs")
         if self.disk_size < 30:
             raise SetupError("--disk-size must be at least 30 GB")
+        if self.tools_store is not None and not re.fullmatch(
+            r"gs://[a-z0-9][a-z0-9._-]{1,220}[a-z0-9](?:/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)?", self.tools_store
+        ):
+            raise SetupError("--tools-store must be gs://BUCKET or gs://BUCKET/PREFIX")
         if not re.fullmatch(
             r"[a-z0-9][a-z0-9./_-]+(?:@sha256:[0-9a-f]{64}|:\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)", self.image
         ):
@@ -155,6 +167,17 @@ def plan(config: Config) -> dict[str, Any]:
             "For microsandbox: enable nested virtualization, install the pinned runtime and import the worker image",
             "For --gvisor: install pinned runsc, reload Docker without changing its default, "
             "and grant the SSH worker Docker group access",
+            "Install Anvil's CLI and SDKs once under /opt/anvil with `anvil install`, or say it was skipped when "
+            "anvil is not on the VM",
+            *(
+                [
+                    f"Pull the shared tool store from {config.tools_store} to {TOOLS_STORE} with `by tools pull`, "
+                    "and point the worker's server at it; the VM's service account needs roles/storage.objectViewer "
+                    "on the bucket"
+                ]
+                if config.tools_store
+                else []
+            ),
             "Transfer only a clean committed HEAD, or initialize an empty remote repository",
             "Write an owned SSH Host entry and one Include line, preserving existing SSH configuration",
             "Verify binary versions, SSH configuration and KVM access before recording deployment.json",
@@ -453,6 +476,17 @@ def runtime_environment(config: Config) -> str:
     return f'. "$HOME/.local/state/branchyard/gce/{config.name}/microsandbox.env"'
 
 
+# Anvil's CLI and SDKs are installed once per host, not packaged in every turn (docs/anvil-contract-v2.md,
+# item 4). The guard keeps a host without Anvil, or with an Anvil that has no `install` yet, working.
+ANVIL_INSTALL = """if command -v anvil >/dev/null 2>&1 && anvil install --help >/dev/null 2>&1; then
+  sudo anvil install --prefix /opt/anvil
+else
+  echo 'anvil with an install command is not on this VM; skipping the Anvil toolchain under /opt/anvil' >&2
+fi
+"""
+TOOLS_STORE = "/opt/branchyard/store"
+
+
 def bootstrap(config: Config, head: str | None) -> str:
     """Build the secret-free remote install script from validated values."""
     image = shlex.quote(config.image)
@@ -518,6 +552,14 @@ sudo docker save {image} | "$MSB_PATH" image load --tag {image}
         script += "sudo python3 - --apply <<'BRANCHYARD_GVISOR_INSTALLER'\n"
         script += installer + "\nBRANCHYARD_GVISOR_INSTALLER\n"
         script += 'sudo usermod -aG docker "$(id -un)"\n'
+    script += ANVIL_INSTALL
+    if config.tools_store:
+        script += f"""command -v gcloud >/dev/null 2>&1 || {{
+  echo 'gcloud is not on this VM; --tools-store needs the Google Cloud CLI' >&2; exit 1;
+}}
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 {TOOLS_STORE}
+/usr/local/bin/by tools pull --from {shlex.quote(config.tools_store)} --store {TOOLS_STORE}
+"""
     script += "/usr/local/bin/by --version\n/usr/local/bin/agy --version\n"
     return script
 
@@ -580,6 +622,7 @@ config = json.loads(path.read_text())
 config["harness_commands"] = {"antigravity": ["/usr/local/bin/agy"]}
 config["allow_unapproved_tools"] = True
 config["allow_client_commands"] = False
+@@TOOLS@@
 path.write_text(json.dumps(config, indent=2) + "\n")
 path.chmod(0o600)
 BY_SERVER
@@ -590,6 +633,12 @@ BY_SERVER
         template.replace("@@NAME@@", config.name)
         .replace("@@BACKEND@@", config.backend)
         .replace("@@IMAGE@@", json.dumps(config.image))
+        .replace(
+            "@@TOOLS@@",
+            f'config["tools"] = {json.dumps({"store": TOOLS_STORE, "store_bucket": config.tools_store_bucket})}'
+            if config.tools_store
+            else "",
+        )
         .replace("@@RUNTIME_ENV@@", runtime_environment(config) if config.backend == "microsandbox" else "")
     )
 
@@ -853,6 +902,12 @@ def main(argv: list[str] | None = None) -> int:
         "--forward-secret",
         choices=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         help="read this environment variable and store it via SSH stdin in the worker's native 0600 keystore",
+    )
+    parser.add_argument(
+        "--tools-store",
+        metavar="GS_URL",
+        help="pull the shared tool store from gs://BUCKET/PREFIX to /opt/branchyard/store at setup, "
+        "and have the worker's server link turns to it",
     )
     parser.add_argument("--apply", action="store_true", help="create/reuse the named VM and prepare its SSH remote")
     args = vars(parser.parse_args(argv))

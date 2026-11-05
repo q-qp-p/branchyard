@@ -100,18 +100,43 @@ pub(crate) fn catalogued() -> Result<Vec<&'static skills::Skill>, String> {
 /// ([`crate::Provisioning::skills`]): those and the skills they need are
 /// staged and listed, the rest removed, and the indexes list only what was
 /// staged. `None` stages every built-in skill.
+#[cfg(test)]
 pub(crate) fn stage(
     host: &Path,
     repository: Option<&RepositorySet>,
     only: Option<&[String]>,
+) -> Result<Staged, String> {
+    stage_from(host, repository, only, None)
+}
+
+/// [`stage`], linking each built-in skill the shared tool `store` has an
+/// entry for ([`crate::toolstore`]) instead of writing its files: the
+/// skill's directory is a link to the entry. The caller passes the store
+/// only when the harness sees it at the same path. A skill the store lacks
+/// is written as before, and a link left by an earlier turn that had the
+/// store is replaced by the files.
+pub(crate) fn stage_from(
+    host: &Path,
+    repository: Option<&RepositorySet>,
+    only: Option<&[String]>,
+    store: Option<&crate::toolstore::ToolStore>,
 ) -> Result<Staged, String> {
     let chosen = only.map(built_in::closure).transpose()?;
     let indexes = built_in::indexes(chosen.as_ref())?;
     let mut plan = Plan::default();
     let mut built_in = Vec::new();
     let mut listed = Vec::new();
+    let mut links = Vec::new();
+    let mut unlinked = Vec::new();
     for skill in catalogued()? {
         let directory = format!("{DIRECTORY}/{}", skill.name);
+        let entry = store
+            .filter(|_| chosen.as_ref().is_none_or(|set| set.contains(skill.name)))
+            .and_then(|store| store.skill(skill));
+        match &entry {
+            Some(entry) => links.push((directory.clone(), entry.clone())),
+            None => unlinked.push(directory.clone()),
+        }
         if !chosen.as_ref().is_none_or(|set| set.contains(skill.name)) {
             // A narrower turn than the last removes what it does not give.
             for stale in files_under(host, &directory)? {
@@ -120,11 +145,15 @@ pub(crate) fn stage(
             continue;
         }
         for (path, content) in skill.files {
-            plan.edit(
-                &format!("{directory}/{path}"),
-                false,
-                Edit::Put((*content).into()),
-            );
+            // With an entry the link stands for the files, and replaces
+            // any copy an earlier turn made ([`link_skill`]).
+            if entry.is_none() {
+                plan.edit(
+                    &format!("{directory}/{path}"),
+                    false,
+                    Edit::Put((*content).into()),
+                );
+            }
         }
         built_in.push(skillset::built_in_entry(skill));
         listed.push(Tool {
@@ -179,13 +208,116 @@ pub(crate) fn stage(
         };
         plan.edit(&format!("{DIRECTORY}/{path}"), false, edit);
     }
+    // A link an earlier turn made to a skill this turn writes, or drops, is
+    // removed first: the files are never written through it.
+    let fail = |e: io::Error| format!("could not link document capabilities: {e}");
+    let mut linked = Vec::new();
+    for directory in &unlinked {
+        if unlink_skill(&host.join(directory)).map_err(fail)? {
+            linked.push(directory.clone());
+        }
+    }
     let applied = apply::apply(&plan, host)
         .map_err(|e| format!("could not install document capabilities: {e}"))?;
+    for (directory, entry) in &links {
+        if link_skill(&host.join(directory), entry).map_err(fail)? {
+            linked.push(directory.clone());
+        }
+    }
     Ok(Staged {
-        written: applied.written.into_iter().chain(applied.removed).collect(),
+        written: applied
+            .written
+            .into_iter()
+            .chain(applied.removed)
+            .chain(linked)
+            .collect(),
         built_in,
         listed,
     })
+}
+
+/// Make `path` a real directory whose entries are links to those of the
+/// store's `entry`, replacing the copy or the other links there. The
+/// directory itself is not a link so that a skill's relative references to
+/// its siblings (`../artifact-tools/INDEX.md`) resolve beside it, not in
+/// the store. Whether anything changed.
+fn link_skill(path: &Path, entry: &Path) -> io::Result<bool> {
+    let mut changed = false;
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            std::fs::remove_file(path)?;
+            changed = true;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::create_dir_all(path)?;
+    let mut wanted = BTreeSet::new();
+    for child in std::fs::read_dir(entry)? {
+        let name = child?.file_name();
+        let (link, target) = (path.join(&name), entry.join(&name));
+        match std::fs::symlink_metadata(&link) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if std::fs::read_link(&link)? != target {
+                    std::fs::remove_file(&link)?;
+                    std::os::unix::fs::symlink(&target, &link)?;
+                    changed = true;
+                }
+            }
+            Ok(meta) => {
+                match meta.is_dir() {
+                    true => std::fs::remove_dir_all(&link)?,
+                    false => std::fs::remove_file(&link)?,
+                }
+                std::os::unix::fs::symlink(&target, &link)?;
+                changed = true;
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                std::os::unix::fs::symlink(&target, &link)?;
+                changed = true;
+            }
+            Err(e) => return Err(e),
+        }
+        wanted.insert(name);
+    }
+    // What the entry no longer holds, or never did, goes.
+    for child in std::fs::read_dir(path)? {
+        let child = child?;
+        if !wanted.contains(&child.file_name()) && child.file_type()?.is_symlink() {
+            std::fs::remove_file(child.path())?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// Remove the links [`link_skill`] made in `dir`, and `dir` when nothing
+/// else is in it: a skill the turn writes as files, or drops, must not be
+/// written through a link into the store. Whether anything changed.
+fn unlink_skill(dir: &Path) -> io::Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e)
+            if e.kind() == io::ErrorKind::NotFound || e.kind() == io::ErrorKind::NotADirectory =>
+        {
+            return Ok(false)
+        }
+        Err(e) => return Err(e),
+    };
+    let mut changed = false;
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_symlink() {
+            std::fs::remove_file(entry.path())?;
+            changed = true;
+        }
+    }
+    // Left when something else is in it.
+    if changed && std::fs::read_dir(dir)?.next().is_none() {
+        std::fs::remove_dir(dir)?;
+    }
+    Ok(changed)
 }
 
 /// A built-in skill's description, from its `SKILL.md` frontmatter.
@@ -466,5 +598,85 @@ mod tests {
             local_home(&linked.path().join("state"), "branch").unwrap(),
             home
         );
+    }
+    /// With the shared store, each chosen built-in skill's files are links
+    /// to the store's entry, in a directory of the turn's own so that its
+    /// references to sibling skills resolve; a skill the store lacks, or a
+    /// turn without the store, gets files, and nothing is written through
+    /// a link left by an earlier turn.
+    #[test]
+    fn skills_the_store_has_are_linked_and_the_rest_are_copied() {
+        use crate::toolstore::{publish, ToolStore};
+        let shared = branchyard_testkit::Scratch::new("capabilities-store");
+        publish(shared.path(), None).unwrap();
+        let store = ToolStore::new(shared.path());
+        let host = branchyard_testkit::Scratch::new("capabilities-host");
+        let root = host.path().join(DIRECTORY);
+        let linked = |name: &str| {
+            let skill = root.join(name);
+            let meta = std::fs::symlink_metadata(&skill).unwrap();
+            assert!(meta.is_dir() && !meta.file_type().is_symlink(), "{name}");
+            std::fs::read_link(skill.join("SKILL.md")).ok()
+        };
+        let first = stage_from(host.path(), None, None, Some(&store)).unwrap();
+        assert_eq!(first.listed.len(), first.built_in.len());
+        for tool in &first.listed {
+            let link = linked(&tool.directory).unwrap();
+            assert!(link.starts_with(shared.path().join("skills")), "{link:?}");
+            assert!(link.is_file());
+        }
+        // A sibling reference resolves beside the skill, not in the store.
+        assert!(root
+            .join("source-capture/../artifact-tools/INDEX.md")
+            .is_file());
+        assert!(std::fs::read_to_string(root.join("find-tools/SKILL.md"))
+            .unwrap()
+            .contains("name: find-tools"));
+        assert_eq!(
+            std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
+            skills::INDEX
+        );
+        assert!(stage_from(host.path(), None, None, Some(&store))
+            .unwrap()
+            .written
+            .is_empty());
+
+        // An entry the store lacks is copied beside the links.
+        let digest = crate::toolstore::skill_digest(skills::skill("pptx").unwrap());
+        std::fs::remove_dir_all(shared.join(format!("skills/pptx@{digest}"))).unwrap();
+        let partial = stage_from(host.path(), None, None, Some(&store)).unwrap();
+        assert_eq!(linked("pptx"), None);
+        assert!(root.join("pptx/SKILL.md").is_file());
+        assert!(partial
+            .written
+            .iter()
+            .any(|w| w.starts_with(".branchyard/capabilities/pptx")));
+        assert!(linked("docx").is_some());
+
+        // A narrower turn drops the links of the skills it does not give.
+        let chosen = ["docx".to_owned()];
+        stage_from(host.path(), None, Some(&chosen), Some(&store)).unwrap();
+        assert!(linked("docx").is_some());
+        assert!(!root.join("pptx/SKILL.md").exists());
+        assert!(!root.join("xlsx/SKILL.md").exists());
+        assert!(!root.join("xlsx/SKILL.md").is_symlink());
+
+        // A turn on a provider that does not see the store gets files, and
+        // the store is not written through the links it replaces.
+        let before = crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap();
+        let copied = stage_from(host.path(), None, None, None).unwrap();
+        assert!(!copied.written.is_empty());
+        for tool in &copied.listed {
+            assert_eq!(linked(&tool.directory), None, "{}", tool.id);
+            assert!(root.join(&tool.directory).join("SKILL.md").is_file());
+        }
+        assert_eq!(
+            crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap(),
+            before
+        );
+        assert!(stage_from(host.path(), None, None, None)
+            .unwrap()
+            .written
+            .is_empty());
     }
 }

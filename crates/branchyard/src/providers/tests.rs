@@ -699,3 +699,70 @@ fn each_variant_has_a_banner_of_its_own() {
     assert!(!Provider::is_local(Some(&microsandbox)));
     assert!(!Provider::is_local(Some(&recipe)));
 }
+
+/// Links into the tool store need the store at the same path in the
+/// harness's filesystem: a local harness has it, Microsandbox is given a
+/// read-only mount of it, an Agent Sandbox mounts its bucket, and a
+/// provider that copies the home in has none.
+#[test]
+fn only_a_provider_that_sees_the_store_at_its_path_is_given_links_to_it() {
+    use crate::toolstore::ToolStore;
+    let f = fixture();
+    let store = branchyard_testkit::Scratch::new("provider-store");
+    let sees = |provider: &Provider| of(Some(provider)).sees_store(&f.yard);
+    let usable = samples(&f);
+    let sandbox = |name: &str| {
+        usable
+            .iter()
+            .map(|(ok, _)| ok)
+            .find(|p| p.name() == name)
+            .unwrap()
+            .clone()
+    };
+    assert!(of(None).sees_store(&f.yard));
+    for name in [
+        "microsandbox",
+        "substrate",
+        "recipe",
+        "container",
+        "agent_sandbox",
+    ] {
+        assert!(!sees(&sandbox(name)), "{name} before a store is set");
+    }
+
+    f.yard.use_tool_store(ToolStore::new(store.path()));
+    assert!(sees(&sandbox("microsandbox")));
+    for name in ["substrate", "recipe", "container", "agent_sandbox"] {
+        assert!(!sees(&sandbox(name)), "{name} without a bucket or a mount");
+    }
+
+    // The mount is read-only, at the same path, and only for a store that
+    // exists.
+    let mut record = record(&sandbox("microsandbox"));
+    record.home = Some("/h".into());
+    let options = SandboxOptions {
+        image: "i".into(),
+        ..SandboxOptions::default()
+    };
+    let (spec, _) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    let mount = spec
+        .mounts
+        .iter()
+        .find(|m| m.guest == store.path())
+        .expect("the store is mounted");
+    assert_eq!(mount.host, store.path());
+    assert!(!mount.writable);
+    f.yard.use_tool_store(ToolStore::new(store.join("absent")));
+    assert!(!sees(&sandbox("microsandbox")));
+    let (spec, _) = super::microsandbox::spec(&f.yard, &record, &options).unwrap();
+    assert!(spec.mounts.iter().all(|m| m.guest != store.join("absent")));
+
+    // A bucket makes the Agent Sandbox's pod mount it at the store's path.
+    f.yard.use_tool_store(ToolStore {
+        root: store.path().to_path_buf(),
+        bucket: Some("acme-tools/store".into()),
+    });
+    assert!(sees(&sandbox("agent_sandbox")));
+    assert!(!sees(&sandbox("container")));
+    assert!(!sees(&sandbox("substrate")));
+}

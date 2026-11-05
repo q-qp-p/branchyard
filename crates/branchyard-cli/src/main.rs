@@ -91,6 +91,7 @@ mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
 mod task_cmd;
+mod tools_cmd;
 mod trackers;
 mod trigger_cmd;
 mod up_cmd;
@@ -646,6 +647,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Workspace { json, action } => workspace_cmd::main(env, target, &action, json),
         Command::Recipe { json, action } => recipe_cmd::main(env, target, &action, json),
         Command::Skills { json, action } => skills_cmd::main(target, &action, json),
+        Command::Tools { json, action } => tools_cmd::main(target, &action, json),
         Command::Env { json, action } => env_cmd::main(env, target, &action, json),
         Command::Trigger { json, action } => trigger_cmd::main(env, target, &action, json),
         Command::Rm {

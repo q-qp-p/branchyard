@@ -180,6 +180,7 @@ mod tarball;
 pub mod tasks;
 mod timeline;
 mod timers;
+pub mod toolstore;
 mod tooltree;
 pub mod up;
 mod wake;
@@ -520,6 +521,20 @@ impl Yard {
     /// set before. Shared by every clone of this `Yard`.
     pub fn use_connectors(&self, gateway: connectors::Gateway) {
         *self.hub.connectors.lock_recovering("connectors") = Some(Arc::new(gateway));
+    }
+
+    /// Give this yard's branches the shared tool store `store`: a turn on a
+    /// provider that sees the store at its path links the skills and
+    /// connector packages the store has instead of copying them into its
+    /// home; see `docs/tools-model.md`. Replaces any store set before.
+    /// Shared by every clone of this `Yard`.
+    pub fn use_tool_store(&self, store: toolstore::ToolStore) {
+        *self.hub.tool_store.lock_recovering("tool store") = Some(Arc::new(store));
+    }
+
+    /// The store set with [`Yard::use_tool_store`], if any.
+    pub fn tool_store(&self) -> Option<Arc<toolstore::ToolStore>> {
+        self.hub.tool_store.lock_recovering("tool store").clone()
     }
 
     /// Give this yard's branches the model gateway `gateway`: a branch on

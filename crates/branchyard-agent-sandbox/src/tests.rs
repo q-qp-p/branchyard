@@ -6,7 +6,7 @@ use branchyard_sandbox::{ExecSpec, Mount, Resources, SandboxProvider, SandboxSpe
 use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
-use super::{AgentSandboxProvider, Config, Network, Runtime};
+use super::{AgentSandboxProvider, Config, Network, Runtime, StoreVolume};
 
 fn config() -> Config {
     Config {
@@ -14,6 +14,7 @@ fn config() -> Config {
         namespace: "branchyard-gvisor".into(),
         runtime: Runtime::Gvisor,
         network: Network::Deny,
+        store: None,
     }
 }
 
@@ -28,9 +29,18 @@ struct Fixture {
 
 impl Fixture {
     fn new(network: Network) -> Self {
+        Self::build(network, None)
+    }
+
+    fn with_store(store: StoreVolume) -> Self {
+        Self::build(Network::Deny, Some(store))
+    }
+
+    fn build(network: Network, store: Option<StoreVolume>) -> Self {
         let scratch = Scratch::new("agent-sandbox");
         let mut config = config();
         config.network = network;
+        config.store = store;
         let mut provider = AgentSandboxProvider::new(config, scratch.join("receipts")).unwrap();
         provider.control.binary = scratch.join("kubectl");
         // Share the immutable fixture inode. Writing executable scripts while
@@ -620,4 +630,170 @@ fn managed_microvm_requires_supported_gke_node_version() {
     provider.ensure(&spec()).unwrap();
     provider.stop("allocation").unwrap();
     assert!(provider.inspect("allocation").unwrap().is_none());
+}
+
+fn store(bucket: &str) -> StoreVolume {
+    StoreVolume {
+        bucket: bucket.into(),
+        path: "/opt/branchyard/store".into(),
+    }
+}
+
+fn true_in(fixture: &Fixture) -> Result<(), branchyard_sandbox::ProviderError> {
+    fixture
+        .provider
+        .exec(
+            "allocation",
+            &ExecSpec {
+                argv: vec!["true".into()],
+                cwd: fixture.scratch.path().to_path_buf(),
+                ..ExecSpec::default()
+            },
+        )
+        .map(|_| ())
+}
+
+#[test]
+fn the_tool_store_is_a_read_only_cloud_storage_fuse_volume_at_the_hosts_path() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    let state = fixture.state();
+    let sandbox = &state["objects"][format!("sandbox/{name}")]["spec"]["podTemplate"];
+    assert_eq!(
+        sandbox["metadata"]["annotations"]["gke-gcsfuse/volumes"],
+        "true"
+    );
+    let volume = sandbox["spec"]["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == "tool-store")
+        .unwrap();
+    assert_eq!(
+        *volume,
+        json!({"name":"tool-store","csi":{
+            "driver":"gcsfuse.csi.storage.gke.io","readOnly":true,
+            "volumeAttributes":{"bucketName":"acme-tools",
+                "mountOptions":"implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true"}}})
+    );
+    let mounts = &sandbox["spec"]["containers"][0]["volumeMounts"];
+    assert_eq!(
+        mounts[4],
+        json!({"name":"tool-store","mountPath":"/opt/branchyard/store","readOnly":true})
+    );
+    // The first four mounts are the ones every allocation has.
+    assert_eq!(mounts.as_array().unwrap().len(), 5);
+    true_in(&fixture).unwrap();
+
+    // A store below a prefix in the bucket is mounted from there.
+    let prefixed = Fixture::with_store(store("acme-tools/store/v1"));
+    prefixed.provider.ensure(&spec()).unwrap();
+    let state = prefixed.state();
+    let options = &state["objects"][format!("sandbox/{}", prefixed.name())]["spec"]["podTemplate"]
+        ["spec"]["volumes"][4]["csi"]["volumeAttributes"];
+    assert_eq!(options["bucketName"], "acme-tools");
+    assert_eq!(
+        options["mountOptions"],
+        "implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true,only-dir=store/v1"
+    );
+
+    // Without a store the pod is what it was: no volume, no annotation.
+    let plain = Fixture::new(Network::Deny);
+    plain.provider.ensure(&spec()).unwrap();
+    let state = plain.state();
+    let template = &state["objects"][format!("sandbox/{}", plain.name())]["spec"]["podTemplate"];
+    assert_eq!(template["spec"]["volumes"].as_array().unwrap().len(), 4);
+    assert!(template["metadata"]["annotations"]
+        .get("gke-gcsfuse/volumes")
+        .is_none());
+}
+
+#[test]
+fn a_bad_store_volume_is_refused_before_anything_is_created() {
+    for (bucket, path) in [
+        ("", "/opt/branchyard/store"),
+        ("gs://acme", "/opt/branchyard/store"),
+        ("acme tools", "/opt/branchyard/store"),
+        ("acme,x", "/opt/branchyard/store"),
+        ("acme", "relative/store"),
+        ("acme", "/"),
+    ] {
+        let mut target = config();
+        target.store = Some(StoreVolume {
+            bucket: bucket.into(),
+            path: path.into(),
+        });
+        assert!(target.validate().is_err(), "{bucket} {path}");
+    }
+    let mut target = config();
+    target.store = Some(store("acme-tools/store"));
+    target.validate().unwrap();
+}
+
+#[test]
+fn the_sidecar_gke_injects_for_the_store_is_accepted_and_nothing_else_is() {
+    let inject = |state: &mut Value, name: &str, extra: Option<(&str, Value)>| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["initContainers"] =
+            json!([{"name":"gke-gcsfuse-sidecar","image":"gcs-fuse-csi-driver-sidecar-mounter"}]);
+        pod["spec"]["volumes"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-tmp","emptyDir":{}}));
+        pod["status"]["initContainerStatuses"] =
+            json!([{"name":"gke-gcsfuse-sidecar","ready":true,"state":{"running":{}}}]);
+        if let Some((key, value)) = extra {
+            match key {
+                "container" => pod["spec"]["containers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(value),
+                "volume" => pod["spec"]["volumes"].as_array_mut().unwrap().push(value),
+                "init" => pod["spec"]["initContainers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(value),
+                _ => unreachable!(),
+            }
+        }
+    };
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let name = fixture.name();
+    fixture.edit(|state| inject(state, &name, None));
+    true_in(&fixture).unwrap();
+    // As a regular container, as older clusters inject it.
+    fixture.edit(|state| {
+        let pod = &mut state["objects"][format!("pod/{name}")];
+        pod["spec"]["initContainers"] = json!([]);
+        pod["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-sidecar"}));
+        pod["status"]["containerStatuses"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"gke-gcsfuse-sidecar","ready":true,"state":{"running":{}}}));
+    });
+    true_in(&fixture).unwrap();
+
+    for (what, extra) in [
+        ("container", json!({"name":"miner"})),
+        ("init", json!({"name":"miner"})),
+        ("volume", json!({"name":"hostpath","hostPath":{"path":"/"}})),
+    ] {
+        let fixture = Fixture::with_store(store("acme-tools"));
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        fixture.edit(|state| inject(state, &name, Some((what, extra.clone()))));
+        assert!(true_in(&fixture).is_err(), "{what}");
+    }
+
+    // An allocation with no store accepts no sidecar at all.
+    let plain = Fixture::new(Network::Deny);
+    plain.provider.ensure(&spec()).unwrap();
+    let name = plain.name();
+    plain.edit(|state| inject(state, &name, None));
+    assert!(true_in(&plain).is_err());
 }

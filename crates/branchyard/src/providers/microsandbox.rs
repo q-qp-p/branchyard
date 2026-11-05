@@ -104,6 +104,12 @@ impl ProviderKind for SandboxOptions {
         microsandbox(yard, self)
     }
 
+    /// The guest mounts the store read-only at the host's path
+    /// ([`spec`]).
+    fn sees_store(&self, yard: &Yard) -> bool {
+        store_to_mount(yard).is_some()
+    }
+
     fn destroy(&self, yard: &Yard, sandbox: &str) -> Result<String, String> {
         let said = destroy_orphan(microsandbox(yard, self), sandbox);
         match said.starts_with("could not") {
@@ -132,6 +138,11 @@ pub(crate) fn spec(
         Mount::writable(home, HOME),
         Mount::read_only(&git_dir, &git_dir),
     ];
+    // The shared tool store, read-only at the same path, so the links a
+    // turn makes into it (`crate::toolstore`) resolve in the guest.
+    if let Some(store) = store_to_mount(yard) {
+        mounts.push(Mount::read_only(&store.root, &store.root));
+    }
     // Every scratch area this branch may reach is mounted read-write at a
     // fixed guest path, named for the harness the same way the local
     // provider's environment variable does; see `docs/storage.md`. One
@@ -165,6 +176,11 @@ pub(crate) fn spec(
         persist: keep,
     };
     Ok((spec, env))
+}
+
+/// The yard's tool store when its root exists here to be mounted.
+fn store_to_mount(yard: &Yard) -> Option<Arc<crate::toolstore::ToolStore>> {
+    yard.tool_store().filter(|store| store.root.is_dir())
 }
 
 /// The provider a Microsandbox branch runs through: the yard's own

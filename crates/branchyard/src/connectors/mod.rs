@@ -523,8 +523,8 @@ pub(crate) fn prepare(
             }
         }
     }
-    let store = yard.store();
-    let cache = store.dir().join("connectors").join("cache");
+    let tool_store = crate::toolstore::for_turn(yard, record);
+    let cache = yard.store().dir().join("connectors").join("cache");
     let staged = home.join(format!(
         ".branchyard/.connectors-{}",
         keys::random_id().map_err(|e| e.to_string())?
@@ -533,6 +533,16 @@ pub(crate) fn prepare(
     let placed = (|| -> Result<(), String> {
         fs::create_dir_all(&staged).map_err(|e| format!("create {}: {e}", staged.display()))?;
         for bundle in &bundles {
+            // The store's package, linked, when the turn's harness sees
+            // the store; else the cached package, copied.
+            if let Some(entry) = tool_store
+                .as_ref()
+                .and_then(|s| s.connector(&bundle.id, &bundle.hash))
+            {
+                std::os::unix::fs::symlink(&entry, staged.join(&bundle.id))
+                    .map_err(|e| format!("link {}: {e}", entry.display()))?;
+                continue;
+            }
             let package = cached_package(gateway.packager.as_ref(), &cache, bundle)?;
             packager::copy_tree(&package, &staged.join(&bundle.id))?;
         }
@@ -675,7 +685,7 @@ pub(crate) fn turn_claims(token: TurnToken<'_>) -> Result<Claims, String> {
 
 /// A bundle's package from the cache, packaged first if needed; keyed by
 /// the bundle's hash, so a changed bundle is packaged again.
-fn cached_package(
+pub(crate) fn cached_package(
     packager: &dyn Packager,
     cache: &Path,
     bundle: &Bundle,

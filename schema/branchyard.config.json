@@ -121,6 +121,10 @@
       "$ref": "#/$defs/Connectors",
       "description": "The connector gateway (docs/connectors.md): where it is, which\nbundles it serves, how `by gateway` runs it, and the grants a new\nbranch gets when `--connector` names none."
     },
+    "tools": {
+      "$ref": "#/$defs/Tools",
+      "description": "The shared, content-addressed tool store (docs/tools-model.md): the\nread-only directory a turn links its skills and connector packages\nfrom, and the bucket a Kubernetes sandbox mounts it from."
+    },
     "network": {
       "$ref": "#/$defs/NetworkConfig",
       "description": "The hosts a new branch's harness may reach (docs/egress.md), when\n`--network` gives none: an allowlist enforced through Branchyard's\negress proxy. Unset: open."
@@ -1346,6 +1350,27 @@
         }
       },
       "description": "`[connectors]`."
+    },
+    "Tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "store": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The store's root, such as `/opt/branchyard/store`: it holds\n`skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`,\nfilled by `by tools pull` or `by tools publish`. A turn links the\nentries it needs instead of copying them into its home. Sandboxes\nsee it at the same path. Without it, every turn copies."
+        },
+        "store_bucket": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The Cloud Storage bucket that mirrors the store, `BUCKET` or\n`BUCKET/PREFIX`. A GKE Agent Sandbox mounts it read-only at `store`\nwith the Cloud Storage FUSE CSI driver (docs/agent-sandbox-gke.md)."
+        }
+      },
+      "description": "`[tools]`: the shared tool store."
     },
     "NetworkConfig": {
       "type": "object",

@@ -150,6 +150,9 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
     if let Some(gateway) = gateway {
         yard.use_connectors(gateway);
     }
+    if let Some(store) = tool_store(&config.tools) {
+        yard.use_tool_store(store);
+    }
     if person.is_some() {
         yard.use_approvals(ApprovalSettings {
             person,
@@ -168,6 +171,20 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
         options,
     }));
     Ok(())
+}
+
+// `[tools]`
+
+/// The shared tool store `[tools]` describes: `store`, with `store_bucket`
+/// as its Cloud Storage mirror. `None` without `store`.
+pub fn tool_store(config: &config::Tools) -> Option<crate::toolstore::ToolStore> {
+    config
+        .store
+        .as_ref()
+        .map(|root| crate::toolstore::ToolStore {
+            root: PathBuf::from(root),
+            bucket: config.store_bucket.clone(),
+        })
 }
 
 // `[connectors]`

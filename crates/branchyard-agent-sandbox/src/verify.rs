@@ -224,12 +224,54 @@ pub(crate) fn network(
     )
 }
 
+/// `pod` without what GKE injects for the Cloud Storage FUSE CSI driver
+/// when the allocation mounts the tool store: the driver's sidecar (a
+/// container or an init container, by cluster version), its status, and the
+/// volumes named for it. Only those exact names go; anything else GKE or an
+/// admission webhook adds still fails the checks below.
+fn without_gcsfuse(pod: &Value) -> Value {
+    let mut pod = pod.clone();
+    let named = |item: &Value, prefix: bool, name: &str| {
+        item["name"]
+            .as_str()
+            .is_some_and(|n| n == name || (prefix && n.starts_with(name)))
+    };
+    for (path, name, prefix) in [
+        ("/spec/containers", manifest::GCSFUSE_SIDECAR, false),
+        ("/spec/initContainers", manifest::GCSFUSE_SIDECAR, false),
+        ("/spec/volumes", manifest::GCSFUSE_VOLUME_PREFIX, true),
+        (
+            "/status/containerStatuses",
+            manifest::GCSFUSE_SIDECAR,
+            false,
+        ),
+        (
+            "/status/initContainerStatuses",
+            manifest::GCSFUSE_SIDECAR,
+            false,
+        ),
+    ] {
+        if let Some(items) = pod.pointer_mut(path).and_then(Value::as_array_mut) {
+            items.retain(|item| !named(item, prefix, name));
+        }
+    }
+    pod
+}
+
 pub(crate) fn pod(
     control: &Control,
-    object: &Value,
+    live: &Value,
     receipt: &Receipt,
     sandbox_uid: &str,
 ) -> Result<PodIdentity, ProviderError> {
+    let cleaned;
+    let object = match receipt.target.store {
+        Some(_) => {
+            cleaned = without_gcsfuse(live);
+            &cleaned
+        }
+        None => live,
+    };
     let pod_uid = owned(object, receipt, receipt.pod_uid.as_deref())?;
     check(
         object.pointer("/metadata/deletionTimestamp").is_none(),

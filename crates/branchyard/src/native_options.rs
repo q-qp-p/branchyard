@@ -97,11 +97,21 @@ impl AgentSandboxOptions {
     }
 
     pub(crate) fn config(&self) -> branchyard_agent_sandbox::Config {
+        self.config_with(None)
+    }
+
+    /// The target with the shared tool store mounted from `store`, when
+    /// the yard has a store and a bucket for it.
+    pub(crate) fn config_with(
+        &self,
+        store: Option<branchyard_agent_sandbox::StoreVolume>,
+    ) -> branchyard_agent_sandbox::Config {
         branchyard_agent_sandbox::Config {
             context: self.context.clone(),
             namespace: self.namespace.clone(),
             runtime: self.runtime,
             network: self.network,
+            store,
         }
     }
 

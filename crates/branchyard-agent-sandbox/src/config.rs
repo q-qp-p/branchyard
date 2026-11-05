@@ -42,6 +42,72 @@ pub enum Network {
     Unrestricted,
 }
 
+/// A Cloud Storage bucket that holds Branchyard's shared tool store, mounted
+/// read-only into the allocation with the Cloud Storage FUSE CSI driver
+/// (`docs/agent-sandbox-gke.md`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StoreVolume {
+    /// The bucket, `BUCKET` or `BUCKET/PREFIX` where the store sits below a
+    /// prefix.
+    pub bucket: String,
+    /// The absolute path the store is mounted at: the store's root on the
+    /// host, so the links a turn makes into it resolve here.
+    pub path: String,
+}
+
+impl StoreVolume {
+    /// The bucket's name, without any prefix.
+    pub(crate) fn bucket_name(&self) -> &str {
+        self.bucket.split('/').next().unwrap_or_default()
+    }
+
+    /// The prefix below the bucket, if there is one.
+    pub(crate) fn prefix(&self) -> Option<&str> {
+        self.bucket
+            .split_once('/')
+            .map(|(_, prefix)| prefix.trim_matches('/'))
+            .filter(|prefix| !prefix.is_empty())
+    }
+
+    /// The driver's mount options: the cache the shared tools are read
+    /// through, and the prefix when the store sits below one.
+    pub(crate) fn mount_options(&self) -> String {
+        // A bucket keeps no file modes: give everything 755 so connector
+        // launchers (`bin/<id>`) stay runnable; the mount is read-only.
+        let mut options = String::from(
+            "implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true",
+        );
+        if let Some(prefix) = self.prefix() {
+            options.push_str(",only-dir=");
+            options.push_str(prefix);
+        }
+        options
+    }
+
+    fn validate(&self) -> Result<(), ProviderError> {
+        let plain = |s: &str| {
+            !s.is_empty()
+                && !s.bytes().any(|b| {
+                    b.is_ascii_whitespace() || b.is_ascii_control() || b == b',' || b == b'"'
+                })
+        };
+        if !plain(self.bucket_name())
+            || self.prefix().is_some_and(|p| !plain(p))
+            || self.bucket.starts_with("gs://")
+        {
+            return Err(invalid(
+                "the tool store bucket must be BUCKET or BUCKET/PREFIX",
+            ));
+        }
+        if !self.path.starts_with('/') || self.path.len() < 2 || !plain(&self.path) {
+            return Err(invalid("the tool store mount path must be absolute"));
+        }
+        Ok(())
+    }
+}
+
 /// Operator-selected target, authenticated by the host's kubeconfig.
 /// No workload-supplied PodSpec, command, kubeconfig or credential is accepted.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -58,6 +124,11 @@ pub struct Config {
     /// Enforced workload network boundary; defaults to deny.
     #[serde(default)]
     pub network: Network,
+    /// The shared tool store to mount read-only, when the cluster has the
+    /// Cloud Storage FUSE CSI driver and the namespace's workload identity
+    /// can read the bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<StoreVolume>,
 }
 
 impl Config {
@@ -71,6 +142,9 @@ impl Config {
         }
         if !dns_label(&self.namespace) {
             return Err(invalid("the namespace must be a DNS label"));
+        }
+        if let Some(store) = &self.store {
+            store.validate()?;
         }
         Ok(())
     }

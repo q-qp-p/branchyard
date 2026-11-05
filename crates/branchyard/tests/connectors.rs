@@ -281,6 +281,66 @@ fn a_granted_turn_gets_packages_an_index_and_a_signed_token() {
     );
 }
 
+/// A store with the bundle's package is linked into the home, not
+/// packaged or copied; a store without it, or a provider that cannot see
+/// the store, leaves the copy path as before.
+#[test]
+fn a_connector_the_store_has_is_linked_and_the_copy_path_stays_the_fallback() {
+    use branchyard::toolstore::ToolStore;
+    let f = Fixture::new();
+    let packager = gateway(&f, &["github", "linear"]);
+    let store = f.dir.join("tool-store");
+    let entry = |id: &str, from: &str| {
+        let dir = store.join(format!("connectors/{id}@hash-{id}"));
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("# {id} from {from}\n")).unwrap();
+        dir
+    };
+    let github = entry("github", "the store");
+    f.yard.use_tool_store(ToolStore::new(&store));
+    let run = |name: &str| {
+        f.task(
+            "SH cat \"$HOME/.branchyard/connectors/github/SKILL.md\"\n\
+             SH cat \"$HOME/.branchyard/connectors/linear/SKILL.md\"",
+        )
+        .options(TaskOptions {
+            name: Some(name.into()),
+            ..granted(&f, &["github:read", "linear:read"])
+        })
+        .run()
+        .unwrap()
+    };
+    let branch = run("linked");
+    let said = text(&branch.events().unwrap());
+    assert!(said.contains("# github from the store"), "{said}");
+    // Linear is not in the store: packaged and copied.
+    assert!(said.contains("# linear\n"), "{said}");
+    assert_eq!(packager.packaged.load(Ordering::SeqCst), 1);
+    let home = PathBuf::from(stored_record(&f.root, "linked")["home"].as_str().unwrap());
+    let connectors = home.join(".branchyard/connectors");
+    assert_eq!(fs::read_link(connectors.join("github")).unwrap(), github);
+    assert!(fs::symlink_metadata(connectors.join("linear"))
+        .unwrap()
+        .is_dir());
+    // The tool tree finds the linked package through its own link.
+    let tools = home.join(".branchyard/tools");
+    assert!(fs::read_to_string(tools.join("INDEX.md"))
+        .unwrap()
+        .contains("- github"));
+    assert!(tools.join("connectors/github/SKILL.md").is_file());
+    // A bundle that changed is another entry: the old one is not used.
+    fs::rename(&github, store.join("connectors/github@hash-old")).unwrap();
+    let again = run("changed");
+    let said = text(&again.events().unwrap());
+    assert!(said.contains("# github\n"), "{said}");
+    let home = PathBuf::from(stored_record(&f.root, "changed")["home"].as_str().unwrap());
+    assert!(
+        fs::symlink_metadata(home.join(".branchyard/connectors/github"))
+            .unwrap()
+            .is_dir()
+    );
+}
+
 #[test]
 fn a_connect_token_names_the_person_for_the_connect_routes_only() {
     let f = Fixture::new();

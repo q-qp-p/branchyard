@@ -238,6 +238,18 @@ pub enum Command {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// The shared tool store: publish it, pull it
+    ///
+    /// Skills and connector packages named by their content, which turns
+    /// link instead of copy (see docs/tools-model.md).
+    #[command(display_order = 118, subcommand_required = true, after_help = crate::tools_cmd::TOOLS_EXAMPLES)]
+    Tools {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: crate::tools_cmd::ToolsAction,
+    },
     /// Remove a branch and free its name
     ///
     /// Removes the branch's worktree and record. A removed child leaves its parent's

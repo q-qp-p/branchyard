@@ -131,6 +131,40 @@ dedicated cluster. Deleting a cluster removes its managed pools; leave the
 existing network, subnet, NAT, node service account and unrelated clusters
 intact. The helper has no delete command.
 
+## Mount the tool store
+
+A turn can link its skills and connector packages from a shared, read-only tool store instead of copying them into each allocation ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)). On GKE the store is a Cloud Storage bucket, filled with `by tools publish --gcs gs://BUCKET/PREFIX`, and mounted with the Cloud Storage FUSE CSI driver. Set it in the worker's configuration:
+
+```toml
+[tools]
+store = "/opt/branchyard/store"      # the same path on the worker and in the pod
+store_bucket = "BUCKET/PREFIX"       # or BUCKET
+```
+
+(A server uses `tools.store` and `tools.store_bucket` in its JSON file.) With `store_bucket` set, each pod the provider builds gets one more volume and one more mount on the runtime container:
+
+| Where | Value |
+|---|---|
+| Pod annotation | `gke-gcsfuse/volumes: "true"`, so GKE injects the driver's sidecar |
+| Volume `tool-store` | `csi` with `driver: gcsfuse.csi.storage.gke.io`, `readOnly: true`, `volumeAttributes: {bucketName: BUCKET, mountOptions: "implicit-dirs,file-mode=755,dir-mode=755,file-cache:enable-parallel-downloads:true"}`; a `PREFIX` adds `,only-dir=PREFIX` |
+| Mount | `readOnly: true` at `store` |
+
+The provider accepts the sidecar GKE injects (a container or an init container named `gke-gcsfuse-sidecar`, and volumes named `gke-gcsfuse-*`) when it checks the live pod, and only those. Without `store_bucket` the pod is what it was, and a turn copies.
+
+What the cluster needs, none of which the setup helper does:
+
+1. The driver: `gcloud container clusters update CLUSTER --update-addons=GcsFuseCsiDriver=ENABLED` (GKE 1.27 or later).
+2. Read access for the namespace's workload identity. The pod's service account is the namespace's `default`; grant it `roles/storage.objectViewer` on the bucket:
+
+   ```sh
+   gcloud storage buckets add-iam-policy-binding gs://BUCKET \
+     --role roles/storage.objectViewer \
+     --member "principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/PROJECT_ID.svc.id.goog/subject/ns/NAMESPACE/sa/default"
+   ```
+3. A route to Cloud Storage from the pod. The sidecar runs in the pod's network, so with `network = "deny"` (the default) it cannot read the bucket. Use `network = "unrestricted"`, or add your own egress rule for Google APIs; the provider adds none.
+
+Not done: no pod mounted a bucket on a live cluster. Whether the driver works in the gVisor and the Kata runtimes of this provider, and the NetworkPolicy above, are unverified. A bucket keeps no file modes, so the mount sets `file-mode=755` and `dir-mode=755` to keep connector launchers (`bin/<id>`) runnable; read-only, so nothing writes through it.
+
 ## Evidence and limits
 
 Hermetic verification on 2 November 2026 uses fake `gcloud`, `kubectl` and `curl`

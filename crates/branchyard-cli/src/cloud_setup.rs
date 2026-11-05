@@ -75,6 +75,9 @@ pub struct Gce {
     /// Read this environment variable into the worker's private keystore over SSH stdin; never pass a key value
     #[arg(long, value_name = "ENV_NAME", value_parser = ["GEMINI_API_KEY", "GOOGLE_API_KEY"])]
     forward_secret: Option<String>,
+    /// Pull the shared tool store from gs://BUCKET/PREFIX to /opt/branchyard/store at setup, and have the worker's server link turns to it; the VM's account needs roles/storage.objectViewer on the bucket
+    #[arg(long, value_name = "GS_URL")]
+    tools_store: Option<String>,
     /// Private deployment records; default is ~/.local/state/branchyard/compute-gce/PROJECT/ZONE/NAME
     #[arg(long, value_name = "PATH")]
     state_dir: Option<PathBuf>,
@@ -121,6 +124,7 @@ fn gce_command(args: &Gce) -> Command {
         ("--service-account", args.service_account.as_deref()),
         ("--scopes", args.scopes.as_deref()),
         ("--forward-secret", args.forward_secret.as_deref()),
+        ("--tools-store", args.tools_store.as_deref()),
     ] {
         if let Some(value) = value {
             command.args([flag, value]);
@@ -754,6 +758,8 @@ mod tests {
             "worker@test-project.iam.gserviceaccount.com",
             "--scopes",
             "storage-ro,logging-write",
+            "--tools-store",
+            "gs://acme-tools/store",
             "--apply",
         ])
         .unwrap();
@@ -782,6 +788,7 @@ mod tests {
                 "worker@test-project.iam.gserviceaccount.com",
             ),
             ("--scopes", "storage-ro,logging-write"),
+            ("--tools-store", "gs://acme-tools/store"),
             ("--version", env!("CARGO_PKG_VERSION")),
         ] {
             assert!(argv.windows(2).any(|pair| pair == [flag, value]), "{flag}");

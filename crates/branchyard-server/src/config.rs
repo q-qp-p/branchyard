@@ -905,6 +905,9 @@ pub struct Config {
     /// The connector gateway its branches' turns are given, and whether
     /// this server runs it; see `docs/connectors.md`. `None`: off.
     pub connectors: Option<ConnectorsConfig>,
+    /// The shared tool store its turns link skills and connector packages
+    /// from (docs/tools-model.md). `None`: every turn copies.
+    pub tools: Option<ToolsConfig>,
     /// The model gateway (docs/model-gateway.md), as `[models]` in
     /// branchyard.toml says it. `None`: off.
     pub models: Option<branchyard_setup::config::ModelsConfig>,
@@ -1040,6 +1043,17 @@ fn gateway_is_loopback(url: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
+/// `tools` in the configuration file: the shared tool store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolsConfig {
+    /// The store's root, filled by `by tools pull`; a sandbox sees it at
+    /// the same path.
+    pub store: PathBuf,
+    /// The Cloud Storage bucket (`BUCKET` or `BUCKET/PREFIX`) that mirrors
+    /// the store, which a GKE Agent Sandbox mounts read-only.
+    pub store_bucket: Option<String>,
+}
+
 /// `connectors` in the configuration file: the connector gateway.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectorsConfig {
@@ -1152,6 +1166,7 @@ impl Config {
             webhooks: Vec::new(),
             webhook_insecure: false,
             connectors: None,
+            tools: None,
             models: None,
             ceilings: BTreeMap::new(),
             approvals: branchyard::effects::ApprovalSettings::default(),
@@ -1260,6 +1275,15 @@ impl Config {
                 || knowledge.max_upload_bytes == 0
             {
                 return Err("managed_knowledge quotas must be positive".into());
+            }
+        }
+        if let Some(t) = &self.tools {
+            let checked = branchyard_setup::config::Tools {
+                store: Some(t.store.display().to_string()),
+                store_bucket: t.store_bucket.clone(),
+            };
+            if let Some((key, why)) = checked.problems() {
+                return Err(format!("{key}: {why}"));
             }
         }
         if let Some(c) = &self.connectors {
@@ -1888,6 +1912,9 @@ pub(crate) struct FileConfig {
     /// The connector gateway (docs/connectors.md): where it is, which
     /// bundles it serves, and whether this server runs it.
     connectors: Option<FileConnectors>,
+    /// The shared tool store (docs/tools-model.md): where it is, and the
+    /// bucket that mirrors it.
+    tools: Option<FileTools>,
     /// The model gateway (docs/model-gateway.md): backends, routes,
     /// budgets and prices, as `[models]` in branchyard.toml. A backend's
     /// `key` names an entry of `secrets`, else a variable of this server.
@@ -2053,6 +2080,22 @@ impl FileCeiling {
                 .map_err(at)?,
         })
     }
+}
+
+/// `tools`: the shared tool store; see `docs/tools-model.md`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct FileTools {
+    /// The store's root, such as `/opt/branchyard/store`: it holds
+    /// `skills/<name>@<digest>/` and `connectors/<id>@<bundle-hash>/`. A
+    /// turn links the entries it needs instead of copying them, and a
+    /// sandbox sees the store at this path.
+    store: PathBuf,
+    /// The Cloud Storage bucket that mirrors the store, `BUCKET` or
+    /// `BUCKET/PREFIX`, which a GKE Agent Sandbox mounts read-only with the
+    /// Cloud Storage FUSE CSI driver.
+    store_bucket: Option<String>,
 }
 
 /// `connectors`: the connector gateway; see `docs/connectors.md`.
@@ -2324,6 +2367,8 @@ pub struct Partial {
     pub webhooks: Vec<WebhookConfig>,
     pub webhook_insecure: bool,
     pub connectors: Option<ConnectorsConfig>,
+    /// `tools`, its relative store path resolved.
+    pub tools: Option<ToolsConfig>,
     pub models: Option<branchyard_setup::config::ModelsConfig>,
     pub ceilings: BTreeMap<String, branchyard::Ceiling>,
     pub approvals: branchyard::effects::ApprovalSettings,
@@ -2659,6 +2704,10 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             effects_proxy: c.effects_proxy,
             effects_listen: c.effects_listen,
             effects_sandbox_host: c.effects_sandbox_host,
+        }),
+        tools: file.tools.map(|t| ToolsConfig {
+            store: resolve(t.store),
+            store_bucket: t.store_bucket,
         }),
         models: match file.models {
             Some(models) => {
@@ -3102,6 +3151,11 @@ mod tests {
         // The repository's gateway: the key from the server's secrets,
         // branches named under the repository.
         let mut config = Config::new(dir.join("data"));
+        config.repos.push(("app".into(), dir.join("repo")));
+        config.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
         config.secrets = partial.secrets.clone();
         config.models = partial.models.clone();
         let gateway = crate::models::gateway_for(&config, "app").unwrap().unwrap();
@@ -3205,6 +3259,49 @@ mod tests {
             let error = load_file(&path).unwrap_err();
             assert!(error.contains(needle), "{approvals}: {error}");
         }
+    }
+
+    #[test]
+    fn the_tool_store_is_read_resolved_and_checked() {
+        let temp = tempfile::Builder::new()
+            .prefix("branchyard-config-")
+            .tempdir()
+            .unwrap();
+        let dir = temp.path();
+        let path = dir.join("server.json");
+        fs::write(
+            &path,
+            r#"{"listen": "127.0.0.1:0", "data_dir": "data", "repos": {"app": "repo"},
+                "tokens": [{"name": "ci", "token": "0123456789abcdef"}],
+                "tools": {"store": "store", "store_bucket": "acme-tools/store"}}"#,
+        )
+        .unwrap();
+        let tools = load_file(&path).unwrap().tools.unwrap();
+        assert_eq!(tools.store, dir.join("store"));
+        assert_eq!(tools.store_bucket.as_deref(), Some("acme-tools/store"));
+        let mut config = Config::new(dir.join("data"));
+        config.repos.push(("app".into(), dir.join("repo")));
+        config.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
+        config.tools = Some(tools);
+        config.validate().unwrap();
+        config.tools = Some(ToolsConfig {
+            store: dir.join("store"),
+            store_bucket: Some("gs://acme".into()),
+        });
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .contains("tools.store_bucket"));
+        fs::write(
+            &path,
+            r#"{"repos": {"app": "repo"}, "tokens": [{"name": "ci", "token": "0123456789abcdef"}],
+                "tools": {"store": "s", "bucket": "b"}}"#,
+        )
+        .unwrap();
+        assert!(load_file(&path).is_err());
     }
 
     #[test]

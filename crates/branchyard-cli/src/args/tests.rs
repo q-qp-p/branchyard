@@ -1511,6 +1511,51 @@ fn skills_actions_parse_with_json_anywhere() {
 }
 
 #[test]
+fn tools_actions_parse_and_a_pull_names_one_source() {
+    use crate::tools_cmd::ToolsAction;
+    let tools = |line: &str| match parse_str(line).unwrap() {
+        Command::Tools { json, action } => (json, action),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        tools("tools publish"),
+        (
+            false,
+            ToolsAction::Publish {
+                store: None,
+                oci: None,
+                gcs: None
+            }
+        )
+    );
+    assert_eq!(
+        tools("tools --json publish --store /s --oci r.example/a/b --gcs gs://b/p"),
+        (
+            true,
+            ToolsAction::Publish {
+                store: Some("/s".into()),
+                oci: Some("r.example/a/b".into()),
+                gcs: Some("gs://b/p".into())
+            }
+        )
+    );
+    assert_eq!(
+        tools("tools pull --from gs://b/p --store /s"),
+        (
+            false,
+            ToolsAction::Pull {
+                from: Some("gs://b/p".into()),
+                oci: None,
+                store: Some("/s".into())
+            }
+        )
+    );
+    assert!(err("tools pull").contains("--from"));
+    assert!(err("tools pull --from gs://b --oci r/x").contains("cannot be used"));
+    assert!(err("tools").contains("Usage"));
+}
+
+#[test]
 fn env_actions_parse() {
     let env = |line: &str| match parse_str(line).unwrap() {
         Command::Env { json, action } => (json, action),
