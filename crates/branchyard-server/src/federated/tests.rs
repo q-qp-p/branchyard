@@ -164,7 +164,8 @@ async fn iap_assertion_admits_a_bound_identity() {
         principal.origin,
         AuthenticationOrigin::Iap {
             email: "alice@example.com".into(),
-            sub: "accounts.google.com:1111".into()
+            sub: "accounts.google.com:1111".into(),
+            groups_at_ms: None,
         }
     );
     assert!(principal.connector_subject().starts_with("iap:"));
@@ -363,6 +364,7 @@ async fn oidc_admits_a_bound_identity_with_groups_from_the_claim() {
             issuer: OIDC_ISSUER.into(),
             sub: "workforce-subject-1".into(),
             email: Some("bob@example.com".into()),
+            groups_at_ms: None,
         }
     );
     let subject = principal.connector_subject();
@@ -372,12 +374,14 @@ async fn oidc_admits_a_bound_identity_with_groups_from_the_claim() {
         issuer: "https://other.test".into(),
         sub: "workforce-subject-1".into(),
         email: None,
+        groups_at_ms: None,
     };
     assert_ne!(subject, other_issuer.connector_subject());
     let mut iap = principal.clone();
     iap.origin = AuthenticationOrigin::Iap {
         email: "bob@example.com".into(),
         sub: "workforce-subject-1".into(),
+        groups_at_ms: None,
     };
     assert_ne!(subject, iap.connector_subject());
 }
@@ -704,6 +708,162 @@ async fn a_recheck_uses_the_binding_that_admitted_the_identity() {
     // No binding matching at all refuses as well.
     revoked.bindings.retain(|b| b.matches == "dave@example.com");
     assert!(!still_allows(None, &[revoked], &principal));
+}
+
+/// A Cloud Identity that reports `eng@example.com` until `removed` is set,
+/// then no groups.
+fn membership_server(removed: Arc<std::sync::atomic::AtomicBool>) -> MockHttp {
+    MockHttp::start(move |request| {
+        if request.header("authorization") != Some("Bearer meta-token") {
+            return Response::new(403, "denied");
+        }
+        match removed.load(Ordering::SeqCst) {
+            true => Response::json(200, &json!({})),
+            false => Response::json(
+                200,
+                &json!({"memberships": [{"groupKey": {"id": "eng@example.com"}}]}),
+            ),
+        }
+    })
+}
+
+/// An IAP-signed-in principal whose groups Cloud Identity gave, with the
+/// configuration that admitted it and the server it asked.
+async fn engineer_from_cloud_identity(
+    removed: &Arc<std::sync::atomic::AtomicBool>,
+) -> (IapConfig, MockHttp, Principal) {
+    let key = EsKey::new("iap-1");
+    let keys = serve_keys(key.jwks.clone());
+    let identity = membership_server(removed.clone());
+    let mut config = iap_config(&keys);
+    config.groups_from = Some(GroupsFrom::CloudIdentity);
+    config.groups_url = Some(identity.url());
+    let fed = federation(Some(config.clone()), Vec::new());
+    let principal = fed
+        .verify_iap(Some(&key.sign("iap-1", &iap_claims())))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(principal.name, "engineer");
+    // `keys` must outlive the sign-in only.
+    drop(keys);
+    (config, identity, principal)
+}
+
+fn groups_at(principal: &Principal) -> Option<u64> {
+    match &principal.origin {
+        AuthenticationOrigin::Iap { groups_at_ms, .. }
+        | AuthenticationOrigin::Oidc { groups_at_ms, .. } => *groups_at_ms,
+        _ => None,
+    }
+}
+
+fn captured_at(principal: &Principal, at: Option<u64>) -> Principal {
+    let mut out = principal.clone();
+    match &mut out.origin {
+        AuthenticationOrigin::Iap { groups_at_ms, .. }
+        | AuthenticationOrigin::Oidc { groups_at_ms, .. } => *groups_at_ms = at,
+        _ => {}
+    }
+    out
+}
+
+#[tokio::test]
+async fn sign_in_records_when_cloud_identity_gave_the_groups() {
+    let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (_, _, principal) = engineer_from_cloud_identity(&removed).await;
+    let at = groups_at(&principal).expect("the lookup time is recorded");
+    assert!(at <= branchyard_support::time::now_ms());
+    // It survives the durable round trip a queued operation makes.
+    let back: Principal =
+        serde_json::from_str(&serde_json::to_string(&principal).unwrap()).unwrap();
+    assert_eq!(groups_at(&back), Some(at));
+    // Groups from a token's claim carry no lookup time.
+    let keys = serve_keys(rsa_jwks());
+    let fed = federation(None, vec![oidc_config(&keys)]);
+    let header = format!("Bearer {}", rsa_sign(RSA_KID, &oidc_claims()));
+    let claimed = fed.verify_oidc(Some(&header)).await.unwrap().unwrap();
+    assert_eq!(groups_at(&claimed), None);
+}
+
+#[tokio::test]
+async fn a_person_removed_from_a_group_loses_it_when_old_groups_are_read_again() {
+    let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (config, identity, principal) = engineer_from_cloud_identity(&removed).await;
+    let now = branchyard_support::time::now_ms();
+    let old = captured_at(&principal, Some(now - GROUPS_TTL_MS - 1));
+    // A worker's own federation: its cache is empty, as another process's is.
+    let worker = federation(Some(config.clone()), Vec::new());
+    let before = identity.requests().len();
+
+    // Still a member: the lookup runs once and the engineer binding stands.
+    assert_eq!(worker.still_allows_fresh(&old, now), Ok(true));
+    assert_eq!(identity.requests().len(), before + 1);
+    // The answer is cached, so a second recheck asks nobody.
+    assert_eq!(worker.still_allows_fresh(&old, now), Ok(true));
+    assert_eq!(identity.requests().len(), before + 1);
+
+    // Removed from the group: the next worker to ask finds the domain
+    // binding, which allows less than the engineer's `run`.
+    removed.store(true, Ordering::SeqCst);
+    let later = federation(Some(config.clone()), Vec::new());
+    assert_eq!(later.still_allows_fresh(&old, now), Ok(false));
+    // Judged on the groups captured at sign-in alone, he would still pass.
+    assert!(still_allows(Some(&config), &[], &old));
+}
+
+#[tokio::test]
+async fn groups_younger_than_the_cache_are_not_read_again() {
+    let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (config, identity, principal) = engineer_from_cloud_identity(&removed).await;
+    removed.store(true, Ordering::SeqCst);
+    let now = branchyard_support::time::now_ms();
+    let young = captured_at(&principal, Some(now - 1_000));
+    let worker = federation(Some(config), Vec::new());
+    let before = identity.requests().len();
+    assert_eq!(worker.still_allows_fresh(&young, now), Ok(true));
+    assert_eq!(
+        identity.requests().len(),
+        before,
+        "no lookup for young groups"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_lookup_on_a_recheck_refuses_instead_of_guessing() {
+    let removed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (mut config, _, principal) = engineer_from_cloud_identity(&removed).await;
+    let broken = MockHttp::start(|_| Response::new(503, "down"));
+    config.groups_url = Some(broken.url());
+    let now = branchyard_support::time::now_ms();
+    let old = captured_at(&principal, Some(now - GROUPS_TTL_MS - 1));
+    let worker = federation(Some(config), Vec::new());
+    let refusal = worker.still_allows_fresh(&old, now).unwrap_err();
+    assert!(matches!(refusal, Refusal::Unavailable(_)), "{refusal:?}");
+    let api: ApiError = refusal.into();
+    assert_eq!(api.body.code, "identity_unavailable");
+}
+
+#[tokio::test]
+async fn claim_groups_are_checked_as_captured() {
+    let keys = serve_keys(rsa_jwks());
+    let identity = identity_server(false);
+    let mut config = oidc_config(&keys);
+    config.groups_from = Some(GroupsFrom::CloudIdentity);
+    config.groups_url = Some(identity.url());
+    let fed = federation(None, vec![config.clone()]);
+    let header = format!("Bearer {}", rsa_sign(RSA_KID, &oidc_claims()));
+    let principal = fed.verify_oidc(Some(&header)).await.unwrap().unwrap();
+    assert_eq!(groups_at(&principal), None);
+    let worker = federation(None, vec![config]);
+    assert_eq!(
+        worker.still_allows_fresh(&principal, u64::MAX / 2),
+        Ok(true)
+    );
+    assert!(
+        identity.requests().is_empty(),
+        "a claim's groups are not looked up"
+    );
 }
 
 mod http {

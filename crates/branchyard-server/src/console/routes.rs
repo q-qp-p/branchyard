@@ -34,6 +34,10 @@ pub(crate) fn router() -> Router<Shared> {
             "/v1/workspaces/{workspace}/sessions/{session}/cancel",
             post(cancel),
         )
+        .route(
+            "/v1/workspaces/{workspace}/sessions/{session}/readmit",
+            post(readmit),
+        )
         .route("/v1/workspaces/{workspace}/actions/{action}", post(action))
         .route("/v1/execution-presets", get(execution_presets))
         .route(
@@ -479,6 +483,13 @@ async fn cancel(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     super::runtime::control(&app, &caller, &wid, &sid, &headers, "cancel", json!({})).map(Json)
+}
+async fn readmit(
+    State(app): State<Shared>,
+    Path((wid, sid)): Path<(String, String)>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Value>, ApiError> {
+    super::runtime::readmit(&app, &caller, &wid, &sid).map(Json)
 }
 async fn action(
     State(app): State<Shared>,

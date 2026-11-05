@@ -664,8 +664,17 @@ fn run(
     // The session's turn manifest: resolved when it started, and again
     // only when its tools changed (`crate::manifest`). Kept with the
     // branch, written into its home, and named in its token.
-    let manifest =
-        crate::manifest::settle(turn.yard, &scoped, &scopes, turn.options.policy_version);
+    // A turn that wakes the branch's kept sandbox resolves it again: what
+    // the person deselected or the policy withdrew while it slept is gone,
+    // and the bundles are the ones this host serves now.
+    let waking = crate::placement::wakes_kept_sandbox(turn.yard, record, fence);
+    let manifest = crate::manifest::settle(
+        turn.yard,
+        &scoped,
+        &scopes,
+        turn.options.policy_version,
+        waking,
+    );
     if record.manifest.as_ref() != Some(&manifest) {
         record.manifest = Some(manifest.clone());
         store.write_fenced(record, fence)?;
@@ -680,6 +689,15 @@ fn run(
                 return Ok(driven);
             }
         }
+    }
+    // The skills this host holds are the ones the session was admitted
+    // with (`crate::bundles`); a connector's bundle is held to the manifest
+    // below, where it is linked or copied. Before anything starts.
+    let tool_store = crate::toolstore::for_turn(turn.yard, record);
+    if let Err(mismatch) = crate::bundles::verify_skills(&manifest, tool_store.as_deref()) {
+        recorder.record(Activity::Warning(mismatch.to_string()))?;
+        driven.end = End::failed(mismatch.to_string());
+        return Ok(driven);
     }
     // A sandboxed harness's delegation tools, served from this host for
     // this turn with a token of its own; stopped, with each session's
@@ -710,19 +728,20 @@ fn run(
             None
         }
     };
-    let mut connectors = match crate::connectors::prepare(
-        turn.yard,
-        &scoped,
-        deadline_ms,
-        &scopes,
-        Some(&manifest_digest),
-    ) {
-        Ok(connectors) => connectors,
-        Err(reason) => {
-            driven.end = End::failed(format!("could not provide connectors: {reason}"));
-            return Ok(driven);
-        }
-    };
+    let mut connectors =
+        match crate::connectors::prepare(turn.yard, &scoped, deadline_ms, &scopes, Some(&manifest))
+        {
+            Ok(connectors) => connectors,
+            Err(reason) if reason.starts_with(crate::bundles::BUNDLE_MISMATCH) => {
+                recorder.record(Activity::Warning(reason.clone()))?;
+                driven.end = End::failed(reason);
+                return Ok(driven);
+            }
+            Err(reason) => {
+                driven.end = End::failed(format!("could not provide connectors: {reason}"));
+                return Ok(driven);
+            }
+        };
     for warning in connectors.iter().flat_map(|prepared| &prepared.warnings) {
         recorder.record(Activity::Warning(warning.clone()))?;
     }
@@ -823,7 +842,6 @@ fn run(
     // The repository skills fixed for the branch, read again from their
     // commit: never from the worktree its turns change.
     let skills = crate::skills::for_turn(turn.yard.root(), record.skills.as_ref());
-    let tool_store = crate::toolstore::for_turn(turn.yard, record);
     let provisioned = match crate::provisioning::prepare(
         record,
         turn.profile,
@@ -1813,6 +1831,10 @@ fn run(
             }
             Err(error) => recorder.record(Activity::Warning(format!("kill failed: {error}")))?,
         }
+        // No token is renewed in, or left beside, a sandbox that is paused.
+        if let Some(prepared) = connectors.as_mut() {
+            prepared.retire();
+        }
         for activity in placement.release(turn.yard, record, fence) {
             recorder.record(activity)?;
         }
@@ -1843,6 +1865,12 @@ fn run(
             }
         }
         Err(error) => recorder.record(Activity::Warning(format!("close failed: {error}")))?,
+    }
+    // The renewer stops and the token file goes before the sandbox is
+    // paused (a copied home returns without it), so a paused sandbox holds
+    // no token; the next turn mints another (`docs/tools-model.md`, step 7).
+    if let Some(prepared) = connectors.as_mut() {
+        prepared.retire();
     }
     for activity in placement.release(turn.yard, record, fence) {
         recorder.record(activity)?;

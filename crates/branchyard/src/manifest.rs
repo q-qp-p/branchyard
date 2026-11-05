@@ -58,7 +58,25 @@ pub struct ManifestConnector {
     /// The connector's id.
     pub id: String,
     /// The packager's hash of its bundle (`Bundle::hash`). Empty when the
-    /// gateway did not serve it when the manifest was resolved.
+    /// gateway did not serve it when the manifest was resolved; a turn
+    /// then checks nothing against it.
+    pub digest: String,
+    /// The BLAKE3 hash of the package's files as the shared tool store's
+    /// index listed them when the manifest was resolved
+    /// ([`crate::toolstore`]); absent when the store had no entry. A turn
+    /// that links the store's package checks it against this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// One built-in skill the session was given, and the content hash of its
+/// files on the host that admitted it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestSkill {
+    /// The skill's name.
+    pub id: String,
+    /// [`crate::toolstore::skill_digest`]: BLAKE3 over the skill's files,
+    /// the digest in its tool-store path (`skills/<name>@<digest>`).
     pub digest: String,
 }
 
@@ -77,6 +95,13 @@ pub struct TurnManifest {
     /// The bundle behind each granted connector.
     #[serde(default)]
     pub connectors: Vec<ManifestConnector>,
+    /// The digest of each built-in skill staged for the session. A turn
+    /// that holds a skill with another digest, or links a store entry whose
+    /// files hash to another, fails `bundle_mismatch`
+    /// ([`crate::bundles`]). Empty in a manifest resolved before skills
+    /// were recorded, which checks nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_digests: Vec<ManifestSkill>,
     /// What the session may delegate; absent when it may not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Envelope>,
@@ -170,14 +195,25 @@ fn canonical(value: &Value) -> String {
 /// are those it was resolved for, else one resolved now. `record` is the
 /// branch as scoped by the person's ceiling. `policy_version` is the
 /// server's, when it gave one: a manifest that otherwise stands takes it.
+/// `resumed` is a turn that wakes the branch's kept (paused) sandbox: the
+/// manifest is resolved again whatever it holds, so a tool deselected or
+/// disallowed while the sandbox slept is gone and the bundles are those
+/// this host serves now (`docs/tools-model.md`, step 7).
 pub(crate) fn settle(
     yard: &Yard,
     record: &crate::state::Record,
     scopes: &crate::access::TokenScopes,
     policy_version: Option<u64>,
+    resumed: bool,
 ) -> TurnManifest {
     let stored = record.manifest.as_ref();
     let mut fresh = resolve(yard, record, scopes, policy_version.unwrap_or(0));
+    if resumed {
+        if policy_version.is_none() {
+            fresh.policy_version = stored.map_or(0, |s| s.policy_version);
+        }
+        return fresh;
+    }
     match stored {
         Some(stored) if stored.same_tools(&fresh) => {
             let mut kept = stored.clone();
@@ -224,15 +260,43 @@ fn resolve(
         (Some(gateway), false) => gateway.packager.served().unwrap_or_default(),
         _ => Vec::new(),
     };
+    // The store's index, when it has one: a store without `store.json` is a
+    // store that names no digests, and a manifest then records none for it
+    // (a turn checks nothing it was not given). One that is unreadable is
+    // said, not hidden.
+    let listed = yard
+        .tool_store()
+        .filter(|store| store.root.join(crate::toolstore::INDEX_FILE).is_file())
+        .and_then(|store| {
+            branchyard_support::best_effort(
+                "read the tool store's index for the manifest's package digests",
+                crate::toolstore::read_index(&store.root),
+            )
+        });
     let connectors = branchyard_provision::connectors::connectors(&grants)
         .into_iter()
-        .map(|id| ManifestConnector {
-            digest: served
+        .map(|id| {
+            let digest = served
                 .iter()
                 .find(|b| b.id == id)
                 .map(|b| b.hash.clone())
-                .unwrap_or_default(),
-            id,
+                .unwrap_or_default();
+            let content = listed.as_ref().and_then(|index| {
+                index
+                    .entries
+                    .iter()
+                    .find(|e| {
+                        e.kind == crate::toolstore::Kind::Connector
+                            && e.id == id
+                            && e.key() == digest
+                    })
+                    .map(|e| e.digest.clone())
+            });
+            ManifestConnector {
+                digest,
+                content,
+                id,
+            }
         })
         .collect();
     TurnManifest {
@@ -244,6 +308,8 @@ fn resolve(
             None => ManifestSkills::All,
         },
         connectors,
+        skill_digests: crate::bundles::skill_digests(spec.and_then(|p| p.skills.as_deref()))
+            .unwrap_or_default(),
         helpers: record.grant.as_ref().map(|g| g.envelope.clone()),
         models: scopes.models.clone(),
         network: scopes.network.as_ref().map(|n| n.policy.clone()),
@@ -268,7 +334,9 @@ mod tests {
             connectors: vec![ManifestConnector {
                 id: "github".into(),
                 digest: "h1".into(),
+                content: None,
             }],
+            skill_digests: Vec::new(),
             helpers: None,
             models: Some(vec!["claude-*".into()]),
             network: Some("open".into()),

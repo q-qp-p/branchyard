@@ -1787,6 +1787,14 @@ class Client:
         """Queue cancellation of one native session."""
         return self._operation(self._session(workspace, session, "/cancel"), {}, key)
 
+    def readmit_workspace_session(self, workspace: str, session: str) -> Record:
+        """Run the tool admission check again from the session's stored tools
+        and record the answering server's ceiling and the current policy
+        version (`policy_version`, `server_ceiling`). The way past a
+        `policy_changed` that asked for re-admission; a refusal is the same
+        `policy_changed` and changes nothing."""
+        return Record(self.post(self._session(workspace, session, "/readmit"), {}))
+
     def workspace_action(self, workspace: str, action: str, *, revision: int, key: Optional[str] = None) -> Operation:
         """Queue a revision-checked lifecycle intent, such as archive or restore.
         Unsupported provider capabilities remain explicit server errors."""

@@ -1030,3 +1030,341 @@ async fn a_recheck_names_what_the_policy_no_longer_allows() {
     assert_eq!(status, StatusCode::OK, "{put}");
     refused(allowed, "helper", "*");
 }
+
+// ---------------------------------------------------------------------------
+// Workers hold a session to the policy it was admitted under.
+// ---------------------------------------------------------------------------
+
+/// Holds every queued start until `open`, so a test can change what a
+/// worker finds when it claims one.
+struct HeldStarts {
+    native: ReservedFakeAgentPorts,
+    open: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::ops::Executor for HeldStarts {
+    fn execute(
+        &self,
+        operation: &crate::store::StoredOperation,
+        work: &Value,
+    ) -> crate::ops::Finished {
+        if matches!(
+            serde_json::from_value::<crate::work::Work>(work.clone()),
+            Ok(crate::work::Work::Console {
+                command: crate::console::ConsoleWork::Start { .. },
+                ..
+            })
+        ) {
+            branchyard_testkit::wait::until("the test to open the queue", || {
+                self.open.load(std::sync::atomic::Ordering::SeqCst)
+            });
+        }
+        crate::ops::Executor::execute(&self.native, operation, work)
+    }
+}
+
+fn session_row(fixture: &Fixture, started: &Value) -> crate::console_store::Record {
+    fixture
+        .app
+        .registry
+        .console_get(
+            Collection::Sessions,
+            started["session_id"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap()
+}
+
+/// Change a session's stored row, as another process's admission or a
+/// stale one would have written it.
+fn edit_session(fixture: &Fixture, started: &Value, edit: impl FnOnce(&mut Value)) {
+    let row = session_row(fixture, started);
+    let mut body = row.body.clone();
+    edit(&mut body);
+    fixture
+        .app
+        .registry
+        .console_mutate(&[crate::console::update(row, body)])
+        .unwrap();
+}
+
+async fn start_with_skill(fixture: &Fixture, wid: &str, key: &'static str) -> Value {
+    let (status, started) = fixture
+        .json(
+            Method::POST,
+            &format!("/v1/workspaces/{wid}/sessions"),
+            OWNER,
+            Some(key),
+            json!({"name":key,"prompt":"Hello","harness":"gemini-cli","access":"writer",
+                   "tools":[{"kind":"skill","id":"docx"}]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    started
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_records_the_server_ceiling_it_applied() {
+    let mock = super::connections::gateway();
+    let fixture = fixture(&mock);
+    let wid = fixture.workspace().await;
+    let started = start_with_skill(&fixture, &wid, "recorded").await;
+    let row = session_row(&fixture, &started);
+    // The ceiling the fixture's server sets for its owner, and its delegation.
+    assert_eq!(row.body["server_ceiling"]["allow_delegation"], true);
+    let recorded: Vec<String> = row.body["server_ceiling"]["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            format!(
+                "{}:{}",
+                c["connector"].as_str().unwrap(),
+                c["mode"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(recorded, ["atlassian:write", "github:read", "linear:write"]);
+    // It is the process's own, as `Ceiling::of_this_server` reads it.
+    let caller =
+        crate::api::Caller::authenticated(fixture.app.config.principals["owner"].clone(), None);
+    assert_eq!(
+        crate::console::policy::Ceiling::admitted(&row.body),
+        Some(crate::console::policy::Ceiling::of_this_server(
+            &fixture.app,
+            &caller
+        ))
+    );
+}
+
+#[test]
+fn a_claiming_process_holds_the_session_to_the_ceiling_it_was_admitted_under() {
+    use crate::console::policy::{claim_ceiling, Ceiling};
+    let read = |text: &str| GrantEntry::parse(text).unwrap();
+    let ceiling = |connectors: Option<Vec<&str>>, delegation: bool| Ceiling {
+        connectors: connectors.map(|list| list.into_iter().map(read).collect()),
+        allow_delegation: delegation,
+    };
+    let tools = |connector: &str, mode: &str| {
+        json!({"connectors":[{"connector":connector,"mode":mode,"account":null}],
+               "skills":["docx"]})
+    };
+    let helpers = json!({"skills":["docx"],"helpers":{"harnesses":["gemini-cli"]}});
+
+    // A worker with a looser configuration changes nothing: the session
+    // holds to what it was admitted under.
+    let admitted = ceiling(Some(vec!["github:read"]), false);
+    let looser = ceiling(None, true);
+    let effective = claim_ceiling(&looser, Some(&admitted), &tools("github", "read")).unwrap();
+    assert_eq!(effective, admitted);
+    // A row that breaks its own ceiling is refused, whatever the worker
+    // allows, and is not offered re-admission.
+    for broken in [
+        tools("github", "write"),
+        tools("linear", "read"),
+        helpers.clone(),
+    ] {
+        let error = claim_ceiling(&looser, Some(&admitted), &broken).unwrap_err();
+        assert_eq!(error.body.code, "policy_changed", "{error:?}");
+        assert!(
+            error
+                .body
+                .detail
+                .as_ref()
+                .is_none_or(|d| d.get("readmit").is_none()),
+            "{error:?}"
+        );
+    }
+
+    // A worker whose configuration is narrower refuses what it cannot
+    // hold, and asks for re-admission.
+    let wide = ceiling(None, true);
+    let narrow = ceiling(Some(vec!["github:read"]), false);
+    let fits = tools("github", "read");
+    assert_eq!(
+        claim_ceiling(&narrow, Some(&wide), &fits).unwrap(),
+        ceiling(Some(vec!["github:read"]), false),
+        "a session that still fits runs, under the narrower ceiling"
+    );
+    for (excess, id) in [
+        (tools("linear", "read"), "linear"),
+        (tools("github", "write"), "github"),
+    ] {
+        let error = claim_ceiling(&narrow, Some(&wide), &excess).unwrap_err();
+        assert_eq!(error.body.code, "policy_changed", "{error:?}");
+        let detail = error.body.detail.unwrap();
+        assert_eq!(detail["readmit"], true, "{detail}");
+        assert_eq!(detail["id"], id, "{detail}");
+        assert!(
+            error.body.message.contains("readmit"),
+            "{}",
+            error.body.message
+        );
+    }
+    let error = claim_ceiling(&narrow, Some(&wide), &helpers).unwrap_err();
+    assert_eq!(error.body.detail.unwrap()["readmit"], true);
+
+    // A session admitted before ceilings were recorded is held to the
+    // claiming process's own.
+    assert_eq!(claim_ceiling(&narrow, None, &fits).unwrap(), narrow);
+    assert!(claim_ceiling(&narrow, None, &tools("linear", "read")).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_claims_against_the_recorded_ceiling_not_its_own_configuration() {
+    let mock = super::connections::gateway();
+    let fixture = {
+        let url = format!("http://{}", mock.addr());
+        Fixture::with(false, move |config, root| {
+            config.connectors = Some(super::connections::connectors(root, &url, &["github"]));
+            // This server offers delegation and sets no connector ceiling:
+            // looser than any session below was admitted under.
+            config.allow_delegation = true;
+        })
+    };
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fixture
+        .app
+        .registry
+        .start(Arc::new(HeldStarts {
+            native: ReservedFakeAgentPorts(fixture.app.clone()),
+            open: open.clone(),
+        }))
+        .unwrap();
+    let wid = fixture.workspace().await;
+    let widened = start_with_skill(&fixture, &wid, "widened").await;
+    let admitted = start_with_skill(&fixture, &wid, "admitted").await;
+    let legacy = start_with_skill(&fixture, &wid, "legacy").await;
+    let version = fixture
+        .app
+        .registry
+        .console_get(
+            Collection::Sessions,
+            admitted["session_id"].as_str().unwrap(),
+        )
+        .unwrap()
+        .unwrap()
+        .body["policy_version"]
+        .clone();
+    // `widened` was admitted by a server that offered no delegation, yet
+    // its row asks for helpers: this worker's own delegation does not lend
+    // them to it.
+    edit_session(&fixture, &widened, |body| {
+        body["server_ceiling"] = json!({"connectors": null, "allow_delegation": false});
+        body["tools"]["helpers"] = json!({"harnesses":["gemini-cli"],"max_children":1});
+    });
+    // `admitted` carries the ceiling of a server like this one.
+    edit_session(&fixture, &admitted, |body| {
+        body["server_ceiling"] = json!({"connectors": null, "allow_delegation": true});
+    });
+    // `legacy` was admitted before ceilings were recorded.
+    edit_session(&fixture, &legacy, |body| {
+        body.as_object_mut().unwrap().remove("server_ceiling");
+    });
+    open.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let refused = fixture.finished(widened["id"].as_str().unwrap());
+    let error = refused.error.unwrap();
+    assert_eq!(error.code, "policy_changed", "{error:?}");
+    assert_eq!(error.detail.as_ref().unwrap()["kind"], "helper");
+    for ran in [&admitted, &legacy] {
+        let done = fixture.finished(ran["id"].as_str().unwrap());
+        assert_eq!(
+            done.state,
+            branchyard_client::api::OperationState::Succeeded,
+            "{done:?}"
+        );
+    }
+    // Nothing moved: no policy changed, so no version was rewritten.
+    assert_eq!(
+        session_row(&fixture, &admitted).body["policy_version"],
+        version
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_narrower_worker_refuses_and_asks_for_re_admission_which_checks_the_tools_again() {
+    let mock = super::connections::gateway();
+    let fixture = {
+        let url = format!("http://{}", mock.addr());
+        Fixture::with(false, move |config, root| {
+            config.connectors = Some(super::connections::connectors(root, &url, &["github"]));
+            // This worker's configuration lets its owner read github only.
+            config.ceilings.insert(
+                "owner".into(),
+                branchyard::Ceiling {
+                    connectors: Some(vec![GrantEntry::parse("github:read").unwrap()]),
+                    ..Default::default()
+                },
+            );
+        })
+    };
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fixture
+        .app
+        .registry
+        .start(Arc::new(HeldStarts {
+            native: ReservedFakeAgentPorts(fixture.app.clone()),
+            open: open.clone(),
+        }))
+        .unwrap();
+    let wid = fixture.workspace().await;
+    let started = start_with_skill(&fixture, &wid, "wide").await;
+    // The server that admitted it set no connector ceiling, and its tools
+    // include slack, which this worker's ceiling does not.
+    edit_session(&fixture, &started, |body| {
+        body["server_ceiling"] = json!({"connectors": null, "allow_delegation": false});
+        body["tools"]["connectors"] =
+            json!([{"connector":"slack","mode":"read","account":null,"operations":["*"]}]);
+    });
+    open.store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = fixture.finished(started["id"].as_str().unwrap());
+    let error = refused.error.unwrap();
+    assert_eq!(error.code, "policy_changed", "{error:?}");
+    assert_eq!(error.detail.as_ref().unwrap()["readmit"], true, "{error:?}");
+    assert!(error.message.contains("readmit"), "{error:?}");
+
+    // Re-admission runs the check again from the stored tools on the
+    // process asked: slack is still not allowed here, and nothing changes.
+    let route = format!(
+        "/v1/workspaces/{wid}/sessions/{}/readmit",
+        started["session_id"].as_str().unwrap()
+    );
+    let before = session_row(&fixture, &started);
+    let (status, refused) = fixture
+        .json(Method::POST, &route, OWNER, None, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"]["code"], "policy_changed");
+    assert_eq!(session_row(&fixture, &started).revision, before.revision);
+
+    // With the tools back within this process's ceiling, it records this
+    // process's ceiling and the version now.
+    edit_session(&fixture, &started, |body| {
+        body["tools"]["connectors"] =
+            json!([{"connector":"github","mode":"read","account":null,"operations":["*"]}]);
+        body["policy_version"] = json!(0);
+    });
+    let (status, done) = fixture
+        .json(Method::POST, &route, OWNER, None, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let row = session_row(&fixture, &started);
+    assert_eq!(
+        row.body["server_ceiling"],
+        json!(crate::console::policy::Ceiling {
+            connectors: Some(vec![GrantEntry::parse("github:read").unwrap()]),
+            allow_delegation: false,
+        }),
+        "{}",
+        row.body["server_ceiling"]
+    );
+    assert_eq!(done["policy_version"], row.body["policy_version"]);
+    assert!(row.body["readmitted_at_ms"].as_u64().is_some());
+
+    // Only the person the session belongs to can re-admit it.
+    let (status, _) = fixture
+        .json(Method::POST, &route, FOREIGN, None, Value::Null)
+        .await;
+    assert!(status.is_client_error(), "{status}");
+}

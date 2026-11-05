@@ -467,6 +467,7 @@ impl Federation {
             AuthenticationOrigin::Iap {
                 email,
                 sub: subject,
+                groups_at_ms: None,
             },
         )
         .await
@@ -543,6 +544,7 @@ impl Federation {
                 issuer: config.issuer.clone(),
                 sub: subject,
                 email,
+                groups_at_ms: None,
             },
         )
         .await
@@ -555,14 +557,19 @@ impl Federation {
         identity: Identity,
         origin: AuthenticationOrigin,
     ) -> Result<Principal, Refusal> {
+        let mut looked_up_at = None;
         let groups = match (identity.claim_groups, provider.groups_from, &identity.email) {
             (Some(groups), _, _) => groups,
             (None, Some(GroupsFrom::CloudIdentity), Some(email)) => {
-                self.cloud_identity_groups(provider.groups_url, email)
-                    .await?
+                let (groups, fetched_ms) = self
+                    .cloud_identity_groups(provider.groups_url, email)
+                    .await?;
+                looked_up_at = Some(fetched_ms);
+                groups
             }
             (None, _, _) => BTreeSet::new(),
         };
+        let origin = stamped(origin, looked_up_at);
         let binding = provider
             .bindings
             .iter()
@@ -668,87 +675,232 @@ impl Federation {
         found.ok_or(Refusal::Unauthorized)
     }
 
-    /// Transitive group memberships of `email`, cached for five minutes.
+    /// Transitive group memberships of `email`, cached for five minutes,
+    /// with the time (milliseconds since the Unix epoch) they were read.
     async fn cloud_identity_groups(
         &self,
         base: Option<&str>,
         email: &str,
-    ) -> Result<BTreeSet<String>, Refusal> {
-        let now = branchyard_support::time::now_ms();
-        let cache_key = format!("{}\n{}", base.unwrap_or(""), email.to_ascii_lowercase());
-        if let Some(cached) = self
-            .groups
-            .lock_recovering("federated group cache")
-            .get(&cache_key)
-        {
-            if now.saturating_sub(cached.fetched_ms) < GROUPS_TTL_MS {
-                return Ok(cached.groups.clone());
-            }
+    ) -> Result<(BTreeSet<String>, u64), Refusal> {
+        let key = groups_cache_key(base, email);
+        if let Some(cached) = self.cached_groups(&key) {
+            return Ok(cached);
         }
-        let unavailable = |why: String| Refusal::Unavailable(format!("group lookup failed: {why}"));
         let access = self.access.clone();
         let token = tokio::task::spawn_blocking(move || access.token())
             .await
-            .map_err(|e| unavailable(e.to_string()))?
-            .map_err(unavailable)?;
-        let base = base.unwrap_or(CLOUD_IDENTITY_URL).trim_end_matches('/');
-        let query = format!(
-            "member_key_id == '{}' && 'cloudidentity.googleapis.com/groups.discussion_forum' in labels",
-            email.replace('\'', "")
-        );
+            .map_err(|e| lookup_failed(e.to_string()))?
+            .map_err(lookup_failed)?;
         let mut groups = BTreeSet::new();
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_GROUP_PAGES {
-            let mut url = format!(
-                "{base}/v1/groups/-/memberships:searchTransitiveGroups?query={}",
-                http::encode(&query)
-            );
-            if let Some(next) = &page_token {
-                url.push_str(&format!("&pageToken={}", http::encode(next)));
-            }
+            let url = groups_page_url(base, email, page_token.as_deref());
             let body = fetch(url, vec![("Authorization", format!("Bearer {token}"))])
                 .await
-                .map_err(unavailable)?;
-            let page: Value = serde_json::from_slice(&body)
-                .map_err(|_| unavailable("the answer was not JSON".into()))?;
-            for membership in page
-                .get("memberships")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if let Some(id) = membership
-                    .pointer("/groupKey/id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty() && id.len() <= 256)
-                {
-                    if groups.len() < MAX_GROUPS {
-                        groups.insert(id.to_owned());
-                    }
-                }
-            }
-            page_token = page
-                .get("nextPageToken")
-                .and_then(Value::as_str)
-                .filter(|t| !t.is_empty())
-                .map(str::to_owned);
+                .map_err(lookup_failed)?;
+            page_token = read_groups_page(&body, &mut groups)?;
             if page_token.is_none() {
                 break;
             }
         }
+        Ok(self.remember_groups(key, groups))
+    }
+
+    /// [`Federation::cloud_identity_groups`] for a caller that is already
+    /// on a blocking thread, such as a worker claiming a queued operation.
+    /// It shares the cache, so a lookup inside the five minutes costs
+    /// nothing.
+    fn cloud_identity_groups_blocking(
+        &self,
+        base: Option<&str>,
+        email: &str,
+    ) -> Result<(BTreeSet<String>, u64), Refusal> {
+        let key = groups_cache_key(base, email);
+        if let Some(cached) = self.cached_groups(&key) {
+            return Ok(cached);
+        }
+        let token = self.access.token().map_err(lookup_failed)?;
+        let mut groups = BTreeSet::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_GROUP_PAGES {
+            let url = groups_page_url(base, email, page_token.as_deref());
+            let body = get(&url, vec![("Authorization", format!("Bearer {token}"))])
+                .map_err(lookup_failed)?;
+            page_token = read_groups_page(&body, &mut groups)?;
+            if page_token.is_none() {
+                break;
+            }
+        }
+        Ok(self.remember_groups(key, groups))
+    }
+
+    fn cached_groups(&self, key: &str) -> Option<(BTreeSet<String>, u64)> {
+        let now = branchyard_support::time::now_ms();
+        let cache = self.groups.lock_recovering("federated group cache");
+        let cached = cache.get(key)?;
+        (now.saturating_sub(cached.fetched_ms) < GROUPS_TTL_MS)
+            .then(|| (cached.groups.clone(), cached.fetched_ms))
+    }
+
+    fn remember_groups(&self, key: String, groups: BTreeSet<String>) -> (BTreeSet<String>, u64) {
+        let fetched_ms = branchyard_support::time::now_ms();
         let mut cache = self.groups.lock_recovering("federated group cache");
         if cache.len() >= GROUPS_CACHE_MAX {
             cache.clear();
         }
         cache.insert(
-            cache_key,
+            key,
             CachedGroups {
-                fetched_ms: branchyard_support::time::now_ms(),
+                fetched_ms,
                 groups: groups.clone(),
             },
         );
-        Ok(groups)
+        (groups, fetched_ms)
     }
+
+    /// Whether the principal a queued operation was admitted as is still
+    /// allowed, with its groups read again when they are old.
+    ///
+    /// A principal whose groups came from Cloud Identity records when
+    /// (`groups_at_ms` of [`AuthenticationOrigin::Iap`] and
+    /// [`AuthenticationOrigin::Oidc`]). Once they are older than the
+    /// lookup's cache (five minutes) they are looked up again, through that
+    /// cache, and the binding is chosen with the fresh groups, so a person
+    /// removed from a group loses that group's access without signing in
+    /// again. Groups a token's claim carried are not refreshed (only a new
+    /// token has them), and a principal without a lookup time is checked as
+    /// it was captured; a principal no federated provider vouches for is
+    /// left to the ordinary recheck (`true` here). A lookup that fails is [`Refusal::Unavailable`]: the
+    /// groups are never guessed. Blocking; `now_ms` is the time to compare
+    /// against.
+    pub fn still_allows_fresh(&self, principal: &Principal, now_ms: u64) -> Result<bool, Refusal> {
+        let captured_check = || still_allows(self.iap.as_ref(), &self.issuers, principal);
+        let (captured, email, groups_url) = match principal.root_origin() {
+            Some(AuthenticationOrigin::Iap {
+                email,
+                groups_at_ms: Some(at),
+                ..
+            }) => (
+                *at,
+                email.clone(),
+                self.iap
+                    .as_ref()
+                    .filter(|c| c.groups_from == Some(GroupsFrom::CloudIdentity))
+                    .map(|c| c.groups_url.clone()),
+            ),
+            Some(AuthenticationOrigin::Oidc {
+                issuer,
+                email: Some(email),
+                groups_at_ms: Some(at),
+                ..
+            }) => (
+                *at,
+                email.clone(),
+                self.issuers
+                    .iter()
+                    .find(|c| &c.issuer == issuer)
+                    .filter(|c| c.groups_from == Some(GroupsFrom::CloudIdentity))
+                    .map(|c| c.groups_url.clone()),
+            ),
+            // Federated, but its groups did not come from a lookup.
+            Some(AuthenticationOrigin::Iap { .. } | AuthenticationOrigin::Oidc { .. }) => {
+                return Ok(captured_check())
+            }
+            // Not this module's to judge: the ordinary recheck decides.
+            _ => return Ok(true),
+        };
+        // The provider no longer looks groups up, or is gone: the ordinary
+        // recheck says whether the identity stands. So it does when the
+        // captured groups are younger than the cache.
+        let Some(groups_url) = groups_url else {
+            return Ok(captured_check());
+        };
+        if now_ms.saturating_sub(captured) < GROUPS_TTL_MS || !captured_check() {
+            return Ok(captured_check());
+        }
+        let (groups, _) = self.cloud_identity_groups_blocking(groups_url.as_deref(), &email)?;
+        let fresh = Principal {
+            groups,
+            ..principal.clone()
+        };
+        Ok(still_allows(self.iap.as_ref(), &self.issuers, &fresh))
+    }
+}
+
+/// `origin` with the time its groups were read from Cloud Identity, when
+/// they were.
+fn stamped(origin: AuthenticationOrigin, looked_up_at: Option<u64>) -> AuthenticationOrigin {
+    match (origin, looked_up_at) {
+        (AuthenticationOrigin::Iap { email, sub, .. }, at @ Some(_)) => AuthenticationOrigin::Iap {
+            email,
+            sub,
+            groups_at_ms: at,
+        },
+        (
+            AuthenticationOrigin::Oidc {
+                issuer, sub, email, ..
+            },
+            at @ Some(_),
+        ) => AuthenticationOrigin::Oidc {
+            issuer,
+            sub,
+            email,
+            groups_at_ms: at,
+        },
+        (origin, _) => origin,
+    }
+}
+
+fn lookup_failed(why: String) -> Refusal {
+    Refusal::Unavailable(format!("group lookup failed: {why}"))
+}
+
+fn groups_cache_key(base: Option<&str>, email: &str) -> String {
+    format!("{}\n{}", base.unwrap_or(""), email.to_ascii_lowercase())
+}
+
+/// The Cloud Identity request for one page of `email`'s transitive groups.
+fn groups_page_url(base: Option<&str>, email: &str, page_token: Option<&str>) -> String {
+    let base = base.unwrap_or(CLOUD_IDENTITY_URL).trim_end_matches('/');
+    let query = format!(
+        "member_key_id == '{}' && 'cloudidentity.googleapis.com/groups.discussion_forum' in labels",
+        email.replace('\'', "")
+    );
+    let mut url = format!(
+        "{base}/v1/groups/-/memberships:searchTransitiveGroups?query={}",
+        http::encode(&query)
+    );
+    if let Some(next) = page_token {
+        url.push_str(&format!("&pageToken={}", http::encode(next)));
+    }
+    url
+}
+
+/// Add the groups of one answered page to `groups`; the next page's token.
+fn read_groups_page(body: &[u8], groups: &mut BTreeSet<String>) -> Result<Option<String>, Refusal> {
+    let page: Value = serde_json::from_slice(body)
+        .map_err(|_| lookup_failed("the answer was not JSON".into()))?;
+    for membership in page
+        .get("memberships")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = membership
+            .pointer("/groupKey/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+        {
+            if groups.len() < MAX_GROUPS {
+                groups.insert(id.to_owned());
+            }
+        }
+    }
+    Ok(page
+        .get("nextPageToken")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned))
 }
 
 fn string_claim(claims: &Map<String, Value>, name: &str) -> Option<String> {

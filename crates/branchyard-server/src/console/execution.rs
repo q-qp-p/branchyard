@@ -297,12 +297,26 @@ pub(crate) fn execute(
 /// as it stands ([`super::policy::recheck`]): refused as `policy_changed`
 /// if no longer allowed, else the session records the new version and the
 /// turn's manifest takes it.
+///
+/// Whichever process claims the operation holds the session to the policy
+/// it was admitted under, not to its own configuration: the server-side
+/// ceiling admission recorded in the row (`server_ceiling`) applies, and
+/// this process's own ceiling can only narrow it
+/// ([`super::policy::claim_ceiling`]). A process whose configuration
+/// allows less than the admitting one refuses `policy_changed` and asks
+/// for re-admission ([`super::policy::readmit`]); one that allows more
+/// changes nothing.
 fn claim_policy(app: &App, caller: &Caller, session: &Record) -> Result<u64, ApiError> {
     let now = super::policy::current_version(app, caller.tenant())?;
+    let tools = &session.body["tools"];
+    let own = super::policy::Ceiling::of_this_server(app, caller);
+    let admitted = super::policy::Ceiling::admitted(&session.body);
+    let ceiling = super::policy::claim_ceiling(&own, admitted.as_ref(), tools)?;
     if session.body["policy_version"].as_u64() == Some(now) {
         return Ok(now);
     }
-    super::policy::recheck(app, caller, &session.body["tools"])?;
+    let stored = super::policy::resolved(app, caller)?.store;
+    super::policy::check_tools(&stored, &ceiling, tools)?;
     for _ in 0..8 {
         let current = get(app, Collection::Sessions, &session.id)?;
         let mut body = current.body.clone();

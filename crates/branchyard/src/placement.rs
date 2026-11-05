@@ -142,6 +142,47 @@ fn environment(
     crate::environments::for_sandbox(&yard.root, &workspace.spec, &record.info.worktree, key)
 }
 
+/// Remove the gateway token file from the copied home `guest_home` in a
+/// sandbox, so a paused sandbox keeps no token (`docs/tools-model.md`,
+/// step 7). No file is not an error.
+fn scrub_token(endpoint: &dyn Guest, guest_home: &Path) -> Result<(), String> {
+    let spec = branchyard_sandbox::ExecSpec {
+        argv: vec![
+            "rm".into(),
+            "-f".into(),
+            guest_home
+                .join(crate::connectors::TOKEN_FILE)
+                .display()
+                .to_string(),
+        ],
+        cwd: PathBuf::from("/"),
+        env: BTreeMap::new(),
+        writable: None,
+    };
+    let mut process = endpoint.exec(&spec).map_err(|e| e.to_string())?;
+    let status = process.wait().map_err(|e| e.to_string())?;
+    match status.success() {
+        true => Ok(()),
+        false => Err(format!("rm ended {status}")),
+    }
+}
+
+/// Whether the turn about to run wakes a sandbox its branch kept paused
+/// since its last turn (`keep = "pause"`): the branch holds a kept sandbox
+/// of this run's incarnation. Such a turn resolves its manifest again
+/// ([`crate::manifest::settle`]).
+pub(crate) fn wakes_kept_sandbox(yard: &Yard, record: &Record, fence: &Fence) -> bool {
+    yard.store()
+        .sandboxes()
+        .sandboxes(&record.info.name)
+        .map(|rows| {
+            rows.iter()
+                .any(|row| row.kind == SandboxKind::Kept && row.incarnation == fence.incarnation)
+        })
+        // When the store cannot say, resolving again is the safe answer.
+        .unwrap_or(true)
+}
+
 /// A turn's harness location. A sandbox is destroyed, or parked, by
 /// [`Placement::release`]; destroyed on drop otherwise.
 pub(crate) struct Placement {
@@ -387,6 +428,14 @@ impl Actor {
                             "could not bring the home directory back from {noun} {}: {error}",
                             self.name
                         )),
+                    }
+                    // The actor is about to be paused or destroyed: the
+                    // token it was copied in with does not stay in it.
+                    if let Err(error) = scrub_token(endpoint.as_ref(), guest) {
+                        warnings.push(format!(
+                            "could not remove the gateway token from {noun} {}: {error}",
+                            self.name
+                        ));
                     }
                 }
             }

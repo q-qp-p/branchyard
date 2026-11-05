@@ -643,7 +643,7 @@ fn start_once(
         Collection::Sessions,
         &sid,
         caller,
-        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"policy_version":policy_version,"created_at_ms":branchyard_support::time::now_ms()}),
+        json!({"id":sid,"workspace_id":wid,"name":name,"branch":sid,"harness":harness,"model":model,"preset":preset.as_ref().map(|preset|&preset.id),"_preset":preset,"effort":body.get("effort").filter(|value| !value.is_null()),"access":access,"_policy":request.policy,"unapproved_tools":access != "reviewer" && request.unapproved_tools,"review_candidate":candidate.as_ref().map(|(commit,_)|commit),"review_candidate_branch":candidate.as_ref().map(|(_,branch)|branch),"subject":caller.0.connector_subject(),"credential":caller.name(),"status":"queued","sources":selected,"artifacts":artifact_inputs,"result_contract":body.get("result_contract"),"tools":chosen.view,"policy_version":policy_version,"server_ceiling":super::policy::Ceiling::of_this_server(app, caller),"created_at_ms":branchyard_support::time::now_ms()}),
     );
     let mutations = vec![
         insert(row),
@@ -986,6 +986,26 @@ pub(super) fn control(
         idem,
         mutations,
     )
+}
+/// Admit a session again on this process: its stored tools are checked
+/// against the caller's policy as it stands and this process's ceiling, and
+/// the session records both (`server_ceiling`, `policy_version`). The way
+/// past a `policy_changed` that asked for re-admission.
+pub(super) fn readmit(app: &App, caller: &Caller, wid: &str, sid: &str) -> Result<Value, ApiError> {
+    let row = session(app, caller, wid, sid)?;
+    let required = if row.body["access"] == "reviewer" {
+        "comment"
+    } else {
+        "run"
+    };
+    auth::authorize_workspace(app, caller, wid, required)?;
+    session_subject(&row, caller)?;
+    let version = super::policy::readmit(app, caller, &row)?;
+    Ok(json!({
+        "id": sid,
+        "policy_version": version,
+        "server_ceiling": super::policy::Ceiling::of_this_server(app, caller),
+    }))
 }
 pub(super) fn lifecycle(
     app: &App,

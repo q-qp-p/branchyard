@@ -285,6 +285,18 @@ A caller's effective policy is the tenant's, narrowed by the union of their grou
 
 Each tenant has a **policy version**: a counter, stored in the same collection as the policies (key `version:<tenant>`, never listed as a policy and refused as a policy key), that rises by one in the same transaction as every `PUT` and `DELETE` of any of the tenant's policy records. A refused change does not move it. `GET /v1/admin/policies` returns it as `version`. A session start records the version it was admitted under (`policy_version` on the session). When the session's operation is claimed, and for a send as well as a start, the server compares: if the version has not moved, nothing more is checked. If it has, the session's tools (its connectors with their operations, mode, confirmation and account, its skills, or all of them when it chose none, and its helpers) are checked against the policy as it stands now. A tool no longer allowed fails the operation `policy_changed` and the session keeps the version it was admitted under; the person starts again with allowed tools. If every tool is still allowed, the session records the new version, and the turn's [manifest](connectors.md#the-turn-manifest) takes it. The check is of policy only: it does not look again at whether the person's accounts are connected.
 
+**A claim uses the policy that admitted the session, not the claiming process's.** Several processes share one database and claim operations: `by serve` and its workers. Admission records the server-side limits it applied in the session row, as `server_ceiling`: `{"connectors": [...] | null, "allow_delegation": bool}`, the `ceilings` configuration's connector grants for the caller (`null` when none are set) and whether the server delegates at all. Whichever process claims a start or a send holds the session's tools to three things, each only narrowing the one before:
+
+1. the stored policy as it stands now (read from the shared store; checked when the policy version has moved, as above);
+2. the `server_ceiling` the session was admitted under, checked at every claim, which costs no read; and
+3. the claiming process's own `ceilings` and `allow_delegation`, which can narrow the recorded ceiling and never widen it.
+
+A worker with a looser or older configuration than the admitting server therefore cannot widen a turn: a session that breaks the ceiling it records (a row that was changed) is refused `policy_changed` whatever the worker allows. A worker whose configuration is narrower than the recorded ceiling runs a session that still fits its own, and refuses one that does not with `policy_changed`, `detail.readmit: true` and a message that asks for re-admission. A session admitted before ceilings were recorded has no `server_ceiling` and is held to the claiming process's own, as it was.
+
+`POST /v1/workspaces/{workspace}/sessions/{session}/readmit` (the person the session belongs to, with the scope a send needs) runs the admission check again on the process that answers: the session's stored `tools` against the caller's stored policy as it stands, narrowed by that process's own ceiling. If every tool is allowed the session records that process's ceiling as its `server_ceiling`, the tenant's current `policy_version` and `readmitted_at_ms`, and answers `{id, policy_version, server_ceiling}`; the next turn's manifest takes the version. If not, `policy_changed` with the same `detail` as a refused claim, and the session is unchanged. Re-admission records one process's view: a worker whose configuration is narrower than that process's still refuses, and the way past is to run the session on a worker with the admitting configuration, or to give every process the same `ceilings`.
+
+What still comes from the claiming process's own configuration, because it describes that machine and not the person: the harness commands and `pass_env` it offers, its sandbox providers and the paths and credentials they use, its connector gateway, packager, signing key and tool store (`connectors`, `tools`), the model gateway, its approval settings, `allow_unapproved_tools`, its `by` binary, its repositories and each tenant's repository allowlist, and the identity configuration it rechecks the admitting principal against (`iap`, `oidc_issuers`, `google_identity`, the credentials). A worker that lacks one of these fails the operation by name (a harness it cannot run, a provider it does not offer). Only the connector ceiling and delegation, the two limits on what a person's session may reach, are held to the admitting server's record. Bundles are the engine's: a turn also checks the skills and connector bundles it links or copies against the [digests its manifest recorded](connectors.md#the-turn-manifest) and fails `bundle_mismatch` when this worker holds others.
+
 | Route | What it does | Scope |
 |---|---|---|
 | `GET /v1/admin/policies` | `{"policies": [{"key", "policy", "revision"}]}` for the caller's tenant | `admin` |
@@ -307,7 +319,7 @@ A session start takes `tools: [{"kind": "connector|skill|helper", "id", "mode"?,
 | `tool_not_allowed` | 403 | Policy does not allow a tool; `detail.kind`, `detail.id` (`*` when delegation is off), and `detail.max_mode` for a connector allowed less |
 | `tools_conflict` | 400 | `tools` beside `connectors`, `skills` or `helpers` |
 | `policy_key_invalid` | 400 | A policy key that is not one of the three forms for the caller's tenant |
-| `policy_changed` | 403 | The tenant's policy changed after the session was admitted, and a tool it chose is no longer allowed; same `detail` as `tool_not_allowed`. Returned in the failed operation, not on the start |
+| `policy_changed` | 403 | The tenant's policy changed after the session was admitted, and a tool it chose is no longer allowed; same `detail` as `tool_not_allowed`. Also a claim by a process whose `ceilings` or `allow_delegation` allow less than the server that admitted the session, with `detail.readmit: true`, and a refused `readmit`. Returned in the failed operation, not on the start |
 
 ## Approvals
 
@@ -654,6 +666,8 @@ Every error is `{"error": {"code", "message", "detail"?}}`. Codes are stable; me
 | `connectors_conflict` | 400 | A session start with both `connectors` and `provision.connectors` |
 | `connector_not_served` | 422 | A connector the gateway does not serve; `detail.connector` |
 | `tool_not_allowed`, `tools_conflict`, `policy_key_invalid`, `policy_changed` | 403, 400, 400, 403 | See [tool policy](#tool-policy) |
+| `identity_binding_revoked` | 403 | A queued operation's admitting identity no longer passes its provider's bindings, or, for groups read from Cloud Identity, no longer does with its groups read again; see [fresh groups](identity.md#fresh-groups-on-a-recheck) |
+| `identity_unavailable` | 503 | The sign-in dependency (a key set, or the Cloud Identity group lookup of a sign-in or of a recheck) did not answer; the server does not guess |
 | `connector_over_ceiling` | 403 | A connector, or a write, beyond the caller's ceiling; `detail.connector`, and `detail.max_mode` when reads are allowed |
 | `connector_not_connected` | 409 | A session's connector the caller has not connected, or must reconnect; `detail.connector`, `detail.account`, `detail.action` (`connect`) |
 | `gateway_unreachable`, `gateway_refused`, `gateway_unexpected` | 502 | The connector gateway did not answer, refused a connect call (`detail.status`, `detail.code`), or answered something else |
@@ -1025,6 +1039,7 @@ fields. Poll the existing operation route to determine its outcome.
 | `GET /v1/workspaces/{workspace}/sessions/{session}/messages?after=CURSOR` | Read native prompt, output, and steering text with a cursor |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/messages` | Continue `{prompt,action:"send"|"resume"|"steer"}` in the same native attempt |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/cancel` | Admit attributed native cancellation |
+| `POST /v1/workspaces/{workspace}/sessions/{session}/readmit` | Run the tool admission check again from the session's stored tools and record this server's ceiling and the current policy version, or `policy_changed`; see [tool policy](#tool-policy) |
 | `GET /v1/workspaces/{workspace}/sessions/{session}/runtime` | Inspect the owning provider, retained allocation, capabilities and terminal readiness |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/runtime/actions/{action}` | Admit a supported resource lifecycle action into the durable queue |
 | `POST /v1/workspaces/{workspace}/sessions/{session}/terminals` | Open an explicitly permitted idle writer terminal with a real provider PTY |

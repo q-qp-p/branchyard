@@ -450,6 +450,15 @@ impl Prepared {
         Ok(live)
     }
 
+    /// End the turn's hold on the gateway: stop renewing the token and
+    /// remove the file that holds it. Run before the turn's sandbox is
+    /// paused, so a paused sandbox keeps no token and nothing refreshes one
+    /// in it; the next turn mints another. Safe to run twice.
+    pub(crate) fn retire(&mut self) {
+        self.renewer = None;
+        branchyard_support::cleanup_file(&self._token.0);
+    }
+
     /// The token the model gateway may share with the connector gateway:
     /// the turn's long one, unless renewal has made the harness's short.
     /// (A renewing turn's model gateway signs a token of its own.)
@@ -476,11 +485,22 @@ pub(crate) fn prepare(
     record: &Record,
     deadline_ms: Option<u64>,
     scopes: &crate::access::TokenScopes,
-    manifest: Option<&str>,
+    admitted: Option<&crate::manifest::TurnManifest>,
 ) -> Result<Option<Prepared>, String> {
+    let manifest = admitted.map(crate::manifest::TurnManifest::digest);
+    let manifest = manifest.as_deref();
     let grant = match &record.provision {
         Some(spec) if !spec.connectors.is_empty() => spec.connectors.clone(),
-        _ => return Ok(None),
+        _ => {
+            // A turn without connectors leaves none from an earlier one: a
+            // tool deselected while a kept sandbox slept is gone from its
+            // home, with the token it was served by.
+            if let Some(home) = record.home.as_deref() {
+                branchyard_support::cleanup_dir(home.join(HOME_DIR));
+                branchyard_support::cleanup_file(home.join(TOKEN_FILE));
+            }
+            return Ok(None);
+        }
     };
     let names = branchyard_provision::connectors::connectors(&grant);
     let gateway = yard.connectors().ok_or_else(|| {
@@ -523,6 +543,14 @@ pub(crate) fn prepare(
             }
         }
     }
+    // The bundles served now are the ones the session was admitted with,
+    // before anything is linked or copied.
+    if let Some(admitted) = admitted {
+        for bundle in &bundles {
+            crate::bundles::verify_served(admitted, &bundle.id, &bundle.hash)
+                .map_err(|mismatch| mismatch.to_string())?;
+        }
+    }
     let tool_store = crate::toolstore::for_turn(yard, record);
     let cache = yard.store().dir().join("connectors").join("cache");
     let staged = home.join(format!(
@@ -539,6 +567,10 @@ pub(crate) fn prepare(
                 .as_ref()
                 .and_then(|s| s.connector(&bundle.id, &bundle.hash))
             {
+                if let Some(admitted) = admitted {
+                    crate::bundles::verify_linked(admitted, &bundle.id, &entry)
+                        .map_err(|mismatch| mismatch.to_string())?;
+                }
                 std::os::unix::fs::symlink(&entry, staged.join(&bundle.id))
                     .map_err(|e| format!("link {}: {e}", entry.display()))?;
                 continue;
@@ -579,7 +611,10 @@ pub(crate) fn prepare(
     if placed.is_err() {
         branchyard_support::cleanup_dir(&staged);
     }
-    placed.map_err(|e| format!("could not place connector packages: {e}"))?;
+    placed.map_err(|e| match e.starts_with(crate::bundles::BUNDLE_MISMATCH) {
+        true => e,
+        false => format!("could not place connector packages: {e}"),
+    })?;
     // The token: this turn's, for at most an hour and not past the
     // turn's deadline.
     let now = branchyard_support::time::now_ms() / 1000;

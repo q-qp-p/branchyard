@@ -40,6 +40,9 @@ struct FakePackager {
     composed: AtomicUsize,
     /// Fail `compose`, as an Anvil without `connectors compose` does.
     cannot_compose: bool,
+    /// Bumped to have the gateway serve another bundle under each id: the
+    /// hash gains a suffix, as a republished bundle's would change.
+    generation: AtomicUsize,
 }
 
 impl Packager for FakePackager {
@@ -50,7 +53,10 @@ impl Packager for FakePackager {
             .map(|id| Bundle {
                 id: (*id).to_owned(),
                 path: PathBuf::from(format!("/bundles/{id}")),
-                hash: format!("hash-{}", id.replace('/', "-")),
+                hash: match self.generation.load(Ordering::SeqCst) {
+                    0 => format!("hash-{}", id.replace('/', "-")),
+                    n => format!("hash-{}-{n}", id.replace('/', "-")),
+                },
             })
             .collect())
     }
@@ -1200,4 +1206,367 @@ fn a_session_runs_every_turn_on_one_manifest_until_its_tools_change() {
     assert_eq!(third.policy_version, 8, "no server word keeps the version");
     assert!(!third.same_tools(&second));
     assert!(third.created_at_ms >= second.created_at_ms);
+}
+
+/// The turn ended without failing: ready, or with nothing changed.
+fn assert_ran(branch: &branchyard::Branch) {
+    assert!(
+        matches!(
+            branch.info().status,
+            BranchStatus::Ready | BranchStatus::NoChanges
+        ),
+        "{:?}",
+        branch.info().status
+    );
+}
+
+fn failure(branch: &branchyard::Branch) -> String {
+    match &branch.info().status {
+        BranchStatus::Failed { reason } => reason.clone(),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+}
+
+/// The warnings a branch's log holds.
+fn warnings(branch: &branchyard::Branch) -> Vec<String> {
+    branch
+        .events()
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.activity {
+            Activity::Warning(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+fn resend(branch: &branchyard::Branch, prompt: &str, options: TaskOptions) -> branchyard::Branch {
+    branch
+        .send(
+            prompt,
+            TaskOptions {
+                policy: Policy::allow_all(),
+                ..options
+            },
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_host_that_serves_another_bundle_than_the_admitted_one_fails_the_turn_before_the_harness() {
+    let f = Fixture::new();
+    let packager = gateway(&f, &["github"]);
+    let branch = f
+        .task("SH echo marker=one")
+        .options(granted(&f, &["github:read"]))
+        .name("admitted")
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    assert_eq!(manifest_of(&branch).connectors[0].digest, "hash-github");
+
+    // The gateway's packager now serves a republished bundle.
+    packager.generation.store(1, Ordering::SeqCst);
+    let refused = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("connector github"), "{reason}");
+    assert!(reason.contains("hash-github-1"), "found: {reason}");
+    assert!(
+        reason.contains("admitted with hash-github "),
+        "expected: {reason}"
+    );
+    // Before the harness: nothing of the turn ran, and it is an event.
+    assert!(!text(&refused.events().unwrap()).contains("marker=two"));
+    assert!(warnings(&refused)
+        .iter()
+        .any(|w| w.starts_with("bundle_mismatch")));
+    // The manifest on record is still the one admitted.
+    assert_eq!(manifest_of(&refused).connectors[0].digest, "hash-github");
+
+    // Admitting what the host serves is a change of tools: it resolves the
+    // manifest again, and the turn runs.
+    let admitted = resend(
+        &refused,
+        "SH echo marker=three",
+        granted(&f, &["github:write"]),
+    );
+    assert_ran(&admitted);
+    assert!(text(&admitted.events().unwrap()).contains("marker=three"));
+    assert_eq!(manifest_of(&admitted).connectors[0].digest, "hash-github-1");
+}
+
+#[test]
+fn a_store_package_whose_files_changed_is_not_linked_into_the_turn() {
+    use branchyard::toolstore::{self, Entry, Index, Kind, ToolStore};
+    let f = Fixture::new();
+    gateway(&f, &["github"]);
+    let store = f.dir.join("tool-store");
+    let entry = store.join("connectors/github@hash-github");
+    fs::create_dir_all(entry.join("bin")).unwrap();
+    fs::write(entry.join("SKILL.md"), "# github from the store\n").unwrap();
+    let index = Index {
+        version: 1,
+        entries: vec![Entry {
+            id: "github".into(),
+            kind: Kind::Connector,
+            digest: connectors::packager::hash_dir(&entry).unwrap(),
+            size: toolstore::size_of(&entry).unwrap(),
+            path: "connectors/github@hash-github".into(),
+        }],
+    };
+    toolstore::write_index(&store, &index).unwrap();
+    f.yard.use_tool_store(ToolStore::new(&store));
+
+    let branch = f
+        .task("SH cat \"$HOME/.branchyard/connectors/github/SKILL.md\"")
+        .options(granted(&f, &["github:read"]))
+        .name("linked-store")
+        .run()
+        .unwrap();
+    assert!(text(&branch.events().unwrap()).contains("# github from the store"));
+    let admitted = manifest_of(&branch).connectors[0].content.clone();
+    assert_eq!(admitted.as_deref(), Some(index.entries[0].digest.as_str()));
+
+    // Another host's store holds other files under the same name.
+    fs::write(entry.join("SKILL.md"), "# a different github\n").unwrap();
+    let refused = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("connector github"), "{reason}");
+    assert!(
+        reason.contains(&index.entries[0].digest),
+        "expected: {reason}"
+    );
+    assert!(!text(&refused.events().unwrap()).contains("marker=two"));
+}
+
+#[test]
+fn a_skill_this_host_holds_in_other_files_fails_the_turn_naming_both_digests() {
+    use branchyard::toolstore::{self, ToolStore};
+    let f = Fixture::new();
+    let store = f.dir.join("tool-store");
+    toolstore::publish(&store, None).unwrap();
+    f.yard.use_tool_store(ToolStore::new(&store));
+    let branch = f
+        .task("SH echo marker=one")
+        .options(granted(&f, &[]))
+        .name("skilled")
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    let admitted = manifest_of(&branch);
+    assert!(!admitted.skill_digests.is_empty());
+    // The same turn again: nothing differs, and the store is not rehashed
+    // to find out (the unit tests count that); it runs.
+    let again = resend(&branch, "SH echo marker=two", TaskOptions::default());
+    assert_ran(&again);
+
+    // A store entry edited in place.
+    let docx = admitted
+        .skill_digests
+        .iter()
+        .find(|s| s.id == "docx")
+        .unwrap()
+        .clone();
+    let dir = store.join(format!("skills/docx@{}", docx.digest));
+    fs::write(dir.join("SKILL.md"), "# not the admitted docx\n").unwrap();
+    let refused = resend(&again, "SH echo marker=three", TaskOptions::default());
+    let reason = failure(&refused);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(reason.contains("skill docx"), "{reason}");
+    assert!(reason.contains(&docx.digest), "{reason}");
+    assert!(!text(&refused.events().unwrap()).contains("marker=three"));
+
+    // A build that embeds another docx than the manifest admitted: the
+    // record says a digest this build does not hold.
+    common::edit_record(&f.root, "skilled", |record| {
+        let digests = record["manifest"]["skill_digests"].as_array_mut().unwrap();
+        for skill in digests.iter_mut().filter(|s| s["id"] == "docx") {
+            skill["digest"] = "feedface".into();
+        }
+    });
+    let other = resend(&refused, "SH echo marker=four", TaskOptions::default());
+    let reason = failure(&other);
+    assert!(reason.starts_with("bundle_mismatch"), "{reason}");
+    assert!(
+        reason.contains("skill docx") && reason.contains("feedface"),
+        "{reason}"
+    );
+    assert!(reason.contains(&docx.digest), "found: {reason}");
+}
+
+/// Looks at one file at the moment a sandbox is paused.
+struct PauseWatch {
+    inner: Arc<branchyard_sandbox::fake::FakeProvider>,
+    watched: std::sync::Mutex<Option<PathBuf>>,
+    /// Whether the watched file existed at each pause.
+    seen: std::sync::Mutex<Vec<bool>>,
+}
+
+impl branchyard_sandbox::SandboxProvider for PauseWatch {
+    fn capabilities(&self) -> branchyard_sandbox::Capabilities {
+        self.inner.capabilities()
+    }
+    fn ensure(
+        &self,
+        spec: &branchyard_sandbox::SandboxSpec,
+    ) -> Result<branchyard_sandbox::SandboxInfo, branchyard_sandbox::ProviderError> {
+        self.inner.ensure(spec)
+    }
+    fn inspect(
+        &self,
+        name: &str,
+    ) -> Result<Option<branchyard_sandbox::SandboxInfo>, branchyard_sandbox::ProviderError> {
+        self.inner.inspect(name)
+    }
+    fn exec(
+        &self,
+        name: &str,
+        spec: &branchyard_sandbox::ExecSpec,
+    ) -> Result<Box<dyn branchyard_sandbox::Process>, branchyard_sandbox::ProviderError> {
+        self.inner.exec(name, spec)
+    }
+    fn stop(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        self.inner.stop(name)
+    }
+    fn destroy(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        self.inner.destroy(name)
+    }
+    fn pause(&self, name: &str) -> Result<(), branchyard_sandbox::ProviderError> {
+        let watched = self.watched.lock().unwrap().clone();
+        if let Some(path) = watched {
+            self.seen.lock().unwrap().push(path.exists());
+        }
+        self.inner.pause(name)
+    }
+    fn resume(
+        &self,
+        name: &str,
+    ) -> Result<branchyard_sandbox::SandboxInfo, branchyard_sandbox::ProviderError> {
+        self.inner.resume(name)
+    }
+}
+
+#[test]
+fn a_resumed_sandbox_gets_a_fresh_manifest_a_new_token_and_loses_what_was_deselected() {
+    use branchyard::{Provider, SandboxEvent, SandboxKeep, SandboxOptions, SandboxOrigin};
+    let f = Fixture::new();
+    let fake = Arc::new(branchyard_sandbox::fake::FakeProvider::live(
+        Box::new(branchyard_runtime::LocalProvider::new()),
+        f.dir.join("fake-provider"),
+    ));
+    let watch = Arc::new(PauseWatch {
+        inner: fake.clone(),
+        watched: std::sync::Mutex::new(None),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    f.yard.use_sandbox_provider(watch.clone());
+    let packager = Arc::new(FakePackager {
+        bundles: vec!["github", "linear"],
+        ..FakePackager::default()
+    });
+    let mut gateway = Gateway::local(&f.yard, URL, packager).unwrap();
+    gateway.sandbox_url = Some("http://192.168.127.1:8931/mcp".into());
+    f.yard.use_connectors(gateway);
+    let kept = TaskOptions {
+        provider: Some(Provider::Microsandbox(SandboxOptions {
+            image: "registry.example/harness:1".into(),
+            keep: SandboxKeep::Pause,
+            ..SandboxOptions::default()
+        })),
+        isolated: false,
+        ..granted(&f, &["github:read", "linear:read"])
+    };
+    let token = "SH echo token=$(cat \"$ANVIL_GATEWAY_TOKEN_FILE\")";
+    let origins = |branch: &branchyard::Branch| -> Vec<SandboxOrigin> {
+        branch
+            .events()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.activity {
+                Activity::Sandbox(event) => match *event {
+                    SandboxEvent::Started { origin, .. } => Some(origin),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    let last_token = |branch: &branchyard::Branch| -> String {
+        let said = text(&branch.events().unwrap());
+        said.rsplit("token=")
+            .next()
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+
+    // First turn: a fresh sandbox, kept paused when the turn ends.
+    let branch = f
+        .task(token)
+        .options(TaskOptions {
+            name: Some("sleeper".into()),
+            ..kept
+        })
+        .run()
+        .unwrap();
+    assert_ran(&branch);
+    let home = PathBuf::from(stored_record(&f.root, "sleeper")["home"].as_str().unwrap());
+    let token_file = home.join(".branchyard/gateway-token");
+    let first = manifest_of(&branch);
+    let first_token = last_token(&branch);
+    assert_eq!(first.connectors.len(), 2);
+    assert!(fake
+        .sandboxes()
+        .iter()
+        .any(|(_, state)| *state == branchyard_sandbox::SandboxState::Paused));
+    assert!(!token_file.exists(), "no token beside a paused sandbox");
+
+    // The next turns watch the file at the moment of the pause. The same
+    // tools wake the kept sandbox: the manifest is resolved again anyway.
+    *watch.watched.lock().unwrap() = Some(token_file.clone());
+    let woken = resend(&branch, token, TaskOptions::default());
+    assert_ran(&woken);
+    assert_eq!(origins(&woken).last(), Some(&SandboxOrigin::Resumed));
+    let second = manifest_of(&woken);
+    assert!(second.created_at_ms > first.created_at_ms, "resolved again");
+    assert!(second.same_tools(&first));
+    let second_token = last_token(&woken);
+    assert_ne!(second_token, first_token, "a new token on resume");
+    let claims = connectors::keys::verify(&jwks(&f), &second_token).unwrap();
+    assert_eq!(claims["by_manifest"], second.digest().as_str());
+    // The server's word at the claim reaches the resumed manifest.
+    let versioned = resend(
+        &woken,
+        "SH true",
+        TaskOptions {
+            policy_version: Some(9),
+            ..TaskOptions::default()
+        },
+    );
+    assert_eq!(manifest_of(&versioned).policy_version, 9);
+
+    // While it slept the person deselected linear: it is gone from the
+    // resumed turn's home, and so is its package.
+    assert!(home.join(".branchyard/connectors/linear").is_dir());
+    let narrowed = resend(&versioned, token, granted(&f, &["github:read"]));
+    assert_ran(&narrowed);
+    assert_eq!(origins(&narrowed).last(), Some(&SandboxOrigin::Resumed));
+    let third = manifest_of(&narrowed);
+    assert_eq!(third.connectors.len(), 1);
+    assert_eq!(third.connectors[0].id, "github");
+    assert!(!home.join(".branchyard/connectors/linear").exists());
+    assert!(home
+        .join(".branchyard/connectors/github/SKILL.md")
+        .is_file());
+    assert_ne!(last_token(&narrowed), second_token);
+
+    // The renewer stopped and the token went before every pause.
+    let seen = watch.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 3, "three pauses were watched: {seen:?}");
+    assert!(seen.iter().all(|present| !present), "{seen:?}");
 }

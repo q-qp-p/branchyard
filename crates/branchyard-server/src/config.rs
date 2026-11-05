@@ -245,6 +245,13 @@ pub enum AuthenticationOrigin {
         email: String,
         /// The verified IAP subject, such as `accounts.google.com:1234`.
         sub: String,
+        /// When the groups this principal holds were read from Cloud
+        /// Identity (milliseconds since the Unix epoch); absent when they
+        /// came from the token or the provider has none. A recheck of
+        /// queued work looks them up again once they are older than the
+        /// lookup's cache (`docs/identity.md`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        groups_at_ms: Option<u64>,
     },
     /// A federated OIDC token (Workforce or Workload Identity Federation, or
     /// a plain issuer) matched an operator-configured binding.
@@ -258,6 +265,11 @@ pub enum AuthenticationOrigin {
         /// it; never the identity key.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         email: Option<String>,
+        /// When the groups this principal holds were read from Cloud
+        /// Identity (milliseconds since the Unix epoch); absent when they
+        /// came from the token's claim or the provider has no lookup.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        groups_at_ms: Option<u64>,
     },
 }
 

@@ -55,6 +55,21 @@ impl Credentials {
         self.federation.as_ref()?.verify_oidc(header).await
     }
 
+    /// Whether a federated principal is still allowed with its groups read
+    /// again when they are old ([`Federation::still_allows_fresh`]). True
+    /// for a principal no federated provider vouches for: the ordinary
+    /// recheck decides those. Blocking.
+    pub(crate) fn recheck_groups(
+        &self,
+        principal: &Principal,
+        now_ms: u64,
+    ) -> Result<bool, Refusal> {
+        match &self.federation {
+            Some(federation) => federation.still_allows_fresh(principal, now_ms),
+            None => Ok(true),
+        }
+    }
+
     /// Add Google-only ID-token verification without changing static credentials.
     /// Select ring only when no process TLS provider has been installed.
     pub fn with_google(mut self, config: Option<GoogleIdTokenConfig>) -> Self {

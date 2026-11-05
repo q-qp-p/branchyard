@@ -66,10 +66,13 @@ impl ToolStore {
 
     /// The store's entry for built-in `skill`, when it has one.
     pub(crate) fn skill(&self, skill: &Skill) -> Option<PathBuf> {
-        let dir =
-            self.root
-                .join(SKILLS_DIR)
-                .join(format!("{}@{}", skill.name, skill_digest(skill)));
+        self.skill_entry(skill.name, &skill_digest(skill))
+    }
+
+    /// The store's entry for the skill `name` whose files hash to `digest`,
+    /// when it has one.
+    pub(crate) fn skill_entry(&self, name: &str, digest: &str) -> Option<PathBuf> {
+        let dir = self.root.join(SKILLS_DIR).join(format!("{name}@{digest}"));
         dir.is_dir().then_some(dir)
     }
 

@@ -31,10 +31,11 @@ use branchyard::connectors::{intersect, GrantEntry, GrantMode};
 use branchyard_client::workspace_api::{
     PolicyList, PolicyRecord, PutPolicyRequest, ToolKind, ToolPolicy,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api::{App, Caller, Shared};
-use crate::console_store::Collection;
+use crate::console_store::{Collection, Record};
 use crate::error::ApiError;
 
 /// Policies one tenant may store, so a list stays a page.
@@ -352,6 +353,119 @@ impl Resolved {
     }
 }
 
+/// The server-side limits a process applies to a caller: the `ceilings`
+/// configuration's connector ceiling and whether the server delegates at
+/// all. Admission records the ceiling it applied in the session row
+/// (`server_ceiling`), and whichever process later claims the session's
+/// operation holds it to that, narrowed by its own, so a worker with a
+/// looser or older configuration never widens what was admitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Ceiling {
+    /// The connector ceiling for the caller; unset is no limit.
+    pub connectors: Option<Vec<GrantEntry>>,
+    /// Whether the server offers delegation to its harnesses.
+    pub allow_delegation: bool,
+}
+
+impl Ceiling {
+    /// The limits this process's own configuration sets for `caller`.
+    pub(crate) fn of_this_server(app: &App, caller: &Caller) -> Ceiling {
+        Ceiling {
+            connectors: super::connections::server_ceiling(app, caller),
+            allow_delegation: app.config.allow_delegation,
+        }
+    }
+
+    /// The ceiling a session row records, when it records one. A row
+    /// admitted before ceilings were recorded has none.
+    pub(crate) fn admitted(session: &Value) -> Option<Ceiling> {
+        serde_json::from_value(session["server_ceiling"].clone()).ok()
+    }
+
+    /// What both ceilings allow.
+    pub(crate) fn narrowed_by(&self, other: &Ceiling) -> Ceiling {
+        Ceiling {
+            connectors: match (&self.connectors, &other.connectors) {
+                (Some(a), Some(b)) => Some(intersect(a, b)),
+                (a, b) => a.clone().or_else(|| b.clone()),
+            },
+            allow_delegation: self.allow_delegation && other.allow_delegation,
+        }
+    }
+}
+
+/// The ceiling a process claiming a session's operation holds its tools
+/// to: the one the session was admitted under, narrowed by `own`, the
+/// claiming process's configuration, which can only narrow it. A session
+/// admitted before ceilings were recorded is held to `own` alone.
+///
+/// Refused as `policy_changed` when the session's `tools` do not fit. When
+/// they fit the ceiling they were admitted under but not `own`, the
+/// refusal says so and asks for re-admission (`detail.readmit`): the
+/// worker's configuration allows less than the server that admitted the
+/// session did.
+pub(crate) fn claim_ceiling(
+    own: &Ceiling,
+    admitted: Option<&Ceiling>,
+    tools: &Value,
+) -> Result<Ceiling, ApiError> {
+    let open = ToolPolicy::default();
+    let Some(admitted) = admitted else {
+        check_tools(&open, own, tools)?;
+        return Ok(own.clone());
+    };
+    // A row that breaks the ceiling it records is refused outright.
+    check_tools(&open, admitted, tools)?;
+    let effective = admitted.narrowed_by(own);
+    check_tools(&open, &effective, tools).map_err(|refused| {
+        let mut out = ApiError::new(
+            StatusCode::FORBIDDEN,
+            "policy_changed",
+            format!(
+                "this server's configuration allows less than the server that admitted the \
+                 session did, so it cannot run it ({}); re-admit the session with \
+                 POST /v1/workspaces/{{workspace}}/sessions/{{session}}/readmit, or run it on a \
+                 worker with the admitting configuration",
+                refused.body.message
+            ),
+        );
+        let mut detail = refused.body.detail.unwrap_or_else(|| json!({}));
+        detail["readmit"] = json!(true);
+        out = out.detail(detail);
+        out
+    })?;
+    Ok(effective)
+}
+
+/// Run the admission check again for a session, on this process: its stored
+/// `tools` against the caller's stored policy as it stands, narrowed by
+/// this process's own ceiling. If they are allowed the session records this
+/// process's ceiling and the tenant's current policy version, and its next
+/// turn's manifest takes that version; otherwise `policy_changed`, and the
+/// session is unchanged. Returns the version recorded.
+pub(crate) fn readmit(app: &App, caller: &Caller, session: &Record) -> Result<u64, ApiError> {
+    let own = Ceiling::of_this_server(app, caller);
+    let now = current_version(app, caller.tenant())?;
+    let store = resolved(app, caller)?.store;
+    check_tools(&store, &own, &session.body["tools"])?;
+    for _ in 0..8 {
+        let current = super::get(app, Collection::Sessions, &session.id)?;
+        let mut body = current.body.clone();
+        body["server_ceiling"] = json!(own);
+        body["policy_version"] = json!(now);
+        body["readmitted_at_ms"] = json!(branchyard_support::time::now_ms());
+        match app.registry.console_mutate(&[super::update(current, body)]) {
+            Err(error) if error.body.code == "revision_conflict" => continue,
+            result => return result.map(|()| now),
+        }
+    }
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        "revision_conflict",
+        "the session was busy; try again",
+    ))
+}
+
 /// The caller's stored policy and the server's limits. Reads the store, so
 /// run it where blocking is fine.
 pub(crate) fn resolved(app: &App, caller: &Caller) -> Result<Resolved, ApiError> {
@@ -387,7 +501,25 @@ pub(crate) fn resolved(app: &App, caller: &Caller) -> Result<Resolved, ApiError>
 /// harness no longer listed. A refusal is `policy_changed`, with the
 /// detail of what is no longer allowed; the person starts again with tools
 /// the policy allows. Reads the store, so run it where blocking is fine.
+#[cfg(test)]
 pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), ApiError> {
+    let resolved = resolved(app, caller)?;
+    let ceiling = Ceiling {
+        connectors: resolved.server_ceiling.clone(),
+        allow_delegation: resolved.allow_delegation,
+    };
+    check_tools(&resolved.store, &ceiling, tools)
+}
+
+/// [`recheck`] against a stored policy and the server ceiling the session
+/// was admitted under, rather than the configuration of the process that
+/// runs it. A tool is allowed when the stored policy, narrowed by the
+/// ceiling, still lists it. Refusals are `policy_changed`.
+pub(crate) fn check_tools(
+    stored: &ToolPolicy,
+    ceiling: &Ceiling,
+    tools: &Value,
+) -> Result<(), ApiError> {
     let changed = |error: ApiError| {
         let mut out = ApiError::new(
             StatusCode::FORBIDDEN,
@@ -402,8 +534,12 @@ pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), A
         }
         out
     };
-    let resolved = resolved(app, caller)?;
-    let store = &resolved.store;
+    let effective = with_server(
+        stored,
+        ceiling.connectors.as_deref(),
+        ceiling.allow_delegation,
+    );
+    let store = &effective;
     let grant: Vec<GrantEntry> = tools["connectors"]
         .as_array()
         .into_iter()
@@ -441,7 +577,7 @@ pub(crate) fn recheck(app: &App, caller: &Caller, tools: &Value) -> Result<(), A
         return Err(changed(not_allowed(ToolKind::Skill, id, None)));
     }
     if let Some(helpers) = tools["helpers"]["harnesses"].as_array() {
-        if !delegation_allowed(store) || !resolved.allow_delegation {
+        if !delegation_allowed(store) {
             return Err(changed(not_allowed(ToolKind::Helper, "*", None)));
         }
         if let Some(id) = helpers

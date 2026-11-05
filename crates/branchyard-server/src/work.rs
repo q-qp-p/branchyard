@@ -465,7 +465,9 @@ impl Executor for AppExecutor {
     fn execute(&self, stored: &StoredOperation, work: &Value) -> Finished {
         let app = &self.0;
         let operation = &stored.operation;
-        if let Err(refused) = admitted_principal_allowed(&app.config, stored) {
+        if let Err(refused) = admitted_principal_allowed(&app.config, stored)
+            .and_then(|()| fresh_groups_allowed(&app.credentials, stored))
+        {
             return Finished {
                 result: Err(*refused.body),
                 end_cursor: None,
@@ -820,6 +822,31 @@ fn admitted_principal_allowed(
         .detail(serde_json::json!({ "repo": repo })));
     }
     Ok(())
+}
+
+/// Refuse to run an operation whose principal's groups, read again, no
+/// longer admit it. Groups a federated sign-in read from Cloud Identity are
+/// looked up again here once they are older than the lookup's cache, and the
+/// binding is chosen with the fresh groups, so a person removed from a group
+/// loses its access without signing in again. A lookup that fails refuses
+/// as `identity_unavailable`: the groups are never guessed. Blocking, which
+/// an executor is allowed to be. See `docs/identity.md`.
+fn fresh_groups_allowed(
+    credentials: &crate::auth::Credentials,
+    stored: &StoredOperation,
+) -> Result<(), ApiError> {
+    let Some(principal) = &stored.principal else {
+        return Ok(());
+    };
+    match credentials.recheck_groups(principal, branchyard_support::time::now_ms()) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "identity_binding_revoked",
+            "the admitted identity's groups changed and its binding no longer allows this operation",
+        )),
+        Err(refusal) => Err(refusal.into()),
+    }
 }
 
 /// The branches an operation ran, once every branch they delegated to on
@@ -1337,6 +1364,110 @@ pub(crate) fn delegator(yard: &Yard, name: &str) -> Result<String, branchyard::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A queued operation of a person who signed in through IAP with groups
+    /// read from Cloud Identity at `groups_at_ms`, and the credentials of a
+    /// server whose Cloud Identity is `identity`.
+    fn queued_federated_work(
+        identity: &branchyard_testkit::MockHttp,
+        groups_at_ms: Option<u64>,
+    ) -> (crate::auth::Credentials, StoredOperation) {
+        use crate::config::{AuthenticationOrigin, Principal};
+        use crate::federated::{AccessToken, GroupsFrom, IapConfig, IdentityBinding};
+        struct Token;
+        impl AccessToken for Token {
+            fn token(&self) -> Result<String, String> {
+                Ok("meta-token".into())
+            }
+        }
+        let binding = |matches: &str, name: &str, scopes: &[&str]| IdentityBinding {
+            matches: matches.into(),
+            name: Some(name.into()),
+            tenant: Some("engineering".into()),
+            scopes: Some(scopes.iter().map(|s| (*s).to_owned()).collect()),
+            repos: None,
+        };
+        let iap = IapConfig {
+            audience: "/projects/1/global/backendServices/2".into(),
+            keys_url: None,
+            tenant: None,
+            scopes: None,
+            bindings: vec![
+                binding("group:eng@example.com", "engineer", &["read", "run"]),
+                binding("domain:example.com", "staff", &["read"]),
+            ],
+            groups_from: Some(GroupsFrom::CloudIdentity),
+            groups_url: Some(identity.url()),
+        };
+        let credentials = crate::auth::Credentials::new(Vec::new()).with_federation(
+            Some(iap),
+            Vec::new(),
+            Arc::new(Token),
+        );
+        let principal = Principal {
+            origin: AuthenticationOrigin::Iap {
+                email: "ada@example.com".into(),
+                sub: "accounts.google.com:1".into(),
+                groups_at_ms,
+            },
+            name: "engineer".into(),
+            tenant: "engineering".into(),
+            scopes: ["read".to_owned(), "run".to_owned()].into_iter().collect(),
+            repos: None,
+            groups: ["eng@example.com".to_owned()].into_iter().collect(),
+        };
+        let stored: StoredOperation = serde_json::from_value(serde_json::json!({
+            "operation":{"id":"queued","repo":"app","kind":"task","state":"queued","branches":[],"cursor":0,"created_at_ms":0},
+            "principal":principal,"tenant":"engineering"
+        })).unwrap();
+        (credentials, stored)
+    }
+
+    #[test]
+    fn queued_work_rereads_old_groups_and_refuses_a_person_removed_from_one() {
+        use branchyard_testkit::{MockHttp, Response};
+        let old = Some(branchyard_support::time::now_ms().saturating_sub(10 * 60 * 1000));
+        let member = |present: bool| {
+            MockHttp::start(move |_| match present {
+                true => Response::json(
+                    200,
+                    &serde_json::json!({"memberships":[{"groupKey":{"id":"eng@example.com"}}]}),
+                ),
+                false => Response::json(200, &serde_json::json!({})),
+            })
+        };
+        // Still in the group: it runs, after one lookup.
+        let identity = member(true);
+        let (credentials, stored) = queued_federated_work(&identity, old);
+        assert!(fresh_groups_allowed(&credentials, &stored).is_ok());
+        assert_eq!(identity.requests().len(), 1);
+        // Removed from it: the binding found with the fresh groups allows
+        // less than the person was admitted with. No new sign-in needed.
+        let identity = member(false);
+        let (credentials, stored) = queued_federated_work(&identity, old);
+        let refused = fresh_groups_allowed(&credentials, &stored).unwrap_err();
+        assert_eq!(refused.body.code, "identity_binding_revoked");
+        // A lookup that fails is a refusal, never a guess.
+        let down = MockHttp::start(|_| Response::new(503, "down"));
+        let (credentials, stored) = queued_federated_work(&down, old);
+        let refused = fresh_groups_allowed(&credentials, &stored).unwrap_err();
+        assert_eq!(refused.body.code, "identity_unavailable");
+        assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE);
+        // Groups younger than the lookup's cache are not read again.
+        let identity = member(false);
+        let (credentials, stored) =
+            queued_federated_work(&identity, Some(branchyard_support::time::now_ms()));
+        assert!(fresh_groups_allowed(&credentials, &stored).is_ok());
+        assert!(identity.requests().is_empty());
+        // A principal with no federated provider is left to the ordinary
+        // recheck.
+        let (credentials, _) = queued_federated_work(&identity, old);
+        let plain: StoredOperation = serde_json::from_value(serde_json::json!({
+            "operation":{"id":"q","repo":"app","kind":"task","state":"queued","branches":[],"cursor":0,"created_at_ms":0},
+            "principal":crate::config::Principal::default_for("static"),"tenant":"default"
+        })).unwrap();
+        assert!(fresh_groups_allowed(&credentials, &plain).is_ok());
+    }
 
     #[test]
     fn queued_paired_google_work_cannot_outlive_its_issuer_binding() {

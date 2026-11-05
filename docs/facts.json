@@ -72,7 +72,7 @@
     }
   },
   "http": {
-    "route_count": 141,
+    "route_count": 142,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -203,6 +203,7 @@
       "/v1/workspaces/{workspace}/sessions/{session}/messages",
       "/v1/workspaces/{workspace}/sessions/{session}/pr",
       "/v1/workspaces/{workspace}/sessions/{session}/pr/refresh",
+      "/v1/workspaces/{workspace}/sessions/{session}/readmit",
       "/v1/workspaces/{workspace}/sessions/{session}/runtime",
       "/v1/workspaces/{workspace}/sessions/{session}/runtime/actions/{action}",
       "/v1/workspaces/{workspace}/sessions/{session}/terminals",

@@ -3,6 +3,7 @@
 //! grant (`anvil connectors index`). [`Packager`] is the seam; tests use a
 //! fake, [`AnvilPackager`] runs Anvil's CLI.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -229,6 +230,53 @@ pub fn hash_dir(dir: &Path) -> Result<String, String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// [`hash_dir`], remembered for this process by what a stat of every file
+/// says (its path, size and modification time): a directory whose files
+/// are as they were is not read again. Returns the digest and whether it
+/// came from the memory. A store is read-only and content-addressed, so a
+/// turn pays one hash per entry per process, then a walk of stats. A file
+/// rewritten in place with its size and time kept would not be seen; that
+/// is not a defence against a writer, only against a host that holds
+/// another bundle than the one a manifest admitted.
+pub(crate) fn hash_dir_cached(dir: &Path) -> Result<(String, bool), String> {
+    use branchyard_support::LockExt as _;
+    static REMEMBERED: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, (String, String)>>> =
+        std::sync::OnceLock::new();
+    let memory = REMEMBERED.get_or_init(Default::default);
+    let print = fingerprint(dir)?;
+    if let Some((seen, digest)) = memory.lock_recovering("hashed bundles").get(dir) {
+        if *seen == print {
+            return Ok((digest.clone(), true));
+        }
+    }
+    let digest = hash_dir(dir)?;
+    memory
+        .lock_recovering("hashed bundles")
+        .insert(dir.to_path_buf(), (print, digest.clone()));
+    Ok((digest, false))
+}
+
+/// What a stat of every file [`hash_dir`] reads says, hashed.
+fn fingerprint(dir: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    collect(dir, dir, &mut files)?;
+    files.sort();
+    let mut hasher = blake3::Hasher::new();
+    for rel in files {
+        let meta = fs::metadata(dir.join(&rel)).map_err(|e| format!("stat {rel}: {e}"))?;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(branchyard_support::time::system_time_nanos)
+            .unwrap_or(0);
+        hasher.update(rel.as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&meta.len().to_le_bytes());
+        hasher.update(&modified.to_le_bytes());
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
 fn collect(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -294,5 +342,27 @@ mod tests {
         mk("github", "air.yaml", "service: github2");
         assert_ne!(discover(root.path()).unwrap()[0].hash, before);
         assert!(discover(&root.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_directory_is_hashed_once_until_a_file_in_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a"), "one").unwrap();
+        let (first, remembered) = hash_dir_cached(dir.path()).unwrap();
+        assert!(!remembered);
+        assert_eq!(first, hash_dir(dir.path()).unwrap());
+        let (again, remembered) = hash_dir_cached(dir.path()).unwrap();
+        assert!(remembered, "a second look reads no file");
+        assert_eq!(again, first);
+        // A different size is seen.
+        fs::write(dir.path().join("a"), "three").unwrap();
+        let (changed, remembered) = hash_dir_cached(dir.path()).unwrap();
+        assert!(!remembered);
+        assert_ne!(changed, first);
+        // So is a new file.
+        fs::write(dir.path().join("b"), "").unwrap();
+        let (added, remembered) = hash_dir_cached(dir.path()).unwrap();
+        assert!(!remembered);
+        assert_ne!(added, changed);
     }
 }

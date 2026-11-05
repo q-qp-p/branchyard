@@ -698,6 +698,15 @@
               "description": "The verified IAP subject, such as `accounts.google.com:1234`.",
               "type": "string"
             },
+            "groups_at_ms": {
+              "description": "When the groups this principal holds were read from Cloud\nIdentity (milliseconds since the Unix epoch); absent when they\ncame from the token or the provider has none. A recheck of\nqueued work looks them up again once they are older than the\nlookup's cache (`docs/identity.md`).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
             "kind": {
               "type": "string",
               "const": "iap"
@@ -728,6 +737,15 @@
                 "string",
                 "null"
               ]
+            },
+            "groups_at_ms": {
+              "description": "When the groups this principal holds were read from Cloud\nIdentity (milliseconds since the Unix epoch); absent when they\ncame from the token's claim or the provider has no lookup.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
             },
             "kind": {
               "type": "string",
