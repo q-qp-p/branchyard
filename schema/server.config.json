@@ -208,6 +208,17 @@
         "null"
       ]
     },
+    "database_ca_file": {
+      "description": "PEM file of the certificates that sign the database server's\ncertificate (an AlloyDB instance's server CA), added to the public\nroots for `sslmode=require`. A relative path is relative to this\nfile. See docs/server.md#alloydb.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "database_auth": {
+      "description": "`\"password\"` (default): the password in the `database` URL, if any.\n`\"gcp_iam\"`: a Google access token from the metadata server, as the\npassword at each connection (AlloyDB and Cloud SQL IAM\nauthentication); the URL then has no password and `sslmode=require`\nunless the host is loopback. See docs/server.md#alloydb.",
+      "$ref": "#/$defs/DatabaseAuth"
+    },
     "labels": {
       "description": "The labels this server's worker carries; it claims only operations\nwhose `require_labels` are all among them. See\ndocs/server.md#worker-labels.",
       "type": "array",
@@ -1732,6 +1743,21 @@
       "additionalProperties": false,
       "required": [
         "harness"
+      ]
+    },
+    "DatabaseAuth": {
+      "description": "How the server logs in to its PostgreSQL `database`.",
+      "oneOf": [
+        {
+          "description": "The password in the URL, or none (the default).",
+          "type": "string",
+          "const": "password"
+        },
+        {
+          "description": "A Google OAuth access token from the metadata server, as the\npassword, at every new connection: AlloyDB and Cloud SQL IAM\ndatabase authentication.",
+          "type": "string",
+          "const": "gcp_iam"
+        }
       ]
     },
     "FileWebhook": {

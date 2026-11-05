@@ -684,6 +684,35 @@ by serve --database 'postgres://branchyard@db.internal/branchyard' --repo app=/s
 
 Each served repository's branch records, event log and feed, leases, journaled steps, harness processes, cancels and steered input are kept in the database under the repository's served name, with [the same semantics as SQLite](durability.md#postgresql); the operation registry is the `by_operations`, `by_operation_queue` and `by_branch_locks` tables. Tables are created when missing, in the connection's `search_path` schema: add `?options=-csearch_path%3Dname` to the URL to choose one. Worktrees, private homes and delegation tokens stay in each repository's `.branchyard/`, and the data directory still holds the default token (a `--worker`, which serves no requests, creates none).
 
+### AlloyDB
+
+AlloyDB speaks the PostgreSQL protocol, so the server uses it as any `--database`. Two ways to connect.
+
+**Through the AlloyDB Auth Proxy (recommended on GKE).** Run the proxy beside the server with `--auto-iam-authn`, and point the URL at its loopback port. The proxy encrypts the connection and logs in with the pod's service account, so the server needs no password, no CA file and no TLS setting:
+
+```json
+{ "database": "postgres://my-sa%40my-project.iam@127.0.0.1:5432/branchyard" }
+```
+
+**Directly, with TLS and IAM login.** Connect to the instance's private IP with `sslmode=require`, trust the instance's server CA, and let the server fetch a Google access token as the password:
+
+```json
+{
+  "database": "postgres://my-sa@10.20.0.5/branchyard?sslmode=require",
+  "database_ca_file": "/etc/branchyard/alloydb-server-ca.pem",
+  "database_auth": "gcp_iam"
+}
+```
+
+- **`sslmode=require`** connects over TLS (rustls) and checks the server's certificate against the public roots plus `database_ca_file`. `disable` and `prefer` (the default) stay in the clear. Download the instance's server CA certificate as a PEM file from the AlloyDB console, or from the instance's connection info in the AlloyDB API. A file that is unreadable or holds no certificate stops the connection with an error naming it.
+- **`database_ca_file`** is a PEM file of one or more certificates, relative to the configuration file. It adds to the public roots and replaces none.
+- **`database_auth`** is `"password"` (the default: the URL's password, if any) or `"gcp_iam"`. With `gcp_iam` the server asks the metadata server (`GCE_METADATA_HOST`, else `metadata.google.internal`) for an access token of the service account it runs as, at every new connection, and uses it as the password. It keeps the token until five minutes before it expires. GKE with Workload Identity, Compute Engine and Cloud Run provide the metadata server.
+- **The database user** is an IAM database user. For a service account, it is the account's email without `.gserviceaccount.com`, such as `my-sa@my-project.iam`; write the `@` in the URL as `%40`. Create the user in AlloyDB and grant it the `roles/alloydb.client` and `roles/alloydb.databaseUser` roles.
+- **Refused at start.** `gcp_iam` with a password in the URL (the token replaces it), and `gcp_iam` without `sslmode=require` unless every host is loopback (the Auth Proxy) or a Unix socket, so a token never crosses the network in the clear. `database_ca_file` and `database_auth` without a `database` are refused too.
+- **Workers.** `by worker` and `by serve --worker` read the same configuration file, so they log in the same way.
+
+Status: hermetic only. The token source runs against a mock metadata server, the configuration checks and the CA loading against local files, and no test connects to AlloyDB, Cloud SQL or any TLS-terminating PostgreSQL. Not done: a run against a real AlloyDB instance, with the Auth Proxy or directly; IAM login with a real token; a handshake with a real server CA.
+
 ### Several servers on one database
 
 Servers, and `by worker` processes, started with the same `--database` share its operations, queue and branch locks:
@@ -730,7 +759,7 @@ A task (one branch or a fan) that runs its harnesses by name (no request `comman
 What it is not yet:
 
 - **Shared with local `by`.** A local `by` on a served repository opens its SQLite `state.db` and sees none of the server's branches; use `by --remote`. Nothing is imported from an existing `state.db` when a repository moves to the database.
-- **TLS to the database.** Connections are plain; keep the database on a trusted network or a Unix socket.
+- **TLS for `sslmode=prefer`.** `sslmode=require` connects over TLS ([AlloyDB](#alloydb)); `disable` and `prefer` (the default) connect in the clear, so keep such a database on a trusted network or a Unix socket.
 - **Waits** poll every 100 ms, as SQLite's do across processes; nothing listens for `NOTIFY`. A long poll of an operation another server's worker runs sees it finish within `poll_interval`.
 
 ### Service registry

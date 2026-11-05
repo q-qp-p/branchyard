@@ -206,7 +206,9 @@ pub use native_options::{
     ContainerOptions, ContainerRuntime,
 };
 #[cfg(feature = "postgres")]
-pub use pg::postgres_config;
+pub use pg::{
+    postgres_config, postgres_open, set_connection_policy, ConnectionPolicy, PasswordSource,
+};
 pub use placement::{HOME as SANDBOX_HOME, WORKSPACE as SANDBOX_WORKSPACE};
 pub use provider_admission::ProviderAdmission;
 pub use providers::HarnessLocation;

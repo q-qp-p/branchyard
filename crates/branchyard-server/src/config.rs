@@ -39,6 +39,71 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// What `database_auth` checks in a PostgreSQL URL.
+struct DatabaseUrl {
+    /// The URL carries a password.
+    password: bool,
+    /// `sslmode=require`.
+    require_tls: bool,
+    /// Every host is loopback or a Unix socket.
+    loopback: bool,
+}
+
+impl DatabaseUrl {
+    fn parse(url: &str) -> DatabaseUrl {
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let (before_query, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let authority = before_query.split('/').next().unwrap_or_default();
+        let (user, hosts) = authority.rsplit_once('@').unwrap_or(("", authority));
+        let pairs: Vec<(&str, &str)> = query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .collect();
+        let query_value = |key: &str| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+        let password = user.split_once(':').is_some_and(|(_, p)| !p.is_empty())
+            || query_value("password").is_some_and(|p| !p.is_empty());
+        let require_tls = query_value("sslmode") == Some("require");
+        let hosts = match (hosts.is_empty(), query_value("host")) {
+            (true, Some(host)) => host,
+            _ => hosts,
+        };
+        let loopback = !hosts.is_empty()
+            && hosts.split(',').all(|entry| {
+                let entry = entry.trim();
+                let name = match entry.strip_prefix('[') {
+                    Some(v6) => v6.split(']').next().unwrap_or_default(),
+                    None => entry.split(':').next().unwrap_or_default(),
+                };
+                name.starts_with('/')
+                    || name.starts_with("%2F")
+                    || name.starts_with("%2f")
+                    || name.eq_ignore_ascii_case("localhost")
+                    || name
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
+        DatabaseUrl {
+            password,
+            require_tls,
+            loopback,
+        }
+    }
+}
+
+/// How the server logs in to its PostgreSQL `database`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DatabaseAuth {
+    /// The password in the URL, or none (the default).
+    #[default]
+    Password,
+    /// A Google OAuth access token from the metadata server, as the
+    /// password, at every new connection: AlloyDB and Cloud SQL IAM
+    /// database authentication.
+    GcpIam,
+}
+
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8421";
 
 /// Which repositories' workspace scripts a server runs: its operator's
@@ -800,6 +865,12 @@ pub struct Config {
     /// A PostgreSQL URL: keep branch state and operations there instead of
     /// SQLite. Only in a build with the `postgres` feature.
     pub database: Option<String>,
+    /// PEM file of the certificates that sign the database's server
+    /// certificate (an AlloyDB instance's server CA), for
+    /// `sslmode=require`.
+    pub database_ca_file: Option<PathBuf>,
+    /// How the server logs in to `database`.
+    pub database_auth: DatabaseAuth,
     /// How often the feed looks in the repository's store for activity
     /// recorded by other processes.
     pub poll_interval: Duration,
@@ -1032,6 +1103,8 @@ impl Config {
             execution_presets: Vec::new(),
             require_workspace_execution_presets: false,
             database: None,
+            database_ca_file: None,
+            database_auth: DatabaseAuth::Password,
             poll_interval: Duration::from_millis(500),
             recover_interval: crate::serve::RECOVER_EVERY,
             log_requests: true,
@@ -1296,6 +1369,7 @@ impl Config {
                 return Err("database must be a PostgreSQL URL, postgres://user@host/name".into());
             }
         }
+        self.check_database_login()?;
         if self.worker_only && self.database.is_none() {
             return Err(
                 "a worker needs --database: it runs operations other servers queued there".into(),
@@ -1404,6 +1478,36 @@ impl Config {
 
     /// Refuse an execution preset that could not run as written, after the
     /// flags merged `allow_providers` and `secrets` in.
+    /// `database_ca_file` and `database_auth` against the `database` URL.
+    fn check_database_login(&self) -> Result<(), String> {
+        if self.database.is_none() {
+            if self.database_ca_file.is_some() || self.database_auth != DatabaseAuth::Password {
+                return Err("database_ca_file and database_auth need a database".into());
+            }
+            return Ok(());
+        }
+        if self.database_auth != DatabaseAuth::GcpIam {
+            return Ok(());
+        }
+        let url = self.database.as_deref().unwrap_or_default();
+        let parts = DatabaseUrl::parse(url);
+        if parts.password {
+            return Err(
+                "database_auth gcp_iam takes the password from Google: remove the password from \
+                 the database URL"
+                    .into(),
+            );
+        }
+        if !parts.require_tls && !parts.loopback {
+            return Err(
+                "database_auth gcp_iam sends a token: the database URL needs sslmode=require \
+                 (or a loopback host, the AlloyDB Auth Proxy)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     fn check_execution_presets(&self) -> Result<(), String> {
         if self.require_workspace_execution_presets && self.execution_presets.is_empty() {
             return Err(
@@ -1678,6 +1782,18 @@ pub(crate) struct FileConfig {
     #[serde(default)]
     require_workspace_execution_presets: bool,
     database: Option<String>,
+    /// PEM file of the certificates that sign the database server's
+    /// certificate (an AlloyDB instance's server CA), added to the public
+    /// roots for `sslmode=require`. A relative path is relative to this
+    /// file. See docs/server.md#alloydb.
+    database_ca_file: Option<PathBuf>,
+    /// `"password"` (default): the password in the `database` URL, if any.
+    /// `"gcp_iam"`: a Google access token from the metadata server, as the
+    /// password at each connection (AlloyDB and Cloud SQL IAM
+    /// authentication); the URL then has no password and `sslmode=require`
+    /// unless the host is loopback. See docs/server.md#alloydb.
+    #[serde(default)]
+    database_auth: DatabaseAuth,
     /// The labels this server's worker carries; it claims only operations
     /// whose `require_labels` are all among them. See
     /// docs/server.md#worker-labels.
@@ -2095,6 +2211,10 @@ pub struct Partial {
     /// `require_workspace_execution_presets`.
     pub require_workspace_execution_presets: bool,
     pub database: Option<String>,
+    /// `database_ca_file`, its relative path resolved.
+    pub database_ca_file: Option<PathBuf>,
+    /// `database_auth`.
+    pub database_auth: DatabaseAuth,
     pub labels: Vec<String>,
     pub inventory: Option<bool>,
     pub unclaimable_after: Option<Duration>,
@@ -2381,6 +2501,8 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             .collect(),
         require_workspace_execution_presets: file.require_workspace_execution_presets,
         database: file.database,
+        database_ca_file: file.database_ca_file.map(resolve),
+        database_auth: file.database_auth,
         labels: file.labels,
         inventory: file.inventory,
         unclaimable_after,
@@ -3031,5 +3153,99 @@ mod execution_presets_tests {
             let error = config.validate().unwrap_err();
             assert!(error.contains(expected), "{expected:?} in {error:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod database_login_tests {
+    use super::*;
+
+    fn with(database: Option<&str>, auth: DatabaseAuth) -> Config {
+        let mut c = Config::new(PathBuf::from("/nonexistent/x"));
+        c.listen = "127.0.0.1:0".parse().unwrap();
+        c.repos.push(("app".into(), PathBuf::from("/srv/app")));
+        c.tokens.push(Token {
+            name: "t".into(),
+            secret: "0123456789abcdef".into(),
+        });
+        c.database = database.map(str::to_owned);
+        c.database_auth = auth;
+        c
+    }
+
+    #[test]
+    fn gcp_iam_accepts_tls_and_a_loopback_proxy() {
+        for url in [
+            "postgres://sa@10.1.2.3/app?sslmode=require",
+            "postgres://sa@alloydb.internal:5432/app?sslmode=require",
+            "postgres://sa@127.0.0.1:5432/app",
+            "postgres://sa@localhost/app",
+            "postgres://sa@[::1]:5432/app",
+            "postgres://sa@%2Ftmp%2Fsock/app",
+        ] {
+            with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+    }
+
+    #[test]
+    fn gcp_iam_refuses_a_url_with_a_password() {
+        for url in [
+            "postgres://sa:secret@127.0.0.1/app",
+            "postgres://sa@127.0.0.1/app?password=secret",
+        ] {
+            let error = with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_err();
+            assert!(error.contains("remove the password"), "{url}: {error}");
+        }
+    }
+
+    #[test]
+    fn gcp_iam_refuses_a_remote_host_without_tls() {
+        for url in [
+            "postgres://sa@10.1.2.3/app",
+            "postgres://sa@10.1.2.3/app?sslmode=prefer",
+            "postgres://sa@127.0.0.1,10.1.2.3/app",
+        ] {
+            let error = with(Some(url), DatabaseAuth::GcpIam)
+                .validate()
+                .unwrap_err();
+            assert!(error.contains("sslmode=require"), "{url}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_login_settings_need_a_database() {
+        let error = with(None, DatabaseAuth::GcpIam).validate().unwrap_err();
+        assert!(error.contains("need a database"), "{error}");
+        let mut config = with(None, DatabaseAuth::Password);
+        config.database_ca_file = Some("/etc/ca.pem".into());
+        assert!(config.validate().unwrap_err().contains("need a database"));
+    }
+
+    #[test]
+    fn the_password_default_keeps_a_url_password() {
+        with(Some("postgres://u:p@db/app"), DatabaseAuth::Password)
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn the_file_form_reads_both_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.json");
+        std::fs::write(
+            &path,
+            r#"{"database": "postgres://sa@db/app?sslmode=require",
+                "database_ca_file": "ca.pem", "database_auth": "gcp_iam"}"#,
+        )
+        .unwrap();
+        let partial = load_file(&path).unwrap();
+        assert_eq!(partial.database_auth, DatabaseAuth::GcpIam);
+        assert_eq!(partial.database_ca_file, Some(dir.path().join("ca.pem")));
+        std::fs::write(&path, r#"{"database_auth": "kerberos"}"#).unwrap();
+        assert!(load_file(&path).is_err());
     }
 }

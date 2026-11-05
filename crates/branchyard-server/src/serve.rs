@@ -354,6 +354,27 @@ fn tls_acceptor(files: &TlsFiles) -> Result<TlsAcceptor, String> {
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
+/// How this process connects to the database, before any store opens:
+/// the CA file, and with `database_auth: gcp_iam` a Google access token
+/// from the metadata server as the password at every new connection.
+#[cfg(feature = "postgres")]
+fn install_database_policy(config: &Config) {
+    if config.database.is_none() {
+        return;
+    }
+    let password: Option<branchyard::PasswordSource> = match config.database_auth {
+        crate::config::DatabaseAuth::Password => None,
+        crate::config::DatabaseAuth::GcpIam => {
+            let source = crate::gcp::MetadataToken::new(&[]);
+            Some(Arc::new(move || source.token()))
+        }
+    };
+    branchyard::set_connection_policy(branchyard::ConnectionPolicy {
+        ca_file: config.database_ca_file.clone(),
+        password,
+    });
+}
+
 /// Open every repository (recovering branches whose engine stopped), the
 /// registry and the feeds, bind, and start
 /// serving. Needs a multi-threaded Tokio runtime.
@@ -372,6 +393,8 @@ pub async fn start(config: Config) -> Result<Running, String> {
     );
     std::fs::create_dir_all(&config.data_dir)
         .map_err(|e| format!("data directory {}: {e}", config.data_dir.display()))?;
+    #[cfg(feature = "postgres")]
+    install_database_policy(&config);
     // With PostgreSQL, operations, their queue and branch locks are in the
     // database, which several servers may share; otherwise they are in the
     // data directory's SQLite, which one server owns.

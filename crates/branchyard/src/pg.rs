@@ -721,12 +721,115 @@ impl Drop for Postgres {
     }
 }
 
-/// Connect to `url`. Only `sslmode=disable` or `prefer` work: TLS to the
-/// database is not built in.
+/// Connect to `url` under the process's [`ConnectionPolicy`].
 pub(crate) fn connect(url: &str) -> Result<Client, Error> {
-    let refused = |e: postgres::Error| state(&format!("connect to {}", redact(url)), &e);
-    let config = postgres_config(url).map_err(refused)?;
-    off_runtime(|| config.connect(NoTls)).map_err(refused)
+    postgres_open(url, None).map_err(|e| Error::State(e.to_string()))
+}
+
+/// A source of the database password, asked at every new connection: a
+/// short-lived token (AlloyDB or Cloud SQL IAM login), never stored.
+pub type PasswordSource = std::sync::Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
+
+/// How this process connects to PostgreSQL, set once at start by
+/// [`set_connection_policy`]. Without one, connections use the URL's
+/// password and no TLS.
+#[derive(Clone, Default)]
+pub struct ConnectionPolicy {
+    /// PEM certificates that sign the database's server certificate (an
+    /// AlloyDB instance's server CA), added to the public roots for
+    /// `sslmode=require`.
+    pub ca_file: Option<std::path::PathBuf>,
+    /// Replaces the URL's password at each connection.
+    pub password: Option<PasswordSource>,
+}
+
+static POLICY: std::sync::RwLock<ConnectionPolicy> = std::sync::RwLock::new(ConnectionPolicy {
+    ca_file: None,
+    password: None,
+});
+
+/// Set how every connection this process opens is made, replacing an
+/// earlier policy (a process that starts several servers, as tests do,
+/// sets it for each).
+pub fn set_connection_policy(policy: ConnectionPolicy) {
+    use branchyard_support::RwLockExt as _;
+    *POLICY.write_recovering("connection policy") = policy;
+}
+
+/// Open a connection to `url`, off any Tokio runtime, within
+/// `connect_wait` when given. The password comes from the
+/// [`ConnectionPolicy`] when it has a source, else from the URL.
+/// `sslmode=require` connects over TLS (rustls, the public roots plus the
+/// policy's `ca_file`, the server's name verified); `disable` and `prefer`,
+/// the default, connect in the clear, as before.
+pub fn postgres_open(url: &str, connect_wait: Option<Duration>) -> std::io::Result<Client> {
+    let policy = {
+        use branchyard_support::RwLockExt as _;
+        POLICY.read_recovering("connection policy").clone()
+    };
+    open_under(&policy, url, connect_wait)
+}
+
+/// [`postgres_open`] under `policy`.
+fn open_under(
+    policy: &ConnectionPolicy,
+    url: &str,
+    connect_wait: Option<Duration>,
+) -> std::io::Result<Client> {
+    let shown = redact(url);
+    let failed = |what: String| std::io::Error::other(format!("connect to {shown}: {what}"));
+    let mut config = postgres_config(url).map_err(|e| failed(e.to_string()))?;
+    if let Some(wait) = connect_wait {
+        config.connect_timeout(wait);
+    }
+    if let Some(source) = &policy.password {
+        let password = source().map_err(|why| failed(format!("no database password: {why}")))?;
+        config.password(password);
+    }
+    let tls = matches!(config.get_ssl_mode(), postgres::config::SslMode::Require);
+    let said = |e: postgres::Error| match e.as_db_error() {
+        Some(db) => failed(db.message().to_owned()),
+        None => failed(e.to_string()),
+    };
+    if !tls {
+        return off_runtime(|| config.connect(NoTls)).map_err(said);
+    }
+    let connector = tls_connector(policy.ca_file.as_deref()).map_err(failed)?;
+    off_runtime(|| config.connect(connector)).map_err(said)
+}
+
+/// The rustls connector for `sslmode=require`.
+pub(crate) fn tls_connector(
+    ca_file: Option<&std::path::Path>,
+) -> Result<tokio_postgres_rustls::MakeRustlsConnect, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    if let Some(path) = ca_file {
+        let pem = std::fs::read(path)
+            .map_err(|e| format!("cannot read the database CA {}: {e}", path.display()))?;
+        use rustls::pki_types::pem::PemObject as _;
+        let mut added = 0;
+        for cert in rustls::pki_types::CertificateDer::pem_slice_iter(&pem) {
+            let cert = cert.map_err(|e| format!("database CA {}: {e}", path.display()))?;
+            roots
+                .add(cert)
+                .map_err(|e| format!("database CA {}: {e}", path.display()))?;
+            added += 1;
+        }
+        if added == 0 {
+            return Err(format!(
+                "database CA {} holds no certificate",
+                path.display()
+            ));
+        }
+    }
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
 }
 
 /// The connection settings `url` names, with the notices PostgreSQL sends
@@ -2393,11 +2496,8 @@ impl Glanced {
         connect_wait: Duration,
         statement_wait: Duration,
     ) -> Result<Glanced, Error> {
-        let mut config = postgres_config(url)
-            .map_err(|e| Error::State(format!("database {}: {e}", redact(url))))?;
-        config.connect_timeout(connect_wait);
-        let mut client = off_runtime(|| config.connect(NoTls))
-            .map_err(|e| state(&format!("connect to {}", redact(url)), &e))?;
+        let mut client =
+            postgres_open(url, Some(connect_wait)).map_err(|e| Error::State(e.to_string()))?;
         let read = off_runtime(|| Glanced::read_with(&mut client, repo, inbox_of, statement_wait));
         close(client);
         read
@@ -4393,6 +4493,77 @@ mod retry_tests {
         };
         assert_eq!(retry.pause(), None);
         assert_eq!(retry.attempts, 1);
+    }
+}
+
+#[cfg(test)]
+mod tls_tests {
+    use super::{open_under, tls_connector, ConnectionPolicy};
+    use std::sync::Arc;
+
+    fn pem_ca(dir: &std::path::Path) -> std::path::PathBuf {
+        let cert = rcgen::generate_simple_self_signed(vec!["alloydb.test".to_owned()])
+            .expect("self-signed certificate");
+        let path = dir.join("server-ca.pem");
+        std::fs::write(&path, cert.cert.pem()).expect("write the CA");
+        path
+    }
+
+    #[test]
+    fn a_pem_ca_file_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = pem_ca(dir.path());
+        assert!(tls_connector(Some(&path)).is_ok());
+        assert!(tls_connector(None).is_ok());
+    }
+
+    #[test]
+    fn an_empty_ca_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.pem");
+        std::fs::write(&path, "").unwrap();
+        let error = tls_connector(Some(&path)).err().expect("refused");
+        assert!(error.contains("holds no certificate"), "{error}");
+    }
+
+    #[test]
+    fn an_unreadable_ca_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = tls_connector(Some(&dir.path().join("absent.pem")))
+            .err()
+            .expect("refused");
+        assert!(error.contains("cannot read the database CA"), "{error}");
+    }
+
+    #[test]
+    fn a_failing_password_source_stops_the_connection_with_its_reason() {
+        let policy = ConnectionPolicy {
+            ca_file: None,
+            password: Some(Arc::new(|| Err("metadata server unreachable".to_owned()))),
+        };
+        let error = open_under(&policy, "postgres://iam-user:@127.0.0.1:1/db", None)
+            .err()
+            .expect("refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("no database password: metadata server unreachable"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_missing_ca_file_stops_a_tls_connection_before_it_connects() {
+        let policy = ConnectionPolicy {
+            ca_file: Some("/nonexistent/ca.pem".into()),
+            password: None,
+        };
+        let error = open_under(&policy, "postgres://u@127.0.0.1:1/db?sslmode=require", None)
+            .err()
+            .expect("refused");
+        assert!(
+            error.to_string().contains("cannot read the database CA"),
+            "{error}"
+        );
     }
 }
 

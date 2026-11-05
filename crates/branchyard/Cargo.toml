@@ -23,7 +23,7 @@ workspace = true
 microsandbox = ["branchyard-microsandbox/microsandbox"]
 # Keep a repository's state in PostgreSQL (Yard::open_postgres) as well as
 # SQLite; see docs/durability.md.
-postgres = ["dep:postgres", "dep:tokio"]
+postgres = ["dep:postgres", "dep:tokio", "dep:tokio-postgres-rustls"]
 # Derive schemars::JsonSchema on the branch/delegation wire types, for
 # schema/contract.json; see tools/schema-gen.
 schema = ["dep:schemars", "branchyard-provision/schema", "branchyard-harness/schema", "branchyard-container/schema", "branchyard-agent-sandbox/schema"]
@@ -52,6 +52,7 @@ sha2 = { workspace = true }
 strum = { workspace = true }
 rusqlite = { workspace = true }
 postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 schemars = { workspace = true, optional = true }
 glob = { workspace = true }

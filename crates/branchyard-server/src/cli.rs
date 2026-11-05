@@ -794,6 +794,8 @@ fn build(flags: Flags) -> Result<(Config, Vec<String>), String> {
     config.execution_presets = partial.execution_presets;
     config.require_workspace_execution_presets = partial.require_workspace_execution_presets;
     config.database = flags.database.or(partial.database);
+    config.database_ca_file = partial.database_ca_file;
+    config.database_auth = partial.database_auth;
     if let Some(aging) = partial.aging {
         config.aging = aging;
     }
