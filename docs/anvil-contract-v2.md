@@ -1,8 +1,8 @@
 # Anvil contract v2
 
-Written 4 November 2026.
+Written 5 November 2026.
 
-**Status, 4 November 2026: proposed. Nothing here is built in Anvil.** Evidence: a read of Anvil at `8e990cb`, with the file for each claim named in its item. No Anvil build, no run, and no Branchyard test against a mock exists yet. Not done: any Anvil change, any mock in Branchyard, any live run on GCP.
+**Status, 5 November 2026: proposed. Nothing here is built in Anvil.** Evidence: a read of Anvil at `8e990cb`, with the file for each claim named in its item (4 November 2026); and, hermetically (5 November 2026), a mock of the `anvil` CLI in Branchyard that implements items 3 and 4 and the package layout ([the mock](#the-mock)), with tests for the mock itself and for the `tools` search script that reads its `search.json`. The mock is Branchyard's reading of this page, not Anvil. Not done: any Anvil change, a run against a real Anvil, a mock of items 1, 2 and 5 to 8 beyond the stand-ins they name, any live run on GCP.
 
 This page is what Anvil must add so that the tools model in `docs/tools-model.md` works remotely. Branchyard builds against this contract now, with a mock for each item, and switches to Anvil when Anvil ships the item. Each item gives what it is, why Branchyard needs it, the wire shape, how Branchyard tests before Anvil ships, and the acceptance test.
 
@@ -142,7 +142,30 @@ Document:
 - `schema` is a path inside the package.
 - A JSON Schema for the file ships as `schemas/anvil-search-v1.json`.
 
-**Mock before Anvil ships.** The fake packager in Branchyard's tests writes a fixture `search.json` (for example, `crates/branchyard/tests/fixtures/anvil/search/github.json`). The ranker is tested on that fixture. No Anvil run is needed.
+**Branchyard's proposal: the fields, pinned.** The wire above leaves some fields open. Branchyard's reader (`plugins/branchyard/skills/find-tools/scripts/tools.py`) holds them to the following, and refuses a `search.json` that does not meet them with the file and field named. These are Branchyard's proposal, for Anvil to accept or change; nothing here is Anvil's behaviour yet.
+
+| Field | Branchyard's rule |
+|---|---|
+| `schema` | exactly `"anvil.search/v1"` |
+| `connector` | the package's directory name (the fleet connector id) |
+| `bundle_hash` | `sha256:` and 64 lower-case hex digits |
+| `icon` | present; `null`, or a slug matching `^[a-z0-9]+(-[a-z0-9]+)*$` of at most 64 characters (item 8) |
+| `operations` | a list, possibly empty; ids unique and sorted ascending (byte order) |
+| `id` | `CONNECTOR.` and one or more dotted names of letters, digits, `_` and `-` |
+| `title` | a non-empty string |
+| `summary` | a non-empty string on one line, at most 160 characters |
+| `effect` | one of Branchyard's effect classes (`docs/effects.md`): `read`, `reversible`, `compensable`, `irreversible` |
+| `risk` | `null`, or a non-empty string whose vocabulary is Anvil's (Branchyard does not read it) |
+| `confirm` | a boolean: whether the gateway needs `"confirm": "allow"` in the grant entry |
+| `idempotency` | `safe` (repeating the call is harmless), `keyed` (the operation takes an idempotency key) or `none` |
+| `resource` | a non-empty string, the capability that owns the operation |
+| `tags`, `terms` | lists of non-empty strings; each term is lower-case letters and digits |
+| `schema` (per operation) | a relative path inside the package, without `..`, to a file that exists |
+| `cli` | a non-empty string |
+
+Fields not listed are ignored, so Anvil may add some without breaking the reader. A package without a `search.json` is read tolerantly (see `docs/tools-model.md`); a package with one is read only from it, and a refused one is never read as if it were absent.
+
+**Mock before Anvil ships.** [The mock](#the-mock) writes a `search.json` for any bundle it packages, from fixture bundles under `tests/fixtures/anvil/bundles/`. The ranker is tested on its output, and the mock's output is itself tested against the table above. No Anvil run is needed.
 
 **Acceptance.**
 
@@ -183,7 +206,7 @@ Document:
 - The OCI image holds one blob per file, named by digest, and an index with the annotations `dev.anvil.bundle-hash`, `dev.anvil.connector` and `dev.anvil.version`.
 - The pull side is Branchyard's job. It uses the registry's HTTP API with the host's identity. Anvil may add `anvil package pull` later; it is not required.
 
-**Mock before Anvil ships.** Branchyard's host-setup tests serve an OCI layout from an in-process HTTP server (`branchyard_testkit::MockHttp`). The fake `anvil` binary on `PATH` stands in for the CLI, as the tests already do.
+**Mock before Anvil ships.** [The mock](#the-mock) implements `anvil install --prefix` (with `--from` and `--prune`) with the layout and the checks above, and `anvil install --help` for the guard. Branchyard's host-setup tests (`tools/session_setup.sh --tools-only` and `by compute gce`) run the guarded install against it and look at what lands under the prefix. OCI packaging (`anvil package oci`) and the pull side are not mocked: a test would serve an OCI layout from an in-process HTTP server (`branchyard_testkit::MockHttp`), and none does yet.
 
 **Acceptance.**
 
@@ -284,6 +307,37 @@ Branchyard uses C. The harness then holds no token, and the proxy renews it. A a
 - `icon: github` appears in `harness.json`, `search.json` and the index.
 - A bundle without `icon` gives `null` in all three.
 
+## The mock
+
+`tests/fixtures/anvil/anvil` is a Python script (standard library only) that stands in for the `anvil` CLI in hermetic tests. Put it on `PATH` as `anvil`, or name it in `[connectors] anvil`. It is the one fake Anvil: the tests of `tools_store`, `session_setup.sh`, `by compute gce` and the `tools` search script use it, so a drift between them and this page shows up in one place. It compiles nothing.
+
+| Command | What it does |
+|---|---|
+| `anvil --version` | `anvil 0.0.0-mock` |
+| `anvil capabilities --json` | `{"features": ["package.search", "skill.lean", "install.prefix"]}`, the features it implements (see [Compatibility](#compatibility)) |
+| `anvil package harness BUNDLE --out DIR [--workspace ROOT] [--connector ID] [--skill-mode full\|lean]` | writes a package (below) |
+| `anvil connectors compose --out DIR BUNDLE...` | writes `compose.json` (`connectors`, and `operations` with `flow.plan` and `flow.run`) and a `SKILL.md` |
+| `anvil connectors index --grants FILE --out FILE BUNDLE...` | writes `INDEX.md`, one `- ID (MODE): ID/SKILL.md` line per granted bundle |
+| `anvil install [--help]`, `anvil install --prefix DIR [--from DIR] [--prune]` | item 4: a `versions/<digest>/` directory, `current` switched by rename, idempotent, a tampered `--from` file refused before anything is written |
+
+A bundle is a directory with `air.json` (the mock's own small source: `service.description`, `service.icon`, and `operations` with `id`, `title`, `description`, `effect`, `risk`, `confirm`, `idempotency`, `resource`, `tags`, `input_schema`, and `approved: false` for a pending one) or `air.yaml` (only the file's presence is read; the package gets one operation, `status.get`). The fixture bundles are `github` and `linear`.
+
+The package `anvil package harness` writes is the layout the contract and `docs/connectors.md` describe:
+
+```text
+SKILL.md                    frontmatter, one line per resource with its operation count; lean mode is at most 4 KB
+harness.json                connector, bundle_hash, operations: [{id, description}]
+search.json                 item 3, with the pinned fields; sorted by id; the same bytes for the same bundle
+schemas/<id>.input.json     one per approved operation
+reference/operations.md     the full table
+bin/<connector>             a launcher
+python/  typescript/        stand-ins for the SDKs
+```
+
+Two environment variables serve tests: `ANVIL_MOCK_LOG` appends `anvil ARGS` for each call to a file, and `ANVIL_MOCK_ROOT` re-roots an absolute `--prefix` under a directory, so a test can run the guarded `anvil install --prefix /opt/anvil` without touching `/opt`.
+
+What it does not do: validate an AIR document, call an upstream, sign anything, or serve a gateway; mock items 1, 2 and 5 to 8; or write `compose.json` into a connector package (Anvil's ADR-0031 puts it in `_compose/`). Its tests are `tests/test_anvil_mock.py`; the reader's are in `tests/test_find_tools.py`.
+
 ## Compatibility
 
 - Each item is optional and off by default. Today's behaviour does not change.
@@ -300,4 +354,4 @@ Branchyard uses C. The harness then holds no token, and the proxy renews it. A a
 
 ## Not done
 
-Nothing on this page is built in Anvil. No Branchyard mock exists yet for any item. No item has been run against a real Cloud Run, Firestore or KMS. Each item's acceptance is a test to write, not a result.
+Nothing on this page is built in Anvil. The Branchyard mock covers item 3 (the index and the lean skill) and item 4 (`install --prefix`, not OCI) and the capabilities listing; the stand-ins the other items name are not built. No item has been run against a real Anvil, Cloud Run, Firestore or KMS. The acceptance tests of items 3 and 4 that the mock can answer (determinism, the 4 KB lean skill, idempotent install, a tampered file refused) run against the mock, which shows the mock follows this page and nothing about Anvil. The rest are tests to write, not results.

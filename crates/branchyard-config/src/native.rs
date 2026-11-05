@@ -90,6 +90,29 @@ pub struct AgentSandbox {
     /// Environment variable names copied into the allocation, never their values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pass_env: Vec<String>,
+    /// Hosts a `deny` allocation may reach by name, on port 443, besides the
+    /// ones Branchyard adds itself (`[network] mirrors`, the gateway's host,
+    /// Cloud Storage with a tool store): the model endpoint. Lower-case DNS
+    /// names or `*.suffix`. Needs GKE's FQDN network policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub egress_hosts: Vec<String>,
+    /// The connector gateway, when it runs in the cluster: a `deny`
+    /// allocation may reach its pods on its port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_service: Option<AgentSandboxGateway>,
+}
+
+/// An in-cluster Service an Agent Sandbox allocation may reach.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSandboxGateway {
+    /// The Service's namespace.
+    pub namespace: String,
+    /// The Service's name; its pods carry `app.kubernetes.io/name` with it.
+    pub name: String,
+    /// The TCP port the pods listen on.
+    #[schemars(range(min = 1))]
+    pub port: u16,
 }
 
 /// Validate a native provider's registry image digest without accepting a mutable tag.

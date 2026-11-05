@@ -43,6 +43,9 @@ impl ProviderKind for ContainerOptions {
     fn guest_paths(&self, _record: &Record) -> (String, String) {
         (WORKSPACE.into(), HOME.into())
     }
+    fn tools_root(&self) -> Option<&'static str> {
+        Some(crate::tooltree::GUEST_ROOT)
+    }
     fn prepare(
         &self,
         yard: &Yard,

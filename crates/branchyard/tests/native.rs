@@ -361,7 +361,7 @@ fn native_turns_copy_back_work_and_private_home_then_use_a_fresh_allocation() {
         let (_serial, f, bin, options) = fixture(kind);
         let first = f
             .yard
-            .task("SH printf 'first\\n' > result.txt; printf saved > \"$HOME/saved.txt\"")
+            .task("SH printf 'first\\n' > result.txt; printf saved > \"$HOME/saved.txt\"; printf %s \"$BRANCHYARD_TOOLS\" > tools-env.txt")
             .options(options.clone())
             .name("native")
             .run()
@@ -375,6 +375,14 @@ fn native_turns_copy_back_work_and_private_home_then_use_a_fresh_allocation() {
             fs::read_to_string(first.info().worktree.join("result.txt")).unwrap(),
             "first\n"
         );
+        // The guest is told where the tool tree is, and the tree was copied to that root after the home.
+        // The fake CLIs map guest paths into their private directory, `/tools` included.
+        assert_eq!(
+            fs::read_to_string(first.info().worktree.join("tools-env.txt")).unwrap(),
+            bin.join("tools").display().to_string()
+        );
+        assert!(bin.join("tools/INDEX.md").is_file());
+        assert!(bin.join("tools/bin/tools").is_file());
         assert_deleted(&bin, kind);
         assert!(f
             .yard

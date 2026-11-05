@@ -247,6 +247,47 @@ fn proxy_env(url: &str) -> Vec<(String, String)> {
     env
 }
 
+/// The hosts a turn's restricted network policy lets through beyond what the
+/// branch's own policy lists, and nothing else: the one explicit allowlist
+/// (`docs/egress.md`, `docs/tools-model.md` step 5). They are added for the
+/// turn only; the branch's stored policy stays as set. Under `none` they are
+/// all a turn may reach.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TurnHosts {
+    /// The connector gateway, from the URL the harness is given (the turn's
+    /// effect-ledger proxy, or the gateway), when the turn has a grant.
+    pub connector_gateway: Option<HostRule>,
+    /// The model gateway of a turn that is on it. The provider's own hosts
+    /// need not be allowed then: the gateway calls them.
+    pub model_gateway: Option<HostRule>,
+    /// The model provider's hosts, for a harness that calls it directly
+    /// (a subscription login).
+    pub model_endpoints: Vec<HostRule>,
+    /// `[network] mirrors`: the package mirrors.
+    pub mirrors: Vec<HostRule>,
+}
+
+impl TurnHosts {
+    /// The rules, in a fixed order: gateways, model endpoints, mirrors.
+    pub(crate) fn rules(self) -> Vec<HostRule> {
+        self.connector_gateway
+            .into_iter()
+            .chain(self.model_gateway)
+            .chain(self.model_endpoints)
+            .chain(self.mirrors)
+            .collect()
+    }
+}
+
+/// `network` with the turn's hosts added, once each. An open policy stays
+/// open. A restricted one then allows its own rules and exactly `hosts`.
+pub(crate) fn allowlist(network: Network, hosts: TurnHosts) -> Network {
+    hosts
+        .rules()
+        .into_iter()
+        .fold(network, |network, rule| network.with_rule(rule))
+}
+
 /// The gateway's `host:port` as a rule, from its URL.
 pub(crate) fn gateway_rule(url: &str) -> Option<HostRule> {
     let (scheme, rest) = url.split_once("://")?;
@@ -308,7 +349,7 @@ pub(crate) fn check(
 pub(crate) fn prepare(
     yard: &Yard,
     record: &Record,
-    extra: Vec<HostRule>,
+    hosts: TurnHosts,
 ) -> Result<Option<Egress>, String> {
     let Some(network) = record
         .provision
@@ -318,11 +359,10 @@ pub(crate) fn prepare(
     else {
         return Ok(None);
     };
-    // The gateways the turn is given (connectors, models), and the hosts
-    // a harness calling its provider directly needs, for this turn only.
-    let network = extra
-        .into_iter()
-        .fold(network, |network, rule| network.with_rule(rule));
+    // The gateways the turn is given (connectors, models), the hosts a
+    // harness calling its provider directly needs, and the package mirrors,
+    // for this turn only.
+    let network = allowlist(network, hosts);
     let policy = network.to_string();
     let required = network.enforce == Enforce::Required;
     let applied = |enforcement: Enforcement, reason: Option<String>, ca_bundle: Option<PathBuf>| {
@@ -588,6 +628,95 @@ mod tests {
         );
         assert!(env[..6].iter().all(|(_, v)| v == "http://127.0.0.1:3128"));
         assert!(env[6..].iter().all(|(_, v)| v.is_empty()));
+    }
+
+    fn rule(text: &str) -> HostRule {
+        HostRule::parse(text).unwrap()
+    }
+
+    fn all_hosts() -> TurnHosts {
+        TurnHosts {
+            connector_gateway: gateway_rule("http://10.0.0.5:8931/mcp"),
+            model_gateway: gateway_rule("http://127.0.0.1:9100"),
+            model_endpoints: vec![rule("api.anthropic.com:443")],
+            mirrors: vec![rule("pypi.org"), rule("*.pythonhosted.org")],
+        }
+    }
+
+    #[test]
+    fn a_deny_policy_still_allows_the_gateway_and_nothing_else() {
+        let hosts = TurnHosts {
+            connector_gateway: gateway_rule("http://10.0.0.5:8931/mcp"),
+            ..TurnHosts::default()
+        };
+        let network = allowlist(Network::none(), hosts);
+        assert_eq!(network.rules(), ["10.0.0.5:8931"]);
+        assert!(network.rule_for("10.0.0.5", 8931).is_some());
+        for (host, port) in [
+            ("10.0.0.5", 80),
+            ("10.0.0.6", 8931),
+            ("github.com", 443),
+            ("pypi.org", 443),
+            ("api.anthropic.com", 443),
+            ("127.0.0.1", 9100),
+        ] {
+            assert!(network.rule_for(host, port).is_none(), "{host}:{port}");
+        }
+    }
+
+    #[test]
+    fn the_allowlist_is_the_gateways_the_model_endpoint_and_the_mirrors_and_nothing_else() {
+        let network = allowlist(Network::none(), all_hosts());
+        assert_eq!(
+            network.rules(),
+            [
+                "10.0.0.5:8931",
+                "127.0.0.1:9100",
+                "api.anthropic.com:443",
+                "pypi.org",
+                "*.pythonhosted.org"
+            ]
+        );
+        for (host, port, allowed) in [
+            ("10.0.0.5", 8931, true),
+            ("127.0.0.1", 9100, true),
+            ("api.anthropic.com", 443, true),
+            ("pypi.org", 443, true),
+            ("files.pythonhosted.org", 443, true),
+            ("api.anthropic.com", 80, false),
+            ("pythonhosted.org", 443, false),
+            ("github.com", 443, false),
+            ("registry.npmjs.org", 443, false),
+            ("evil.example.com", 443, false),
+        ] {
+            assert_eq!(
+                network.rule_for(host, port).is_some(),
+                allowed,
+                "{host}:{port}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_turns_hosts_join_a_restricted_policy_once_and_leave_an_open_one_open() {
+        let own = Network::allow(vec![rule("github.com"), rule("pypi.org")]);
+        let network = allowlist(own.clone(), all_hosts());
+        assert_eq!(
+            network.rules().iter().filter(|r| *r == "pypi.org").count(),
+            1,
+            "a mirror the branch already lists is not added again"
+        );
+        assert!(network.rule_for("github.com", 443).is_some());
+        assert!(network.rule_for("10.0.0.5", 8931).is_some());
+        // The branch's own policy is what it was: the hosts are for this turn.
+        assert_eq!(own.rules(), ["github.com", "pypi.org"]);
+        let open = allowlist(Network::open(), all_hosts());
+        assert!(open.is_open());
+        // No hosts, no change.
+        assert_eq!(
+            allowlist(Network::none(), TurnHosts::default()),
+            Network::none()
+        );
     }
 
     #[test]

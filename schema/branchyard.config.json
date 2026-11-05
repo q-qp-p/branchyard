@@ -627,6 +627,24 @@
             "type": "string"
           },
           "description": "Environment variable names copied into the allocation, never their values."
+        },
+        "egress_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Hosts a `deny` allocation may reach by name, on port 443, besides the\nones Branchyard adds itself (`[network] mirrors`, the gateway's host,\nCloud Storage with a tool store): the model endpoint. Lower-case DNS\nnames or `*.suffix`. Needs GKE's FQDN network policy."
+        },
+        "gateway_service": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentSandboxGateway"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The connector gateway, when it runs in the cluster: a `deny`\nallocation may reach its pods on its port."
         }
       },
       "required": [
@@ -650,6 +668,33 @@
         }
       ],
       "description": "The runtime required for a Kubernetes Agent Sandbox."
+    },
+    "AgentSandboxGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "The Service's namespace."
+        },
+        "name": {
+          "type": "string",
+          "description": "The Service's name; its pods carry `app.kubernetes.io/name` with it."
+        },
+        "port": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The TCP port the pods listen on."
+        }
+      },
+      "required": [
+        "namespace",
+        "name",
+        "port"
+      ],
+      "description": "An in-cluster Service an Agent Sandbox allocation may reach."
     },
     "Substrate": {
       "type": "object",
@@ -1396,6 +1441,13 @@
             }
           ],
           "description": "`best_effort` (the default): where the policy cannot be enforced,\nrun with the proxy's variables and say so. `required`: refuse to\nrun there."
+        },
+        "mirrors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Package mirror hosts (`\"pypi.org\"`, `\"*.pythonhosted.org\"`,\n`\"registry.npmjs.org:443\"`) that every restricted policy allows, beside\nthe connector gateway and the model gateway a turn is given, so a\nharness can install packages with nothing else open. Hosts only: no\nmethod, path or address. Unused while `allow` is unset (open)."
         }
       },
       "description": "`[network]`."

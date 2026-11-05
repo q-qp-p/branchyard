@@ -6,7 +6,10 @@ use branchyard_sandbox::{ExecSpec, Mount, Resources, SandboxProvider, SandboxSpe
 use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
-use super::{AgentSandboxProvider, Config, Network, Runtime, StoreVolume};
+use super::{
+    AgentSandboxProvider, Config, Egress, GatewayService, Network, Runtime, StoreVolume,
+    GOOGLE_API_BLOCKS,
+};
 
 fn config() -> Config {
     Config {
@@ -15,6 +18,7 @@ fn config() -> Config {
         runtime: Runtime::Gvisor,
         network: Network::Deny,
         store: None,
+        egress: Egress::default(),
     }
 }
 
@@ -34,6 +38,14 @@ impl Fixture {
 
     fn with_store(store: StoreVolume) -> Self {
         Self::build(Network::Deny, Some(store))
+    }
+
+    fn with_egress(network: Network, store: Option<StoreVolume>, egress: Egress) -> Self {
+        let mut fixture = Self::build(network, store);
+        let mut config = fixture.provider.control.config.clone();
+        config.egress = egress;
+        fixture.provider.control.config = config;
+        fixture
     }
 
     fn build(network: Network, store: Option<StoreVolume>) -> Self {
@@ -679,11 +691,11 @@ fn the_tool_store_is_a_read_only_cloud_storage_fuse_volume_at_the_hosts_path() {
     );
     let mounts = &sandbox["spec"]["containers"][0]["volumeMounts"];
     assert_eq!(
-        mounts[4],
+        mounts[5],
         json!({"name":"tool-store","mountPath":"/opt/branchyard/store","readOnly":true})
     );
-    // The first four mounts are the ones every allocation has.
-    assert_eq!(mounts.as_array().unwrap().len(), 5);
+    // The first five mounts are the ones every allocation has.
+    assert_eq!(mounts.as_array().unwrap().len(), 6);
     true_in(&fixture).unwrap();
 
     // A store below a prefix in the bucket is mounted from there.
@@ -691,7 +703,7 @@ fn the_tool_store_is_a_read_only_cloud_storage_fuse_volume_at_the_hosts_path() {
     prefixed.provider.ensure(&spec()).unwrap();
     let state = prefixed.state();
     let options = &state["objects"][format!("sandbox/{}", prefixed.name())]["spec"]["podTemplate"]
-        ["spec"]["volumes"][4]["csi"]["volumeAttributes"];
+        ["spec"]["volumes"][5]["csi"]["volumeAttributes"];
     assert_eq!(options["bucketName"], "acme-tools");
     assert_eq!(
         options["mountOptions"],
@@ -703,7 +715,7 @@ fn the_tool_store_is_a_read_only_cloud_storage_fuse_volume_at_the_hosts_path() {
     plain.provider.ensure(&spec()).unwrap();
     let state = plain.state();
     let template = &state["objects"][format!("sandbox/{}", plain.name())]["spec"]["podTemplate"];
-    assert_eq!(template["spec"]["volumes"].as_array().unwrap().len(), 4);
+    assert_eq!(template["spec"]["volumes"].as_array().unwrap().len(), 5);
     assert!(template["metadata"]["annotations"]
         .get("gke-gcsfuse/volumes")
         .is_none());
@@ -796,4 +808,293 @@ fn the_sidecar_gke_injects_for_the_store_is_accepted_and_nothing_else_is() {
     let name = plain.name();
     plain.edit(|state| inject(state, &name, None));
     assert!(true_in(&plain).is_err());
+}
+
+fn gateway() -> GatewayService {
+    GatewayService {
+        namespace: "branchyard-system".into(),
+        name: "anvil-gateway".into(),
+        port: 8931,
+    }
+}
+
+fn egress_hosts() -> Egress {
+    Egress {
+        gateway: Some(gateway()),
+        hosts: vec![
+            "pypi.org".into(),
+            "api.anthropic.com".into(),
+            "*.pythonhosted.org".into(),
+            "gateway.example.com".into(),
+        ],
+    }
+}
+
+fn object(fixture: &Fixture, kind: &str) -> Value {
+    fixture.state()["objects"][format!("{kind}/{}", fixture.name())].clone()
+}
+
+#[test]
+fn a_deny_allocation_with_a_store_still_reaches_cloud_storage_and_dns_and_nothing_else() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    assert_eq!(policy["spec"]["policyTypes"], json!(["Egress"]));
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    // Cluster DNS, and the Private Google Access ranges on 443: no 0.0.0.0/0, no gateway.
+    assert_eq!(egress.len(), 2, "{egress:?}");
+    assert_eq!(egress[0]["ports"][0]["port"], 53);
+    assert_eq!(
+        egress[1],
+        json!({"to":[
+            {"ipBlock":{"cidr":"199.36.153.4/30"}},
+            {"ipBlock":{"cidr":"199.36.153.8/30"}}
+        ],"ports":[{"protocol":"TCP","port":443}]})
+    );
+    assert_eq!(GOOGLE_API_BLOCKS, ["199.36.153.4/30", "199.36.153.8/30"]);
+    assert!(!policy.to_string().contains("0.0.0.0/0"));
+    // The FQDN policy names the Cloud Storage API and nothing else.
+    let fqdn = object(&fixture, "fqdnnetworkpolicy");
+    assert_eq!(fqdn["apiVersion"], "networking.gke.io/v1alpha1");
+    assert_eq!(fqdn["kind"], "FQDNNetworkPolicy");
+    assert_eq!(
+        fqdn["spec"]["egress"],
+        json!([{"matches":[{"name":"storage.googleapis.com"}],"ports":[{"protocol":"TCP","port":443}]}])
+    );
+    assert_eq!(
+        fqdn["spec"]["podSelector"],
+        json!({"matchLabels":{"branchyard.io/owner": policy["spec"]["podSelector"]["matchLabels"]["branchyard.io/owner"]}})
+    );
+    // Both belong to the Sandbox, so deleting it removes them; and the live pod passes the checks.
+    for object in [&policy, &fqdn] {
+        assert_eq!(object["metadata"]["ownerReferences"][0]["kind"], "Sandbox");
+        assert_eq!(object["metadata"]["ownerReferences"][0]["controller"], true);
+    }
+    true_in(&fixture).unwrap();
+    let state = fixture.state();
+    assert!(
+        state["objects"][format!("networkpolicy/{}", fixture.name())]["metadata"]["uid"]
+            .is_string()
+    );
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(fixture.state()["objects"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn an_orphaned_fqdn_policy_is_deleted_by_its_recorded_uid() {
+    let fixture = Fixture::with_store(store("acme-tools"));
+    fixture.provider.ensure(&spec()).unwrap();
+    let recorded: Value = serde_json::from_slice(&fs::read(fixture.receipt()).unwrap()).unwrap();
+    let fqdn_uid = recorded["fqdn_policy_uid"].as_str().unwrap().to_owned();
+    fixture.edit(|state| {
+        state["objects"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&format!("sandbox/{}", fixture.name()));
+    });
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(fixture.state()["objects"].as_object().unwrap().is_empty());
+    let calls = fixture.calls();
+    let deleted: Vec<_> = calls
+        .iter()
+        .filter(|call| call["operation"] == "delete")
+        .map(|call| {
+            call["body"]["preconditions"]["uid"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(deleted.contains(&fqdn_uid), "{deleted:?}");
+    assert!(calls.iter().any(|call| call["args"].to_string().contains(
+        "/apis/networking.gke.io/v1alpha1/namespaces/branchyard-gvisor/fqdnnetworkpolicies/"
+    )));
+}
+
+#[test]
+fn a_deny_allocation_lists_the_gateway_and_the_hosts_it_may_reach() {
+    let fixture = Fixture::with_egress(Network::Deny, Some(store("acme-tools")), egress_hosts());
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    let egress = policy["spec"]["egress"].as_array().unwrap();
+    assert_eq!(egress.len(), 3, "DNS, the gateway Service, Cloud Storage");
+    assert_eq!(
+        egress[1],
+        json!({"to":[{
+            "namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"branchyard-system"}},
+            "podSelector":{"matchLabels":{"app.kubernetes.io/name":"anvil-gateway"}}
+        }],"ports":[{"protocol":"TCP","port":8931}]})
+    );
+    let fqdn = object(&fixture, "fqdnnetworkpolicy");
+    assert_eq!(
+        fqdn["spec"]["egress"][0]["matches"],
+        json!([
+            {"pattern":"*.pythonhosted.org"},
+            {"name":"api.anthropic.com"},
+            {"name":"gateway.example.com"},
+            {"name":"pypi.org"},
+            {"name":"storage.googleapis.com"}
+        ])
+    );
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn a_deny_allocation_without_a_store_a_gateway_or_hosts_gets_no_policy_of_its_own() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    assert!(fixture.state()["objects"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|key| !key.contains("policy")));
+    // Only hosts: DNS and the names, no gateway rule, no Cloud Storage.
+    let hosts = Egress {
+        gateway: None,
+        hosts: vec!["pypi.org".into()],
+    };
+    let named = Fixture::with_egress(Network::Deny, None, hosts);
+    named.provider.ensure(&spec()).unwrap();
+    assert_eq!(
+        object(&named, "networkpolicy")["spec"]["egress"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        object(&named, "fqdnnetworkpolicy")["spec"]["egress"][0]["matches"],
+        json!([{"name":"pypi.org"}])
+    );
+}
+
+#[test]
+fn unrestricted_keeps_its_open_policy_and_needs_no_name_list() {
+    let fixture = Fixture::with_egress(
+        Network::Unrestricted,
+        Some(store("acme-tools")),
+        egress_hosts(),
+    );
+    fixture.provider.ensure(&spec()).unwrap();
+    let policy = object(&fixture, "networkpolicy");
+    assert_eq!(
+        policy["spec"]["egress"][0]["to"][0]["ipBlock"]["cidr"],
+        "0.0.0.0/0"
+    );
+    assert!(object(&fixture, "fqdnnetworkpolicy").is_null());
+}
+
+#[test]
+fn a_drifted_or_foreign_egress_policy_is_refused_before_exec() {
+    for mutation in [
+        "fqdn_hosts",
+        "fqdn_extra",
+        "policy_ports",
+        "foreign_fqdn",
+        "fqdn_gone",
+    ] {
+        let fixture = Fixture::with_store(store("acme-tools"));
+        fixture.provider.ensure(&spec()).unwrap();
+        let name = fixture.name();
+        fixture.edit(|state| match mutation {
+            "fqdn_hosts" => state["objects"][format!("fqdnnetworkpolicy/{name}")]["spec"]["egress"]
+                [0]["matches"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"name":"evil.example.com"})),
+            "fqdn_extra" => state["objects"][format!("fqdnnetworkpolicy/{name}")]["spec"]["egress"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"matches":[{"name":"evil.example.com"}]})),
+            "policy_ports" => {
+                state["objects"][format!("networkpolicy/{name}")]["spec"]["egress"][1]["ports"][0]
+                    ["port"] = 80.into()
+            }
+            "foreign_fqdn" => {
+                state["extra_fqdn_policies"] =
+                    json!([{"metadata":{"name":"foreign"},"spec":{"podSelector":{}}}])
+            }
+            "fqdn_gone" => {
+                state["objects"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(&format!("fqdnnetworkpolicy/{name}"));
+            }
+            _ => unreachable!(),
+        });
+        assert!(true_in(&fixture).is_err(), "{mutation}");
+        assert!(
+            !fixture
+                .calls()
+                .iter()
+                .any(|call| call["operation"] == "exec"),
+            "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn egress_hosts_and_the_gateway_service_are_validated_before_anything_is_created() {
+    for hosts in [
+        vec!["https://pypi.org"],
+        vec!["pypi.org:443"],
+        vec!["PyPI.org"],
+        vec!["localhost"],
+        vec!["10.0.0.1"],
+        vec!["*.com."],
+        vec!["a_b.example.com"],
+        vec!["-x.example.com"],
+        vec!["*"],
+    ] {
+        let mut target = config();
+        target.egress.hosts = hosts.iter().map(|h| (*h).to_owned()).collect();
+        assert!(target.validate().is_err(), "{hosts:?}");
+    }
+    let mut many = config();
+    many.egress.hosts = (0..33).map(|n| format!("h{n}.example.com")).collect();
+    assert!(many.validate().is_err());
+    for bad in [
+        GatewayService {
+            namespace: "Bad".into(),
+            ..gateway()
+        },
+        GatewayService {
+            name: String::new(),
+            ..gateway()
+        },
+        GatewayService {
+            port: 0,
+            ..gateway()
+        },
+    ] {
+        let mut target = config();
+        target.egress.gateway = Some(bad);
+        assert!(target.validate().is_err());
+    }
+    let mut good = config();
+    good.egress = egress_hosts();
+    good.validate().unwrap();
+    // An older receipt, written before `egress` existed, still matches a config without any.
+    assert!(serde_json::to_value(config())
+        .unwrap()
+        .get("egress")
+        .is_none());
+}
+
+#[test]
+fn the_tool_tree_has_a_volume_of_its_own_at_the_guest_root() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    let state = fixture.state();
+    let template =
+        &state["objects"][format!("sandbox/{}", fixture.name())]["spec"]["podTemplate"]["spec"];
+    assert!(template["volumes"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","emptyDir":{"sizeLimit":"64Mi"}})));
+    assert!(template["containers"][0]["volumeMounts"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name":"tools","mountPath":"/tools"})));
+    true_in(&fixture).unwrap();
 }

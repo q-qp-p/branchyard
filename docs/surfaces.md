@@ -674,7 +674,7 @@ A branch's harness reaches only the hosts its policy allows, through an allowlis
 | Refusals | | `unsupported` before anything is created when a `required` policy cannot be enforced (a sandbox provider, or a host without confinement); a turn fails naming the reason when that is found only as it starts |
 | `PolicyPreset` (`PresetRules`, `EDIT_TOOLS`, `SHELL_TOOLS`, `WEB_TOOLS`) | none: rigs refused `permission_policy` | `--permissions read-only\|edit-worktree\|full` wherever `--yes` is; `[defaults] permissions` takes the presets; `policy.preset` in a request (`PolicySpec::preset`); a seat's `permission_policy` in a rig (a top-level one is refused); `plan::read_only` is the `read-only` preset |
 | `RigPlan`'s `root.policy` | `default`, `deny`, `allow`, `delegation_commands` | adds `preset` when a seat names one; the rules include its expansion |
-| `[network]` and `[defaults] permissions` in `branchyard.toml`; `network` and `permission_policy` on a rig seat | none; `ask` or `yes` | in `schema/branchyard.config.json` and `schema/rig.json` |
+| `[network]` (`allow`, `enforce`, `mirrors`) and `[defaults] permissions` in `branchyard.toml`; `network` and `permission_policy` on a rig seat | none; `ask` or `yes` | in `schema/branchyard.config.json` and `schema/rig.json` |
 
 ## Added with the model gateway
 

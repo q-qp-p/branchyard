@@ -464,6 +464,9 @@ cpus = 2
 memory_mib = 4096
 pass_env = ["ANTHROPIC_API_KEY"]
 
+[network]                   # package mirrors every restricted policy also allows (docs/egress.md)
+mirrors = ["pypi.org", "*.pythonhosted.org"]
+
 [notify]                    # when a branch needs you or ends; see the README
 enabled = true              # unset: on; --no-notify turns it off for one command
 desktop = false             # also run notify-send (osascript on macOS)

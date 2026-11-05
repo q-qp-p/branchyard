@@ -20,7 +20,7 @@ use serde::Deserialize;
 use crate::skills::RepositorySet;
 use crate::tooltree::Tool;
 
-const DIRECTORY: &str = ".branchyard/capabilities";
+pub(crate) const DIRECTORY: &str = ".branchyard/capabilities";
 
 #[derive(Deserialize)]
 struct Catalog {

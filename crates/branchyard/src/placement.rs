@@ -326,6 +326,10 @@ struct Copied<'a> {
     workdir: String,
     home: String,
     pass_env: &'a [String],
+    /// Where the guest also sees the tool tree (`ProviderKind::tools_root`):
+    /// the engine copies the tree there after the home and sets
+    /// `BRANCHYARD_TOOLS` to it.
+    tools: Option<&'static str>,
 }
 
 /// A turn's Substrate actor or recipe machine, and what must come back
@@ -646,6 +650,7 @@ impl Placement {
                 workdir: options.workdir().to_owned(),
                 home: options.home().to_owned(),
                 pass_env: &options.pass_env,
+                tools: None,
             },
         )
     }
@@ -677,6 +682,7 @@ impl Placement {
                 workdir,
                 home,
                 pass_env: &options.pass_env,
+                tools: None,
             },
         )
     }
@@ -706,6 +712,7 @@ impl Placement {
                 workdir: WORKSPACE.into(),
                 home: HOME.into(),
                 pass_env,
+                tools: providers::of(record.provider.as_ref()).tools_root(),
             },
         )
     }
@@ -739,7 +746,10 @@ impl Placement {
             .home
             .clone()
             .ok_or("a sandboxed branch has no private home")?;
-        let env = sandbox_env(&how.home, how.pass_env)?;
+        let mut env = sandbox_env(&how.home, how.pass_env)?;
+        if let Some(root) = how.tools {
+            env.insert(crate::tooltree::ENV_TOOLS.into(), root.into());
+        }
         let (remote, spec) = (how.remote, how.spec);
         let fresh =
             SandboxPlan::Fresh("native providers allocate a fresh sandbox for every turn".into());
@@ -939,6 +949,22 @@ impl Placement {
             Ok(sent) => sent,
             Err(error) => return fail(&mut actor, &mut native_registration, error),
         };
+        // The tool tree is also at the guest root (`/tools`): it was written into
+        // the home, so a copy of it goes to its own volume once the home is in.
+        let tree = home.join(crate::tooltree::DIRECTORY);
+        if let (Some(root), true) = (how.tools, tree.is_dir()) {
+            let copied = actor
+                .provider
+                .guest(&name)
+                .and_then(|endpoint| {
+                    transfer::push_tree(endpoint.as_ref(), &tree, Path::new(root))
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(|e| format!("could not copy the tool tree into {noun} {name}: {e}"));
+            if let Err(error) = copied {
+                return fail(&mut actor, &mut native_registration, error);
+            }
+        }
         actor.home = Some((home, guest_home));
         Ok(Placement {
             cwd: how.workdir,

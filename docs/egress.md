@@ -48,6 +48,12 @@ The policy is stored with the branch, like the rest of its provisioning. A send 
 
 A turn with a [connector grant](connectors.md) gets the gateway's host and port added to its rules for that turn, from the URL the harness is given (`[connectors] gateway`, or `sandbox_gateway` in a sandbox). It is not stored: the branch's own policy stays what you set. So `--network none --connector github:read` reaches the gateway and nothing else.
 
+### Package mirrors, and the whole list
+
+`[network] mirrors = ["pypi.org", "*.pythonhosted.org", "registry.npmjs.org:443"]` names package mirror hosts (a host, or `*.suffix`, and optionally a port; no method, path or address) that every restricted policy allows for the turn, beside the gateways. They apply only to a restricted policy (`allow` set, `none` included); an open one is open. The branch's stored policy is unchanged.
+
+So a restricted turn may reach exactly this, and nothing else (`TurnHosts` in `crates/branchyard/src/egress.rs`): the branch's own rules; the connector gateway (when the turn has a grant); the model gateway (when it is on it); the model provider's hosts (when its harness calls the provider directly); and the mirrors. Under `none`, the last four are all there is. This is the local list for a local harness, which the proxy enforces, and for a Microsandbox guest, whose `egress` event records the list but says `not applied`, because that guest gets the runtime's default network. The same list drives a [GKE Agent Sandbox](agent-sandbox-gke.md#egress), which holds the pod with a `NetworkPolicy` and a `FQDNNetworkPolicy` instead of the proxy. Tested hermetically: `none` plus the gateway allows the gateway's host and port and no other host or port, mirror or model endpoint; the full list is exactly its five rules; a mirror the branch already lists is not added twice; an open policy stays open. Not done: a Microsandbox guest held to the list.
+
 ### The model gateway
 
 A turn on the [model gateway](model-gateway.md) gets its gateway's host and port (`127.0.0.1:PORT`) added the same way, for that turn only, so `--network none --model-gateway` reaches the gateway and nothing else, and the provider's hosts need not be allowed: the gateway, in the engine's process, calls them. A turn whose harness is logged in by subscription runs direct, and gets its provider's hosts added instead (`api.anthropic.com:443` and `console.anthropic.com:443` for Claude Code; `api.openai.com:443`, `chatgpt.com:443` and `auth.openai.com:443` for Codex).

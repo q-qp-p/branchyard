@@ -217,6 +217,8 @@ STEPS = (
     Step("check_model_surface", "fast", (PY, "tools/check_model_surface.py")),
     Step("test_check_model_surface", "fast", (PY, "tests/test_check_model_surface.py")),
     Step("test_find_tools", "fast", (PY, "tests/test_find_tools.py")),
+    # The Anvil mock follows docs/anvil-contract-v2.md; the tests that put it on PATH stand on it.
+    Step("test_anvil_mock", "fast", (PY, "tests/test_anvil_mock.py")),
     # The lint table's exceptions only fall, and every crate inherits the table.
     Step("check_lint_ratchet", "controls", (PY, "tools/check_lint_ratchet.py")),
     Step("test_check_lint_ratchet", "controls", (PY, "tests/test_check_lint_ratchet.py")),
