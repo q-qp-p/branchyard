@@ -3575,6 +3575,16 @@ impl Message {
             .and_then(|meta| meta.kind.as_deref())
             .unwrap_or_else(|| self.kind.as_str())
     }
+
+    /// Whether the message carries a deadline ([`messaging::MessageMeta::deadline_ms`])
+    /// that is at or before `now_ms`: a message that is not yet delivered
+    /// then is expired, not given to a turn.
+    pub fn expired_at(&self, now_ms: u64) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.deadline_ms)
+            .is_some_and(|deadline| deadline <= now_ms)
+    }
 }
 
 /// Activity from a named branch.

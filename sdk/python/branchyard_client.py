@@ -3173,11 +3173,16 @@ class Repo:
         kind: Optional[str] = None,
         payload: Optional[Any] = None,
         key: Optional[str] = None,
+        deadline_ms: Optional[int] = None,
     ) -> Message:
         """Message `to`, one of `branch`'s siblings, as `branch` (`by message --as branch`): `kind` is a
         registered message kind (`note` when None) whose schema checks `payload`, and a repeat with the same
-        `key` returns the first message. It waits for the sibling's next turn."""
-        body = _drop_none({"to": to, "text": text, "kind": kind, "payload": payload, "key": key})
+        `key` returns the first message. It waits for the sibling's next turn; with `deadline_ms` (milliseconds
+        since the Unix epoch, in the future) a message still unread when the sibling's turn starts after it is
+        dropped with a warning on the sibling's log."""
+        body = _drop_none(
+            {"to": to, "text": text, "kind": kind, "payload": payload, "key": key, "deadline_ms": deadline_ms}
+        )
         return Message(self.client.post(self._branch(branch, "/message"), body, key=new_key()))
 
     # -- the inbox, as the person ------------------------------------------

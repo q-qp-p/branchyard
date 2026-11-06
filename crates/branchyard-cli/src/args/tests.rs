@@ -886,7 +886,7 @@ fn messages_take_text_and_an_acting_branch() {
 fn a_message_to_a_sibling_takes_a_kind_a_payload_and_a_key() {
     assert_eq!(
         parse_str(
-            "message b 'step one done' --kind step --payload '{\"n\": 1}' --key s1 --as a --json"
+            "message b 'step one done' --kind step --payload '{\"n\": 1}' --key s1 --deadline 10m --as a --json"
         )
         .unwrap(),
         Command::Message {
@@ -896,6 +896,7 @@ fn a_message_to_a_sibling_takes_a_kind_a_payload_and_a_key() {
             kind: Some("step".into()),
             payload: Some("{\"n\": 1}".into()),
             key: Some("s1".into()),
+            deadline: Some(Duration::from_secs(600)),
             json: true
         }
     );
@@ -908,10 +909,12 @@ fn a_message_to_a_sibling_takes_a_kind_a_payload_and_a_key() {
             kind: None,
             payload: None,
             key: None,
+            deadline: None,
             json: false
         }
     );
     assert!(err("message b").contains("<TEXT>"));
+    assert!(err("message b hi --deadline 0").contains("longer than zero"));
 }
 
 #[test]

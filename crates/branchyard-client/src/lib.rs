@@ -904,7 +904,8 @@ impl Repo {
     /// Message one of `branch`'s siblings as `branch`, like `by message
     /// --as branch`: `request.to` is the sibling, `kind` a registered
     /// message kind (`note` when omitted), `payload` a JSON value its
-    /// schema checks, `key` an idempotency key. The message waits for the
+    /// schema checks, `key` an idempotency key, `deadline_ms` the moment after
+    /// which it is no longer given to the sibling. The message waits for the
     /// sibling's next turn. Needs the `run` scope; a recipient that is not
     /// a sibling is `403 denied`. See `docs/messaging.md`.
     pub fn message(&self, branch: &str, request: &MessageRequest) -> Result<Message, Error> {

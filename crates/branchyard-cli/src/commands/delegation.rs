@@ -819,15 +819,22 @@ pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: boo
     })
 }
 
-/// `by message TO TEXT [--kind K] [--payload JSON] [--key KEY]`: a message
-/// to a sibling, delivered at its next turn ([`Delegate::message`]).
+/// `by message TO TEXT [--kind K] [--payload JSON] [--key KEY] [--deadline
+/// DURATION]`: a message to a sibling, delivered at its next turn
+/// ([`Delegate::message`]); a `deadline` is counted from now into the
+/// absolute `deadline_ms` every other surface takes.
 pub fn message(
     target: &Target,
     as_branch: Option<String>,
     (to, text): (&str, &str),
     (kind, payload, key): (Option<&str>, Option<&str>, Option<&str>),
+    deadline: Option<std::time::Duration>,
     json: bool,
 ) -> Outcome {
+    let deadline_ms = deadline.map(|d| {
+        branchyard_support::time::now_ms()
+            .saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    });
     let payload = match payload
         .map(|text| {
             serde_json::from_str::<serde_json::Value>(text)
@@ -840,7 +847,7 @@ pub fn message(
     };
     let result = match (harness_delegate(json)?, target) {
         (Some(delegate), _) => as_itself(&delegate, as_branch.as_deref(), "--as")
-            .and_then(|()| delegate.message(to, text, kind, payload.clone(), key)),
+            .and_then(|()| delegate.message(to, text, kind, payload.clone(), key, deadline_ms)),
         (None, Target::Remote(remote)) => as_branch_required(as_branch, "message").and_then(|b| {
             remote
                 .repo
@@ -852,12 +859,20 @@ pub fn message(
                         kind: kind.map(str::to_owned),
                         payload: payload.clone(),
                         key: key.map(str::to_owned),
+                        deadline_ms,
                     },
                 )
                 .map_err(remote::sdk_error)
         }),
         (None, Target::Local) => as_branch_required(as_branch, "message").and_then(|b| {
-            as_user(&b, TaskOptions::default())?.message(to, text, kind, payload.clone(), key)
+            as_user(&b, TaskOptions::default())?.message(
+                to,
+                text,
+                kind,
+                payload.clone(),
+                key,
+                deadline_ms,
+            )
         }),
     };
     emit(json, result, |m| {

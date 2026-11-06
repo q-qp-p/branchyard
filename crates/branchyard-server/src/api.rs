@@ -2917,6 +2917,7 @@ async fn post_message(
             request.kind.as_deref(),
             request.payload.clone(),
             request.key.as_deref(),
+            request.deadline_ms,
         )
     })
     .await

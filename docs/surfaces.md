@@ -148,7 +148,7 @@ A person acts with their own authority, or the server's, bounded by the branch's
 | Escalate to the parent, or further up if a rig seat allows | `Delegate::escalate` | `escalate "<text>"` | yes | `POST …/escalate` | `escalate` |
 | Answer a descendant's message | `Delegate::answer` | `answer <message-id> "<text>"` | yes | `POST …/answer` | `answer` |
 | The branch's own inbox | `Delegate::inbox` | `inbox [--unread]` | yes | `GET …/inbox` | `inbox` |
-| Message a sibling, of a registered kind, read at its next turn ([messaging](messaging.md)) | `Delegate::message` | `message TO "<text>" [--kind K] [--payload JSON] [--key KEY]` | yes | `POST …/message` | `message` |
+| Message a sibling, of a registered kind, read at its next turn ([messaging](messaging.md)) | `Delegate::message` | `message TO "<text>" [--kind K] [--payload JSON] [--key KEY] [--deadline DURATION]` | yes | `POST …/message` | `message` |
 
 `by --remote` prints the same JSON as `by` for each, and the same `{"error": {"kind", "message", "next", "detail"}}` for refusals; tests compare them. [The `--json` contract](#the---json-contract) below says what every command does with it. Outside a harness every messaging command needs `--as <branch>`, since there is no other way to say who is asking; see [delegation](delegation.md#inbox). A message to a branch with a running turn is steered into it on every surface (`SteerDelivery`, the default `DeliveryHook` of every `Yard`), and otherwise delivered at its next turn's start; `Activity::MessagesDelivered` (`messages_delivered` in `by log --json`) records which ([delegation](delegation.md#delivery)).
 
@@ -260,7 +260,7 @@ Every command that takes a branch or prints a result takes `--json`. This round 
 
 | Surface | Before | Now |
 |---|---|---|
-| `Delegate::message`, `by message TO TEXT [--kind K] [--payload JSON] [--key KEY]`, the MCP `message` tool, `branchyard.message(to, text, kind=, payload=, key=)`, `POST …/branches/{b}/message`, `Repo::message` in the client and `Repo.message` in Python | a branch messaged its parent or its descendants only | a message to a sibling, of a registered kind, delivered at the sibling's next turn ([messaging](messaging.md)) |
+| `Delegate::message`, `by message TO TEXT [--kind K] [--payload JSON] [--key KEY] [--deadline DURATION]`, the MCP `message` tool (without the deadline), `branchyard.message(to, text, kind=, payload=, key=, deadline=)`, `POST …/branches/{b}/message`, `Repo::message` in the client and `Repo.message` in Python | a branch messaged its parent or its descendants only | a message to a sibling, of a registered kind, delivered at the sibling's next turn ([messaging](messaging.md)) |
 | `Message` | `{id, from, to, kind, text, in_reply_to, at_ms, delivered, handoff?, next_turn?}` | the same, plus `kind` `peer` and `meta` (`{kind?, schema_version?, payload?, trace?, deadline_ms?}`) only when the message carries one of them; a message of a legacy kind reads as before |
 | `Yard::register_kind`, `message_kinds`, `set_messaging_pipeline`; `branchyard::messaging::{Envelope, Address, Class, Delivery, KindSpec, Registry, Pipeline, Stage}` | none | kinds registered by schema, and the pipeline every message goes through, in the Rust SDK |
 | The store | `messages` rows with no payload | the additive columns `meta` and `idempotency_key` on SQLite and PostgreSQL, which an older binary ignores |

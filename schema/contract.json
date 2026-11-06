@@ -10170,7 +10170,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -21173,7 +21173,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -22601,6 +22601,15 @@
             "null"
           ],
           "description": "An idempotency key: a repeat with the same key returns the first\nmessage."
+        },
+        "deadline_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Milliseconds since the Unix epoch, in the future, after which the\nmessage is not given to the sibling's turn: it is marked delivered\nand a warning naming it goes on the sibling's log."
         }
       },
       "required": [
@@ -40846,7 +40855,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -46687,7 +46696,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -58726,7 +58735,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -62406,7 +62415,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -62669,7 +62678,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
@@ -62955,7 +62964,7 @@
               ],
               "format": "uint64",
               "minimum": 0,
-              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered: at the recipient's next turn start it is marked\ndelivered without being given to the turn, and a warning naming it\ngoes on the recipient's log (`docs/messaging.md`)."
             }
           },
           "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."

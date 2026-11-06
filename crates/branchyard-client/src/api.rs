@@ -821,6 +821,11 @@ pub struct MessageRequest {
     /// message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Milliseconds since the Unix epoch, in the future, after which the
+    /// message is not given to the sibling's turn: it is marked delivered
+    /// and a warning naming it goes on the sibling's log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
 }
 
 /// `POST /v1/repos/{repo}/branches/{branch}/answer`: an answer to one of

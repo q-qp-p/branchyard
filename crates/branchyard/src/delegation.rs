@@ -1513,8 +1513,13 @@ impl Delegate {
     /// repeat with the same key returns the first message). It waits for
     /// the sibling's next turn and is never steered; the sibling finds it
     /// in its inbox and in its prompt's `<branchyard-inbox>` block. A
-    /// recipient that is not a sibling is refused `denied`. See
-    /// `docs/messaging.md`.
+    /// recipient that is not a sibling is refused `denied`. With a
+    /// `deadline_ms` (milliseconds since the Unix epoch, in the future), a
+    /// message still pending when the sibling's turn starts after it is
+    /// not given to the turn: it is marked delivered and a warning naming
+    /// it goes on the sibling's log. A sibling that already has
+    /// [`crate::messaging::PEER_PENDING_MAX`] undelivered peer messages
+    /// refuses another. See `docs/messaging.md`.
     pub fn message(
         &self,
         to: &str,
@@ -1522,10 +1527,14 @@ impl Delegate {
         kind: Option<&str>,
         payload: Option<Value>,
         key: Option<&str>,
+        deadline_ms: Option<u64>,
     ) -> Result<Message, Error> {
         self.typed(
             "message",
-            json!({"to": to, "text": text, "kind": kind, "payload": payload, "key": key}),
+            json!({
+                "to": to, "text": text, "kind": kind, "payload": payload, "key": key,
+                "deadline_ms": deadline_ms
+            }),
         )
     }
 
@@ -4588,6 +4597,7 @@ impl Local {
         kind: Option<&str>,
         payload: Option<Value>,
         key: Option<&str>,
+        deadline_ms: Option<u64>,
     ) -> Result<Message, Error> {
         let mut envelope = crate::messaging::Envelope::new(
             kind.unwrap_or(crate::messaging::DEFAULT_KIND),
@@ -4597,6 +4607,7 @@ impl Local {
         );
         envelope.payload = payload;
         envelope.idempotency_key = key.map(str::to_owned);
+        envelope.deadline_ms = deadline_ms;
         envelope.trace = self.options.trace_parent.clone();
         let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
         self.note("message", to, &result, |m| {
@@ -4963,6 +4974,10 @@ struct MessageArgs {
     /// message.
     #[serde(default)]
     key: Option<String>,
+    /// Milliseconds since the Unix epoch after which the message is not
+    /// delivered.
+    #[serde(default)]
+    deadline_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -5368,6 +5383,7 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
                 args.kind.as_deref(),
                 args.payload,
                 args.key.as_deref(),
+                args.deadline_ms,
             )?)
         }
         other => Err(Error::Denied(format!("no delegation tool named {other}"))),

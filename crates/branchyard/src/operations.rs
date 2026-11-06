@@ -166,6 +166,17 @@ const ACTING_BRANCH: Param = Param::outside(
     "--branch",
     "inside a harness the acting branch is always the harness's own, from its token",
 );
+/// `by message --deadline`: a duration from now. The MCP tool lacks it to
+/// stay within the leaf's tool-list cap.
+const DEADLINE: Param = Param {
+    cli: Some("--deadline"),
+    tool: None,
+    python: Some("deadline"),
+    why: "the MCP tool list a leaf is shown is capped, so the tool leaves it out; the CLI and \
+          Python take a duration from now, a server request and the Rust method take \
+          deadline_ms, the moment itself",
+    inside: None,
+};
 const TARGET: Param = Param::all("<BRANCH>", "branch", "branch");
 const PROMPT_FILE: Param = Param::cli(
     "--prompt-file",
@@ -939,6 +950,7 @@ pub const OPERATIONS: &[Operation] = &[
             Param::all("--kind", "kind", "kind"),
             Param::all("--payload", "payload", "payload"),
             Param::all("--key", "key", "key"),
+            DEADLINE,
             ACT_AS,
             JSON,
         ],

@@ -14,6 +14,7 @@ use branchyard::messaging::{Class, KindSpec};
 use branchyard::{
     Activity, Delegate, DeliveredVia, Envelope, Error, MessageKind, Policy, Spawn, TaskOptions,
 };
+use branchyard_testkit::wait;
 use common::{fake_agent, Fixture};
 use serde_json::json;
 
@@ -110,37 +111,54 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
 
     // Refusals, each by name, before anything is stored.
     denied(
-        a.message("b", "hi", Some("nope"), None, None),
+        a.message("b", "hi", Some("nope"), None, None, None),
         "no message kind named \"nope\"",
     );
     denied(
-        a.message("b", "hi", Some("step"), Some(json!({"n": "one"})), None),
+        a.message(
+            "b",
+            "hi",
+            Some("step"),
+            Some(json!({"n": "one"})),
+            None,
+            None,
+        ),
         "payload.n: expected integer",
     );
     denied(
-        a.message("b", "hi", Some("step"), Some(json!({"n": 1, "x": 2})), None),
+        a.message(
+            "b",
+            "hi",
+            Some("step"),
+            Some(json!({"n": 1, "x": 2})),
+            None,
+            None,
+        ),
         "payload: the field \"x\" is not allowed",
     );
     denied(
-        a.message("b", "hi", Some("step"), None, None),
+        a.message("b", "hi", Some("step"), None, None, None),
         "needs a payload",
     );
     denied(
-        a.message("root", "hi", None, None, None),
+        a.message("root", "hi", None, None, None, None),
         "may only message its siblings",
     );
     denied(
-        a.message("@person", "hi", None, None, None),
+        a.message("@person", "hi", None, None, None, None),
         "may only message its siblings",
     );
-    denied(root.message("a", "hi", None, None, None), "has no siblings");
     denied(
-        a.message("a", "hi", None, None, None),
+        root.message("a", "hi", None, None, None, None),
+        "has no siblings",
+    );
+    denied(
+        a.message("a", "hi", None, None, None, None),
         "cannot message itself",
     );
-    denied(a.message("b", "   ", None, None, None), "needs text");
+    denied(a.message("b", "   ", None, None, None, None), "needs text");
     assert!(matches!(
-        a.message("nobody", "hi", None, None, None),
+        a.message("nobody", "hi", None, None, None, None),
         Err(Error::UnknownBranch(_))
     ));
     assert!(
@@ -157,6 +175,7 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
             None,
             Some(json!({"tokens": 3})),
             Some("k1"),
+            None,
         )
         .unwrap();
     assert_eq!((first.from.as_str(), first.to.as_str()), ("a", "b"));
@@ -185,15 +204,16 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
             None,
             Some(json!({"tokens": 3})),
             Some("k1"),
+            None,
         )
         .unwrap();
     assert_eq!(again, first);
     denied(
-        a.message("b", "something else", None, None, Some("k1")),
+        a.message("b", "something else", None, None, Some("k1"), None),
         "a key names one message",
     );
     // b may use the same key for its own message.
-    let from_b = b.message("a", "ack", None, None, Some("k1")).unwrap();
+    let from_b = b.message("a", "ack", None, None, Some("k1"), None).unwrap();
     assert_ne!(from_b.id, first.id);
 
     // A second message of the registered kind, after the first.
@@ -204,6 +224,7 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
             Some("step"),
             Some(json!({"n": 2})),
             Some("k2"),
+            None,
         )
         .unwrap();
     assert!(second.id > first.id);
@@ -213,7 +234,14 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
     // as the peer class and the text and payload match: refused, not
     // answered with the step.
     denied(
-        a.message("b", "step two", None, Some(json!({"n": 2})), Some("k2")),
+        a.message(
+            "b",
+            "step two",
+            None,
+            Some(json!({"n": 2})),
+            Some("k2"),
+            None,
+        ),
         "a key names one message",
     );
 
@@ -318,4 +346,141 @@ fn a_question_through_the_pipeline_reads_as_before_and_a_registration_is_checked
             .map(|_| ()),
         "schema uses `$ref`",
     );
+}
+
+/// The last prompt `branch` was given.
+fn last_prompt(f: &Fixture, branch: &str) -> String {
+    f.yard
+        .branch(branch)
+        .unwrap()
+        .events()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Prompt(p) => Some(p.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap()
+}
+
+/// A message past its deadline is not given to the turn that starts after
+/// it: it counts delivered (so it is never given late), the prompt omits
+/// it, and the recipient's log carries a warning naming its id, while a
+/// message without a deadline sent beside it is delivered as usual.
+#[test]
+fn a_message_past_its_deadline_is_dropped_with_a_warning_on_the_recipients_log() {
+    let f = Fixture::new();
+    let options = delegating(&f);
+    let (root, a, b) = siblings(&f, &options);
+    let deadline = branchyard_support::time::now_ms() + 600;
+    let stale = a
+        .message("b", "use the old lexer", None, None, None, Some(deadline))
+        .unwrap();
+    assert_eq!(stale.meta.as_ref().unwrap().deadline_ms, Some(deadline));
+    let live = a
+        .message("b", "use the new lexer", None, None, None, None)
+        .unwrap();
+    // A deadline in the past is refused at the send, as before.
+    denied(
+        a.message("b", "late", None, None, None, Some(1)),
+        "has passed",
+    );
+    wait::until("the deadline to pass", || {
+        branchyard_support::time::now_ms() > deadline
+    });
+
+    root.send("b", "WHOAMI").unwrap();
+    root.wait("b", Duration::from_secs(120)).unwrap();
+    let prompt = last_prompt(&f, "b");
+    assert!(prompt.contains("use the new lexer"), "{prompt}");
+    assert!(
+        !prompt.contains("use the old lexer"),
+        "an expired message is not given to the turn: {prompt}"
+    );
+    let events = f.yard.branch("b").unwrap().events().unwrap();
+    let warnings: Vec<&String> = events
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Warning(text) if text.contains("expired") => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(&format!("message #{} from a expired", stale.id)),
+        "{}",
+        warnings[0]
+    );
+    let delivered: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::MessagesDelivered { ids, .. } => Some(ids.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(delivered, [live.id], "only the live message was delivered");
+    let inbox = b.inbox().unwrap();
+    assert!(
+        inbox.messages.iter().all(|m| m.delivered),
+        "the expired message no longer waits"
+    );
+
+    // Another turn does not warn again.
+    root.send("b", "WHOAMI").unwrap();
+    root.wait("b", Duration::from_secs(120)).unwrap();
+    let again = f.yard.branch("b").unwrap().events().unwrap();
+    assert_eq!(
+        again
+            .iter()
+            .filter(|e| matches!(&e.activity, Activity::Warning(t) if t.contains("expired")))
+            .count(),
+        1
+    );
+}
+
+/// A recipient with PEER_PENDING_MAX undelivered peer messages refuses
+/// another, naming the count and the limit; a repeat under a key still
+/// returns the first message, and the refusal stores nothing.
+#[test]
+fn a_recipient_with_too_many_pending_peer_messages_refuses_another() {
+    let f = Fixture::new();
+    let options = delegating(&f);
+    let (root, a, b) = siblings(&f, &options);
+    let max = branchyard::messaging::PEER_PENDING_MAX;
+    let first = a
+        .message("b", "note 0", None, None, Some("k0"), None)
+        .unwrap();
+    for n in 1..max {
+        a.message("b", &format!("note {n}"), None, None, None, None)
+            .unwrap();
+    }
+    assert_eq!(b.unread().unwrap().messages.len(), max);
+    let refused = a
+        .message("b", "one too many", None, None, None, None)
+        .unwrap_err();
+    match &refused {
+        Error::Denied(reason) => assert!(
+            reason.contains(&format!("already has {max} undelivered peer messages"))
+                && reason.contains(&format!("the limit is {max}")),
+            "{reason}"
+        ),
+        other => panic!("expected denied, got {other:?}"),
+    }
+    assert_eq!(b.unread().unwrap().messages.len(), max, "nothing stored");
+    // A repeat of a message already sent is not a new one.
+    let repeat = a
+        .message("b", "note 0", None, None, Some("k0"), None)
+        .unwrap();
+    assert_eq!(repeat, first);
+    // The count is the recipient's: b can still message a.
+    b.message("a", "hello", None, None, None, None).unwrap();
+
+    // Once b's next turn starts it reads its messages (at most 20 per
+    // turn), which makes room.
+    root.send("b", "WHOAMI").unwrap();
+    root.wait("b", Duration::from_secs(120)).unwrap();
+    a.message("b", "now there is room", None, None, None, None)
+        .unwrap();
 }

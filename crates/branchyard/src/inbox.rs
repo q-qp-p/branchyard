@@ -427,41 +427,86 @@ pub(crate) fn combine(prompt: &str, waiting: &[Message]) -> (String, Vec<u64>) {
 }
 
 /// `branch`'s pending messages combined into the prompt the engine call
-/// `turn` is about to submit, and the ids of those it includes. Messages
-/// steered input queued for this same turn carries are left to it. Marks
-/// nothing: [`begin_submit`] acknowledges them with the submit's intent.
+/// `turn` is about to submit, the ids of those it includes, and the
+/// messages whose deadline has passed ([`Message::expired_at`]), which are
+/// not given to the turn. Messages steered input queued for this same turn
+/// carries are left to it. Marks nothing: [`begin_submit`] acknowledges
+/// them with the submit's intent.
 pub(crate) fn compose_turn_start(
     store: &Store,
     branch: &str,
     turn: u64,
     prompt: &str,
-) -> Result<(String, Vec<u64>), Error> {
+) -> Result<(String, Vec<u64>, Vec<Message>), Error> {
+    let now = branchyard_support::time::now_ms();
     let mut waiting = Vec::new();
+    let mut expired = Vec::new();
     for message in store
         .backend()
         .inbox_for_turn(branch, turn)?
         .into_iter()
         .filter(|message| !message.delivered)
     {
-        if !steering(store, branch, turn, &message)? {
+        if message.expired_at(now) {
+            expired.push(message);
+        } else if !steering(store, branch, turn, &message)? {
             waiting.push(message);
         }
     }
-    Ok(combine(prompt, &waiting))
+    let (prompt, included) = combine(prompt, &waiting);
+    Ok((prompt, included, expired))
 }
 
 /// A turn's prompt as submitted: the task with its pending messages
-/// prepended, and the ids of the messages it carries.
+/// prepended, the ids of the messages it carries, and the messages that
+/// expired instead of being given to it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Submission {
     pub prompt: String,
     pub delivered: Vec<u64>,
+    pub expired: Vec<Message>,
+}
+
+impl Submission {
+    /// One line per expired message for the recipient's event log
+    /// ([`crate::Activity::Warning`]): its id, sender and deadline, so a
+    /// message that was not delivered is never silently lost.
+    pub(crate) fn expiry_notes(&self, turn: u64) -> Vec<String> {
+        self.expired
+            .iter()
+            .map(|message| {
+                let deadline = message
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.deadline_ms)
+                    .map_or_else(String::new, branchyard_support::time::rfc3339);
+                format!(
+                    "message #{} from {} expired: its deadline {deadline} passed before turn \
+                     {turn} started, so it was not delivered",
+                    message.id, message.from
+                )
+            })
+            .collect()
+    }
+
+    /// The ids the store marks delivered with the submit: the messages the
+    /// prompt carries and the expired ones it does not.
+    fn acknowledged(&self) -> Vec<u64> {
+        self.delivered
+            .iter()
+            .copied()
+            .chain(self.expired.iter().map(|m| m.id))
+            .collect()
+    }
 }
 
 /// Deliver `branch`'s pending messages into the fenced turn's prompt:
 /// journal its `submit` step, whose intent holds the combined prompt and
 /// the message ids, and acknowledge (mark delivered) exactly those messages
-/// in the same store transaction. Any failure before that commit leaves
+/// in the same store transaction. A message whose deadline has passed is
+/// not given to the turn but is acknowledged in the same transaction, so
+/// it is never delivered late; the engine records a warning naming it
+/// ([`Submission::expiry_notes`]). Any failure before that commit leaves
 /// them pending; once it commits they count delivered, as the prompt counts
 /// submitted, so recovery never gives either again.
 pub(crate) fn begin_submit(
@@ -470,14 +515,20 @@ pub(crate) fn begin_submit(
     branch: &str,
     prompt: &str,
 ) -> Result<Submission, Error> {
-    let (prompt, delivered) = compose_turn_start(store, branch, fence.turn, prompt)?;
-    let intent = serde_json::json!({ "prompt": prompt, "messages": delivered });
+    let (prompt, delivered, expired) = compose_turn_start(store, branch, fence.turn, prompt)?;
+    let submission = Submission {
+        prompt,
+        delivered,
+        expired,
+    };
+    let intent =
+        serde_json::json!({ "prompt": submission.prompt, "messages": submission.delivered });
     let begun = store.backend().begin_step_delivering(
         fence,
         fence.turn,
         crate::engine::STEP_SUBMIT,
         &intent,
-        &delivered,
+        &submission.acknowledged(),
     )?;
     if !matches!(begun, crate::state::Begun::Fresh) {
         return Err(Error::State(format!(
@@ -485,7 +536,7 @@ pub(crate) fn begin_submit(
             fence.turn
         )));
     }
-    Ok(Submission { prompt, delivered })
+    Ok(submission)
 }
 
 /// Undo [`begin_submit`] when the harness refused the prompt with nothing
@@ -500,7 +551,7 @@ pub(crate) fn abandon_submit(
         fence,
         fence.turn,
         crate::engine::STEP_SUBMIT,
-        &submission.delivered,
+        &submission.acknowledged(),
     )
 }
 
@@ -623,7 +674,7 @@ mod tests {
         assert_eq!(steps[0].intent["messages"], serde_json::json!([id]));
         assert!(delivered(&store, id));
         // The next turn start has nothing left to give.
-        let (_, again) = compose_turn_start(&store, "parent", fence.turn, "next").unwrap();
+        let (_, again, _) = compose_turn_start(&store, "parent", fence.turn, "next").unwrap();
         assert!(again.is_empty());
     }
 
@@ -642,8 +693,47 @@ mod tests {
             .steps("parent", fence.turn)
             .unwrap()
             .is_empty());
-        let (_, again) = compose_turn_start(&store, "parent", fence.turn, "go").unwrap();
+        let (_, again, _) = compose_turn_start(&store, "parent", fence.turn, "go").unwrap();
         assert_eq!(again, [id]);
+    }
+
+    /// A message whose deadline has passed is acknowledged with the submit
+    /// but left out of the prompt, and named by an expiry note; abandoning
+    /// the submit returns it to pending with the rest.
+    #[test]
+    fn an_expired_message_is_acknowledged_but_not_given_to_the_turn() {
+        let (_t, store, fence, live) = running("expired");
+        let mut late = message(0, MessageKind::Report, "stale news");
+        late.meta = Some(crate::messaging::MessageMeta {
+            deadline_ms: Some(1),
+            ..crate::messaging::MessageMeta::default()
+        });
+        let late = store.backend().send_message(&late, None).unwrap();
+        assert!(late.expired_at(branchyard_support::time::now_ms()));
+        assert!(!message(0, MessageKind::Report, "x").expired_at(u64::MAX));
+
+        let submission = begin_submit(&store, &fence, "parent", "go").unwrap();
+        assert_eq!(submission.delivered, [live]);
+        assert_eq!(
+            submission.expired.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [late.id]
+        );
+        assert!(
+            !submission.prompt.contains("stale news"),
+            "{}",
+            submission.prompt
+        );
+        let notes = submission.expiry_notes(fence.turn);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with(&format!("message #{} from kid expired", late.id)),
+            "{notes:?}"
+        );
+        assert!(delivered(&store, late.id), "never delivered late");
+
+        abandon_submit(&store, &fence, &submission).unwrap();
+        assert!(!delivered(&store, late.id));
+        assert!(!delivered(&store, live));
     }
 
     /// `wait_for_answer` with `Duration::MAX`, what the agent `ask` tool

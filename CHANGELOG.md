@@ -40,6 +40,15 @@ and `gen_ai.client.token.usage`. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` for a
 harness's own telemetry now also makes a `by` that inherits it export; see
 [observability](docs/observability.md#configuration).
 
+A message between siblings can now carry a deadline: `by message --deadline 10m`
+(or `branchyard.message(..., deadline=600)`, or `deadline_ms` in the server's
+`POST .../message` body and the Rust and Python clients; the MCP tool leaves it
+out to stay within a leaf's tool-list cap). A message still pending when the
+recipient's next turn starts after its deadline is not given to the turn: it
+counts delivered, and a warning naming its id goes on the recipient's log. A
+sibling with 32 undelivered peer messages now refuses another with `denied`,
+naming the count and the limit.
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

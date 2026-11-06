@@ -905,6 +905,8 @@ pub enum Command {
     /// A sibling is another child of this branch's parent. The message waits in the sibling's inbox and is prepended to its next turn's prompt; it
     /// is never steered into a running turn. --kind names a registered message kind (`note`
     /// without one) whose schema checks --payload; --key makes a repeat return the first message.
+    /// --deadline drops a message still unread when the sibling's turn starts after it, with a
+    /// warning on the sibling's log. A sibling with 32 unread peer messages refuses another.
     #[command(hide = true, display_order = 313)]
     Message {
         /// Act as this branch (outside a harness; inside one, it is the harness's own)
@@ -923,6 +925,10 @@ pub enum Command {
         /// An idempotency key: a repeat with the same key returns the first message
         #[arg(long, value_name = "KEY", value_parser = non_blank)]
         key: Option<String>,
+        /// Drop the message if the sibling has not started a turn within this long (a duration
+        /// such as 10m or 2h; bare numbers are seconds)
+        #[arg(long, value_name = "DURATION", value_parser = message_deadline)]
+        deadline: Option<Duration>,
         /// Print JSON
         #[arg(long)]
         json: bool,

@@ -1164,6 +1164,7 @@ def message(
     kind: Optional[str] = None,
     payload: Optional[Any] = None,
     key: Optional[str] = None,
+    deadline: Optional[float] = None,
 ) -> Message:
     """Message a sibling, another child of your parent. It waits in the
     sibling's inbox and is given to it when its next turn starts; it never
@@ -1173,6 +1174,11 @@ def message(
     checks `payload`, a JSON value; a payload that does not match raises
     DeniedError naming the path and the rule, and so does a recipient that
     is not a sibling. A repeat with the same `key` returns the first message.
+
+    With `deadline` (seconds from now), a message the sibling has not read
+    by then is not given to it: it is marked delivered and a warning naming
+    it goes on the sibling's log. A sibling that already has 32 unread peer
+    messages refuses another (DeniedError).
     """
     args = ["message"]
     if kind is not None:
@@ -1181,6 +1187,8 @@ def message(
         args += ["--payload", json.dumps(payload)]
     if key is not None:
         args += ["--key", key]
+    if deadline is not None:
+        args += ["--deadline", str(deadline)]
     return _message(_run([*args, "--", to, text]))
 
 

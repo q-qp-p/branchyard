@@ -44,6 +44,13 @@ pub const TEXT_MAX: usize = 16 * 1024;
 /// result's limit.
 pub const PAYLOAD_MAX: usize = 64 * 1024;
 
+/// How many undelivered peer messages one recipient may have waiting
+/// before `authorize` refuses another: one chatty sibling cannot fill the
+/// next turn's prompt (which renders at most 20 messages) or the store.
+/// A message past its deadline is not counted; it is dropped at the
+/// recipient's next turn.
+pub const PEER_PENDING_MAX: usize = 32;
+
 /// How many ways a payload fails its schema are named in a refusal.
 const VIOLATIONS_SHOWN: usize = 8;
 
@@ -171,7 +178,9 @@ pub struct MessageMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace: Option<String>,
     /// Milliseconds since the Unix epoch after which the message should
-    /// not be delivered. Recorded; not yet enforced (`docs/messaging.md`).
+    /// not be delivered: at the recipient's next turn start it is marked
+    /// delivered without being given to the turn, and a warning naming it
+    /// goes on the recipient's log (`docs/messaging.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_ms: Option<u64>,
 }
@@ -419,6 +428,15 @@ impl Stage for Authorize {
         }
         let (from, to) = (cx.envelope.from.as_str(), cx.envelope.to.as_str());
         crate::inbox::authorize(&store, from, cx.spec.class.message_kind(), to)?;
+        if cx.spec.class == Class::Peer {
+            let repeat = match cx.envelope.scoped_key() {
+                Some(key) => store.backend().message_by_key(&key)?.is_some(),
+                None => false,
+            };
+            if !repeat {
+                check_pending(&store, from, to)?;
+            }
+        }
         if let Some(question_id) = cx.envelope.correlation {
             let question = store
                 .backend()
@@ -432,6 +450,27 @@ impl Stage for Authorize {
         }
         Ok(())
     }
+}
+
+/// Refuse a peer message to `to` while it already has
+/// [`PEER_PENDING_MAX`] undelivered ones: the count and the limit are
+/// named, so the sender knows to wait for `to`'s next turn rather than
+/// retry.
+fn check_pending(store: &crate::state::Store, from: &str, to: &str) -> Result<(), Error> {
+    let now = branchyard_support::time::now_ms();
+    let pending = store
+        .backend()
+        .inbox(to)?
+        .iter()
+        .filter(|m| m.kind == MessageKind::Peer && !m.delivered && !m.expired_at(now))
+        .count();
+    if pending >= PEER_PENDING_MAX {
+        return Err(Error::Denied(format!(
+            "{to} already has {pending} undelivered peer messages (the limit is \
+             {PEER_PENDING_MAX}); {from} can send more after {to}'s next turn starts"
+        )));
+    }
+    Ok(())
 }
 
 /// The text, the payload against the kind's schema, the sizes, the trace's
