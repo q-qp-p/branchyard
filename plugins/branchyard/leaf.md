@@ -81,6 +81,8 @@ plans a worker; `--apply` provisions the reviewed VM and its dedicated IAP TCP
 roles decide API access, `--scopes` narrows it. Harness sessions and `--remote`
 are refused. `--gvisor` installs the pinned gVisor
 Docker runtime; Container needs access to the worker's Docker socket.
+Operators, outside harness sessions, run `by harnesses update ID --qualify`,
+`by images build`, `by images pin REF@DIGEST` and `by startup report`.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and
 `--substrate-server-name NAME` for verified forwarded TLS. Egress is
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
