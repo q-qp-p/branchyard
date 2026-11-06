@@ -87,6 +87,10 @@ Each step keeps every surface's output and refusals as they are; the tests that 
 6. **The wake.** The wake prompt becomes a message of class `wake` from the engine, next-turn delivery, so a parent's inbox shows why it was woken and the prompt is rendered from it.
 7. **Generated surface.** Build the MCP `message` tool's `kind` enum and a `kinds` read from the registry (the read is `by kinds` now); then a new kind reaches models with no text edited by hand.
 
+## Decisions
+
+- **A message keeps the sender's trace.** A message sent under a turn that has a `TRACEPARENT` stores it in `meta.trace` (and nothing else in `meta` for a legacy kind), and both event logs carry the same message. Without one, a legacy message has no `meta` and serializes byte for byte as it did before the layer (`an_ask_under_a_traceparent_carries_it_and_without_one_has_no_meta`). The trace is carried, not turned into spans; see [observability](observability.md#propagation).
+
 ## Designed, not built
 
-A `Seat`, `Team` or `External` address; `Request`, `Broadcast` and `Interrupt` delivery; kinds listed to a model through the MCP surface; a redaction or rate-limit stage; spans opened from a message's `trace`; a transport to another server; the generated `kind` enum; steps 2 to 7 of the migration. A peer message reaches siblings only (children of one parent); a cousin, an ancestor other than the parent, or a branch in another tree is refused by name.
+A `Seat`, `Team` or `External` address; `Request`, `Broadcast` and `Interrupt` delivery; kinds listed to a model through the MCP surface; a redaction or rate-limit stage; spans opened from a message's `trace`; a transport to another server; the generated `kind` enum; steps 3 to 7 of the migration.

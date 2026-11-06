@@ -592,3 +592,43 @@ fn a_keyed_ask_returns_the_first_question_and_refuses_other_text() {
     assert_eq!(repeat.message.id, first.message.id);
     assert_eq!(repeat.answer.map(|m| m.id), Some(answer.id));
 }
+
+/// A legacy message sent under a `traceparent` carries it in `meta.trace`
+/// and nothing else in `meta`; without telemetry the JSON is exactly what
+/// it was before the messaging layer: no `meta` key at all.
+#[test]
+fn an_ask_under_a_traceparent_carries_it_and_without_one_has_no_meta() {
+    let f = Fixture::new();
+    let traced = delegating(&f);
+    let (_root, a, _b) = siblings(&f, &traced);
+    let asked = a.ask("which lock?", None, None).unwrap().message;
+    assert_eq!(
+        asked.meta.as_ref().and_then(|m| m.trace.as_deref()),
+        Some(TRACE)
+    );
+    let json = serde_json::to_value(&asked).unwrap();
+    assert_eq!(json["meta"], json!({"trace": TRACE}), "{json}");
+    // The same message is on both logs with its trace.
+    for branch in ["a", "root"] {
+        let logged = messages_on(&f, branch)
+            .into_iter()
+            .find(|m| m.id == asked.id)
+            .unwrap();
+        assert_eq!(logged, asked, "{branch}");
+    }
+
+    let g = Fixture::new();
+    let plain = TaskOptions {
+        trace_parent: None,
+        ..delegating(&g)
+    };
+    let (_root, a, _b) = siblings(&g, &plain);
+    let asked = a.ask("which lock?", None, None).unwrap().message;
+    let json = serde_json::to_string(&asked).unwrap();
+    let expected = format!(
+        "{{\"id\":{},\"from\":\"a\",\"to\":\"root\",\"kind\":\"question\",\"text\":\"which lock?\",\
+         \"at_ms\":{},\"delivered\":false}}",
+        asked.id, asked.at_ms
+    );
+    assert_eq!(json, expected, "no telemetry: byte-identical to before");
+}
