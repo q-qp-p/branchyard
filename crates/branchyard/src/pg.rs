@@ -257,7 +257,6 @@ CREATE TABLE IF NOT EXISTS by_messages (
     idempotency_key TEXT
 );
 CREATE INDEX IF NOT EXISTS by_messages_to ON by_messages (repo, to_branch, id);
-CREATE UNIQUE INDEX IF NOT EXISTS by_messages_key ON by_messages (repo, idempotency_key);
 CREATE INDEX IF NOT EXISTS by_messages_steer ON by_messages (steer_id);
 CREATE INDEX IF NOT EXISTS by_messages_from ON by_messages (repo, from_branch, kind);
 CREATE INDEX IF NOT EXISTS by_messages_reply ON by_messages (repo, in_reply_to);

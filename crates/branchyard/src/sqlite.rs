@@ -194,7 +194,6 @@ CREATE TABLE IF NOT EXISTS messages (
     idempotency_key TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_to ON messages (to_branch, id);
-CREATE UNIQUE INDEX IF NOT EXISTS messages_key ON messages (idempotency_key);
 CREATE INDEX IF NOT EXISTS messages_steer ON messages (steer_id);
 CREATE INDEX IF NOT EXISTS messages_from ON messages (from_branch, kind);
 CREATE INDEX IF NOT EXISTS messages_reply ON messages (in_reply_to);
@@ -3996,6 +3995,45 @@ mod tests {
                 opener.join().unwrap().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn a_store_from_before_the_message_key_opens_and_gains_it() {
+        // The key's unique index was once in TABLES, which runs before the
+        // column upgrades, so a store from before the messaging layer failed
+        // to open with "no such column: idempotency_key".
+        let (dir, store) = open("before-message-key");
+        drop(store);
+        let conn = Connection::open(dir.0.join("state.db")).unwrap();
+        conn.execute_batch(
+            "DROP INDEX messages_key; \
+             ALTER TABLE messages DROP COLUMN idempotency_key; \
+             ALTER TABLE messages DROP COLUMN meta;",
+        )
+        .unwrap();
+        drop(conn);
+        drop(Sqlite::open(&dir.0).unwrap());
+        let conn = Connection::open(dir.0.join("state.db")).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(columns.iter().any(|c| c == "meta"), "{columns:?}");
+        assert!(
+            columns.iter().any(|c| c == "idempotency_key"),
+            "{columns:?}"
+        );
+        let index: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     fn open(name: &str) -> (Temp, Sqlite) {
