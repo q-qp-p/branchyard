@@ -269,10 +269,11 @@ fn branches(conn: &Connection) -> rusqlite::Result<Result<Vec<BranchInfo>, Error
     Ok(Ok(infos))
 }
 
-const MESSAGE_COLUMNS: &str =
-    "id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, next_turn";
-
+/// `branch`'s undelivered messages. The columns are the store's own
+/// ([`crate::sqlite::message_from`] reads them by position), so a column the
+/// store adds is read here too.
 fn unread(conn: &Connection, branch: &str) -> rusqlite::Result<Vec<Message>> {
+    use crate::sqlite::MESSAGE_COLUMNS;
     let mut statement = conn.prepare(&format!(
         "SELECT {MESSAGE_COLUMNS} FROM messages \
          WHERE to_branch = ?1 AND delivered_ms IS NULL AND (recipient_incarnation IS NULL OR recipient_incarnation = (SELECT incarnation FROM branches WHERE name = ?1 AND record IS NOT NULL)) ORDER BY id"
@@ -321,6 +322,26 @@ mod tests {
         assert!(glance.unread.is_empty());
         assert_eq!(glance.counts(), Counts::default());
         assert_eq!(glance.branch_at(&below), None);
+    }
+
+    #[test]
+    fn an_unread_message_with_meta_reads_as_the_store_wrote_it() {
+        // The glance once listed the message columns by hand and missed
+        // `meta`, so every unread message failed to read and hooks went quiet.
+        let dir = repository();
+        drop(Yard::open(dir.path()).unwrap());
+        let conn = rusqlite::Connection::open(state_db(dir.path())).unwrap();
+        conn.execute(
+            "INSERT INTO messages (from_branch, to_branch, kind, text, at_ms, meta) \
+             VALUES ('a', 'x', 'peer', 'hi', 1, '{\"kind\":\"note\",\"schema_version\":1}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let glance = read(dir.path(), Some("x")).unwrap().unwrap();
+        assert_eq!(glance.unread.len(), 1, "{:?}", glance.unread);
+        assert_eq!(glance.unread[0].text, "hi");
+        assert!(glance.unread[0].meta.is_some(), "{:?}", glance.unread[0]);
     }
 
     fn message(id: u64, from: &str, kind: MessageKind, in_reply_to: Option<u64>) -> Message {
