@@ -7,6 +7,13 @@ publish.workspace = true
 rust-version.workspace = true
 description = "OpenTelemetry setup for every Branchyard binary: tracing bridged to OTel spans, a meter provider with a Prometheus text reader, OTLP export from the standard OTEL_* variables, and W3C trace-context propagation"
 
+# reqwest is named only for its features: the workspace takes it without
+# defaults, and the OTLP/HTTP exporter's blocking client needs `blocking` and
+# rustls to reach an https collector. No code here calls it, so cargo-machete
+# cannot see it is used.
+[package.metadata.cargo-machete]
+ignored = ["reqwest"]
+
 [lints]
 workspace = true
 
