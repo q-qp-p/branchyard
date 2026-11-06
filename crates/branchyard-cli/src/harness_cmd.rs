@@ -24,6 +24,8 @@ use crate::render::{table, Cell, Column, Style, Tone};
 use crate::ssh_remote::SshUrl;
 use branchyard_recipe::quote;
 
+mod qualify;
+
 /// The machine a command acts on.
 enum Machine {
     Local,
@@ -503,9 +505,15 @@ pub fn main(
         Some(HarnessesAction::Install(change)) => {
             change_harness(env, target, json, on, change, InstallAction::Install)
         }
-        Some(HarnessesAction::Update(change)) => {
+        Some(HarnessesAction::Update {
+            change,
+            qualify: true,
+            with_model,
+        }) => qualify::run(env, target, json, on, change, *with_model),
+        Some(HarnessesAction::Update { change, .. }) => {
             change_harness(env, target, json, on, change, InstallAction::Update)
         }
+        Some(HarnessesAction::Qualified) => qualify::list(env, json),
         Some(HarnessesAction::Login {
             id,
             provider: Some(provider),
@@ -815,17 +823,34 @@ fn change_harness(
             )),
         };
     }
-    if let (InstallAction::Update, None, Some(latest)) =
+    // An update with no version takes the qualified pin, when one is newer
+    // than the version the profile was checked against.
+    let pinned = match (action, &change.version) {
+        (InstallAction::Update, None) => qualify::pin_to_install(id),
+        _ => None,
+    };
+    let version = change
+        .version
+        .clone()
+        .or_else(|| pinned.as_ref().map(|pin| pin.version.clone()));
+    if let Some(pin) = &pinned {
+        eprintln!(
+            "by: updating to the qualified pin {} ({} on {}); `by harnesses qualified` lists it",
+            pin.version,
+            pin.evidence(),
+            pin.qualified_at
+        );
+    } else if let (InstallAction::Update, None, Some(latest)) =
         (action, &change.version, crate::live_catalog::latest(id))
     {
         eprintln!(
             "by: npm's latest {} is {}, as `by catalog refresh` cached it; pass --version {} to \
-             take it",
+             take it (or `--qualify` to check it first)",
             latest.package, latest.latest, latest.latest
         );
     }
-    let plan = inventory::plan(id, action, change.version.as_deref(), &before.tools)
-        .map_err(|why| no_plan(id, action, change.version.as_deref(), &before.tools, why))?;
+    let plan = inventory::plan(id, action, version.as_deref(), &before.tools)
+        .map_err(|why| no_plan(id, action, version.as_deref(), &before.tools, why))?;
     let policy = policy(env)?;
     let event = |outcome: &str, detail: Option<String>, after: Option<String>| HarnessEvent {
         at_ms: branchyard_support::time::now_ms(),
@@ -2090,7 +2115,7 @@ fn show_log(env: &Env, as_json: bool) -> Outcome {
                 Cell::toned(
                     &e.outcome,
                     match e.outcome.as_str() {
-                        "verified" | "ran" | "stored_key" => Tone::Green,
+                        "verified" | "ran" | "stored_key" | "qualified" => Tone::Green,
                         "failed" => Tone::Red,
                         "manual" => Tone::Yellow,
                         _ => Tone::Dim,

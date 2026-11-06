@@ -157,6 +157,7 @@ mod provider_admission;
 mod providers;
 mod provisioning;
 mod pull_request;
+pub mod qualified;
 mod record;
 mod recover;
 pub mod reported;
@@ -216,6 +217,7 @@ pub use pg::{
 pub use placement::{HOME as SANDBOX_HOME, WORKSPACE as SANDBOX_WORKSPACE};
 pub use provider_admission::ProviderAdmission;
 pub use providers::HarnessLocation;
+pub use qualified::{qualified_pin, QualifiedPin};
 
 pub use access::{AccessActivity, Ceiling, DelegationScope, NetworkScope};
 pub use adopt::{AdoptSpec, Adoption};

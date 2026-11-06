@@ -715,7 +715,28 @@ pub enum HarnessesAction {
     /// check it is there
     Install(HarnessChange),
     /// Install a harness again at a newer or pinned version, then check it
-    Update(HarnessChange),
+    ///
+    /// Install a harness again at a newer or pinned version, then check it. Without
+    /// --version, the version it installs is the qualified pin, if `--qualify` recorded one
+    /// newer than the version the harness's profile was checked against; else that checked
+    /// version. With --qualify, the release is installed beside the current one instead,
+    /// checked without a model, and pinned only if it passes; the current install is not
+    /// touched.
+    Update {
+        #[command(flatten)]
+        change: HarnessChange,
+        /// Install the release into a private prefix, check it (version, the profile's protocol
+        /// handshake, launch flags, hook install files), and pin it on a pass instead of
+        /// updating the harness. The release is --version, else the latest `by catalog refresh`
+        /// found
+        #[arg(long)]
+        qualify: bool,
+        /// With --qualify, also run the harness's recorded qualification scenarios with a model
+        /// (branchyard-qualify, which spends the harness's credentials) and write the dated
+        /// record; only this makes the pin live
+        #[arg(long, requires = "qualify")]
+        with_model: bool,
+    },
     /// Log in to a harness once, through its own flow, or store its API key
     Login {
         /// The harness's ID, as `by harnesses --all` lists it
@@ -738,6 +759,12 @@ pub enum HarnessesAction {
     },
     /// Every install, update and login recorded on this machine
     Log,
+    /// The versions that passed `update --qualify`, with their evidence
+    ///
+    /// The versions `by harnesses update ID --qualify` pinned here, from qualified.toml beside
+    /// your user configuration: the release, when it was qualified, and whether the evidence is
+    /// the hermetic checks alone or a recorded run with a model.
+    Qualified,
 }
 
 /// What `by harnesses install|update` takes.

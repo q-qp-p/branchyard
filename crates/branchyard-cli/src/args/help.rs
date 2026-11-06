@@ -343,6 +343,8 @@ Examples:
   by harnesses --remote https://by.internal     # on a server's live workers
   by harnesses install codex                    # the catalog's command, under [harnesses] install
   by harnesses update codex --version 0.200.0 --yes
+  by harnesses update codex --qualify --version 0.200.0 --yes   # install beside, check, pin
+  by harnesses qualified                        # the pins and their evidence
   by harnesses login codex                      # its own login flow, once
   by harnesses login antigravity --yes          # with GEMINI_API_KEY set: select the gemini provider
   printf %s \"$KEY\" | by harnesses login claude-code --api-key
