@@ -231,7 +231,7 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
             Activity::Prompt(p) => Some(p.clone()),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     assert!(prompt.starts_with("<branchyard-inbox>"), "{prompt}");
     let first_line = format!(

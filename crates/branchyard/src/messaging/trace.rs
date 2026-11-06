@@ -36,8 +36,8 @@ pub fn check(text: &str) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)] // tests: a panic is the failure report
+#[cfg(test)]
 mod tests {
     use super::*;
 

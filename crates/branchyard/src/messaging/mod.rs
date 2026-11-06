@@ -463,11 +463,7 @@ impl Stage for Validate {
                     spec.name
                 )));
             }
-            let size = envelope
-                .payload
-                .as_ref()
-                .map(|p| p.to_string().len())
-                .unwrap_or(0);
+            let size = envelope.payload.as_ref().map_or(0, |p| p.to_string().len());
             if size > PAYLOAD_MAX {
                 return Err(Error::Denied(format!(
                     "a {} message's payload is at most {PAYLOAD_MAX} bytes, not {size}",
@@ -639,8 +635,8 @@ impl Stage for Deliver {
     }
 }
 
-#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)] // tests: a panic is the failure report
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;

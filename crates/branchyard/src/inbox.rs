@@ -270,13 +270,33 @@ pub(crate) fn siblings(store: &Store, from: &str, to: &str) -> Result<(), Error>
     }
 }
 
+/// The envelope [`send`] makes of a legacy message: `kind`'s class, from
+/// `from` (a branch, or [`PERSON`] answering) to `to`, replying to
+/// `in_reply_to` when given. A caller that knows the sender's trace sets
+/// `trace` on it before [`crate::messaging::send`].
+pub(crate) fn envelope(
+    from: &str,
+    kind: MessageKind,
+    to: &str,
+    text: &str,
+    in_reply_to: Option<u64>,
+) -> crate::messaging::Envelope {
+    let mut envelope = crate::messaging::Envelope::new(
+        kind.as_str(),
+        crate::messaging::Address::parse(from),
+        crate::messaging::Address::parse(to),
+        text,
+    );
+    envelope.correlation = in_reply_to;
+    envelope
+}
+
 /// Send `kind` from `from` (a branch, or [`PERSON`] answering) to `to`,
 /// replying to message `in_reply_to` when given, which must have been sent
-/// to `from`, carrying the sender's `trace`. One envelope of the kind's
-/// class through the messaging pipeline ([`crate::messaging`]): checked
-/// ([`authorize`]), stored, recorded on the log of each branch it is
-/// between, and delivered into `to`'s running turn when it has one;
-/// otherwise it waits for `to`'s next turn to start.
+/// to `from`: one [`envelope`] through the messaging pipeline
+/// ([`crate::messaging`]), checked ([`authorize`]), stored, recorded on the
+/// log of each branch it is between, and delivered into `to`'s running
+/// turn when it has one; otherwise it waits for `to`'s next turn to start.
 pub(crate) fn send(
     yard: &Yard,
     observer: Option<Observer>,
@@ -285,17 +305,8 @@ pub(crate) fn send(
     to: &str,
     text: &str,
     in_reply_to: Option<u64>,
-    trace: Option<&str>,
 ) -> Result<Message, Error> {
-    let mut envelope = crate::messaging::Envelope::new(
-        kind.as_str(),
-        crate::messaging::Address::parse(from),
-        crate::messaging::Address::parse(to),
-        text,
-    );
-    envelope.correlation = in_reply_to;
-    envelope.trace = trace.map(str::to_owned);
-    crate::messaging::send(yard, observer, envelope)
+    crate::messaging::send(yard, observer, envelope(from, kind, to, text, in_reply_to))
 }
 
 /// Whether `from`'s rig seat lists `to`'s seat in its `escalates_to`.

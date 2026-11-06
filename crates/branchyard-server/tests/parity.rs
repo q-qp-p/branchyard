@@ -426,7 +426,10 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
         note.meta.as_ref().and_then(|m| m.payload.clone()),
         Some(json!({"tokens": 3}))
     );
-    assert_eq!(repo.inbox("kid2").unwrap().messages, [note.clone()]);
+    assert_eq!(
+        repo.inbox("kid2").unwrap().messages,
+        std::slice::from_ref(&note)
+    );
     assert_eq!(
         repo.message("kid", &request).unwrap(),
         note,

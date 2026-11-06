@@ -4567,16 +4567,9 @@ impl Local {
         text: &str,
         in_reply_to: Option<u64>,
     ) -> Result<Message, Error> {
-        let result = inbox::send(
-            &self.yard,
-            self.options.observer.clone(),
-            &self.branch,
-            kind,
-            to,
-            text,
-            in_reply_to,
-            self.options.trace_parent.as_deref(),
-        );
+        let mut envelope = inbox::envelope(&self.branch, kind, to, text, in_reply_to);
+        envelope.trace = self.options.trace_parent.clone();
+        let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
         self.note("message", to, &result, |m| {
             format!("sent {} #{}", m.kind, m.id)
         });

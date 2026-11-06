@@ -964,7 +964,6 @@ impl Yard {
                 asker,
                 text,
                 Some(message_id),
-                None,
             );
         }
         self.branch(&message.to)?

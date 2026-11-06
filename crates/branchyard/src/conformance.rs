@@ -757,10 +757,10 @@ pub(crate) fn messages(s: Opened) {
     let read = store.message(stored.id).unwrap().unwrap();
     assert_eq!(read, stored, "meta and next_turn read back as stored");
     assert_eq!(read.kind, crate::MessageKind::Peer);
-    assert_eq!(store.inbox("b").unwrap(), [stored.clone()]);
+    assert_eq!(store.inbox("b").unwrap(), std::slice::from_ref(&stored));
     assert_eq!(
         store.inbox_for_turn("b", 1).unwrap(),
-        [stored.clone()],
+        std::slice::from_ref(&stored),
         "no fence: the next turn to open delivers it"
     );
     assert_eq!(

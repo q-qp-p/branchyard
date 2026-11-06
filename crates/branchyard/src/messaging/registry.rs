@@ -203,8 +203,8 @@ impl Registry {
     }
 }
 
-#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)] // tests: a panic is the failure report
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
