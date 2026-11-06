@@ -95,6 +95,8 @@ mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
 mod task_cmd;
+#[cfg(test)]
+mod testing;
 mod tools_cmd;
 mod trackers;
 mod trigger_cmd;

@@ -2053,18 +2053,19 @@ fn name_secret(var: &str, path: &Path) -> Result<bool, Failure> {
     Ok(true)
 }
 
-#[allow(clippy::expect_used, clippy::unwrap_in_result)] // ratchet: branchyard-cli
 fn show_log(env: &Env, as_json: bool) -> Outcome {
-    let events = log().read()?;
+    print(&log_text(&log().read()?, env.style(), as_json))
+}
+
+/// The harness log as JSON or a table, or what it is when empty.
+#[allow(clippy::expect_used, clippy::unwrap_in_result)] // ratchet: branchyard-cli
+fn log_text(events: &[HarnessEvent], style: Style, as_json: bool) -> String {
     if as_json {
-        return print(&json::text(
-            &serde_json::to_value(&events).expect("serializes"),
-        ));
+        return json::text(&serde_json::to_value(events).expect("serializes"));
     }
     if events.is_empty() {
-        return print(
-            "no harness has been installed, updated or logged in to through Branchyard here\n",
-        );
+        return "no harness has been installed, updated or logged in to through Branchyard here\n"
+            .to_owned();
     }
     let columns = [
         Column {
@@ -2131,7 +2132,7 @@ fn show_log(env: &Env, as_json: bool) -> Outcome {
             ]
         })
         .collect();
-    print(&table(&columns, &rows, env.style()))
+    table(&columns, &rows, style)
 }
 
 /// For `by serve` and `by worker`: detection on this machine with the
@@ -2202,4 +2203,627 @@ pub fn route_gate(
         true => gate.preview().into_arc(),
         false => gate.into_arc(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The pieces of `by harnesses` that run in this process: choosing the
+    //! machine, the refusals that come before anything is installed, the
+    //! tables and the user configuration edits. Detection, installs and logins
+    //! are the integration tests' (`tests/harnesses.rs`), through the built `by`.
+
+    use super::*;
+    use crate::testing::{env, remote, report_of, with_env};
+    use branchyard_testkit::Scratch;
+
+    /// `body` as a person at a terminal would run it: not on a branch.
+    fn outside_a_branch<T>(body: impl FnOnce() -> T) -> T {
+        with_env(branchyard::ENV_BRANCH, Path::new(""), body)
+    }
+
+    fn machine(on: &str) -> Machine {
+        Machine::parse(Some(on)).unwrap_or_else(|_| panic!("{on} names a machine"))
+    }
+
+    #[test]
+    fn a_machine_is_this_one_an_ssh_host_or_a_recipe() {
+        assert!(matches!(Machine::parse(None), Ok(Machine::Local)));
+        assert_eq!(Machine::Local.name(), "local");
+        assert_eq!(Machine::Local.place(), "this machine");
+        assert!(machine_is_local(&Machine::Local));
+
+        let recipe = machine("recipe:dev");
+        assert_eq!(recipe.name(), "recipe:dev");
+        assert_eq!(recipe.place(), "recipe:dev");
+        assert!(!machine_is_local(&recipe));
+
+        // A host alone gets a home directory path; a path is allowed.
+        for (on, name) in [
+            ("ssh://host", "ssh://host"),
+            ("ssh://me@host:2222", "ssh://me@host:2222"),
+            ("ssh://me@host/srv/app", "ssh://me@host"),
+        ] {
+            let found = machine(on);
+            assert_eq!(found.name(), name, "{on}");
+            assert_eq!(found.place(), name);
+        }
+
+        for (bad, mentions) in [
+            ("recipe:", "needs a recipe's name"),
+            ("elsewhere", "is not ssh://"),
+            ("ssh://", "--on ssh://"),
+        ] {
+            let Err(failure) = Machine::parse(Some(bad)) else {
+                panic!("{bad} names no machine");
+            };
+            let report = report_of(failure);
+            assert_eq!(report.kind, "usage", "{bad}");
+            assert!(report.message.contains(mentions), "{bad}: {report:?}");
+            assert_eq!(report.next.len(), 1);
+        }
+    }
+
+    #[test]
+    fn ssh_is_asked_in_batch_mode_or_with_a_terminal_for_the_host_it_names() {
+        let url = SshUrl::parse("ssh://me@host:2222/srv/app").unwrap();
+        assert_eq!(ssh_target(&url), "-p 2222 me@host");
+        let plain = SshUrl::parse("ssh://host/srv/app").unwrap();
+        assert_eq!(ssh_target(&plain), "host");
+
+        let args = |command: &Command| -> Vec<String> {
+            command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args(&ssh(&url, false)),
+            [
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-p",
+                "2222",
+                "-l",
+                "me",
+                "--",
+                "host"
+            ]
+        );
+        assert_eq!(args(&ssh(&plain, true)), ["-t", "--", "host"]);
+    }
+
+    #[test]
+    fn a_harness_is_qualified_by_its_default_profile_else_any_of_its_profiles() {
+        let known = branchyard::harnesses();
+        let qualified = known
+            .iter()
+            .find(|k| k.default && k.qualification.is_some())
+            .expect("some default profile is qualified");
+        assert_eq!(
+            qualification_of(&known, &qualified.harness),
+            qualified.qualification
+        );
+        assert_eq!(qualification_of(&known, "no-such-harness"), None);
+        assert_eq!(qualification_of(&[], &qualified.harness), None);
+    }
+
+    #[test]
+    fn a_refused_install_names_the_file_to_edit_or_the_command_to_run() {
+        let never = InstallPolicy::new(Some(InstallMode::Never), Vec::new(), false);
+        let report = refused_install(
+            &never,
+            "codex",
+            InstallAction::Install,
+            "npm i -g x",
+            "never",
+        );
+        assert_eq!(report.kind, "denied");
+        assert!(report
+            .message
+            .starts_with("not running `npm i -g x`: never"));
+        assert!(
+            report.lines[0].1.contains("install = \"ask\""),
+            "{report:?}"
+        );
+        assert_eq!(
+            report.next,
+            [
+                "by harnesses install codex --yes (once installs are allowed)",
+                "run `npm i -g x` yourself"
+            ]
+        );
+
+        let listed = InstallPolicy::new(Some(InstallMode::Auto), vec!["pi".into()], false);
+        let report = refused_install(&listed, "codex", InstallAction::Update, "c", "not allowed");
+        assert!(
+            report.lines[0].1.contains("add \"codex\" to `allow`"),
+            "{report:?}"
+        );
+        assert_eq!(report.next, ["run `c` yourself"]);
+        // Allowed by the list, the refusal is for another reason.
+        let ask = InstallPolicy::new(Some(InstallMode::Ask), vec!["codex".into()], false);
+        let report = refused_install(&ask, "codex", InstallAction::Update, "c", "no terminal");
+        assert!(report.lines.is_empty());
+        assert_eq!(report.next, ["by harnesses update codex --yes"]);
+    }
+
+    #[test]
+    fn no_plan_says_what_is_missing_to_install_with() {
+        let tools = |names: &[&str]| -> std::collections::BTreeMap<String, String> {
+            names
+                .iter()
+                .map(|n| ((*n).to_owned(), (*n).to_owned()))
+                .collect()
+        };
+        // A version the command cannot take, where the command itself runs.
+        let report = no_plan(
+            "codex",
+            InstallAction::Install,
+            Some("1"),
+            &tools(&["npm"]),
+            "why".into(),
+        );
+        assert_eq!(report.kind, "usage");
+        assert_eq!(report.next, ["drop --version: by harnesses install codex"]);
+        // A program the commands need is missing.
+        let report = no_plan(
+            "codex",
+            InstallAction::Install,
+            None,
+            &tools(&[]),
+            "why".into(),
+        );
+        assert_eq!(report.kind, "tool_unavailable");
+        assert_eq!(report.next.len(), 2);
+        // A harness whose catalog entry records no install command.
+        if let Some(bare) = catalog::harnesses().iter().find(|e| e.install.is_empty()) {
+            let report = no_plan(
+                &bare.id,
+                InstallAction::Install,
+                None,
+                &tools(&["npm"]),
+                "why".into(),
+            );
+            assert_eq!(report.kind, "unsupported");
+            assert!(report.next[0].contains("by harnesses --refresh"));
+        }
+    }
+
+    #[test]
+    fn only_a_terminal_on_both_ends_can_be_asked() {
+        let mut terminal = env();
+        assert!(!interactive(&terminal));
+        terminal.stdin_tty = true;
+        assert!(!interactive(&terminal));
+        terminal.stderr_tty = true;
+        assert!(interactive(&terminal));
+    }
+
+    #[test]
+    fn a_unknown_harness_or_a_branch_is_refused_before_anything_runs() {
+        let unknown = report_of(entry("no-such-harness").unwrap_err());
+        assert_eq!(unknown.kind, "unknown_harness");
+        assert_eq!(unknown.next, ["by harnesses --all (lists them)"]);
+        assert!(entry("codex").is_ok());
+
+        let branch = with_env(branchyard::ENV_BRANCH, Path::new("feature"), || {
+            not_in_harness("install")
+        });
+        let denied = report_of(branch.unwrap_err());
+        assert_eq!(denied.kind, "denied");
+        assert!(
+            denied
+                .message
+                .contains("(feature) cannot install harnesses"),
+            "{denied:?}"
+        );
+        outside_a_branch(|| not_in_harness("install")).unwrap();
+    }
+
+    fn change(id: &str) -> HarnessChange {
+        HarnessChange {
+            id: id.into(),
+            version: None,
+            yes: true,
+        }
+    }
+
+    #[test]
+    fn an_install_is_refused_for_an_unknown_harness_a_server_or_a_recipe_machine() {
+        outside_a_branch(|| {
+            let local = Target::Local;
+            let run = |target: &Target, on: Option<&str>, id: &str, action| {
+                report_of(
+                    change_harness(&env(), target, false, on, &change(id), action).unwrap_err(),
+                )
+            };
+            assert_eq!(
+                run(&local, None, "nope", InstallAction::Install).kind,
+                "unknown_harness"
+            );
+
+            let server = run(&remote(), None, "codex", InstallAction::Update);
+            assert_eq!(server.kind, "usage");
+            assert!(
+                server.message.contains("never install harnesses"),
+                "{server:?}"
+            );
+            assert!(server.next[0].contains("by harnesses update codex --on ssh://HOST"));
+
+            let recipe = run(&local, Some("recipe:dev"), "codex", InstallAction::Install);
+            assert!(
+                recipe.message.contains("made fresh each time"),
+                "{recipe:?}"
+            );
+            assert!(
+                recipe.next[0].contains("add it to recipe dev's create script: "),
+                "{recipe:?}"
+            );
+            let bad = run(&local, Some("elsewhere"), "codex", InstallAction::Install);
+            assert_eq!(bad.kind, "usage");
+        });
+    }
+
+    #[test]
+    fn the_subcommands_are_routed_and_the_flags_that_exclude_each_other_refused() {
+        outside_a_branch(|| {
+            let call = |target: &Target, on: Option<&str>, action: Option<&HarnessesAction>| {
+                main(&env(), target, false, false, false, false, on, None, action)
+            };
+            let both = report_of(call(&remote(), Some("ssh://h"), None).unwrap_err());
+            assert_eq!(both.kind, "usage");
+            assert!(both.message.contains("--on names one machine"), "{both:?}");
+
+            let install = HarnessesAction::Install(change("nope"));
+            assert_eq!(
+                report_of(call(&Target::Local, None, Some(&install)).unwrap_err()).kind,
+                "unknown_harness"
+            );
+            let update = HarnessesAction::Update {
+                change: change("nope"),
+                qualify: false,
+                with_model: false,
+            };
+            assert_eq!(
+                report_of(call(&Target::Local, None, Some(&update)).unwrap_err()).kind,
+                "unknown_harness"
+            );
+            // `--qualify` goes to the qualification, which refuses a server the same way.
+            let qualify = HarnessesAction::Update {
+                change: change("codex"),
+                qualify: true,
+                with_model: false,
+            };
+            let server = report_of(call(&remote(), None, Some(&qualify)).unwrap_err());
+            assert!(
+                server.next[0].contains("by harnesses update codex --qualify"),
+                "{server:?}"
+            );
+            let nowhere = HarnessesAction::Update {
+                change: change("nope"),
+                qualify: true,
+                with_model: true,
+            };
+            assert_eq!(
+                report_of(call(&Target::Local, None, Some(&nowhere)).unwrap_err()).kind,
+                "unknown_harness"
+            );
+        });
+    }
+
+    #[test]
+    fn the_qualified_listing_is_read_from_the_pins_beside_the_user_configuration() {
+        let dir = Scratch::new("harness-qualified-unit");
+        let config = dir.join("config.toml");
+        with_env("BRANCHYARD_USER_CONFIG", &config, || {
+            let list = |as_json| {
+                main(
+                    &env(),
+                    &Target::Local,
+                    as_json,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                    Some(&HarnessesAction::Qualified),
+                )
+            };
+            list(false).unwrap();
+            std::fs::write(
+                dir.join("qualified.toml"),
+                "[[pin]]\nid = \"codex\"\nversion = \"0.170.0\"\npackage = \"@openai/codex\"\n\
+                 profile = \"codex-app-server\"\nqualified_at = \"2026-11-05T10:00:00Z\"\n",
+            )
+            .unwrap();
+            list(false).unwrap();
+            list(true).unwrap();
+        });
+    }
+
+    fn event(
+        action: InstallAction,
+        outcome: &str,
+        before: Option<&str>,
+        after: Option<&str>,
+    ) -> HarnessEvent {
+        HarnessEvent {
+            at_ms: 1_700_000_000_000,
+            on: "local".into(),
+            harness: "codex".into(),
+            action,
+            by: "by harnesses".into(),
+            command: None,
+            outcome: outcome.into(),
+            version_before: before.map(str::to_owned),
+            version_after: after.map(str::to_owned),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn the_log_is_a_table_of_what_was_done_and_to_which_version() {
+        let style = Style { color: false };
+        assert!(log_text(&[], style, false).starts_with("no harness has been installed"));
+        assert_eq!(log_text(&[], style, true), "[]\n");
+        let events = vec![
+            event(
+                InstallAction::Update,
+                "verified",
+                Some("0.1.0"),
+                Some("0.2.0"),
+            ),
+            event(InstallAction::Install, "failed", None, None),
+            event(InstallAction::Update, "refused", Some("0.1.0"), None),
+            event(
+                InstallAction::Qualify,
+                "qualified",
+                Some("0.2.0"),
+                Some("0.2.0"),
+            ),
+            event(InstallAction::Login, "manual", None, None),
+        ];
+        let text = log_text(&events, style, false);
+        for needle in [
+            "WHEN",
+            "OUTCOME",
+            "0.1.0 → 0.2.0",
+            "qualified",
+            "manual",
+            "failed",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&log_text(&events, style, true)).unwrap();
+        assert_eq!(value.as_array().unwrap().len(), 5);
+        assert_eq!(value[3]["action"], "qualify");
+    }
+
+    #[test]
+    fn the_log_command_reads_the_log_beside_the_user_configuration() {
+        let dir = Scratch::new("harness-log-unit");
+        with_env("BRANCHYARD_USER_CONFIG", &dir.join("config.toml"), || {
+            show_log(&env(), false).unwrap();
+            record(event(
+                InstallAction::Install,
+                "verified",
+                None,
+                Some("1.0.0"),
+            ));
+            assert_eq!(log().read().unwrap().len(), 1);
+            show_log(&env(), false).unwrap();
+            show_log(&env(), true).unwrap();
+        });
+    }
+
+    #[test]
+    fn a_quota_reads_as_two_windows_and_a_login_as_a_tone() {
+        assert_eq!(quota_text(None), "-");
+        let mut quota = Quota {
+            five_hour_percent: Some(12.4),
+            weekly_percent: None,
+            limit_reached: false,
+            resets_at_ms: None,
+        };
+        assert_eq!(quota_text(Some(&quota)), "5h 12% · wk -");
+        quota.limit_reached = true;
+        assert!(quota_text(Some(&quota)).ends_with(" · limit reached"));
+
+        let state = |login: &str| -> HarnessState {
+            serde_json::from_value(serde_json::json!({
+                "id": "codex", "path": "/bin/codex", "on_path": true,
+                "login": {"state": login, "evidence": "verified", "detail": "d"},
+            }))
+            .unwrap()
+        };
+        assert_eq!(login_text(&state("logged_in")).1, Tone::Green);
+        assert_eq!(login_text(&state("logged_out")).1, Tone::Red);
+        assert_eq!(login_text(&state("unknown")).1, Tone::Dim);
+        let unused: HarnessState = serde_json::from_value(serde_json::json!({
+            "id": "antigravity", "path": "p", "on_path": true,
+            "login": {
+                "state": "logged_in", "evidence": "verified",
+                "detail": format!(
+                    "GEMINI_API_KEY is set but ~/.gemini/antigravity-cli/settings.json {}: agy will \
+                     ask for a Google sign-in; Branchyard sets it in isolated runs, and `by harnesses \
+                     login antigravity` sets it for your own",
+                    branchyard::inventory::AGY_KEY_UNUSED
+                ),
+                "key": "GEMINI_API_KEY",
+            },
+        }))
+        .unwrap();
+        assert_eq!(login_text(&unused).1, Tone::Yellow);
+    }
+
+    #[test]
+    fn the_inventory_is_a_table_with_what_is_not_ready_and_how_many_are_here() {
+        let style = Style { color: false };
+        let harness = |id: &str, version: Option<&str>, on_path: bool, login: &str| {
+            let mut value = serde_json::json!({
+                "id": id, "path": format!("/bin/{id}"), "on_path": on_path,
+                "login": {"state": login, "evidence": "likely", "detail": format!("{id} detail")},
+            });
+            if let Some(version) = version {
+                value["version"] = version.into();
+            }
+            value
+        };
+        let found: Inventory = serde_json::from_value(serde_json::json!({
+            "host": "box", "os": "Linux", "detected_at_ms": 0,
+            "checked": ["codex", "pi", "gemini-cli"],
+            "harnesses": [
+                harness("codex", Some("0.157.1"), true, "logged_in"),
+                harness("pi", None, false, "logged_out"),
+            ],
+        }))
+        .unwrap();
+        let text = inventory_text(&found, true, None, style);
+        for needle in [
+            "HARNESS",
+            "codex",
+            "0.157.1",
+            "/bin/pi (not on PATH)",
+            "2 of the 3 harnesses",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        assert!(text.contains("installed on this machine."), "{text}");
+
+        let remote_host = inventory_text(
+            &found,
+            false,
+            Some(std::time::Duration::from_secs(90)),
+            style,
+        );
+        assert!(remote_host.contains("installed on box ("), "{remote_host}");
+
+        let mut noted = found.clone();
+        noted.harnesses[1].version_note = Some("the version command timed out".into());
+        let text = inventory_text(&noted, true, None, style);
+        assert!(
+            text.contains("pi: no version: the version command timed out"),
+            "{text}"
+        );
+        noted.harnesses[0].version_note = Some("two versions".into());
+        let text = inventory_text(&noted, true, None, style);
+        assert!(text.contains("codex: version: two versions"), "{text}");
+
+        let mut quota = found.clone();
+        quota.harnesses[0].quota = serde_json::from_value(serde_json::json!({
+            "five_hour_percent": 40.0, "weekly_percent": 10.0, "limit_reached": false,
+        }))
+        .unwrap();
+        assert!(inventory_text(&quota, true, None, style).contains("QUOTA"));
+
+        let empty = Inventory::default();
+        assert!(
+            inventory_text(&empty, true, None, style).starts_with("no known harness is installed")
+        );
+    }
+
+    #[test]
+    fn a_login_is_named_in_the_user_file_added_replaced_or_left_as_it_is() {
+        let dir = Scratch::new("harness-logins-unit");
+        let file = dir.join("config.toml");
+        with_env("BRANCHYARD_USER_CONFIG", &file, || {
+            // No file yet: a [logins] table is made.
+            assert_eq!(name_login("codex", "zai").unwrap(), "added");
+            assert_eq!(name_login("codex", "zai").unwrap(), "unchanged");
+            assert_eq!(name_login("claude-code", "zai").unwrap(), "added");
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert!(
+                text.contains("[logins]") && text.contains("codex = \"zai\""),
+                "{text}"
+            );
+            assert!(text.contains("claude-code = \"zai\""), "{text}");
+            branchyard_setup::config::parse(&text).unwrap();
+
+            // An existing file without the table gets one after its last line.
+            std::fs::write(&file, "[harnesses]\ninstall = \"ask\"").unwrap();
+            assert_eq!(name_login("codex", "zai").unwrap(), "added");
+            let text = std::fs::read_to_string(&file).unwrap();
+            assert!(
+                text.starts_with("[harnesses]\ninstall = \"ask\"\n\n[logins]\n"),
+                "{text}"
+            );
+
+            // A login set where this cannot edit it is left for the person to change.
+            std::fs::write(&file, "logins = { codex = \"zai\" }\n").unwrap();
+            let by_hand = report_of(name_login("codex", "gemini").unwrap_err());
+            assert_eq!(by_hand.kind, "config");
+            assert!(by_hand.next[0].contains("under [logins]"), "{by_hand:?}");
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "logins = { codex = \"zai\" }\n"
+            );
+
+            std::fs::write(&file, "= not toml\n").unwrap();
+            assert_eq!(
+                report_of(name_login("codex", "b").unwrap_err()).kind,
+                "config"
+            );
+        });
+    }
+
+    #[test]
+    fn a_stored_key_is_written_private_and_never_inside_a_repository() {
+        let dir = Scratch::new("harness-keys-unit");
+        let inside = std::env::current_dir()
+            .unwrap()
+            .join("by-unit-test-config.toml");
+        let refused = with_env("BRANCHYARD_USER_CONFIG", &inside, || {
+            key_file("GEMINI_API_KEY")
+        });
+        let refused = report_of(refused.unwrap_err());
+        assert_eq!(refused.kind, "config");
+        assert!(
+            refused.message.contains("where a key could be committed"),
+            "{refused:?}"
+        );
+        assert!(!inside.exists());
+
+        let path = with_env("BRANCHYARD_USER_CONFIG", &dir.join("config.toml"), || {
+            key_file("GEMINI_API_KEY")
+        })
+        .unwrap();
+        assert_eq!(path, dir.join("secrets/GEMINI_API_KEY"));
+        write_key(&path, "k-1").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "k-1");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+    }
+
+    #[test]
+    fn a_harness_settings_file_is_absent_text_or_an_unreadable_error() {
+        let dir = Scratch::new("harness-settings-unit");
+        assert_eq!(
+            read_settings(&dir.join("none.json"), "none.json").unwrap(),
+            None
+        );
+        std::fs::write(dir.join("s.json"), "{}").unwrap();
+        assert_eq!(
+            read_settings(&dir.join("s.json"), "s.json").unwrap(),
+            Some("{}".into())
+        );
+        let unreadable = report_of(read_settings(dir.path(), "~/dir").unwrap_err());
+        assert_eq!(unreadable.kind, "io");
+        assert!(
+            unreadable.message.starts_with("could not read ~/dir: "),
+            "{unreadable:?}"
+        );
+        assert_eq!(
+            unreadable.next,
+            ["make ~/dir readable, then run this again"]
+        );
+
+        let bad = unparsable(Path::new("/c/config.toml"), "line 3");
+        assert_eq!(bad.kind, "config");
+        assert!(bad.message.contains("/c/config.toml: line 3"));
+        assert!(bad.next[0].contains("by config validate"));
+    }
 }
