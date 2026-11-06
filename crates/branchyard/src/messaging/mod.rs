@@ -540,6 +540,9 @@ impl Stage for Persist {
                     && existing.to == envelope.to.as_str()
                     && existing.text == envelope.text
                     && existing.kind == cx.spec.class.message_kind()
+                    // Every peer kind is stored as the `peer` class, so the
+                    // registered kind is compared on its own.
+                    && existing.kind_name() == envelope.kind
                     && existing.meta.as_ref().and_then(|m| m.payload.as_ref())
                         == envelope.payload.as_ref();
                 if !same {

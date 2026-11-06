@@ -198,11 +198,24 @@ fn a_sibling_message_is_checked_stored_once_and_read_at_the_next_turn() {
 
     // A second message of the registered kind, after the first.
     let second = a
-        .message("b", "step two", Some("step"), Some(json!({"n": 2})), None)
+        .message(
+            "b",
+            "step two",
+            Some("step"),
+            Some(json!({"n": 2})),
+            Some("k2"),
+        )
         .unwrap();
     assert!(second.id > first.id);
     assert_eq!(second.kind_name(), "step");
     assert_eq!(second.meta.as_ref().unwrap().schema_version, Some(1));
+    // The key with another kind is another message, though both are stored
+    // as the peer class and the text and payload match: refused, not
+    // answered with the step.
+    denied(
+        a.message("b", "step two", None, Some(json!({"n": 2})), Some("k2")),
+        "a key names one message",
+    );
 
     // Visible in the recipient's inbox, oldest first, unread, and on both
     // logs exactly once each (the repeat recorded nothing).
