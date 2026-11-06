@@ -133,6 +133,7 @@ pub fn route_options(task: &TaskArgs, attempts: Option<u32>) -> RouteOptions {
         failover: task.auto.then_some(true),
         excluded: Default::default(),
         harnesses: None,
+        images: None,
     }
 }
 
@@ -178,6 +179,9 @@ pub fn route_text(route: &Route, fleet: &Fleet) -> String {
             excluded.reason
         ));
     }
+    for note in &route.notes {
+        text.push_str(&format!("by:   note: {note}\n"));
+    }
     text
 }
 
@@ -202,6 +206,8 @@ pub fn routed(
     // What this machine has of each harness, installing on demand when
     // [harnesses] install = "auto" (docs/harness-lifecycle.md).
     how.harnesses = crate::harness_cmd::route_gate(fleet, options, false);
+    // What a sandbox image's labels say it holds (docs/images.md).
+    how.images = crate::images_cmd::route_source(yard.root(), options);
     let mut route = yard.route(
         prompt,
         options,
@@ -606,10 +612,12 @@ pub fn advise(
     let yard = open()?;
     // What this machine has of each harness, installing nothing.
     let gate = crate::harness_cmd::route_gate(&fleet, &options, true);
+    let images = crate::images_cmd::route_source(yard.root(), &options);
     let scope = AdviceScope {
         fleet: Some(&fleet),
         seed,
         harnesses: gate.as_deref(),
+        images: images.as_deref(),
         ..AdviceScope::default()
     };
     let mut advice = yard.advise(prompt, &options, kind, scope)?;
@@ -733,6 +741,7 @@ pub fn route(
         seed: Some(how.seed.unwrap_or_else(branchyard::fleet_seed)),
         // What this machine has of each harness, installing nothing.
         harnesses: crate::harness_cmd::route_gate(&fleet, &options, true),
+        images: crate::images_cmd::route_source(yard.root(), &options),
         ..how.clone()
     };
     let mut route = yard.route(prompt, &options, &fleet, &how, how.attempts)?;

@@ -380,6 +380,25 @@ impl From<ProviderError> for io::Error {
     }
 }
 
+/// What a provider knows about how it just made a sandbox ready, beyond
+/// the fact that it did: the facts a launch-time measurement needs
+/// (`docs/providers.md#measuring-launch-time`). Every field is optional
+/// because most providers know none of it; a field a provider does not set
+/// is recorded as absent, never guessed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Launch {
+    /// The sandbox was already running before it was asked for and was
+    /// claimed from a pool the provider keeps (GKE Agent Sandbox's warm
+    /// pool), rather than created for this turn.
+    pub pooled: bool,
+    /// The image was already on the host that runs the sandbox, when the
+    /// provider can tell; `None` when it cannot.
+    pub image_cached: Option<bool>,
+    /// Milliseconds from asking for the sandbox until its image was ready
+    /// to run (pulled and unpacked), when the provider measured it.
+    pub image_ready_ms: Option<u64>,
+}
+
 /// A sandbox provider's lifecycle, independent of any vendor SDK.
 pub trait SandboxProvider: Send + Sync {
     /// What this provider claims to support. Unqualified until the runtime
@@ -393,6 +412,23 @@ pub trait SandboxProvider: Send + Sync {
 
     /// The sandbox's state, or `None` if it does not exist.
     fn inspect(&self, name: &str) -> Result<Option<SandboxInfo>, ProviderError>;
+
+    /// How the provider made the sandbox `name` ready the last time it was
+    /// asked to [`SandboxProvider::ensure`] it, for launch-time
+    /// measurement; `None` (the default) when it reports nothing.
+    fn launch(&self, name: &str) -> Option<Launch> {
+        let _ = name;
+        None
+    }
+
+    /// The image reference (`REF@sha256:...`) the provider's own receipt
+    /// records for sandbox `name`, when it keeps one. `None`: no receipt, or
+    /// a provider that keeps none (the default). The engine holds a
+    /// sandbox's image to the one its turn manifest admitted.
+    fn image_receipt(&self, name: &str) -> Result<Option<String>, ProviderError> {
+        let _ = name;
+        Ok(None)
+    }
 
     /// Start `spec.argv` inside the sandbox with piped stdio.
     fn exec(&self, name: &str, spec: &ExecSpec) -> Result<Box<dyn Process>, ProviderError>;

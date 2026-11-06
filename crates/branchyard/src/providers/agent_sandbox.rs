@@ -64,6 +64,14 @@ pub(super) fn yard_egress(yard: &Yard) -> branchyard_agent_sandbox::Egress {
     }
 }
 
+/// How many sandboxes the worker keeps booted ahead of time
+/// (`[agent_sandbox] warm_pool`); `None` when it keeps none.
+fn warm_pool(yard: &Yard) -> Option<u32> {
+    yard.configured()
+        .and_then(|config| config.agent_sandbox.as_ref().and_then(|s| s.warm_pool))
+        .filter(|size| *size > 0)
+}
+
 /// The credential proxy to run beside the harness: when the yard's gateway
 /// has a server for sandboxes to fetch tokens from
 /// ([`crate::connectors::CredentialProxy::server`]).
@@ -84,6 +92,9 @@ impl ProviderKind for AgentSandboxOptions {
     }
     fn name(&self) -> &'static str {
         "agent_sandbox"
+    }
+    fn image(&self) -> Option<String> {
+        Some(self.image.clone()).filter(|image| !image.trim().is_empty())
     }
     fn key(&self) -> String {
         native::key(self.name(), json!(self))
@@ -147,6 +158,7 @@ impl ProviderKind for AgentSandboxOptions {
                 store_volume(yard),
                 yard_egress(yard),
                 credential_sidecar(yard),
+                warm_pool(yard),
             ),
             native::state_dir(yard, &self.key()),
         )

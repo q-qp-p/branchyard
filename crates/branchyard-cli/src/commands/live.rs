@@ -176,6 +176,7 @@ impl Live {
             // A local harness inherits this process's environment,
             // `TRACEPARENT` included.
             trace_parent: None,
+            admitted_ms: None,
             plan: task.plan,
             goal: crate::plan_cmd::goal(task),
             result: result_for_task(task)?,

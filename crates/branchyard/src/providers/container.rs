@@ -21,6 +21,9 @@ impl ProviderKind for ContainerOptions {
     fn name(&self) -> &'static str {
         "container"
     }
+    fn image(&self) -> Option<String> {
+        Some(self.image.clone()).filter(|image| !image.trim().is_empty())
+    }
     fn key(&self) -> String {
         native::key(self.name(), json!(self))
     }

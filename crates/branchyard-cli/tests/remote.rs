@@ -646,6 +646,13 @@ fn normalize(text: &str, root: &Path) -> String {
             }
             _ => line,
         };
+        // The startup line's phases are times each side takes for itself.
+        // A fan's log prefixes it with the branch (`name │ startup: ...`).
+        let line = if line.contains("startup: ") {
+            startup_times(&line)
+        } else {
+            line
+        };
         let line = match line.get(..24) {
             Some(stamp) if stamp.as_bytes()[10] == b'T' && stamp.ends_with('Z') => {
                 format!("<time>{}", &line[24..])
@@ -710,6 +717,25 @@ fn task_ids(line: &str) -> String {
     out
 }
 
+/// Each `N ms` in a startup line becomes `<n> ms`.
+fn startup_times(line: &str) -> String {
+    let words: Vec<&str> = line.split(' ').collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for (i, word) in words.iter().enumerate() {
+        // `ms`, or `ms` at the end of a JSON string (`ms",`).
+        let next_is_ms = words.get(i + 1).is_some_and(|n| {
+            n.strip_prefix("ms")
+                .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric()))
+        });
+        if next_is_ms && !word.is_empty() && word.chars().all(|c| c.is_ascii_digit()) {
+            out.push("<n>".to_owned());
+        } else {
+            out.push((*word).to_owned());
+        }
+    }
+    out.join(" ")
+}
+
 /// Runs of 7 or more hex digits containing a digit become `<sha>`.
 fn hex_runs(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
@@ -748,6 +774,12 @@ fn json(bytes: &[u8], root: &Path) -> Value {
                 for (key, v) in map.iter_mut() {
                     if matches!(key.as_str(), "created_at" | "at_ms" | "acquired_at") {
                         *v = Value::from(0);
+                    } else if key == "phases" {
+                        // A turn's startup phases are times; the two sides
+                        // take their own.
+                        if let Value::Object(phases) = v {
+                            phases.values_mut().for_each(|t| *t = Value::from(0));
+                        }
                     } else {
                         scrub(v);
                     }

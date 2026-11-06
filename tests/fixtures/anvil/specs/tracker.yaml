@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: Tracker
+  version: "1.0.0"
+  description: A small issue tracker, the spec the cross-check test compiles with the real Anvil.
+servers:
+  - url: https://tracker.example.com/api
+paths:
+  /projects/{project_id}/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks
+      description: List the tasks of a project, filtered by state. Paged.
+      tags: [tasks]
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: state
+          in: query
+          schema: {type: string, enum: [open, closed]}
+      responses:
+        "200":
+          description: The tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+                    title: {type: string}
+    post:
+      operationId: createTask
+      summary: Open a task
+      description: Open a task in a project.
+      tags: [tasks]
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: {type: string}
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: {type: string}
+      responses:
+        "201":
+          description: The new task.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+  /projects/{project_id}:
+    get:
+      operationId: getProject
+      summary: Get a project
+      description: Get one project by its id.
+      tags: [projects]
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: The project.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  name: {type: string}

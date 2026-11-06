@@ -136,6 +136,15 @@ Runs each attempt's check on its exact candidate, scores it without a model
 branch. An answer that is not a strict verdict falls back to the
 deterministic score. Local mode only. See docs/fleet.md.";
 
+pub(crate) const STARTUP_EXAMPLES: &str = "\
+Examples:
+  by startup report
+  by startup report --provider agent_sandbox --since 7d
+  by startup report --json
+
+Each phase's figure is the time that phase took; `total` is the whole startup. A phase a
+provider does not measure is absent, not zero; see docs/providers.md.";
+
 pub(crate) const FLEET_EXAMPLES: &str = "\
 Examples:
   by fleet stats
@@ -343,6 +352,8 @@ Examples:
   by harnesses --remote https://by.internal     # on a server's live workers
   by harnesses install codex                    # the catalog's command, under [harnesses] install
   by harnesses update codex --version 0.200.0 --yes
+  by harnesses update codex --qualify --version 0.200.0 --yes   # install beside, check, pin
+  by harnesses qualified                        # the pins and their evidence
   by harnesses login codex                      # its own login flow, once
   by harnesses login antigravity --yes          # with GEMINI_API_KEY set: select the gemini provider
   printf %s \"$KEY\" | by harnesses login claude-code --api-key
@@ -630,6 +641,21 @@ catalog/harnesses.toml stay the pinned baseline, and what a refresh adds is
 cached with its ETag and checksum under ~/.cache/branchyard/catalog (or
 $BRANCHYARD_CATALOG_DIR). A cache whose checksum does not verify is refused.
 See docs/registry.md.";
+
+pub(crate) const IMAGES_EXAMPLES: &str = "\
+Examples:
+  by images build --harness codex --harness gemini-cli --tag ghcr.io/me/tc:1 --push
+  by images build --provider container --allow-unpinned --harness claude-code
+  by images list
+  by images show ghcr.io/me/tc:1
+  by images pin ghcr.io/me/tc:1@sha256:... --provider container
+  by harnesses --image ghcr.io/me/tc:1@sha256:...   # what it holds, from its labels
+
+A toolchain image installs each harness with the catalog's pinned command, so a sandboxed
+turn never installs one at launch, and labels what it holds (dev.branchyard.harness.ID,
+dev.branchyard.by, dev.branchyard.toolchain). The image holds no credentials. Docker
+buildx builds it when docker is on PATH; otherwise the build context is left and the
+command printed. Records go to .branchyard/images.json. See docs/images.md.";
 
 pub(crate) const GATEWAY_EXAMPLES: &str = "\
 Examples:

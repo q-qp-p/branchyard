@@ -248,6 +248,27 @@ impl Work {
             (Some(code), _) => Some(format!("the install command exited with status {code}")),
             (None, _) => Some("the install command did not run to the end".to_owned()),
         };
+        // The log entry is written before the state is published, so whoever
+        // sees the install end also finds it in the harness log.
+        let log = HarnessLog::new(self.app.config.data_dir.join("harness-events.jsonl"));
+        branchyard_support::best_effort(
+            "record a console harness install",
+            log.append(&HarnessEvent {
+                at_ms: started,
+                on: "server".to_owned(),
+                harness: self.harness.clone(),
+                action: InstallAction::Install,
+                by: "console".to_owned(),
+                command: Some(self.command.clone()),
+                outcome: match &problem {
+                    None => "verified".to_owned(),
+                    Some(_) => "failed".to_owned(),
+                },
+                version_before: None,
+                version_after: None,
+                detail: problem.clone(),
+            }),
+        );
         let tail = tail(&output);
         change(&key, |install| {
             install.output_tail = Some(tail.clone());
@@ -259,25 +280,6 @@ impl Work {
                 Some(problem) => failed(install, problem.clone()),
             }
         });
-        let log = HarnessLog::new(self.app.config.data_dir.join("harness-events.jsonl"));
-        branchyard_support::best_effort(
-            "record a console harness install",
-            log.append(&HarnessEvent {
-                at_ms: started,
-                on: "server".to_owned(),
-                harness: self.harness.clone(),
-                action: InstallAction::Install,
-                by: "console".to_owned(),
-                command: Some(self.command.clone()),
-                outcome: match problem {
-                    None => "verified".to_owned(),
-                    Some(_) => "failed".to_owned(),
-                },
-                version_before: None,
-                version_after: None,
-                detail: problem,
-            }),
-        );
     }
 }
 

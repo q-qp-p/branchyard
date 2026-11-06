@@ -77,6 +77,32 @@ impl Control {
         Ok(())
     }
 
+    /// Set `key=value` on an object's labels (or annotations), without
+    /// `--overwrite`: kubectl refuses when the key already holds another
+    /// value, so an object that someone else marked is never taken.
+    pub fn mark(
+        &self,
+        verb: &str,
+        kind: &str,
+        name: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), ProviderError> {
+        let mut command = self.namespaced();
+        command.args([verb, kind, name, &format!("{key}={value}")]);
+        run(command, None, Duration::from_secs(45))?;
+        Ok(())
+    }
+
+    /// Merge-patch an object.
+    pub fn patch(&self, kind: &str, name: &str, patch: &Value) -> Result<(), ProviderError> {
+        let mut command = self.namespaced();
+        command.args(["patch", kind, name, "--type", "merge", "-p"]);
+        command.arg(serde_json::to_string(patch).map_err(|e| runtime_error(e.to_string()))?);
+        run(command, None, Duration::from_secs(45))?;
+        Ok(())
+    }
+
     pub fn delete_uid(&self, api_path: &str, uid: &str) -> Result<(), ProviderError> {
         let mut command = self.command();
         command.args(["delete", "--raw", api_path, "-f", "-"]);

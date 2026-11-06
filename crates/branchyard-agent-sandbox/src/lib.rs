@@ -16,7 +16,7 @@ mod verify;
 
 pub use config::{
     Config, CredentialSidecar, Egress, GatewayService, Network, Runtime, StoreVolume,
-    GOOGLE_API_BLOCKS, STORAGE_HOST,
+    GOOGLE_API_BLOCKS, MAX_WARM_POOL, STORAGE_HOST,
 };
 pub use provider::AgentSandboxProvider;
 

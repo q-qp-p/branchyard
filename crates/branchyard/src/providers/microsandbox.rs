@@ -40,6 +40,10 @@ impl ProviderKind for SandboxOptions {
         "microsandbox"
     }
 
+    fn image(&self) -> Option<String> {
+        Some(self.image.clone()).filter(|image| !image.trim().is_empty())
+    }
+
     fn copies_worktree(&self) -> bool {
         false
     }

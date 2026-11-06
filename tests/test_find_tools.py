@@ -240,6 +240,51 @@ class Command(Tree):
         self.assertEqual(bad.returncode, 2)
 
 
+class RealShapes(Tree):
+    """What the real Anvil writes: `## id - title` index blocks, a compose catalog, no operation descriptions."""
+
+    def test_a_connector_with_no_skill_description_takes_its_index_block(self):
+        write(self.base / "connectors/slack/SKILL.md", "# Slack\n")
+        write(
+            self.base / "connectors/INDEX.md",
+            "# Connectors\n\nPreamble that names slack in passing.\n\n"
+            "## slack \u2014 Slack\n\n- **For:** Messages and channels in Slack.\n"
+            "- **Use when:** a task needs Slack: 2 read and 1 write operation(s) over messages.\n"
+            "- **Granted:** read\n- **Icon:** `slack`\n- **Skill:** `slack/SKILL.md` (CLI: `slack/bin/slack`)\n\n"
+            "## github \u2014 GitHub\n\n- **For:** Repositories.\n",
+        )
+        code, out, _ = run(self.tools, "search", "channels")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("connector  slack: Slack Messages and channels in Slack."), out)
+
+    def test_the_compose_catalog_and_a_harness_json_without_descriptions_are_read_without_error(self):
+        write(
+            self.base / "connectors/_compose/compose.json",
+            json.dumps({"schema": "anvil.compose-catalog/v1", "connectors": [{"id": "github", "operations": []}]}),
+        )
+        write(
+            self.base / "connectors/linear/harness.json",
+            json.dumps(
+                {
+                    "bundleHash": "0" * 64,
+                    "bundle_hash": "sha256:" + "0" * 64,
+                    "operations": [{"id": "linear.tickets.search", "tool": "t", "cli": "linear tickets search"}],
+                }
+            ),
+        )
+        write(self.base / "connectors/linear/schemas/anvil-search-v1.json", json.dumps({"title": "the index"}))
+        write(self.base / "connectors/linear/schemas/search_tickets.schema.json", json.dumps({"title": "x"}))
+        write(self.base / "connectors/linear/schemas/linear.tickets.search.input.json", json.dumps({"type": "object"}))
+        code, out, _ = run(self.tools, "show", "linear")
+        self.assertEqual(code, 0)
+        self.assertIn("tickets.search", out)
+        self.assertNotIn("anvil-search-v1", out)
+        self.assertNotIn("search_tickets", out)
+        self.assertNotIn("tickets.search.input", out)
+        code, out, _ = run(self.tools, "search", "flow")
+        self.assertNotIn("_compose.flow", out)
+
+
 ANVIL = ROOT / "tests/fixtures/anvil/anvil"
 BUNDLES = ROOT / "tests/fixtures/anvil/bundles"
 

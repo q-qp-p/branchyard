@@ -123,12 +123,13 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Observability](observability.md) | Server metrics, OpenTelemetry traces, and how turn trace context is passed to harnesses. |
 | [Sync](sync.md) | Backing up and syncing tasks across Cloud Storage, S3, Azure Blob, Git remotes, or local directories with leases and client-side encryption. |
 | [Environment recipes](recipes.md) | Defining custom VM or container lifecycle scripts in `branchyard.toml` and driving harnesses inside them over SSH. |
+| [Toolchain images](images.md) | Sandbox images with harness CLIs pre-installed at pinned versions, labelled and digest-pinned, and how routing reads them. |
 | [Harness lifecycle](harness-lifecycle.md) | Detecting installed harnesses, versions, logins, and quotas, and installing or updating agent CLIs under user policy. |
 | [Code mode](code-mode.md) | Benchmarks from the multi-agent delegation suite and design notes for programmatic SDK delegation. |
 | [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |
 | [Durability contract](durability-contract.md) | Which rules about turns, effects, ownership, signals and obligations does a durable agent runtime keep, which does Branchyard keep today, and which test shows each? |
 | [Durability primitives design](superpowers/specs/2026-11-02-durability-primitives-design.md) | Why ideas from Tape and Durable Actors are built inside Branchyard rather than taken as a dependency, what was built (lost-turn effects, liveness, obligations) and what comes next, in order |
-| [Anvil contract v2](anvil-contract-v2.md) | Proposed additions to Anvil for remote tools: a Firestore vault with KMS, disconnect, a search index, host install, a Cloud Run gateway, renewing tokens, `by_manifest` and connector icons. Nothing is built in Anvil yet. |
+| [Anvil contract v2](anvil-contract-v2.md) | What Anvil added for remote tools (built in its PR #91, merged 5 November 2026; hermetic, not run live): a Firestore vault with KMS, disconnect, a search index, host install, a Cloud Run gateway, renewing tokens, `by_manifest` and connector icons, and the mock Branchyard tests against. |
 
 ## Roadmap and background
 

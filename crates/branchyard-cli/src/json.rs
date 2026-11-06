@@ -291,6 +291,11 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             "sandbox": event,
             "text": event.describe(),
         }),
+        Activity::Startup(startup) => json!({
+            "activity": "startup",
+            "startup": startup,
+            "text": startup.line(),
+        }),
         Activity::Fleet(activity) => json!({
             "activity": "fleet",
             "fleet": activity,

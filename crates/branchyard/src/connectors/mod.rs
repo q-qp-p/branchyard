@@ -54,6 +54,10 @@ use crate::{Activity, Error, RecordedEvent, Yard};
 pub const ENV_GATEWAY_URL: &str = "ANVIL_GATEWAY_URL";
 /// The variable naming the 0600 file that holds the turn's token.
 pub const ENV_GATEWAY_TOKEN_FILE: &str = "ANVIL_GATEWAY_TOKEN_FILE";
+/// The variable that tells Anvil's CLIs and SDKs how to authenticate to the
+/// gateway (Anvil contract v2 item 6): `proxy` sends no token and relies on
+/// the credential proxy on loopback, which is what a sandbox-held turn has.
+pub const ENV_GATEWAY_AUTH: &str = "ANVIL_GATEWAY_AUTH";
 /// Where packages and the index go, relative to the harness's home.
 pub const HOME_DIR: &str = ".branchyard/connectors";
 /// The composite's directory in the connectors home (Anvil's `_compose`).
@@ -704,7 +708,12 @@ pub(crate) fn prepare(
         }
         let harness_url = sandbox_proxy::ProxyConfig::harness_url(gateway.credential_proxy.port);
         return Ok(Some(Prepared {
-            env: vec![EnvVar::plain(ENV_GATEWAY_URL, harness_url.clone())],
+            // Anvil's clients default to reading a token file; a sandbox-held
+            // turn has none, so they are told to rely on the proxy.
+            env: vec![
+                EnvVar::plain(ENV_GATEWAY_URL, harness_url.clone()),
+                EnvVar::plain(ENV_GATEWAY_AUTH, "proxy"),
+            ],
             connectors: names,
             warnings,
             gateway_url: url,

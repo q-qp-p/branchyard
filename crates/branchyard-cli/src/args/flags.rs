@@ -444,11 +444,15 @@ impl NativeSandboxFlags {
         image: MicrosandboxFlags,
         pass_env: Vec<String>,
     ) -> Result<(), String> {
-        let pinned = image
-            .image
-            .ok_or("native sandbox providers need --image pinned by @sha256:DIGEST")?;
-        branchyard_config::validate_sandbox_image(&pinned)
-            .map_err(|why| format!("--image {why}"))?;
+        // Without --image the provider falls back to `[images]`, which
+        // `defaults::settle_images` reads once the configuration is known
+        // (docs/images.md); an empty image there is refused with this flag's name.
+        let pinned = image.image.unwrap_or_default();
+        let deferred = pinned.trim().is_empty();
+        if !deferred {
+            branchyard_config::validate_sandbox_image(&pinned)
+                .map_err(|why| format!("--image {why}"))?;
+        }
         let unrestricted = self.sandbox_network.as_deref() == Some("unrestricted");
         if provider == ProviderArg::Container {
             let runtime = match self.sandbox_runtime.as_deref() {
@@ -468,7 +472,9 @@ impl NativeSandboxFlags {
                 },
                 pass_env,
             };
-            options.validate().map_err(|error| error.to_string())?;
+            if !deferred {
+                options.validate().map_err(|error| error.to_string())?;
+            }
             task.container = Some(options);
         } else {
             let runtime = match self.sandbox_runtime.as_deref() {
@@ -495,7 +501,9 @@ impl NativeSandboxFlags {
                 },
                 pass_env,
             };
-            options.validate().map_err(|error| error.to_string())?;
+            if !deferred {
+                options.validate().map_err(|error| error.to_string())?;
+            }
             task.agent_sandbox = Some(options);
         }
         Ok(())
@@ -695,11 +703,12 @@ impl Launch {
                 });
             }
             Some(ProviderArg::Microsandbox) => {
+                // Empty: `[images] microsandbox` fills it in, else `settle_images` refuses.
                 let image = self
                     .microsandbox
                     .image
                     .filter(|image| !image.trim().is_empty())
-                    .ok_or("--provider microsandbox needs --image")?;
+                    .unwrap_or_default();
                 task.sandbox = Some(SandboxArgs {
                     image,
                     cpus: self.microsandbox.cpus,

@@ -59,6 +59,7 @@ mod gateway_cmd;
 mod gh;
 mod harness_cmd;
 mod hook_cmd;
+mod images_cmd;
 mod inherited;
 mod init;
 mod json;
@@ -78,6 +79,7 @@ mod pr_threads;
 mod preflight;
 mod readiness;
 mod recipe_cmd;
+mod registry_labels;
 mod remote;
 mod render;
 mod review;
@@ -88,10 +90,13 @@ mod setup_cmd;
 mod setup_io;
 mod skills_cmd;
 mod ssh_remote;
+mod startup_cmd;
 mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
 mod task_cmd;
+#[cfg(test)]
+mod testing;
 mod tools_cmd;
 mod trackers;
 mod trigger_cmd;
@@ -174,13 +179,18 @@ fn main() -> ExitCode {
     // branchyard.toml and the user configuration, under flags and variables.
     let cwd = std::env::current_dir().unwrap_or_default();
     let env = |name: &str| std::env::var(name).ok();
-    let (globals, command) = match defaults::apply(&cwd, &env, cli.globals, command) {
+    let (globals, mut command) = match defaults::apply(&cwd, &env, cli.globals, command) {
         Ok(applied) => applied,
         Err(error) => {
             let failure = errors::config(&error.to_string()).into();
             return errors::finish(Err(failure), errors::wants_json(&argv));
         }
     };
+    // A sandbox provider named without an image takes `[images]`'s, or is refused.
+    if let Err(why) = defaults::settle(&cwd, &env, &mut command) {
+        let failure = errors::Report::usage(why).into();
+        return errors::finish(Err(failure), errors::wants_json(&argv));
+    }
     // Warnings from best-effort steps (a cleanup that failed, a lock whose
     // holder panicked) go to stderr. Not under the live `watch` screen,
     // which owns the terminal.
@@ -314,6 +324,8 @@ fn run(env: &Env, globals: &Globals, command: Command) -> commands::Outcome {
         Command::Remote { json, action } => return ssh_remote::command(globals, &action, json),
         // Live catalogs are cached for this user; no repository or server.
         Command::Catalog { json, action } => return catalog_cmd::live(&action, json),
+        // Toolchain images belong to this repository and this machine's docker.
+        Command::Images { json, action } => return images_cmd::main(env, &action, json),
         // Sync runs on this machine's repository, against its own remote.
         Command::Sync(sync) => {
             return sync_cmd::main(
@@ -620,6 +632,11 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Reincarnate { branch, task } => commands::reincarnate(env, target, &branch, &task),
         Command::Ls { json } => commands::ls(env, target, json),
         Command::Stats { json } => stats_cmd::main(env, target, json),
+        Command::Startup { json, action } => match action {
+            args::StartupAction::Report { provider, since } => {
+                startup_cmd::report(env, target, provider, since, json)
+            }
+        },
         Command::Show {
             branch,
             json,
@@ -668,6 +685,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             profiles,
             refresh,
             on,
+            image,
             action,
         } => harness_cmd::main(
             env,
@@ -677,6 +695,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             profiles,
             refresh,
             on.as_deref(),
+            image.as_deref(),
             action.as_ref(),
         ),
         Command::Pr { branch, pr } => pr::main(env, target, &branch, &pr),
@@ -860,6 +879,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         | Command::Usage { .. }
         | Command::Remote { .. }
         | Command::Catalog { .. }
+        | Command::Images { .. }
         | Command::Sync(_)
         | Command::Connectors { .. }
         | Command::Hook { .. }

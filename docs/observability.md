@@ -48,7 +48,8 @@ The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), wr
 | `branchyard_pool_slots_made_total` | counter | `repo`, `result` (`made`, `failed`) | Slots this process's keepers made, and fills that stopped on an error |
 | `branchyard_pool_fill_seconds` | histogram | `repo` | Time a keeper took to make one slot (worktree and environment) |
 | `branchyard_pool_slots_discarded_total` | counter | `repo` | Slots a keeper removed: stale, or left by a stopped process |
-| `branchyard_start_seconds` | histogram | `pool` (`hit`, `miss`, `none`) | Start latency of a task's new branches: from the operation's admission to the harness's first prompt, by whether the worktree came from a warm pool |
+| `branchyard_start_seconds` | histogram | `pool` (`hit`, `miss`, `none`), `provider`, `path` | Start latency of a task's new branches: from the operation's admission to the harness's first prompt, by whether the worktree came from a warm pool, and by the provider (`local`, `microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe's name; `unknown` when the branch recorded no startup) and the path its sandbox was made ready by (`cold`, `cached_image`, `snapshot`, `resumed`, `pool`, `local`; `unknown`) |
+| `branchyard_start_phase_seconds` | histogram | `provider`, `path`, `phase` (`queued`, `placement`, `image_ready`, `sandbox_ready`, `source_attached`, `harness_started`, `handshake_done`, `first_event`) | The time one phase of a task's new branches' first turn took (its offset less the previous phase that occurred); a phase that did not occur is not counted. See [launch time](providers.md#measuring-launch-time) |
 | `branchyard_sync_bytes_total` | counter | `repo`, `direction` (`up`, `down`) | Bytes this process's [sync](sync.md) sent to and read from the remote |
 | `branchyard_sync_objects_total` | counter | `repo`, `direction` | Objects written to and read from the remote |
 | `branchyard_sync_swaps_total` | counter | `repo` | Task manifests swapped into the remote |
@@ -123,6 +124,12 @@ Set `BRANCHYARD_LOG=branchyard_support=off` to silence them; there is no other s
 
 Not done: only the steps a turn survives reach the branch's log; a cleanup that fails in `by merge` or `by rm` is on standard error and nowhere else. Failures on threads the turn does not run on (a sandbox's output pump, the lease heartbeat) are logged but not collected. There is no summary footer at the end of a command; the lines appear as the failures happen.
 
+## Startup phases
+
+Each turn records one `startup` activity once its harness has said its first thing (or, if it ended first, when it ended): the `provider`, the `path` its sandbox was made ready by, and a millisecond offset from the operation's admission for each phase it reached: `queued`, `placement`, `image_ready`, `sandbox_ready`, `source_attached`, `harness_started`, `handshake_done`, `first_event`. A phase that did not occur is absent, not zero: a local harness has no sandbox phases, and `image_ready` appears only for a provider that measures its image. The clock is `branchyard_support::time`. `by log` prints a line (`startup: agent_sandbox pool; queued 4 ms, placement 9 ms, sandbox_ready 310 ms, ...`) and `by log --json` the `startup` object with its `phases`. The metrics above are made from the same activity, and `by startup report` reads the same activities back ([measuring launch time](providers.md#measuring-launch-time)); no second table is kept.
+
+Hermetic evidence (fake clock, FakeProvider, the exposition parser); live: none. Not done: no number measured on any real provider.
+
 ## `by stats`
 
 ```text
@@ -141,8 +148,9 @@ Locally it reads the repository's store: branches by status, turns and cost by h
 ## Tests
 
 - `crates/branchyard-server/src/metrics.rs` (3): the warm pool's gauges, counters and fill histogram; every family's `HELP` and `TYPE`, counters, histograms (cumulative buckets, `+Inf`, sum and count), queue gauges and label escaping, checked with a parser of the exposition format written independently of the encoder; number formatting.
+- `crates/branchyard/src/startup.rs` (5) and `crates/branchyard/tests/startup.rs` (5): the timer on a fake clock, durations, the wire form, the path a launch means, the report's percentiles; a local and a sandboxed turn (FakeProvider, with and without a pool and an image measurement) recording ordered phases, the queue as the first phase, and the report over the store's feed.
 - `crates/branchyard-server/src/telemetry.rs` (6): `traceparent` round trip and malformed headers; the protobuf encoding's field numbers checked byte by byte; the JSON mapping; the standard variables; the batching tracer; and a real export over HTTP, in both encodings, to a stand-in collector on loopback.
-- `crates/branchyard-server/src/observe.rs` (3): a task's new branches' start latency by pool use, and hits and misses; turns, tools and connector calls from recorded events into metrics and spans (a tool lasting until the next event, an engine-ended turn, another operation's branch ignored); cost as each branch's growth.
+- `crates/branchyard-server/src/observe.rs` (3): a task's new branches' start latency by pool use, provider and path, each startup phase's time, and hits and misses; turns, tools and connector calls from recorded events into metrics and spans (a tool lasting until the next event, an engine-ended turn, another operation's branch ignored); cost as each branch's growth.
 - `crates/branchyard-server/tests/observability.rs` (3, over real HTTP with the fake ACP agent): priority checked, capped and inherited; `/metrics` off by default, `401`/`403`, the metrics token reading nothing else, the counters after a task, and the separate listener; an operation traced from an incoming `traceparent` through admission, claim and run to its turn, with the harness seeing the operation's span as `TRACEPARENT`.
 - `crates/branchyard-server/tests/webhook.rs`: a delivery carries the operation's `traceparent`, and deliveries are counted.
 - `crates/branchyard-server/tests/pools.rs` (1): the pool metrics over real HTTP after a miss and a hit.

@@ -847,7 +847,7 @@ fn an_agent_sandbox_may_reach_the_workers_hosts_and_mirrors_by_name() {
         image: format!("example.test/r@sha256:{}", "a".repeat(64)),
         ..AgentSandboxOptions::default()
     };
-    let config = options.config_with(None, egress, None);
+    let config = options.config_with(None, egress, None, None);
     config.validate().unwrap();
     assert_eq!(config.fqdn_hosts().len(), 5);
 }
@@ -905,7 +905,7 @@ fn each_provider_declares_where_it_can_run_the_credential_proxy() {
 #[test]
 fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_token() {
     use crate::connectors::{
-        credential, sandbox_proxy::IdentityKind, CredentialSite, GrantEntry,
+        credential, sandbox_proxy::IdentityKind, CredentialSite, GrantEntry, ENV_GATEWAY_AUTH,
         ENV_GATEWAY_TOKEN_FILE, ENV_GATEWAY_URL, TOKEN_FILE,
     };
     const UPSTREAM: &str = "http://192.168.127.1:8931/mcp";
@@ -949,6 +949,10 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
                 // The host's proxy holds the token, as before.
                 assert!(prepared.sandbox.is_none(), "{what}");
                 assert!(named(ENV_GATEWAY_TOKEN_FILE).is_some(), "{what}");
+                assert!(
+                    named(ENV_GATEWAY_AUTH).is_none(),
+                    "{what}: token-file mode, Anvil's default"
+                );
                 assert!(home.path().join(TOKEN_FILE).is_file(), "{what}");
                 continue;
             }
@@ -958,7 +962,10 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
             // token, and no file with one is in its home.
             let url = named(ENV_GATEWAY_URL).expect(&what);
             assert_eq!(url.value, "http://127.0.0.1:18900/mcp", "{what}");
-            assert_eq!(prepared.env.len(), 1, "{what}: {:?}", prepared.env);
+            // Anvil's clients are told to send no token (contract v2 item 6).
+            let auth = named(ENV_GATEWAY_AUTH).expect(&what);
+            assert_eq!(auth.value, "proxy", "{what}");
+            assert_eq!(prepared.env.len(), 2, "{what}: {:?}", prepared.env);
             assert!(!home.path().join(TOKEN_FILE).exists(), "{what}");
             assert!(!prepared.files.iter().any(|f| f == TOKEN_FILE), "{what}");
             assert_eq!(prepared.shared_token(), None, "{what}");

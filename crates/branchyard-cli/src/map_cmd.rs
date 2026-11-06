@@ -407,8 +407,9 @@ fn resume(env: &Env, name: &str, retry_failed: bool, json: bool) -> Outcome {
         )
     })?;
     let vars = |var: &str| std::env::var(var).ok();
-    let (_, command) = crate::defaults::apply(&cwd, &vars, cli.globals, command)
+    let (_, mut command) = crate::defaults::apply(&cwd, &vars, cli.globals, command)
         .map_err(|why| crate::errors::config(&why))?;
+    crate::defaults::settle(&cwd, &vars, &mut command).map_err(crate::errors::Report::usage)?;
     let crate::args::Command::Map {
         action: None, map, ..
     } = command

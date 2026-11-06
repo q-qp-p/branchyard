@@ -539,7 +539,14 @@ fn provider_flags_select_and_configure_a_sandbox() {
     assert!(!task.local);
     let task = self::task("fork b go --provider local");
     assert!(task.local && task.sandbox.is_none());
-    assert!(err("run go --provider microsandbox").contains("--provider microsandbox needs --image"));
+    // No image on the line: `[images]` may supply one, so the parser lets
+    // it through empty and `defaults::settle_images` refuses it (docs/images.md).
+    assert_eq!(
+        self::task("run go --provider microsandbox")
+            .sandbox
+            .map(|s| s.image),
+        Some(String::new())
+    );
     assert!(err("run go --image alpine").contains("--image needs --provider microsandbox"));
     assert!(
         err("run go --provider local --cpus 2").contains("--cpus needs --provider microsandbox")
@@ -1256,6 +1263,7 @@ fn inspection_commands() {
         profiles: false,
         refresh: false,
         on: None,
+        image: None,
         action: None,
     };
     assert_eq!(
@@ -1274,6 +1282,7 @@ fn inspection_commands() {
             profiles: false,
             refresh: false,
             on: Some("ssh://h".into()),
+            image: None,
             action: Some(HarnessesAction::Install(HarnessChange {
                 id: "codex".into(),
                 version: Some("1.2".into()),
@@ -1289,6 +1298,7 @@ fn inspection_commands() {
             profiles: false,
             refresh: false,
             on: None,
+            image: None,
             action: Some(HarnessesAction::Login {
                 id: "codex".into(),
                 api_key: true,
@@ -1297,7 +1307,78 @@ fn inspection_commands() {
             }),
         }
     );
+    assert_eq!(
+        parse_str("harnesses update codex --qualify --with-model --version 1.2 --json").unwrap(),
+        Command::Harnesses {
+            json: true,
+            all: false,
+            profiles: false,
+            refresh: false,
+            on: None,
+            image: None,
+            action: Some(HarnessesAction::Update {
+                change: HarnessChange {
+                    id: "codex".into(),
+                    version: Some("1.2".into()),
+                    yes: false,
+                },
+                qualify: true,
+                with_model: true,
+            }),
+        }
+    );
+    assert_eq!(
+        parse_str("harnesses qualified --json").unwrap(),
+        Command::Harnesses {
+            json: true,
+            all: false,
+            profiles: false,
+            refresh: false,
+            on: None,
+            image: None,
+            action: Some(HarnessesAction::Qualified),
+        }
+    );
+    // A model run belongs to a qualification, and only an update qualifies.
+    assert!(parse_str("harnesses update codex --with-model").is_err());
+    assert!(parse_str("harnesses install codex --qualify").is_err());
     assert!(parse_str("harnesses --all --on ssh://h").is_err());
+    // What an image holds is read from its labels: it names no machine.
+    assert!(matches!(
+        parse_str("harnesses --image ghcr.io/me/tc:1 --json").unwrap(),
+        Command::Harnesses { image: Some(ref r), json: true, .. } if r == "ghcr.io/me/tc:1"
+    ));
+    assert!(parse_str("harnesses --image x --on ssh://h").is_err());
+    assert!(parse_str("harnesses --image x --all").is_err());
+    // `by images`: build, list, show and pin.
+    let Command::Images {
+        action: ImagesAction::Build(build),
+        ..
+    } = parse_str(
+        "images build --provider agent-sandbox --harness codex --harness gemini-cli --tag t:1 \
+         --push --allow-unpinned --out /tmp/ctx",
+    )
+    .unwrap()
+    else {
+        panic!("images build");
+    };
+    assert_eq!(build.provider.as_deref(), Some("agent-sandbox"));
+    assert_eq!(build.harness, ["codex", "gemini-cli"]);
+    assert!(build.push && build.allow_unpinned);
+    assert!(parse_str("images build --provider local").is_err());
+    assert!(matches!(
+        parse_str("images pin a/b@sha256:abc --provider container").unwrap(),
+        Command::Images { action: ImagesAction::Pin { ref reference, provider: Some(ref p) }, .. }
+            if reference == "a/b@sha256:abc" && p == "container"
+    ));
+    assert!(matches!(
+        parse_str("images --json list").unwrap(),
+        Command::Images {
+            json: true,
+            action: ImagesAction::List
+        }
+    ));
+    assert!(parse_str("images").is_err());
     assert_eq!(
         parse_str("connectors --json catalog").unwrap(),
         Command::Connectors {

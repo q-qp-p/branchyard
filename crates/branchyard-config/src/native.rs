@@ -63,6 +63,9 @@ pub struct Container {
     pub pass_env: Vec<String>,
 }
 
+/// The most sandboxes `[agent_sandbox] warm_pool` may keep booted.
+pub const MAX_WARM_POOL: u32 = 100;
+
 /// `[agent_sandbox]`: Kubernetes Agent Sandbox allocation defaults.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +103,13 @@ pub struct AgentSandbox {
     /// allocation may reach its pods on its port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_service: Option<AgentSandboxGateway>,
+    /// Sandboxes to keep booted ahead of time (a `SandboxWarmPool` of this
+    /// many replicas for the allocation's `SandboxTemplate`), claimed by a
+    /// turn when one is ready; omitted, or 0, keeps none and every turn
+    /// creates its own. See `docs/agent-sandbox-gke.md#warm-pool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 100))]
+    pub warm_pool: Option<u32>,
 }
 
 /// An in-cluster Service an Agent Sandbox allocation may reach.
@@ -180,6 +190,11 @@ impl AgentSandbox {
             return Err(ConfigError(
                 "agent_sandbox.context and namespace must not be empty".into(),
             ));
+        }
+        if self.warm_pool.is_some_and(|size| size > MAX_WARM_POOL) {
+            return Err(ConfigError(format!(
+                "agent_sandbox.warm_pool must be at most {MAX_WARM_POOL}"
+            )));
         }
         Ok(())
     }

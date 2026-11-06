@@ -354,6 +354,12 @@ impl SandboxProvider for ContainerProvider {
             .transpose()
     }
 
+    fn image_receipt(&self, name: &str) -> Result<Option<String>, ProviderError> {
+        // The receipt alone: no daemon is asked.
+        let locked = Locked::open(&self.state_dir, name)?;
+        Ok(locked.read()?.map(|receipt| receipt.image))
+    }
+
     fn exec(&self, name: &str, spec: &ExecSpec) -> Result<Box<dyn Process>, ProviderError> {
         spec.refuse_write_scope()?;
         let locked = Locked::open(&self.state_dir, name)?;

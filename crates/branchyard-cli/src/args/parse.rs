@@ -303,6 +303,17 @@ pub(crate) fn report_ttl(text: &str) -> Result<Duration, String> {
     branchyard_support::time::parse_duration(text).map_err(|e| e.to_string())
 }
 
+/// `by startup report --since`: how far back to look, a duration such as
+/// `30m` or `7d`, more than zero.
+pub(crate) fn since_window(text: &str) -> Result<Duration, String> {
+    branchyard_support::time::parse_duration(text)
+        .map_err(|e| e.to_string())
+        .and_then(|window| match window.is_zero() {
+            true => Err("needs a duration longer than zero, such as 30m or 7d".into()),
+            false => Ok(window),
+        })
+}
+
 pub(crate) fn watch_interval(text: &str) -> Result<Duration, String> {
     duration(text, 1.0)
         .and_then(Result::ok)

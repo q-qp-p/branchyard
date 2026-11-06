@@ -43,6 +43,7 @@ use crate::graph;
 use crate::placement::{Placement, SandboxPlan};
 use crate::projection::{ENV_BRANCH, ENV_ROOT};
 use crate::record::Recorder;
+use crate::startup::{Phase as StartPhase, StartupPath};
 use crate::state::{Begun, Fence, Lease, ProcessRow, Record, Store};
 use crate::store_codec::deadline_capped;
 use crate::{
@@ -546,6 +547,45 @@ fn stop(session: &mut Session) -> Result<(), RuntimeError> {
     }
 }
 
+/// Note the phases a prepared placement reached, and name its provider and
+/// path for the turn's [`crate::startup::Startup`]. `placement_at` is the
+/// offset at which the provider was asked. A local harness reaches none of
+/// the sandbox's phases. A copied sandbox reports how long it took to be
+/// ready, before its worktree and home went in; a mounted one has its
+/// worktree attached at creation.
+fn mark_sandbox(
+    startup: &mut crate::startup::Timer,
+    placement: &Placement,
+    placement_at: u64,
+) -> (String, StartupPath) {
+    let Some(crate::SandboxEvent::Started {
+        provider,
+        origin,
+        placed,
+        ..
+    }) = placement.started()
+    else {
+        return ("local".to_owned(), StartupPath::Local);
+    };
+    let now = startup.offset();
+    let ready = match placed {
+        Some(placed) => placement_at.saturating_add(placed.ready_ms).min(now),
+        None => now,
+    };
+    let launch = placement
+        .sandbox()
+        .and_then(|(sandbox, name)| sandbox.launch(name));
+    if let Some(ms) = launch.and_then(|launch| launch.image_ready_ms) {
+        startup.mark_at(
+            StartPhase::ImageReady,
+            placement_at.saturating_add(ms).min(ready),
+        );
+    }
+    startup.mark_at(StartPhase::SandboxReady, ready);
+    startup.mark_at(StartPhase::SourceAttached, now);
+    (provider, crate::startup::path_of(&origin, launch))
+}
+
 /// The branch's cost from its session's cumulative estimate: see
 /// `Record::cost_baseline`.
 fn spent(reported: f64, baseline: Option<f64>) -> f64 {
@@ -597,6 +637,11 @@ fn run(
 ) -> Result<Driven, Error> {
     let fence = lease.fence();
     let store = turn.yard.store();
+    // The turn's startup phases, counted from its operation's admission
+    // (`crate::startup`); recorded once, with the harness's first event.
+    let mut startup = crate::startup::Timer::system(turn.options.admitted_ms);
+    startup.mark(StartPhase::Queued);
+    let mut startup_recorded = false;
     let mut driven = Driven {
         end: End::Failed {
             reason: String::new(),
@@ -885,6 +930,8 @@ fn run(
     // Declared before the session so a sandbox outlives it. The turn's
     // provisioning is recorded once the sandbox exists, so its activity
     // names the placement the turn ran in.
+    startup.mark(StartPhase::Placement);
+    let placement_at = startup.offset();
     let mut placement = match Placement::prepare(turn.yard, record, fence, &turn.sandbox) {
         Ok(placement) => placement,
         Err(reason) => {
@@ -896,6 +943,7 @@ fn run(
             return Ok(driven);
         }
     };
+    let (startup_provider, startup_path) = mark_sandbox(&mut startup, &placement, placement_at);
     // Branchyard writes no administrator file: a harness's own managed
     // policy is the administrator's, and what Branchyard requires reaches
     // the harness through its session (flags, a hook, a private home's
@@ -919,6 +967,25 @@ fn run(
         &turn.yard.approval_settings(),
     ) {
         recorder.record(Activity::Warning(note))?;
+    }
+    // The image the provider's receipt names is the one the session was
+    // admitted with (`crate::bundles::verify_image`), before the sandbox is
+    // used for anything.
+    if let Some((provider, name)) = placement.sandbox() {
+        // A receipt that cannot be read is no evidence of another image.
+        let receipt = branchyard_support::best_effort(
+            "read the sandbox's image receipt",
+            provider.image_receipt(name),
+        )
+        .flatten();
+        if let Err(mismatch) = crate::bundles::verify_image(&manifest, receipt.as_deref()) {
+            recorder.record(Activity::Warning(mismatch.to_string()))?;
+            if let Some(warning) = placement.discard() {
+                recorder.record(Activity::Warning(warning))?;
+            }
+            driven.end = End::failed(mismatch.to_string());
+            return Ok(driven);
+        }
     }
     if let Some(started) = placement.started() {
         recorder.record(crate::snapshots::event(started.clone()))?;
@@ -1246,6 +1313,7 @@ fn run(
             return Ok(driven);
         }
     };
+    startup.mark(StartPhase::HarnessStarted);
     // A local harness leads its own process group; recovery kills that
     // group if this engine stops, when pid and start time still match.
     let identity = match placement.is_sandbox() {
@@ -1612,6 +1680,13 @@ fn run(
             steering.event(recorder, &store, fence, &event)?;
         }
         last_activity = Instant::now();
+        if !startup_recorded && matches!(phase, Phase::Running(_)) && recorded(&event) {
+            startup.mark(StartPhase::FirstEvent);
+            startup_recorded = true;
+            recorder.record(Activity::Startup(Box::new(
+                startup.finish(&startup_provider, startup_path),
+            )))?;
+        }
         if stalled && matches!(phase, Phase::Running(_)) {
             stalled = false;
             recorder.record(Activity::Resumed)?;
@@ -1619,6 +1694,7 @@ fn run(
         }
         match event {
             Event::Ready if matches!(phase, Phase::Opening) => {
+                startup.mark(StartPhase::HandshakeDone);
                 // Pending inbox messages are prepended here, at the last
                 // point before the prompt may reach the harness. Journaled
                 // first, and the messages it carries acknowledged (marked
@@ -1850,6 +1926,13 @@ fn run(
                 _ => break,
             }
         }
+    }
+    // A turn that ended before the harness said anything records the
+    // phases it reached.
+    if !startup_recorded {
+        recorder.record(Activity::Startup(Box::new(
+            startup.finish(&startup_provider, startup_path),
+        )))?;
     }
     steering.finish(recorder, &store, fence)?;
     if let Some(id) = session.session_id() {

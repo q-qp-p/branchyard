@@ -497,7 +497,7 @@ const VERSION_ARGS: &[(&str, &[&str])] = &[("jules", &["version"])];
 
 /// Whether `version` (`0.73.1`, `1.3.14-rc.1`) is older than `floor`,
 /// comparing the first three numbers; a suffix is not looked at.
-fn version_below(version: &str, floor: &str) -> bool {
+pub(crate) fn version_below(version: &str, floor: &str) -> bool {
     let parts = |v: &str| -> Vec<u64> {
         v.split(['.', '-', '+'])
             .take(3)
@@ -527,6 +527,35 @@ fn version_args(id: &str) -> &'static [&'static str] {
         .map_or(&["--version"], |(_, a)| *a)
 }
 
+/// The arguments that make `id`'s executable print its version.
+pub(crate) fn version_command_args(id: &str) -> &'static [&'static str] {
+    version_args(id)
+}
+
+/// Whether `command` is a single `npm install -g PACKAGE` (or `i`/`add`).
+pub(crate) fn is_npm_global(command: &str) -> bool {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words.first() == Some(&"npm")
+        && !command.contains('|')
+        && words.iter().any(|w| matches!(*w, "-g" | "--global"))
+        && package_of(command).is_some()
+}
+
+/// The package a package manager's install command names: the first word
+/// after `install`/`i`/`add` and its flags, without a version.
+pub(crate) fn package_of(command: &str) -> Option<String> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let start = words
+        .iter()
+        .position(|w| matches!(*w, "install" | "i" | "add"))?
+        + 1;
+    let package = *words[start..].iter().find(|w| !w.starts_with('-'))?;
+    Some(match package.rfind('@') {
+        Some(0) | None => package.to_owned(),
+        Some(i) => package[..i].to_owned(),
+    })
+}
+
 /// The key variables a harness reads instead of a login: the catalog's
 /// `auth_env` and its `env` in `catalog/logins.toml`, once each.
 pub fn key_variables(id: &str) -> Vec<String> {
@@ -534,6 +563,20 @@ pub fn key_variables(id: &str) -> Vec<String> {
         .map(|e| e.auth_env.clone())
         .unwrap_or_default();
     for var in logins::extra_key_variables(id) {
+        if !vars.contains(var) {
+            vars.push(var.clone());
+        }
+    }
+    vars
+}
+
+/// Every variable `id` reads a key from by name: [`key_variables`] and the
+/// ones that count as a key without being offered as the one to set
+/// (`OPENAI_API_KEY` for Qwen Code). What a qualification run passes through
+/// to the harness by name.
+pub fn credential_variables(id: &str) -> Vec<String> {
+    let mut vars = key_variables(id);
+    for var in logins::quiet_variables(id) {
         if !vars.contains(var) {
             vars.push(var.clone());
         }
@@ -1335,6 +1378,9 @@ pub enum InstallAction {
     Install,
     Update,
     Login,
+    /// A candidate release installed beside the current one and checked
+    /// (`by harnesses update ID --qualify`); see [`crate::qualified`].
+    Qualify,
 }
 
 impl fmt::Display for InstallAction {
@@ -1343,6 +1389,7 @@ impl fmt::Display for InstallAction {
             InstallAction::Install => "install",
             InstallAction::Update => "update",
             InstallAction::Login => "login",
+            InstallAction::Qualify => "qualify",
         })
     }
 }
@@ -1391,7 +1438,7 @@ fn programs(command: &str) -> Vec<String> {
 
 /// `command` with its package pinned to `version`, for package managers
 /// whose `install -g PACKAGE` takes `PACKAGE@VERSION`; `None` for others.
-fn pin(command: &str, version: &str) -> Option<String> {
+pub(crate) fn pin(command: &str, version: &str) -> Option<String> {
     let words: Vec<&str> = command.split_whitespace().collect();
     let manager = *words.first()?;
     if !matches!(manager, "npm" | "bun" | "pnpm") || command.contains('|') {
@@ -1588,7 +1635,8 @@ pub struct HarnessEvent {
     /// The command run, when one was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
-    /// `verified`, `failed`, `refused`, `ran`, `stored_key`, `reported`.
+    /// `verified`, `failed`, `refused`, `ran`, `stored_key`, `reported`, or
+    /// `qualified` for a [`InstallAction::Qualify`] whose checks passed.
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_before: Option<String>,

@@ -1,6 +1,6 @@
 # Sandbox providers
 
-A provider is where a harness process runs. Branchyard talks to every provider through the `SandboxProvider` contract in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Native [containers](container-sandbox.md) and [GKE Agent Sandbox](agent-sandbox.md) use copied files and owned allocations. Their setup, console presets and qualification boundaries are described in [cloud execution](cloud-execution.md). Live runtime evidence is separate from a provider's declared capabilities.
+A provider is where a harness process runs. Branchyard talks to every provider through the `SandboxProvider` contract in [`branchyard-sandbox`](../crates/branchyard-sandbox/src/provider.rs), from [design §10](design.md#10-protocol-and-extensibility). Native [containers](container-sandbox.md) and [GKE Agent Sandbox](agent-sandbox.md) use copied files and owned allocations. Their setup, console presets and qualification boundaries are described in [cloud execution](cloud-execution.md). Live runtime evidence is separate from a provider's declared capabilities. A sandbox image with the harnesses already installed, and a digest to pin it by, is a [toolchain image](images.md).
 
 ## The contract
 
@@ -187,6 +187,22 @@ Pause and resume are `PauseActor` and `ResumeActor`; a checkpoint of a paused ac
 It does not mount: a spec with a mount, an image or limits is refused, because the actor template fixes the image and limits and an actor sees no host paths. The engine instead copies the worktree in and out as git bundles and the private home as a directory tree, with file modes. [Scratch areas](storage.md) are not transferred either: a turn on this provider gets no `BRANCHYARD_SCRATCH_*` variable and no mount, whether or not it is authorized for one; implementing the same copy-in/copy-out treatment for them is future work. [Provisioning](provisioning.md) runs before the copy, so the harness's credential and configuration files go in with the home and come back with it. It cannot tell a harness's tool call from an idle harness. Hermetic fixtures and dated real-runtime results are separate evidence; see the [remote validation record](remote-validation-2026-10-28.md). Saved `[substrate]` egress explicitly selects deny, host allowlist or unrestricted access and is reconciled for each actor and snapshot child. Generic sandbox `egress` remains undeclared: a branch's [network policy](egress.md) and credential-injection rules are not translated into that cluster policy and are refused when confinement is required. It declares `exec` for a template that runs the bridge, `ingress`, `pause`, and checkpoint and branch with the template's commit scope, crash consistency and portability; not `live_branch`.
 
 `TaskOptions::provider` selects it with `Provider::Substrate(SubstrateOptions)`; the CLI flags are `--provider substrate --substrate-endpoint URL --substrate-router URL --substrate-template NAME --substrate-key FILE [--substrate-atespace NAME] [--substrate-workdir PATH] [--substrate-home PATH] [--substrate-ca FILE] [--substrate-client-cert FILE --substrate-client-key FILE] [--substrate-router-ca FILE] [--substrate-insecure] [--pass-env NAME,...]` on `by run`, `by fan` and `by fork`. [Agent Substrate](substrate.md) documents the bridge protocol, the credentials, the transfer, the template and what remains unqualified; [live testing](testing-live.md#6-agent-substrate-cluster) says how to run it on a kind cluster.
+
+## Measuring launch time
+
+Every turn records how long it took to start ([observability](observability.md#startup-phases)): the provider, the path (`cold`, `cached_image`, `snapshot`, `resumed`, `pool` or `local`), and the offsets of the phases it reached. A provider says more about its launch through `SandboxProvider::launch`, whose default reports nothing: whether the sandbox was claimed from a pool (`pool`), whether its image was already on the host (`cached_image`), and when the image was ready (`image_ready`). A provider that cannot tell is recorded as `cold` with no `image_ready`; nothing is guessed. Only the Agent Sandbox provider reports a pool today.
+
+To compare providers, run the same task a number of times on each and read the distribution:
+
+```
+by startup report                       # every provider, path and phase
+by startup report --provider microsandbox --since 7d
+by startup report --json
+```
+
+Each row is a provider, path and phase with the count and the p50 and p95 (nearest rank) of the time that phase took; `total` is the whole startup up to the last phase reached. Phases are gaps, so a slow image shows in `image_ready` or `sandbox_ready` and not in everything after it. Compare like paths: a `pool` figure against a `cold` one measures the pool. It reads the turns recorded in this repository's store (`--remote` is refused: run it where the store is), and the server's `branchyard_start_phase_seconds` histogram holds the same for a served fleet.
+
+Status: hermetic (fakes only: FakeProvider, a fake clock, a fake `kubectl`). Not done: no figure is measured on any real provider; Microsandbox and Substrate report no image or pool facts and have no pre-booted sandboxes.
 
 ## Adding a provider
 

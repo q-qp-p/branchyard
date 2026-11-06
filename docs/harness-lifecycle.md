@@ -12,6 +12,8 @@ by harnesses --on recipe:devbox                # a fresh machine from a recipe
 by harnesses --remote https://by.internal      # a server's live workers
 by harnesses install codex                     # the catalog's command, under [harnesses]
 by harnesses update codex --version 0.200.0 --yes
+by harnesses update codex --qualify --version 0.200.0 --yes   # install beside, check, pin; the current install is untouched
+by harnesses qualified                         # the pins, hermetic or live
 by harnesses login codex                       # its own login flow, once
 printf %s "$KEY" | by harnesses login claude-code --api-key
 printf %s "$ZAI_KEY" | by harnesses login claude-code --provider zai   # GLM through Z.ai
@@ -19,6 +21,8 @@ by harnesses log                               # every install, update and login
 by harnesses --profiles                        # the profiles Branchyard drives (no repository needed)
 by harnesses --all                             # every CLI in the catalog
 ```
+
+A sandbox does not install a harness at launch: [toolchain images](images.md) hold them at pinned versions, and `by harnesses --image REF` reads what one holds from its labels.
 
 ## What `by harnesses` shows
 
@@ -146,7 +150,7 @@ by up                                     # installs every harness the configura
 
 `install` and `update` run the catalog's install command for the harness: the first one whose programs the machine has (`npm install -g @openai/codex`, else `curl ... | sh`, else `brew install --cask codex`). `install` of a harness already there does nothing; `update` runs it again.
 
-**Pins.** A package manager's command (`npm`, `bun`, `pnpm`) is pinned to the version the harness's default profile was checked against (`codex-cli 0.157.1` gives `@openai/codex@0.157.1`), or to `--version`. A piped installer takes no version, so it runs unpinned and `by` says so; `--version` with one is refused.
+**Pins.** A package manager's command (`npm`, `bun`, `pnpm`) is pinned to the version the harness's default profile was checked against (`codex-cli 0.157.1` gives `@openai/codex@0.157.1`), or to `--version`; `update` without `--version` takes a [qualified pin](#qualifying-an-update) instead when one is newer than that checked version. A piped installer takes no version, so it runs unpinned and `by` says so; `--version` with one is refused.
 
 **Verification.** After the command, detection runs again for that harness. The install is verified when the command exited 0, the harness is found, and its version is the pinned one when pinned. Otherwise `by` fails (`command_failed`, exit 1) and shows the end of the output; with `--json` the error envelope carries the attempt, as a verified install prints it, in `result`.
 
@@ -172,6 +176,60 @@ A refused install (`denied`, exit 4) names the file and the key: without a termi
 **Trust.** Installing runs software on your machine, so only your user file can allow it. A repository's `branchyard.toml` may set `install = "never"`; `install = "ask"`, `"auto"` or `allow` there is a configuration error, as `by config validate` reports. Install commands come only from the catalog built into `by`, never from a repository. A harness running on a branch (`BRANCHYARD_BRANCH` set) can never install or log in.
 
 **Where.** Here, or `--on ssh://...` (over `ssh`, as above). A recipe's machines are made fresh each time, so `--on recipe:NAME` is refused with the command to put in its create script. A server's workers never install; `--remote` is refused with how to install on a worker's machine.
+
+## Qualifying an update
+
+> **Status.** Implemented and tested hermetically on 5 November 2026: a fake `npm` that honors `--prefix` lays down a fake harness (the fake ACP agent behind a wrapper that answers `--version` and `--help`), and the handshake runs against it. No real npm release was installed or qualified, and no model was called. Not done: a real npm release qualified end to end; any run with a model (`--with-model` is tested with a stand-in for `branchyard-qualify`, which writes a failing record, so no pin has ever been made live by a test); the handshake of a harness that needs a login in its own home rather than a key variable; the checks for every harness (only Qwen Code's profile is exercised in the tests).
+
+A new release of a harness should not become the version Branchyard pins because it is the latest. `by harnesses update ID --qualify` installs the candidate beside the current one, checks it, and pins it only if it passes. The toolchain image builder reads the pin, so an image bakes in a version that was checked, not whatever npm served that day.
+
+```sh
+by harnesses update codex --qualify --version 0.200.0 --yes   # a hermetic qualification
+by harnesses update codex --qualify --yes                     # the latest `by catalog refresh` cached
+by harnesses update codex --qualify --with-model --yes        # also the recorded scenarios, with a model
+by harnesses qualified [--json]                               # what is pinned, and on what evidence
+by harnesses update codex --yes                               # installs the pin (the current install changes only now)
+```
+
+**The candidate.** The release is `--version`, else the latest release `by catalog refresh` cached. Only a harness the catalog installs with `npm install -g PACKAGE` can be qualified: the command becomes `npm install --prefix PREFIX PACKAGE@VERSION`, with `PREFIX` a fresh `candidates/ID/VERSION` under `~/.cache/branchyard` (`XDG_CACHE_HOME`). A piped installer (`curl ... | sh`) or a system package manager (`brew`) decides where it writes and replaces the current install, so it cannot be installed beside it: `--qualify` refuses (`unsupported`, exit 4) and says why; `by harnesses update ID --version V` still updates in place, unqualified. The install is an install: `[harnesses] install` and `allow` decide whether it runs, `--yes` answers an ask, and a branch can never do it. It runs on this machine only (`--on` and `--remote` are refused). The version is checked to be one safe word before it reaches a shell.
+
+**The checks, without a model.** Each runs against the candidate's own executable in a private home with a scrubbed environment, as `branchyard-qualify` starts a harness; the harness's key variables are passed through by name, nothing else is. All of them run, so a failure report names every check that failed.
+
+| Check | Passes when |
+|---|---|
+| `install` | npm exited 0 and one of the catalog's binaries is in `PREFIX/node_modules/.bin` |
+| `version` | the version command (`--version`) reports exactly the requested release |
+| `handshake` | the default profile's driver, launched from the candidate, reaches `Ready`: ACP `initialize` and `session/new`, Codex's app-server `initialize`, or stream-json startup. It is the driver Branchyard runs with, not a second implementation |
+| `flags` | every long flag the profile's launch passes (for a fresh, resumed and forked session) is still in the candidate's `--help`, of the subcommand the launch starts |
+| `plugin` | the hook and plugin files Branchyard installs for the harness (`plugins/branchyard/install/ID.toml`) still parse, and the manifest still detects the program name the release installs |
+
+A harness that cannot open a session in a private home without a login fails `handshake` with the harness's own reason; sign it in by key (`by harnesses login ID --api-key`, or the key variable in your environment) and run it again.
+
+**On a pass** the version becomes the qualified pin; **on a failure** nothing changes: no pin is written, an earlier pin stays, the current install is untouched, the candidate's prefix stays for you to look at, and `by` exits 1 (`command_failed`) naming each failed check; with `--json` the error carries the whole attempt in `result`. Either way the attempt is a line in [the log](#the-log) (`qualify`, `qualified` or `failed`).
+
+**`--with-model`** additionally runs `branchyard-qualify` against the candidate with the profile's recorded scenarios (the same nine as [docs/qualification](qualification/README.md): turns, permissions, interrupts, resume, fork, a lost connection) and writes its dated report to `qualification/PROFILE-VERSION.json` beside your user configuration, in the format of the records in `docs/qualification/`. It spends the harness's credentials (the runner's `--max-cost-usd 3` cap applies where the harness reports a cost) and runs for minutes, so it starts only after the other checks passed. The `live` check passes when the report is for the profile, names the requested version, and every scenario passed. The runner is `BRANCHYARD_QUALIFY`, else `branchyard-qualify` beside `by`, else on `PATH` (`cargo build -p branchyard-qualify`). **Only this path may say a pin was run live**: a pin without a `live_record` is `hermetic`, and a status paragraph that cites it says so.
+
+**The pin.** `qualified.toml` beside your user configuration (`~/.config/branchyard/qualified.toml`, or next to `BRANCHYARD_USER_CONFIG`), one `[[pin]]` per harness, replaced when the harness is qualified again:
+
+```toml
+[[pin]]
+id = "codex"                              # the catalog harness ID
+version = "0.200.0"
+package = "@openai/codex"
+profile = "codex-app-server"              # the default profile whose handshake it passed
+integrity = "sha512-..."                  # from the install's package-lock.json (else the cached `by catalog refresh` release); absent when neither knew it
+qualified_at = "2026-11-05T10:00:00Z"
+live_record = "/home/me/.config/branchyard/qualification/codex-app-server-0.200.0.json"   # absent unless --with-model passed
+
+[[pin.checks]]
+name = "version"
+passed = true
+detail = "reports 0.200.0 (`codex-cli 0.200.0`)"
+```
+
+`by harnesses update ID` without `--version` installs the pin when it is newer than the version the harness's default profile was checked against, and says so; `--version` wins, and `install` never reads it. The current install is untouched until then. The integrity hash is recorded, not yet checked by `update` (npm checks it against its registry when it installs).
+
+**Reading the pin.** `branchyard::qualified_pin(id: &str) -> Option<QualifiedPin>` (also `branchyard::qualified::qualified_pin`) returns the pin of a harness on this machine, or `None` when there is none or the file cannot be read. A `QualifiedPin` has `id`, `version`, `package`, `profile`, `integrity: Option<String>`, `qualified_at`, `live_record: Option<String>` and `checks`; `evidence()` says `live` or `hermetic`. The toolchain image builder installs `package@version` and compares `integrity`. `qualified::read_pins(path)` reports a file that does not parse instead of hiding it.
 
 ## Logging in
 
@@ -243,7 +301,7 @@ The same variables given as secrets are a login too: `--isolated --secret ANTHRO
 
 ## The log
 
-Every install, update and login attempt is a line in `harness-events.jsonl` beside your user configuration (0600): when, the machine (`local`, `ssh://host`), the harness, the action, who asked (`by harnesses` or `router`), the command, the outcome (`verified`, `failed`, `refused`, `ran`, `manual`, `stored_key`, `provider`, `wrote_settings`; older lines say `reported` for what is now `manual`), the versions before and after, and why. `by harnesses log [--json]` prints it.
+Every install, update, qualification and login attempt is a line in `harness-events.jsonl` beside your user configuration (0600): when, the machine (`local`, `ssh://host`), the harness, the action (`install`, `update`, `login`, `qualify`), who asked (`by harnesses` or `router`), the command, the outcome (`verified`, `failed`, `refused`, `ran`, `manual`, `stored_key`, `provider`, `wrote_settings`, and `qualified` for a qualification whose checks passed; older lines say `reported` for what is now `manual`), the versions before and after, and why. `by harnesses log [--json]` prints it.
 
 ## Workers
 
@@ -303,7 +361,8 @@ With no `[fleet]` configured, `--auto` routes among the harnesses this inventory
 | Detection | `detect_local(&DetectOptions)`, `detect_with(options, stdin, make_command)`, `script`, `parse` |
 | Cache | `InventoryCache::{new, get, put, local, fetch, clear}` (`fetch` returns `Fetched`, with the cached answer's age), `cached_note`, `DEFAULT_TTL` |
 | Installing | `InstallPolicy`, `InstallMode`, `Permission`, `plan`, `install`, `run_local`, `checked_version` |
-| Log | `HarnessLog`, `HarnessEvent` |
+| Log | `HarnessLog`, `HarnessEvent` (`InstallAction::Qualify`) |
+| Qualified updates | `branchyard::qualified_pin(id) -> Option<QualifiedPin>`, `qualified::{QualifiedPin, Check, side_install, run_checks, live_check, read_pins, store_pin, qualified_file}` |
 | Routing | `HarnessGate`, `LocalGate` (with `preview`, `with_runner`, `with_log`), `RouteOptions::harnesses` |
 | Remote | `Client::inventory()` (`GET /v1/inventory`, `InventoryReport`, `WorkerInventory`) |
 
@@ -316,6 +375,9 @@ With no `[fleet]` configured, `--auto` routes among the harnesses this inventory
 - `crates/branchyard-cli/tests/harnesses.rs`, with the built `by`: the table and JSON (verified, likely, unknown, a timeout, off `PATH`), the cache and `--refresh`, `--on ssh://` and `--on recipe:` through `fake-ssh` (the recipe's machine destroyed after, an untrusted recipe refused), installs under `never`, `ask`, `--yes`, `auto` and an allowlist, a repository trying to allow installs refused, a pin and a failed verification, the log; install and login over ssh (`ssh -t`); a login through a pty (the device code passed through, verified after; `--json` `done`), without a terminal (exit 3, `manual`), an API key stored 0600 and named in `[secrets]` (`--json` `stored`); `by run`, `by fan` and `by send` refused before a branch for a verified logged-out and a missing harness, noting a guess, skipping the check for `--command` and `--no-preflight`; `by harnesses --profiles` outside a repository; a refused install naming the file and key; the router excluding a logged-out and a missing candidate, previewing, and installing one on demand before running it on the fake ACP agent; `by serve` advertising its inventory to `by harnesses --remote`, login reported for a worker, install refused.
 - Provider logins (27 October 2026): `crates/branchyard-cli/tests/harnesses.rs` stores a key with `--provider zai` (`--json` `stored`, 0600, `[secrets]` and `[logins]` written, `by config validate` clean, the export line, the key in no output or log), reuses it for a second harness, says `unchanged` the third time, counts it in `by harnesses` (`key stored (ZAI_API_KEY)`), refuses an unknown provider, one the harness has no login for and `--on ssh://`; shows Codex's `config.toml` change without writing it, writes it with `--yes` and finds it there the next time; and runs the fake ACP agent as Qwen Code `--isolated`, which prints `OPENAI_API_KEY`, `OPENAI_BASE_URL=https://api.z.ai/api/coding/paas/v4`, `OPENAI_MODEL=glm-4.5-air` and no `ZAI_API_KEY`, and nothing of them without `--isolated`. `ANTHROPIC_AUTH_TOKEN` in the environment is `key set (ANTHROPIC_AUTH_TOKEN)` against a fake `claude auth status` that says logged out. `crates/branchyard-provision/tests/provision.rs` has goldens for Claude Code, Qwen Code, Codex and Pi on `zai` (`tests/golden/*-zai/`) and checks every row of the table provisions for its harness's default profile; `crates/branchyard-cli/tests/doctor.rs` the credential variable and `[logins]` with and without its key; the engine's unit tests `[logins]` filled only into a private home and never onto the gateway, and an unknown login refused before a branch.
 
+- Qualified updates (5 November 2026, hermetic): `crates/branchyard/src/qualified.rs` unit tests (the pin file stored, replaced and read back; a file that does not parse named; only an `npm install -g` command becomes a side install and a piped installer, `brew` or an unknown harness is refused; a flag matched as a whole option; the integrity read from an npm lockfile; a live record accepted only when every scenario passed on the version and profile; the launch flags read from the drivers' own launch). `crates/branchyard-cli/tests/harnesses.rs` runs the built `by` against a fake `npm` that honors `--prefix` and lays down a fake Qwen Code over the fake ACP agent: a pass (the five checks, the prefix in the npm call, the current install still 0.4.0, the pin with its lockfile integrity and no live record, the listing, the log line), a wrong version, a failed handshake, a lost flag, an npm that fails and one that installs nothing (each naming its check, nothing pinned, an earlier pin kept), a piped installer refused, the policy (`ask` without `--yes`, `never`), a version that is not one safe word, `--on`, `update` defaulting to a newer pin and not to an older one or over `--version`, the listing (hermetic and live, empty, a file that does not parse), and `--with-model` with a stand-in runner (its arguments, a failed record pins nothing, no runner, never started after a failed check).
+- `crates/branchyard-cli/src/args/tests.rs`: `update --qualify --with-model`, `qualified`, and `--with-model` or `--qualify` where they do not belong refused by the parser.
+
 **Not tested:** a real harness installed, updated or logged in to; a real `npm`, `curl` installer or Homebrew; a real `sshd`; macOS's keychain case; quota on a real login; a trigger's routed task consulting the workers' inventories (`WorkersGate` is tested in the store conformance, not through a firing trigger). The status phrases are emdash's; only `codex login status` printing `Logged in using ChatGPT` was observed, on Codex 0.157.1. The Antigravity, DeepSeek Harness and Gemini CLI paths above are tested against fake binaries and configuration files, not by signing in to the real CLIs.
 
 ## Code
@@ -326,5 +388,7 @@ With no `[fleet]` configured, `--auto` routes among the harnesses this inventory
 | [`inventory/logins.rs`](../crates/branchyard/src/inventory/logins.rs), [`catalog/logins.toml`](../catalog/logins.toml) | How each harness's login is read, as data, and the one interpreter that makes the script's lines and the login from it |
 | [`fleet.rs`](../crates/branchyard/src/fleet.rs) | `RouteOptions::harnesses`, consulted in `availability` |
 | [`store.rs`](../crates/branchyard-server/src/store.rs), [`ops.rs`](../crates/branchyard-server/src/ops.rs), [`api.rs`](../crates/branchyard-server/src/api.rs) | The workers' `inventory` column, advertising and derived labels, steering at admission, `WorkersGate`, `GET /v1/inventory` |
+| [`qualified.rs`](../crates/branchyard/src/qualified.rs) | The qualified pin and its file, the side install's command, the checks, `qualified_pin` |
 | [`harness_cmd.rs`](../crates/branchyard-cli/src/harness_cmd.rs) | `by harnesses` and its actions, machines (`--on`), quota, the API-key store, the router's gate |
+| [`harness_cmd/qualify.rs`](../crates/branchyard-cli/src/harness_cmd/qualify.rs) | `update --qualify` and `qualified`: the policy, the install, the plugin check, the run with a model, the report and the log |
 | [`config.rs`](../crates/branchyard-setup/src/config.rs) | `[harnesses]` and the rule that a repository may only forbid installs |

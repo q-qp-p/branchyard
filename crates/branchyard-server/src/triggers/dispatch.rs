@@ -363,6 +363,8 @@ impl Sink for AppSink {
                 .live_workers()
                 .ok()
                 .map(|workers| crate::store::WorkersGate::new(&repo.name, workers).into_arc()),
+            // The images this repository's yard recorded; the server asks no registry.
+            images: Some(repo.yard.image_labels()),
         };
         let route = repo
             .yard

@@ -651,7 +651,8 @@ class ComputeGceTests(unittest.TestCase):
             missing = run(empty)
             self.assertEqual(missing.returncode, 0, missing.stderr)
             self.assertIn("skipping the Anvil toolchain", missing.stderr)
-            # The contract's mock is `anvil`; ANVIL_MOCK_ROOT keeps its /opt/anvil under the test's directory.
+            # The contract's mock is `anvil`; ANVIL_MOCK_ROOT (the mock's own knob, absent from the real Anvil)
+            # keeps its /opt/anvil under the test's directory.
             mock = Path(__file__).resolve().parent / "fixtures" / "anvil" / "anvil"
             for name, body in {
                 "sudo": 'exec "$@"',
