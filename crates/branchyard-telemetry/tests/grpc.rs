@@ -37,9 +37,9 @@ impl TraceService for Collector {
 fn spans_reach_a_collector_over_otlp_grpc() {
     let collector = Collector::default();
     // gRPC needs HTTP/2, which `MockHttp` (HTTP/1.1) does not speak, so the
-    // stand-in is a tonic server. It binds port 0 and keeps the socket, so
-    // the port is not raced for, and says which port it got.
-    let (bound, port_rx) = std::sync::mpsc::channel();
+    // stand-in is a tonic server on the testkit's held loopback listener.
+    let listener = branchyard_testkit::loopback_listener();
+    let port = listener.local_addr().unwrap().port();
     let served = collector.clone();
     let server = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -47,10 +47,7 @@ fn spans_reach_a_collector_over_otlp_grpc() {
             .build()
             .unwrap();
         runtime.block_on(async move {
-            let socket = tokio::net::TcpSocket::new_v4().unwrap();
-            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-            let listener = socket.listen(16).unwrap();
-            bound.send(listener.local_addr().unwrap().port()).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
             // Serves until the process ends; an error is the test's to
             // notice, as a collector that received nothing.
@@ -63,12 +60,6 @@ fn spans_reach_a_collector_over_otlp_grpc() {
             );
         });
     });
-    let port = port_rx
-        .recv_timeout(branchyard_testkit::wait::scaled(
-            std::time::Duration::from_secs(30),
-        ))
-        .unwrap();
-
     std::env::set_var(
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         format!("http://127.0.0.1:{port}"),

@@ -35,7 +35,7 @@ pub use agent::{
 pub use env::hermetic;
 #[cfg(unix)]
 pub use env::system_tools;
-pub use mock::{Banner, MockHttp, Request, Response};
+pub use mock::{loopback_listener, Banner, MockHttp, Request, Response};
 pub use repo::Repo;
 pub use scratch::{processes_in, Scratch};
 

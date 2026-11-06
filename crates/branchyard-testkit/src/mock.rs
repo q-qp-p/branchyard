@@ -536,3 +536,31 @@ fn connection(
         served = true;
     }
 }
+
+/// A listener held on a free loopback port, for a stand-in that speaks a
+/// protocol [`MockHttp`] does not (a tonic gRPC server needs HTTP/2). The
+/// port is bound before anyone learns it and stays bound while the caller
+/// holds the listener, so nothing races for it. The listener is
+/// non-blocking, as `tokio::net::TcpListener::from_std` requires.
+pub fn loopback_listener() -> TcpListener {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind a loopback port");
+    listener
+        .set_nonblocking(true)
+        .expect("make the listener non-blocking");
+    listener
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::*;
+
+    #[test]
+    fn a_loopback_listener_holds_its_port_and_does_not_block() {
+        let listener = loopback_listener();
+        let addr = listener.local_addr().expect("the bound address");
+        assert!(addr.ip().is_loopback() && addr.port() != 0);
+        assert!(TcpListener::bind(addr).is_err(), "the port stays held");
+        let refused = listener.accept().expect_err("no client yet");
+        assert_eq!(refused.kind(), std::io::ErrorKind::WouldBlock);
+    }
+}
