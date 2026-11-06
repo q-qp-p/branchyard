@@ -131,6 +131,11 @@ impl World {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("NO_COLOR", "1")
             .env("FAKE_LOG", self.base.join("calls.log"));
+        // Under `cargo llvm-cov` the `by` run here is instrumented: keep
+        // the profile path, so what it covers counts.
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
         command
     }
 
