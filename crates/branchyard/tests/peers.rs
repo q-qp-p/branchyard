@@ -632,3 +632,68 @@ fn an_ask_under_a_traceparent_carries_it_and_without_one_has_no_meta() {
     );
     assert_eq!(json, expected, "no telemetry: byte-identical to before");
 }
+
+/// Peer messages reach siblings only, by decision (`docs/messaging.md`): a
+/// cousin (a branch sharing a grandparent but not a parent), an uncle, a
+/// parent and a grandparent are all refused naming the parent whose
+/// children are the only recipients, while real siblings still deliver.
+#[test]
+fn a_cousin_is_refused_while_siblings_at_every_depth_are_not() {
+    let f = Fixture::new();
+    let options = TaskOptions {
+        delegation: Some(Envelope::depth(2)),
+        ..delegating(&f)
+    };
+    let root = f
+        .yard
+        .task("WRITE root.txt=r")
+        .options(options.clone())
+        .name("root")
+        .run()
+        .unwrap()
+        .delegate(options.clone())
+        .unwrap();
+    let delegate = |name: &str| {
+        f.yard
+            .branch(name)
+            .unwrap()
+            .delegate(options.clone())
+            .unwrap()
+    };
+    for name in ["c1", "c2"] {
+        root.spawn(spawn(name)).unwrap();
+        root.wait(name, Duration::from_secs(120)).unwrap();
+    }
+    let (c1, c2) = (delegate("c1"), delegate("c2"));
+    for (parent, name) in [(&c1, "g1"), (&c1, "g1b"), (&c2, "g2")] {
+        parent.spawn(spawn(name)).unwrap();
+        parent.wait(name, Duration::from_secs(120)).unwrap();
+    }
+    let g1 = delegate("g1");
+    // Grandchildren of one grandparent under different parents.
+    denied(
+        g1.message("g2", "hi", None, None, None, None),
+        "may only message its siblings, the other children of c1, not g2",
+    );
+    // An uncle, a parent and a grandparent.
+    for target in ["c2", "c1", "root"] {
+        denied(
+            g1.message(target, "hi", None, None, None, None),
+            &format!("the other children of c1, not {target}"),
+        );
+    }
+    // And from the other side.
+    denied(
+        delegate("g2").message("g1", "hi", None, None, None, None),
+        "the other children of c2, not g1",
+    );
+    // Siblings deliver at either depth.
+    assert_eq!(
+        g1.message("g1b", "hi", None, None, None, None).unwrap().to,
+        "g1b"
+    );
+    assert_eq!(
+        c1.message("c2", "hi", None, None, None, None).unwrap().to,
+        "c2"
+    );
+}
