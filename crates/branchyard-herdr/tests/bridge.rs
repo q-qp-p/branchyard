@@ -27,7 +27,10 @@ fn testkit_agent() -> &'static Path {
 const FAKE_HERDR: &str = r#"#!/bin/sh
 d="$FAKE_HERDR_DIR"
 while ! mkdir "$d/lock" 2>/dev/null; do sleep 0.01; done
-{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$d/calls"
+# One write per call: the test reads `calls` without the lock, so a line
+# appended argument by argument could be read half-written.
+line=$(for a in "$@"; do printf '%s\037' "$a"; done)
+printf '%s\n' "$line" >> "$d/calls"
 missing() {
     rmdir "$d/lock"
     printf '{"id":"cli","error":{"code":"pane_not_found","message":"pane %s not found"}}\n' "$1" >&2
