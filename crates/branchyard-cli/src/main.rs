@@ -870,6 +870,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             deadline,
             json,
         ),
+        Command::Kinds { json } => commands::kinds(json),
         Command::Rig { json, action } => commands::rig(env, target, &action.into_args(json)),
         Command::Gateway { json, action } => gateway_cmd::main(target, &action, json),
         Command::Models {

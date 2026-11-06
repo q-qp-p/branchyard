@@ -175,6 +175,10 @@ pub struct ProjectConfig {
     /// `by images pin`; a `--image` flag or the provider's own table wins.
     #[serde(default, skip_serializing_if = "ImagesConfig::is_empty")]
     pub images: ImagesConfig,
+    /// Kinds of message branches may send each other
+    /// (docs/messaging.md): `[[messaging.kinds]]`.
+    #[serde(default, skip_serializing_if = "MessagingConfig::is_empty")]
+    pub messaging: MessagingConfig,
 }
 
 /// `[images]`: the default sandbox image of each provider, digest-pinned.
@@ -229,6 +233,82 @@ impl ImagesConfig {
         }
         Ok(())
     }
+}
+
+/// `[messaging]`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessagingConfig {
+    /// Kinds of message a branch may send a sibling with `by message
+    /// --kind NAME` (the MCP and Python `message` too), beside the
+    /// built-in `note`: `[[messaging.kinds]]`. A project file's list
+    /// replaces the user file's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<MessageKindConfig>,
+}
+
+impl MessagingConfig {
+    /// Whether no kind is declared.
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+
+    fn check(&self) -> Result<(), ConfigError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for (at, kind) in self.kinds.iter().enumerate() {
+            let fail = |why: String| {
+                Err(ConfigError(format!(
+                    "messaging.kinds[{at}] ({:?}): {why}",
+                    kind.name
+                )))
+            };
+            let valid = !kind.name.is_empty()
+                && kind.name.len() <= 64
+                && kind.name.chars().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
+                });
+            if !valid {
+                return fail("name must be [a-z0-9._-], 1 to 64 characters".into());
+            }
+            if !seen.insert(kind.name.as_str()) {
+                return fail("another kind has this name".into());
+            }
+            if kind.schema_version == Some(0) {
+                return fail("schema_version must be at least 1".into());
+            }
+            if let Some(schema) = &kind.schema {
+                if !schema.is_object() {
+                    return fail("schema must be a table (a JSON Schema object)".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One `[[messaging.kinds]]` entry: a registered kind of peer message. The
+/// built-in names (`question`, `report`, `escalation`, `answer`,
+/// `handoff`, `note`) are refused when the yard opens, as is a schema
+/// keyword outside the supported subset (`$ref`, `allOf`, `not`,
+/// `format`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageKindConfig {
+    /// The kind's name, `[a-z0-9._-]`, at most 64 characters.
+    pub name: String,
+    /// The version of the payload schema, stored with each message
+    /// (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
+    /// A JSON Schema, written inline as a TOML table, that a message's
+    /// `payload` must match (`type`, `properties`, `required`, `enum`,
+    /// `pattern`, bounds, `anyOf`/`oneOf`). Without one, any payload or
+    /// none is accepted; with one, a message must carry a payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+    /// One line `by message kinds` shows beside the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// `[approvals]`.
@@ -2387,6 +2467,7 @@ impl ProjectConfig {
             }
         }
         self.approvals.policy()?;
+        self.messaging.check()?;
         self.images.check()?;
         self.network.policy()?;
         self.network.mirror_rules()?;
@@ -3073,6 +3154,12 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
             [("approvals", &config.approvals)].into_iter().collect();
         out.push_str(&toml::to_string(&table).unwrap_or_default());
     }
+    if !config.messaging.is_empty() {
+        out.push_str("\n# Kinds of message branches may send each other; see docs/messaging.md.\n");
+        let table: BTreeMap<&str, &MessagingConfig> =
+            [("messaging", &config.messaging)].into_iter().collect();
+        out.push_str(&toml::to_string(&table).unwrap_or_default());
+    }
     let n = &config.network;
     if !n.is_empty() {
         out.push_str(
@@ -3569,6 +3656,61 @@ classes = { compensable = "allow" }
         }
         let error = parse("[models]\naudit = true\n").unwrap_err().to_string();
         assert!(error.contains("wanted string"), "{error}");
+    }
+
+    #[test]
+    fn message_kinds_are_read_checked_and_rendered() {
+        let text = "[[messaging.kinds]]\nname = \"step\"\nschema_version = 2\n\
+                    description = \"a build step finished\"\n\
+                    [messaging.kinds.schema]\ntype = \"object\"\nrequired = [\"n\"]\n\
+                    [messaging.kinds.schema.properties.n]\ntype = \"integer\"\n\n\
+                    [[messaging.kinds]]\nname = \"ping\"\n";
+        let config = parse(text).unwrap();
+        let kinds = &config.messaging.kinds;
+        assert_eq!(kinds.len(), 2);
+        assert_eq!(kinds[0].name, "step");
+        assert_eq!(kinds[0].schema_version, Some(2));
+        assert_eq!(
+            kinds[0].schema.as_ref().unwrap()["properties"]["n"]["type"],
+            "integer"
+        );
+        assert_eq!(kinds[1].schema, None);
+        // It survives the layers' flatten/unflatten and a render.
+        assert_eq!(
+            ProjectConfig::unflatten(&config.flatten())
+                .unwrap()
+                .messaging,
+            config.messaging
+        );
+        let again = parse(&render(&config, "test")).unwrap();
+        assert_eq!(again.messaging, config.messaging);
+        assert!(MessagingConfig::default().is_empty());
+        for (text, needle) in [
+            (
+                "[[messaging.kinds]]\nname = \"Bad Name\"\n",
+                "messaging.kinds[0]",
+            ),
+            ("[[messaging.kinds]]\nname = \"\"\n", "name must be"),
+            (
+                "[[messaging.kinds]]\nname = \"a\"\n[[messaging.kinds]]\nname = \"a\"\n",
+                "another kind has this name",
+            ),
+            (
+                "[[messaging.kinds]]\nname = \"a\"\nschema_version = 0\n",
+                "schema_version",
+            ),
+            (
+                "[[messaging.kinds]]\nname = \"a\"\nschema = \"nope\"\n",
+                "schema must be a table",
+            ),
+            (
+                "[[messaging.kinds]]\nname = \"a\"\nclass = \"report\"\n",
+                "class",
+            ),
+        ] {
+            let error = parse(text).unwrap_err().to_string();
+            assert!(error.contains(needle), "{text}: {error}");
+        }
     }
 
     #[test]

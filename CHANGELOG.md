@@ -49,6 +49,14 @@ counts delivered, and a warning naming its id goes on the recipient's log. A
 sibling with 32 undelivered peer messages now refuses another with `denied`,
 naming the count and the limit.
 
+`branchyard.toml` can now declare kinds of message siblings may send each other:
+`[[messaging.kinds]]` with a `name`, an optional `schema_version` and
+`description`, and an inline JSON Schema table (`[messaging.kinds.schema]`)
+that a message's `--payload` must match. A yard registers them when it is opened
+with its configuration, with the refusals `Yard::register_kind` makes; a bad
+kind is a configuration error naming it. `by kinds [--json]` lists the built-in
+and configured kinds.
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

@@ -39,6 +39,8 @@ pub struct KindSpec {
     pub delivery: Delivery,
     /// The version of its payload schema, stored with each message.
     pub version: u32,
+    /// One line saying what the kind is for, shown by `by message kinds`.
+    pub description: Option<String>,
     schema: Option<JsonSchema>,
 }
 
@@ -48,6 +50,7 @@ impl PartialEq for KindSpec {
             && self.class == other.class
             && self.delivery == other.delivery
             && self.version == other.version
+            && self.description == other.description
             && self.schema_value() == other.schema_value()
     }
 }
@@ -62,8 +65,15 @@ impl KindSpec {
             class,
             delivery: class.delivery(),
             version: 1,
+            description: None,
             schema: None,
         })
+    }
+
+    /// This kind with a one-line description.
+    pub fn with_description(mut self, description: &str) -> KindSpec {
+        self.description = Some(description.to_owned());
+        self
     }
 
     /// This kind with a payload schema, in the subset result contracts use
@@ -134,13 +144,33 @@ impl Registry {
     /// `handoff`, and `note` (class `peer`, any payload).
     pub fn builtin() -> Registry {
         let mut kinds = BTreeMap::new();
-        for (name, class) in [
-            ("question", Class::Question),
-            ("report", Class::Report),
-            ("escalation", Class::Escalation),
-            ("answer", Class::Answer),
-            ("handoff", Class::Handoff),
-            (DEFAULT_KIND, Class::Peer),
+        for (name, class, description) in [
+            (
+                "question",
+                Class::Question,
+                "a question to your parent (ask)",
+            ),
+            ("report", Class::Report, "a report to your parent (report)"),
+            (
+                "escalation",
+                Class::Escalation,
+                "a problem for your parent or the person (escalate)",
+            ),
+            (
+                "answer",
+                Class::Answer,
+                "an answer to a descendant's message (answer)",
+            ),
+            (
+                "handoff",
+                Class::Handoff,
+                "a settled result relayed to a coworker (handoff)",
+            ),
+            (
+                DEFAULT_KIND,
+                Class::Peer,
+                "a line of text to a sibling, with any payload or none",
+            ),
         ] {
             kinds.insert(
                 name.to_owned(),
@@ -149,6 +179,7 @@ impl Registry {
                     class,
                     delivery: class.delivery(),
                     version: 1,
+                    description: Some(description.to_owned()),
                     schema: None,
                 },
             );

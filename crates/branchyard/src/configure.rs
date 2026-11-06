@@ -148,6 +148,7 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
         false => Some(knowledge_settings(&config.knowledge)?),
     };
     let options = task_options(config)?;
+    let kinds = message_kinds(yard, &config.messaging)?;
     if let Some(host) = host {
         yard.use_sandbox_host(host);
     }
@@ -171,11 +172,48 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
         yard.use_knowledge(knowledge);
     }
     yard.use_max_running(config.usage.max_running.clone());
+    for spec in kinds {
+        yard.register_kind(spec)?;
+    }
     *projection::lock(&yard.hub.config) = Some(Arc::new(Configured {
         config: Arc::new(config.clone()),
         options,
     }));
     Ok(())
+}
+
+// `[messaging]`
+
+/// The kinds `[[messaging.kinds]]` adds to `yard`'s registry, each checked
+/// as [`Yard::register_kind`] checks it (a built-in name, a duplicate, a
+/// schema keyword outside the supported subset) so a bad kind is an error
+/// naming it and nothing is registered. A kind the yard already has,
+/// identical, is left alone, so configuring a yard twice with one file is
+/// not a duplicate.
+fn message_kinds(
+    yard: &Yard,
+    config: &config::MessagingConfig,
+) -> Result<Vec<crate::messaging::KindSpec>, Error> {
+    let mut scratch = yard.messaging().registry;
+    let mut fresh = Vec::new();
+    for kind in &config.kinds {
+        let bad = |why: Error| section(&format!("[[messaging.kinds]] {:?}", kind.name), why);
+        let mut spec = crate::messaging::KindSpec::new(&kind.name, crate::messaging::Class::Peer)
+            .map_err(bad)?
+            .with_version(kind.schema_version.unwrap_or(1));
+        if let Some(description) = &kind.description {
+            spec = spec.with_description(description);
+        }
+        if let Some(schema) = &kind.schema {
+            spec = spec.with_schema(schema.clone()).map_err(bad)?;
+        }
+        if scratch.kinds().contains(&spec) {
+            continue;
+        }
+        scratch.register(spec.clone()).map_err(bad)?;
+        fresh.push(spec);
+    }
+    Ok(fresh)
 }
 
 // `[tools]`

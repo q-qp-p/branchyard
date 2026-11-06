@@ -484,3 +484,74 @@ fn a_recipient_with_too_many_pending_peer_messages_refuses_another() {
     a.message("b", "now there is room", None, None, None, None)
         .unwrap();
 }
+
+/// `[[messaging.kinds]]` registers kinds when a yard is configured, with
+/// the refusals `register_kind` makes: a payload is checked against the
+/// configured schema, configuring twice is not a duplicate, and a bad kind
+/// is a config error naming it that registers none of the file's kinds.
+#[test]
+fn configured_kinds_are_registered_and_a_bad_one_names_itself() {
+    let f = Fixture::new();
+    let good = branchyard::config::parse(
+        "[[messaging.kinds]]\nname = \"step\"\nschema_version = 4\n\
+         description = \"a step finished\"\n\
+         [messaging.kinds.schema]\ntype = \"object\"\nrequired = [\"n\"]\n\
+         [messaging.kinds.schema.properties.n]\ntype = \"integer\"\n",
+    )
+    .unwrap();
+    f.yard.configure(&good).unwrap();
+    f.yard.configure(&good).unwrap();
+    let step = f
+        .yard
+        .message_kinds()
+        .into_iter()
+        .find(|k| k.name == "step")
+        .unwrap();
+    assert_eq!((step.class, step.version), (Class::Peer, 4));
+    assert_eq!(step.description.as_deref(), Some("a step finished"));
+
+    let options = delegating(&f);
+    let (_root, a, _b) = siblings(&f, &options);
+    denied(
+        a.message(
+            "b",
+            "x",
+            Some("step"),
+            Some(json!({"n": "one"})),
+            None,
+            None,
+        ),
+        "payload.n: expected integer",
+    );
+    let sent = a
+        .message("b", "x", Some("step"), Some(json!({"n": 1})), None, None)
+        .unwrap();
+    assert_eq!(sent.meta.unwrap().schema_version, Some(4));
+
+    for (text, needle) in [
+        ("[[messaging.kinds]]\nname = \"note\"\n", "built-in"),
+        (
+            "[[messaging.kinds]]\nname = \"fresh\"\n[[messaging.kinds]]\nname = \"report\"\n",
+            "\"report\"",
+        ),
+        (
+            "[[messaging.kinds]]\nname = \"loose\"\n[messaging.kinds.schema]\n\"$ref\" = \"#/x\"\n",
+            "$ref",
+        ),
+        (
+            "[[messaging.kinds]]\nname = \"step\"\nschema_version = 5\n",
+            "registered already",
+        ),
+    ] {
+        let bad = branchyard::config::parse(text).unwrap();
+        match f.yard.configure(&bad) {
+            Err(Error::Config(why)) => assert!(why.contains(needle), "{text}: {why}"),
+            other => panic!("{text}: expected a config error, got {other:?}"),
+        }
+    }
+    let names: Vec<String> = f.yard.message_kinds().into_iter().map(|k| k.name).collect();
+    assert!(
+        !names.contains(&"fresh".to_owned()) && !names.contains(&"loose".to_owned()),
+        "a refused file registers nothing: {names:?}"
+    );
+}

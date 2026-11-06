@@ -479,6 +479,16 @@ anvil = "anvil"                          # Anvil's command line
 grants = ["github:read"]                 # for new branches with a private home that name none
 sandbox_gateway = "http://192.168.127.1:8931/mcp"   # the gateway as a sandbox reaches it
 
+[[messaging.kinds]]         # a kind of message siblings may send: by message --kind step (docs/messaging.md)
+name = "step"
+schema_version = 1
+description = "a build step finished"
+[messaging.kinds.schema]    # an inline JSON Schema the payload must match
+type = "object"
+required = ["n"]
+[messaging.kinds.schema.properties.n]
+type = "integer"
+
 [workspace]                 # project file only; scripts run once you trust them
 copy = [".env", ".env.*"]
 setup = "pnpm install --frozen-lockfile"
@@ -488,6 +498,8 @@ teardown = 'docker compose -p "by-$BRANCHYARD_BRANCH" down'
 command = "PORT=$BRANCHYARD_PORT pnpm dev"
 default = true
 ```
+
+`[[messaging.kinds]]` declares kinds of peer message (`name`, optional `schema_version`, `description` and an inline `schema` table; the schema is written in the file, not read from a path). `by config validate` checks the names (`[a-z0-9._-]`, unique) and that a schema is a table; `Yard::configure` registers them when a yard is opened with `Yard::open_configured` (what `by` and the server do), with the refusals `Yard::register_kind` makes (a built-in name, a name taken, a schema keyword outside the supported subset), as an error naming the kind and registering none of the file's kinds. A project file's list replaces the user file's. `by kinds` lists the built-in and configured kinds.
 
 `[workspace]` prepares each new branch's worktree and cleans up after it; it is not merged key by key. The user file may replace one repository's section with `[projects."/path/to/repo".workspace]`, which needs no trust; `[workspace]` in the user file and `[projects]` in a project file are refused. See [workspace](workspace.md).
 

@@ -933,6 +933,17 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the message kinds `by message --kind` accepts
+    ///
+    /// The built-in kinds, then those declared in branchyard.toml as `[[messaging.kinds]]`, each
+    /// with its class, schema version, whether a payload schema checks --payload, and its
+    /// description. Reads the configuration, not the server's.
+    #[command(hide = true, display_order = 314)]
+    Kinds {
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check a rig spec and print its plan, or run its root seat with a prompt
     #[command(display_order = 400, subcommand_required = true)]
     Rig {

@@ -880,6 +880,47 @@ pub fn message(
     })
 }
 
+/// `by kinds`: the message kinds this repository's yard knows, built-in
+/// and from `[[messaging.kinds]]`.
+pub fn kinds(json: bool) -> Outcome {
+    let result = open_yard().map(|yard| yard.message_kinds());
+    emit(json, result.map(|kinds| kind_rows(&kinds)), |rows| {
+        let mut out = String::new();
+        for row in rows {
+            let schema = match row["schema"].is_null() {
+                true => "any payload",
+                false => "schema",
+            };
+            out.push_str(&format!(
+                "{:<16} {:<10} v{} {:<11} {}\n",
+                row["name"].as_str().unwrap_or_default(),
+                row["class"].as_str().unwrap_or_default(),
+                row["schema_version"],
+                schema,
+                row["description"].as_str().unwrap_or_default()
+            ));
+        }
+        out
+    })
+}
+
+/// One JSON object per kind: `name`, `class`, `schema_version`, `schema`
+/// (null without one) and `description`.
+fn kind_rows(kinds: &[branchyard::messaging::KindSpec]) -> Vec<serde_json::Value> {
+    kinds
+        .iter()
+        .map(|kind| {
+            serde_json::json!({
+                "name": kind.name,
+                "class": kind.class,
+                "schema_version": kind.version,
+                "schema": kind.schema_value(),
+                "description": kind.description,
+            })
+        })
+        .collect()
+}
+
 pub fn children(env: &Env, target: &Target, branch: Option<String>, json: bool) -> Outcome {
     let result = match (harness_delegate(json)?, target) {
         (Some(delegate), _) => match branch {
