@@ -335,7 +335,7 @@ pub use snapshots::{
 pub use spotlight::{TryEntry, TryFile, TryState};
 use std::collections::{BTreeMap, HashMap};
 pub use storage::{ArtifactRef, ScratchArea, ScratchLock, DEFAULT_ARTIFACT_LIMIT};
-pub use timeline::{Timeline, TimelineTool, TimelineTurn};
+pub use timeline::{MarkKind, Timeline, TimelineMark, TimelineTool, TimelineTurn};
 pub use timers::Timer;
 pub use workspace::{
     check_glob as check_workspace_glob, RanIn, WorkspaceInfo, WorkspacePhase, WorkspaceReport,

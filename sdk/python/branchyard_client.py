@@ -3048,9 +3048,10 @@ class Repo:
     def timeline(self, branch: str) -> Record:
         """`Timeline`: the shape of `branch`'s work with none of its
         content: each turn's `started_at_ms`, `ended_at_ms`, `outcome`,
-        `cost_usd` and `tools` (each `at_ms`, `name` and `call_id`), and
-        `merged_at_ms`, read from its whole log (`docs/server.md`,
-        "Reading a branch")."""
+        `cost_usd`, `tokens`, `startup`, `tools` (each `at_ms`, `name`,
+        `call_id` and `seq`) and `marks` (each `at_ms`, `seq`, `kind`, and
+        a `label`, `ok` or `score` where one applies), and `merged_at_ms`,
+        read from its whole log (`docs/server.md`, "Reading a branch")."""
         return Record(self.client.get(self._branch(branch, "/timeline")))
 
     def said(self, branch: str, cursor: int = 0) -> tuple[str, int]:

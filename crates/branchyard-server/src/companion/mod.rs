@@ -96,6 +96,16 @@ const ASSETS: &[(&str, &str, &str)] = &[
         include_str!("assets/artifact-preview.css"),
     ),
     (
+        "trajectory.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/trajectory.js"),
+    ),
+    (
+        "trajectory.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/trajectory.css"),
+    ),
+    (
         "sw.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/sw.js"),
@@ -803,7 +813,12 @@ mod tests {
             .iter()
             .find(|(path, _, _)| *path == "sw.js")
             .map(|a| a.2);
-        for file in ["artifact-preview.js", "artifact-preview.css"] {
+        for file in [
+            "artifact-preview.js",
+            "artifact-preview.css",
+            "trajectory.js",
+            "trajectory.css",
+        ] {
             assert!(named(file), "{file} is not served");
             assert!(
                 page.contains(&format!("\"{file}\"")),

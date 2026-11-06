@@ -125,6 +125,7 @@
   const sentence = (why, name) => `${name && why.startsWith(name) ? why : cap(why)}.`;
   const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const branchHref = (name) => `#/b/${enc(state.repo)}/${enc(name)}`;
+  const trajectoryHref = (name) => `#/trajectory/${enc(state.repo)}/${enc(name)}`;
   let uid = 0;
   const nextId = (prefix) => `${prefix}-${++uid}`;
 
@@ -972,6 +973,8 @@
     const a = entry.activity || {};
     state.lastActive.set(entry.branch, entry.at_ms);
     trackActivity(entry.branch, a, entry.at_ms);
+    // The Trajectory page folds the same stream into its lanes: no refetch.
+    if (trajView) trajView.activity(entry.branch, entry.activity, entry.at_ms);
     if (a.harness && a.harness.type === 'permission_requested') {
       state.permissions.unshift({ branch: entry.branch, tool: a.harness.request.tool, at_ms: entry.at_ms, decision: null });
       state.permissions.length = Math.min(state.permissions.length, 50);
@@ -1007,6 +1010,7 @@
   const VIEWS = {
     home: renderHome,
     branch: renderBranch,
+    trajectory: renderTrajectory,
     new: renderNew,
     attention: () => {
       // The project's cards are read again on arrival; the repository's
@@ -1028,24 +1032,26 @@
     const hash = location.hash || '#/';
     const parts = hash.replace(/^#\/?/, '').split('/').map((p) => { try { return decodeURIComponent(p); } catch (_) { return p; } });
     if (parts[0] === 'b') return { name: 'branch', repo: parts[1], branch: parts.slice(2).join('/') };
+    if (parts[0] === 'trajectory' && parts[1] && parts[2]) return { name: 'trajectory', repo: parts[1], branch: parts.slice(2).join('/') };
     if (parts[0] === 'p' && parts[1] === 'new') return { name: 'newProject' };
     if (parts[0] === 'p' && parts[1]) return { name: 'project', project: parts[1], creating: parts[2] === 'new' };
     if (parts[0] === 'w' && parts[1] && parts[2] === 'doc' && parts[3]) return { name: 'document', workspace: parts[1], artifact: parts[3] };
     if (parts[0] === 'w' && parts[1]) return { name: 'workspace', workspace: parts[1], session: parts[2] === 's' && parts[3] ? parts[3] : null };
     if (parts[0] === 'settings' && parts[1] === 'tools') return { name: 'settingsTools' };
     const name = ALIASES[parts[0]] || parts[0];
-    return { name: VIEWS[name] && !['branch', 'newProject', 'project', 'workspace', 'document'].includes(name) ? name : 'home' };
+    return { name: VIEWS[name] && !['branch', 'trajectory', 'newProject', 'project', 'workspace', 'document'].includes(name) ? name : 'home' };
   }
 
   async function route() {
     if (!state.token) return;
     closePreview();
+    closeTrajectory();
     document.body.classList.remove('sheet-open');
     // Connections became a page of Settings; an old link lands there.
     if (/^#\/connections\/?$/.test(location.hash)) history.replaceState(null, '', '#/settings/tools');
     state.route = parseRoute();
     const r = state.route;
-    if (r.name === 'branch' && r.repo && state.repos.includes(r.repo)) {
+    if ((r.name === 'branch' || r.name === 'trajectory') && r.repo && state.repos.includes(r.repo)) {
       if (state.source.kind !== 'repo') useSource({ kind: 'repo' });
       if (r.repo !== state.repo) { await switchRepo(r.repo); renderPicker(); }
     }
@@ -1080,6 +1086,7 @@
     if (state.route.name === 'home' && state.source.kind === 'repo') redraw(homeSignature(), renderHome);
     if (state.route.name === 'attention') redraw(attentionSignature(), renderAttention);
     if (state.route.name === 'branch') updateBranch();
+    if (state.route.name === 'trajectory' && trajView) trajView.branchesChanged();
   }
 
   // ---------------------------------------------------------------
@@ -1143,7 +1150,7 @@
     $('branch-count').textContent = needle
       ? `Showing ${shown.length} of ${all.length} branches`
       : plural(all.length, 'branch', 'branches');
-    const current = state.route.name === 'branch' ? state.route.branch : null;
+    const current = state.route.name === 'branch' || state.route.name === 'trajectory' ? state.route.branch : null;
     const row = (b, lane) => h('li', {}, h('a', {
       class: 'branch-row', href: branchHref(b.name), 'data-branch': b.name, 'data-key': `b:${b.name}`, title: b.name,
       'aria-current': b.name === current ? 'page' : null,
@@ -1413,7 +1420,8 @@
     const row = h('div', { class: `board-row board-${lane.key}${b.awaiting ? ' board-parked' : ''}`, 'data-branch': b.name,
       'data-track': entry && entry.track && !entry.loading ? 'loaded' : 'loading' },
       h('span', { class: 'board-name' }, dot(lane.key),
-        h('span', { class: 'board-id' }, h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta))),
+        h('span', { class: 'board-id' }, h('a', { href: branchHref(b.name), text: b.name }), h('span', { class: 'board-meta' }, meta, ' · ',
+          h('a', { class: 'board-traj', href: trajectoryHref(b.name), 'aria-label': `Trajectory of ${b.name}`, text: 'trajectory' })))),
       rail,
       h('span', { class: `board-cost mono${b.cost_usd == null ? ' muted' : ''}`, title: b.cost_usd == null ? 'its harness reports no cost' : `what ${b.harness} reported spending` }, cents(b.cost_usd)),
       h('span', { class: 'board-act' }, action));
@@ -2303,6 +2311,55 @@
   // The open branch: what its panes show, kept across live updates.
   let view = null;
 
+  // ---------------------------------------------------------------
+  // The Trajectory page: what one agent did, step by step
+  // (trajectory.js, docs/companion.md#trajectory). The branch's timeline
+  // gives the overview and the stream keeps it current; a step's content is
+  // read from the event page only when the step is opened.
+
+  let trajView = null;
+  function closeTrajectory() {
+    if (trajView) trajView.destroy();
+    trajView = null;
+  }
+
+  async function renderTrajectory() {
+    const name = state.route.branch;
+    let info = state.branches.get(name);
+    if (!info) {
+      try { info = await api('GET', branchPath(name)); state.branches.set(name, info); } catch (e) {
+        main(h('div', { class: 'page' }, h('a', { class: 'back', href: '#/', text: '‹ Branches' }),
+          h('h1', { text: name }), h('p', { class: 'error', text: e.message })));
+        return;
+      }
+    }
+    const host = h('div', { class: 'tj-host' });
+    main(h('div', { class: 'page full tj' },
+      h('a', { class: 'back', href: branchHref(name), text: '‹ Branch' }),
+      h('div', { class: 'page-head' },
+        h('div', {},
+          h('h1', { text: `Trajectory: ${name}` }),
+          h('p', { class: 'lede', text: 'What this agent did, step by step: its turns, tool calls, waits and the helpers it delegated to.' }),
+          h('div', { class: 'tj-head-links' },
+            h('a', { class: 'button small', href: branchHref(name), text: 'Open the branch' }),
+            info.parent ? h('a', { class: 'button small', href: trajectoryHref(info.parent), text: `Parent: ${info.parent}` }) : null))),
+      host));
+    if (!window.BranchyardTrajectory) {
+      host.append(h('p', { class: 'error', role: 'alert', text: 'The trajectory component did not load.' }));
+      return;
+    }
+    trajView = window.BranchyardTrajectory.mount(host, {
+      repo: state.repo,
+      branch: name,
+      api: (path) => api('GET', path),
+      path: (branch) => branchPath(branch),
+      branches: () => state.branches,
+      href: { branch: branchHref, trajectory: trajectoryHref },
+      status: statusOf,
+      describe,
+    });
+  }
+
   async function renderBranch() {
     const name = state.route.branch;
     let info = state.branches.get(name);
@@ -2578,7 +2635,9 @@
       s.key === 'merged'
         ? h('p', { class: 'state state-merged' }, checkMark(state.merged.has(info.name)), cap(s.text))
         : h('p', { class: `state state-${lane}` }, dot(lane), cap(s.text)),
-      action || menu.length ? h('div', { class: 'strip-actions' }, action, menu.length ? menuOf(menu, info) : null) : null,
+      h('div', { class: 'strip-actions' },
+        h('a', { class: 'button small', href: trajectoryHref(info.name), 'data-trajectory': info.name, text: 'Trajectory' }),
+        action, menu.length ? menuOf(menu, info) : null),
     ];
   }
 
