@@ -25,6 +25,28 @@ pub(crate) struct Receipt {
     #[serde(default)]
     pub fqdn_policy_uid: Option<String>,
     pub node: Option<NodeEvidence>,
+    /// Set when the allocation was claimed from the warm pool instead of
+    /// created (`docs/agent-sandbox-gke.md#warm-pool`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pooled: Option<Pooled>,
+}
+
+/// What a claim on the warm pool made of an allocation: the objects it
+/// went through, and the names of the Sandbox and Pod it ended up with,
+/// which the pool, not Branchyard, named.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct Pooled {
+    /// The `SandboxTemplate` the claim named.
+    pub template: String,
+    /// The claim's UID, once it was read back.
+    pub claim_uid: Option<String>,
+    /// The Sandbox the claim resolved to (`status.sandbox.name`), when it
+    /// is not named like the claim.
+    pub sandbox: Option<String>,
+    /// The warm Pod the Sandbox adopted.
+    pub pod: Option<String>,
+    /// The Sandbox and Pod were verified and marked as this allocation's.
+    pub bound: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -48,7 +70,14 @@ impl Receipt {
             .ok_or_else(|| invalid("an image is required"))?;
         let cpus = spec.resources.cpus.unwrap_or(1);
         let memory_mib = spec.resources.memory_mib.unwrap_or(1024);
-        let body = serde_json::to_vec(&(config, &image, cpus, memory_mib))
+        // The pool's size is not part of what an allocation is: resizing a
+        // pool must not make a new template, nor tell a fresh Sandbox from
+        // a claimed one.
+        let identity = Config {
+            warm_pool: None,
+            ..config.clone()
+        };
+        let body = serde_json::to_vec(&(&identity, &image, cpus, memory_mib))
             .map_err(|e| invalid(&e.to_string()))?;
         let mut nonce = [0u8; 16];
         branchyard_support::rng::fill_random(&mut nonce).map_err(io::Error::from)?;
@@ -68,11 +97,39 @@ impl Receipt {
             policy_uid: None,
             fqdn_policy_uid: None,
             node: None,
+            pooled: None,
         })
     }
 
+    /// The name of the allocation's own objects: its claim, its network
+    /// policies, and (unless claimed from the pool) its Sandbox and Pod.
     pub fn resource_name(&self) -> String {
         resource_name(&self.name)
+    }
+
+    /// The allocation's Sandbox: named by Branchyard, or by the pool when
+    /// claimed.
+    pub fn sandbox_name(&self) -> String {
+        match self.pooled.as_ref().and_then(|p| p.sandbox.clone()) {
+            Some(name) => name,
+            None => self.resource_name(),
+        }
+    }
+
+    /// The allocation's Pod: named like the Sandbox, or by the pool when
+    /// claimed.
+    pub fn pod_name(&self) -> String {
+        match self.pooled.as_ref().and_then(|p| p.pod.clone()) {
+            Some(name) => name,
+            None => self.resource_name(),
+        }
+    }
+
+    /// The template and pool a claim for this allocation goes through:
+    /// named by the specification digest, so every allocation of one
+    /// specification shares one pool.
+    pub fn pool_id(&self) -> &str {
+        &self.digest[..32]
     }
 
     pub fn validate_target(&self, config: &Config, name: &str) -> Result<(), ProviderError> {

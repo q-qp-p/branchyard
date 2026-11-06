@@ -1995,6 +1995,31 @@ by stats [OPTIONS]
 |---|---|
 | `--json` | Print JSON |
 
+## `by startup`
+
+How long turns took to start, by provider and path
+
+Percentiles of each startup phase (placement, sandbox ready, source attached, harness started, ...) from the turns recorded here; see docs/providers.md.
+
+```text
+by startup [OPTIONS] <COMMAND>
+```
+
+### `by startup report`
+
+Percentiles of each startup phase, by provider and path
+
+Reads the startups the engine recorded for turns in this repository's store: the p50 and p95 of the time each phase took, and of the whole startup (`total`), per provider and path.
+
+```text
+by startup report [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--provider <NAME>` | Only this provider (`local`, `microsandbox`, `container`, `agent_sandbox`, `substrate`, ...) |
+| `--since <DURATION>` | Only startups recorded within this long, such as 30m or 7d |
+
 ## `by handoff`
 
 Relay a settled result and selected artifacts without steering its recipient

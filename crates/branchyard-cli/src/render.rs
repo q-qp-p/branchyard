@@ -693,6 +693,7 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             },
             &event.describe(),
         ),
+        Activity::Startup(startup) => style.paint(Tone::Dim, &startup.line()),
         Activity::Fleet(activity) => style.paint(
             match activity.as_ref() {
                 branchyard::FleetActivity::FailedOver { .. } => Tone::Yellow,

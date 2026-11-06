@@ -26,8 +26,8 @@ pub mod fake;
 mod provider;
 
 pub use provider::{
-    Checkpoint, ExecSpec, ExitStatus, Mount, Process, ProviderError, Resources, SandboxInfo,
-    SandboxProvider, SandboxSpec,
+    Checkpoint, ExecSpec, ExitStatus, Launch, Mount, Process, ProviderError, Resources,
+    SandboxInfo, SandboxProvider, SandboxSpec,
 };
 
 /// What a snapshot captures.

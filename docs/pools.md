@@ -124,7 +124,9 @@ The SDK takes no trust decision: `fill_pool` runs the setup its caller passes.
 
 ## Sandboxes
 
-Sandboxes are **not** pre-booted; this part of the plan is not built. A sandboxed branch never takes a slot: a slot holds this host's environment, while a sandboxed branch's environment is a sandbox branched from a provider snapshot ([environments](environments.md#sandboxes)). With a provider that can live-branch, that sandbox already starts from the prepared snapshot, rebound to the branch's own worktree and home, without running setup. A sandbox kept paused for a slot would have to be handed over the same way (a live branch with the branch's mounts), so it would save at most the provider's own start; that is left until a real provider (all are unqualified here) shows the gain. The pool's configuration has no key for it.
+Sandboxes are pre-booted for one provider only: GKE Agent Sandbox, with `[agent_sandbox] warm_pool = N` ([GKE](agent-sandbox-gke.md#warm-pool)). That is the cluster's own pool of pods, claimed by the allocation and recorded as `path=pool` in the turn's [startup](providers.md#measuring-launch-time); it is not a slot of the pool in this page. A sandboxed branch never takes a slot: a slot holds this host's environment, while a sandboxed branch's environment is a sandbox branched from a provider snapshot ([environments](environments.md#sandboxes)). With a provider that can live-branch, that sandbox already starts from the prepared snapshot, rebound to the branch's own worktree and home, without running setup.
+
+Not done: pre-booted Microsandbox and Substrate sandboxes (they would have to be handed over as a live branch with the branch's mounts, so they save at most the provider's own start; left until a real provider shows the gain), and any measurement of what the GKE pool saves. The pool in this page has no key for sandboxes.
 
 ## Limits
 

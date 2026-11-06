@@ -270,8 +270,10 @@ pub fn record_events(
 /// Count the start of each of a task's new branches (`created`): from the
 /// operation's admission (`admitted_ms`) to the branch's first prompt, by
 /// whether its worktree came from a warm pool (`hit`), had a pool and
-/// found no slot (`miss`), or had none (`none`); and the pool's hits and
-/// misses in `repo`.
+/// found no slot (`miss`), or had none (`none`), and by the `provider` and
+/// `path` its turn recorded ([`branchyard::startup::Startup`]; a branch
+/// with none is `unknown`); each phase that turn reached, by the time it
+/// took; and the pool's hits and misses in `repo`.
 pub fn record_starts(
     metrics: &Metrics,
     repo: &str,
@@ -279,6 +281,16 @@ pub fn record_starts(
     created: &BTreeSet<String>,
     entries: &[FeedEntry],
 ) {
+    // A turn's startup is recorded with the harness's first event, after
+    // its prompt: find each branch's first before counting.
+    let mut startups: BTreeMap<&str, &branchyard::startup::Startup> = BTreeMap::new();
+    for entry in entries {
+        if let Activity::Startup(startup) = &entry.activity {
+            if created.contains(entry.branch.as_str()) {
+                startups.entry(entry.branch.as_str()).or_insert(startup);
+            }
+        }
+    }
     let mut pooled: BTreeMap<&str, &'static str> = BTreeMap::new();
     let mut started: BTreeSet<&str> = BTreeSet::new();
     for entry in entries {
@@ -301,11 +313,28 @@ pub fn record_starts(
             Activity::Prompt(_) => {
                 started.insert(branch);
                 let pool = pooled.get(branch).copied().unwrap_or("none");
+                let (provider, path) = match startups.get(branch) {
+                    Some(startup) => (startup.provider.as_str(), startup.path.to_string()),
+                    None => ("unknown", "unknown".to_owned()),
+                };
                 metrics.observe(
                     metrics::START,
-                    &[("pool", pool)],
+                    &[("pool", pool), ("provider", provider), ("path", &path)],
                     entry.at_ms.saturating_sub(admitted_ms) as f64 / 1000.0,
                 );
+                if let Some(startup) = startups.get(branch) {
+                    for (phase, ms) in startup.phases.durations() {
+                        metrics.observe(
+                            metrics::START_PHASE,
+                            &[
+                                ("provider", provider),
+                                ("path", &path),
+                                ("phase", &phase.to_string()),
+                            ],
+                            ms as f64 / 1000.0,
+                        );
+                    }
+                }
             }
             _ => {}
         }
@@ -364,8 +393,21 @@ mod tests {
         }
     }
 
+    fn startup(
+        provider: &str,
+        path: branchyard::startup::StartupPath,
+        phases: branchyard::startup::Phases,
+    ) -> Activity {
+        Activity::Startup(Box::new(branchyard::startup::Startup {
+            provider: provider.into(),
+            path,
+            phases,
+        }))
+    }
+
     #[test]
     fn a_tasks_new_branches_count_their_start_and_pool_use() {
+        use branchyard::startup::{Phases, StartupPath};
         let metrics = Metrics::default();
         let pooled = |slot: Option<&str>| {
             let mut report =
@@ -385,17 +427,62 @@ mod tests {
         let entries = vec![
             entry(1, "hit", 1_100, pooled(Some("s1"))),
             entry(2, "hit", 1_200, Activity::Prompt("p".into())),
-            entry(3, "miss", 1_100, pooled(None)),
-            entry(4, "miss", 4_000, Activity::Prompt("p".into())),
-            entry(5, "plain", 2_000, Activity::Prompt("p".into())),
+            entry(
+                3,
+                "hit",
+                1_300,
+                startup(
+                    "agent_sandbox",
+                    StartupPath::Pool,
+                    Phases {
+                        queued: Some(10),
+                        sandbox_ready: Some(110),
+                        first_event: Some(300),
+                        ..Phases::default()
+                    },
+                ),
+            ),
+            entry(4, "miss", 1_100, pooled(None)),
+            entry(5, "miss", 4_000, Activity::Prompt("p".into())),
+            entry(6, "plain", 2_000, Activity::Prompt("p".into())),
             // Not a start: a later prompt, and another operation's branch.
-            entry(6, "hit", 9_000, Activity::Prompt("again".into())),
-            entry(7, "other", 9_000, Activity::Prompt("p".into())),
+            entry(7, "hit", 9_000, Activity::Prompt("again".into())),
+            entry(8, "other", 9_000, Activity::Prompt("p".into())),
+            entry(
+                9,
+                "other",
+                9_100,
+                startup("local", StartupPath::Local, Phases::default()),
+            ),
+            // A later turn's startup does not replace the first.
+            entry(
+                10,
+                "hit",
+                9_100,
+                startup(
+                    "agent_sandbox",
+                    StartupPath::Resumed,
+                    Phases {
+                        queued: Some(1),
+                        ..Phases::default()
+                    },
+                ),
+            ),
         ];
         record_starts(&metrics, "app", 1_000, &created, &entries);
-        let count = |pool: &str| counter(&metrics, metrics::START, &[("pool", pool)]);
+        let count = |pool: &str, provider: &str, path: &str| {
+            counter(
+                &metrics,
+                metrics::START,
+                &[("pool", pool), ("provider", provider), ("path", path)],
+            )
+        };
         assert_eq!(
-            (count("hit"), count("miss"), count("none")),
+            (
+                count("hit", "agent_sandbox", "pool"),
+                count("miss", "unknown", "unknown"),
+                count("none", "unknown", "unknown"),
+            ),
             (1.0, 1.0, 1.0)
         );
         let claims = |result: &str| {
@@ -407,14 +494,48 @@ mod tests {
         };
         assert_eq!((claims("hit"), claims("miss")), (1.0, 1.0));
         let snapshot = metrics.snapshot();
-        let sum = |pool: &str| match snapshot[metrics::START]
-            .get(&vec![("pool".to_string(), pool.to_string())])
-        {
+        let labels = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let sum = |pairs: &[(&str, &str)]| match snapshot[metrics::START].get(&labels(pairs)) {
             Some(Value::Histogram { sum, .. }) => *sum,
             other => panic!("{other:?}"),
         };
-        assert_eq!(sum("hit"), 0.2);
-        assert_eq!(sum("miss"), 3.0);
+        assert_eq!(
+            sum(&[
+                ("pool", "hit"),
+                ("provider", "agent_sandbox"),
+                ("path", "pool")
+            ]),
+            0.2
+        );
+        assert_eq!(
+            sum(&[
+                ("pool", "miss"),
+                ("provider", "unknown"),
+                ("path", "unknown")
+            ]),
+            3.0
+        );
+        // Each phase the first startup reached counts the time it took:
+        // 10 ms queued, 100 ms until the sandbox, 190 ms after it.
+        let phase = |name: &str| match snapshot[metrics::START_PHASE].get(&labels(&[
+            ("provider", "agent_sandbox"),
+            ("path", "pool"),
+            ("phase", name),
+        ])) {
+            Some(Value::Histogram { sum, count, .. }) => (*sum, *count),
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(phase("queued"), (0.01, 1));
+        assert_eq!(phase("sandbox_ready"), (0.1, 1));
+        assert_eq!(phase("first_event"), (0.19, 1));
+        // Phases that did not occur are not counted, and a branch outside
+        // the operation or a later turn adds nothing.
+        assert_eq!(snapshot[metrics::START_PHASE].len(), 3);
     }
 
     #[test]

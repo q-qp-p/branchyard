@@ -288,6 +288,25 @@ pub(crate) fn knowledge_status(text: &str) -> Result<branchyard::KnowledgeStatus
     })
 }
 
+/// `by startup`'s actions.
+#[derive(Subcommand, Clone, Debug, PartialEq)]
+pub enum StartupAction {
+    /// Percentiles of each startup phase, by provider and path
+    ///
+    /// Reads the startups the engine recorded for turns in this repository's store: the p50
+    /// and p95 of the time each phase took, and of the whole startup (`total`), per provider
+    /// and path.
+    Report {
+        /// Only this provider (`local`, `microsandbox`, `container`, `agent_sandbox`,
+        /// `substrate`, ...)
+        #[arg(long, value_name = "NAME", value_parser = non_blank)]
+        provider: Option<String>,
+        /// Only startups recorded within this long, such as 30m or 7d
+        #[arg(long, value_name = "DURATION", value_parser = since_window)]
+        since: Option<Duration>,
+    },
+}
+
 /// `by fleet`'s actions.
 #[derive(Subcommand, Clone, Debug, PartialEq)]
 pub enum FleetAction {

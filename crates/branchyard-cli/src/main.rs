@@ -90,6 +90,7 @@ mod setup_cmd;
 mod setup_io;
 mod skills_cmd;
 mod ssh_remote;
+mod startup_cmd;
 mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
@@ -629,6 +630,11 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Reincarnate { branch, task } => commands::reincarnate(env, target, &branch, &task),
         Command::Ls { json } => commands::ls(env, target, json),
         Command::Stats { json } => stats_cmd::main(env, target, json),
+        Command::Startup { json, action } => match action {
+            args::StartupAction::Report { provider, since } => {
+                startup_cmd::report(env, target, provider, since, json)
+            }
+        },
         Command::Show {
             branch,
             json,

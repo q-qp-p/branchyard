@@ -93,6 +93,9 @@ pub const POOL_MADE: &str = "branchyard_pool_slots_made_total";
 pub const POOL_FILL: &str = "branchyard_pool_fill_seconds";
 pub const POOL_DISCARDED: &str = "branchyard_pool_slots_discarded_total";
 pub const START: &str = "branchyard_start_seconds";
+/// Histogram of seconds each startup phase of a turn took, labelled
+/// `provider`, `path` and `phase`.
+pub const START_PHASE: &str = "branchyard_start_phase_seconds";
 pub const SYNC_BYTES: &str = "branchyard_sync_bytes_total";
 pub const SYNC_OBJECTS: &str = "branchyard_sync_objects_total";
 pub const SYNC_SWAPS: &str = "branchyard_sync_swaps_total";
@@ -264,7 +267,13 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: START,
         kind: Kind::Histogram,
-        help: "Start latency of a task's new branches, from admission to the harness's first prompt, by pool (hit, miss, none).",
+        help: "Start latency of a task's new branches, from admission to the harness's first prompt, by pool (hit, miss, none), provider and path.",
+        buckets: START_SECONDS,
+    },
+    Family {
+        name: START_PHASE,
+        kind: Kind::Histogram,
+        help: "Time one phase of a task's new branches' start took, by provider, path and phase; a phase that did not occur is not counted.",
         buckets: START_SECONDS,
     },
     family(
@@ -1014,7 +1023,11 @@ mod tests {
                 ..branchyard::PoolFill::default()
             },
         );
-        metrics.observe(START, &[("pool", "hit")], 0.2);
+        metrics.observe(
+            START,
+            &[("pool", "hit"), ("provider", "local"), ("path", "local")],
+            0.2,
+        );
         let mut snapshot = metrics.snapshot();
         pool_gauges(
             &mut snapshot,
@@ -1054,7 +1067,12 @@ mod tests {
             sample(
                 &samples,
                 &format!("{START}_bucket"),
-                &[("pool", "hit"), ("le", "0.25")]
+                &[
+                    ("pool", "hit"),
+                    ("provider", "local"),
+                    ("path", "local"),
+                    ("le", "0.25")
+                ]
             ),
             Some("1")
         );
@@ -1062,7 +1080,12 @@ mod tests {
             sample(
                 &samples,
                 &format!("{START}_bucket"),
-                &[("pool", "hit"), ("le", "0.1")]
+                &[
+                    ("pool", "hit"),
+                    ("provider", "local"),
+                    ("path", "local"),
+                    ("le", "0.1")
+                ]
             ),
             Some("0")
         );

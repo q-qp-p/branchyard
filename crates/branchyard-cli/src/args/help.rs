@@ -136,6 +136,15 @@ Runs each attempt's check on its exact candidate, scores it without a model
 branch. An answer that is not a strict verdict falls back to the
 deterministic score. Local mode only. See docs/fleet.md.";
 
+pub(crate) const STARTUP_EXAMPLES: &str = "\
+Examples:
+  by startup report
+  by startup report --provider agent_sandbox --since 7d
+  by startup report --json
+
+Each phase's figure is the time that phase took; `total` is the whole startup. A phase a
+provider does not measure is absent, not zero; see docs/providers.md.";
+
 pub(crate) const FLEET_EXAMPLES: &str = "\
 Examples:
   by fleet stats

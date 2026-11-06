@@ -188,6 +188,22 @@ It does not mount: a spec with a mount, an image or limits is refused, because t
 
 `TaskOptions::provider` selects it with `Provider::Substrate(SubstrateOptions)`; the CLI flags are `--provider substrate --substrate-endpoint URL --substrate-router URL --substrate-template NAME --substrate-key FILE [--substrate-atespace NAME] [--substrate-workdir PATH] [--substrate-home PATH] [--substrate-ca FILE] [--substrate-client-cert FILE --substrate-client-key FILE] [--substrate-router-ca FILE] [--substrate-insecure] [--pass-env NAME,...]` on `by run`, `by fan` and `by fork`. [Agent Substrate](substrate.md) documents the bridge protocol, the credentials, the transfer, the template and what remains unqualified; [live testing](testing-live.md#6-agent-substrate-cluster) says how to run it on a kind cluster.
 
+## Measuring launch time
+
+Every turn records how long it took to start ([observability](observability.md#startup-phases)): the provider, the path (`cold`, `cached_image`, `snapshot`, `resumed`, `pool` or `local`), and the offsets of the phases it reached. A provider says more about its launch through `SandboxProvider::launch`, whose default reports nothing: whether the sandbox was claimed from a pool (`pool`), whether its image was already on the host (`cached_image`), and when the image was ready (`image_ready`). A provider that cannot tell is recorded as `cold` with no `image_ready`; nothing is guessed. Only the Agent Sandbox provider reports a pool today.
+
+To compare providers, run the same task a number of times on each and read the distribution:
+
+```
+by startup report                       # every provider, path and phase
+by startup report --provider microsandbox --since 7d
+by startup report --json
+```
+
+Each row is a provider, path and phase with the count and the p50 and p95 (nearest rank) of the time that phase took; `total` is the whole startup up to the last phase reached. Phases are gaps, so a slow image shows in `image_ready` or `sandbox_ready` and not in everything after it. Compare like paths: a `pool` figure against a `cold` one measures the pool. It reads the turns recorded in this repository's store (`--remote` is refused: run it where the store is), and the server's `branchyard_start_phase_seconds` histogram holds the same for a served fleet.
+
+Status: hermetic (fakes only: FakeProvider, a fake clock, a fake `kubectl`). Not done: no figure is measured on any real provider; Microsandbox and Substrate report no image or pool facts and have no pre-booted sandboxes.
+
 ## Adding a provider
 
 A branch stores a [`Provider`](../crates/branchyard/src/lib.rs), a closed, serialized enum. What each variant means to the engine (its name and key, its sandbox lifecycle, whether its options can run, where the harness sees the worktree and `HOME`, how a stopped engine's sandbox is recovered and a reaped one destroyed, how its sandbox provider is opened, whether it can confine egress, whether its sandbox can reach the engine's host, and the line `by` prints before a run) is one crate-private trait, `ProviderKind`. The implementation inventory is in [`providers/mod.rs`](../crates/branchyard/src/providers/mod.rs).

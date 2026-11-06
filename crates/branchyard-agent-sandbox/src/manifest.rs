@@ -59,7 +59,22 @@ fn sidecar(receipt: &Receipt, sidecar: &crate::config::CredentialSidecar) -> Val
     })
 }
 
-pub(crate) fn sandbox(receipt: &Receipt) -> Value {
+/// The extensions API Agent Sandbox serves its warm pool through
+/// (`SandboxTemplate`, `SandboxWarmPool`, `SandboxClaim`). Not verified
+/// against a cluster or a pinned CRD: see `docs/agent-sandbox-gke.md#warm-pool`.
+pub(crate) const EXTENSIONS_API_VERSION: &str = "extensions.agents.x-k8s.io/v1alpha1";
+pub(crate) const TEMPLATE_RESOURCE: &str = "sandboxtemplates.extensions.agents.x-k8s.io";
+pub(crate) const POOL_RESOURCE: &str = "sandboxwarmpools.extensions.agents.x-k8s.io";
+pub(crate) const CLAIM_RESOURCE: &str = "sandboxclaims.extensions.agents.x-k8s.io";
+pub(crate) const EXTENSIONS_COLLECTION: &str =
+    "/apis/extensions.agents.x-k8s.io/v1alpha1/namespaces";
+/// The label that marks a template and pool as Branchyard's, with the
+/// specification digest they were made for.
+pub(crate) const POOL: &str = "branchyard.io/pool";
+
+/// The pod of an allocation under `labels`: what a Sandbox runs, and what a
+/// template boots in advance. Either way the pod must verify the same.
+fn pod_template(receipt: &Receipt, labels: Value) -> Value {
     let runtime = receipt.target.runtime.name();
     let mut mounts = vec![
         json!({"name":"workspace","mountPath":"/workspace"}),
@@ -107,6 +122,26 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
         containers.push(sidecar(receipt, proxy));
     }
     json!({
+        "metadata":{"labels":labels, "annotations":pod_annotations},
+        "spec": {
+            "runtimeClassName":runtime,
+            "nodeSelector":{"sandbox.gke.io/runtime":runtime},
+            "tolerations":[{"key":"sandbox.gke.io/runtime", "operator":"Equal", "value":runtime,"effect":"NoSchedule"}],
+            "automountServiceAccountToken":false,
+            "enableServiceLinks":false, "restartPolicy":"Never",
+            "terminationGracePeriodSeconds":10,
+            "securityContext":{
+                "runAsNonRoot":true, "runAsUser":1000, "runAsGroup":1000,
+                "fsGroup":1000, "seccompProfile":{"type":"RuntimeDefault"}
+            },
+            "containers":containers,
+            "volumes":volumes
+        }
+    })
+}
+
+pub(crate) fn sandbox(receipt: &Receipt) -> Value {
+    json!({
         "apiVersion":"agents.x-k8s.io/v1beta1", "kind":"Sandbox",
         "metadata": {
             "name":receipt.resource_name(), "namespace":receipt.target.namespace,
@@ -114,25 +149,61 @@ pub(crate) fn sandbox(receipt: &Receipt) -> Value {
         },
         "spec": {
             "service":false, "failedPodPolicy":"Retain", "operatingMode":"Running",
-            "podTemplate": {
-                "metadata":{"labels":{OWNER:receipt.owner}, "annotations":pod_annotations},
-                "spec": {
-                    "runtimeClassName":runtime,
-                    "nodeSelector":{"sandbox.gke.io/runtime":runtime},
-                    "tolerations":[{"key":"sandbox.gke.io/runtime", "operator":"Equal", "value":runtime,"effect":"NoSchedule"}],
-                    "automountServiceAccountToken":false,
-                    "enableServiceLinks":false, "restartPolicy":"Never",
-                    "terminationGracePeriodSeconds":10,
-                    "securityContext":{
-                        "runAsNonRoot":true, "runAsUser":1000, "runAsGroup":1000,
-                        "fsGroup":1000, "seccompProfile":{"type":"RuntimeDefault"}
-                    },
-                    "containers":containers,
-                    "volumes":volumes
-                }
-            }
+            "podTemplate": pod_template(receipt, json!({OWNER:receipt.owner}))
         }
     })
+}
+
+/// The `SandboxTemplate` of the allocation's warm pool: the same pod as
+/// [`sandbox`], without an owner: the provider labels a claimed Sandbox and
+/// Pod with the allocation's owner once it has verified them. Named by the
+/// specification digest.
+pub(crate) fn template(receipt: &Receipt) -> Value {
+    json!({
+        "apiVersion":EXTENSIONS_API_VERSION, "kind":"SandboxTemplate",
+        "metadata": {
+            "name":template_name(receipt), "namespace":receipt.target.namespace,
+            "labels":{POOL:receipt.pool_id()}, "annotations":{SPEC:receipt.digest}
+        },
+        "spec": {
+            "podTemplate": pod_template(receipt, json!({POOL:receipt.pool_id()}))
+        }
+    })
+}
+
+/// The `SandboxWarmPool` that keeps `replicas` pods of [`template`] booted.
+pub(crate) fn warm_pool(receipt: &Receipt, replicas: u32) -> Value {
+    json!({
+        "apiVersion":EXTENSIONS_API_VERSION, "kind":"SandboxWarmPool",
+        "metadata": {
+            "name":pool_name(receipt), "namespace":receipt.target.namespace,
+            "labels":{POOL:receipt.pool_id()}, "annotations":{SPEC:receipt.digest}
+        },
+        "spec": {
+            "replicas":replicas,
+            "sandboxTemplateRef":{"name":template_name(receipt)}
+        }
+    })
+}
+
+/// The allocation's claim on a ready pod of the pool.
+pub(crate) fn claim(receipt: &Receipt) -> Value {
+    json!({
+        "apiVersion":EXTENSIONS_API_VERSION, "kind":"SandboxClaim",
+        "metadata": {
+            "name":receipt.resource_name(), "namespace":receipt.target.namespace,
+            "labels":{OWNER:receipt.owner}, "annotations":{SPEC:receipt.digest}
+        },
+        "spec": {"sandboxTemplateRef":{"name":template_name(receipt)}}
+    })
+}
+
+pub(crate) fn template_name(receipt: &Receipt) -> String {
+    format!("by-tpl-{}", receipt.pool_id())
+}
+
+pub(crate) fn pool_name(receipt: &Receipt) -> String {
+    format!("by-pool-{}", receipt.pool_id())
 }
 
 /// Cluster DNS, which every allocation policy lets through: the resolver for
@@ -146,7 +217,7 @@ fn dns_rule() -> Value {
 
 fn owned_by_sandbox(receipt: &Receipt, sandbox_uid: &str) -> Value {
     json!([{"apiVersion":"agents.x-k8s.io/v1beta1","kind":"Sandbox",
-        "name":receipt.resource_name(),"uid":sandbox_uid,"controller":true,"blockOwnerDeletion":true}])
+        "name":receipt.sandbox_name(),"uid":sandbox_uid,"controller":true,"blockOwnerDeletion":true}])
 }
 
 /// The egress rules of the allocation's `NetworkPolicy`.

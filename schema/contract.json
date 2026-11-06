@@ -38540,6 +38540,19 @@
             {
               "type": "object",
               "properties": {
+                "startup": {
+                  "$ref": "#/$defs/Startup"
+                }
+              },
+              "required": [
+                "startup"
+              ],
+              "additionalProperties": false,
+              "description": "How long the turn took to start, phase by phase, from the\noperation's admission to the harness's first event, and the provider\nand path that made its sandbox ready. Recorded once per turn that\nstarted a harness. See [`startup::Startup`] and\n`docs/providers.md#measuring-launch-time`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "fleet": {
                   "$ref": "#/$defs/FleetActivity"
                 }
@@ -41835,6 +41848,142 @@
             "ms"
           ],
           "description": "The bytes and duration of one copy into or out of a copied sandbox."
+        },
+        "Startup": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Where the harness ran: `local`, or the sandbox provider\n(`microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe)."
+            },
+            "path": {
+              "$ref": "#/$defs/StartupPath",
+              "description": "Which way the sandbox was made ready."
+            },
+            "phases": {
+              "$ref": "#/$defs/Phases",
+              "description": "The phases that occurred.",
+              "default": {}
+            }
+          },
+          "required": [
+            "provider",
+            "path"
+          ],
+          "description": "One turn's startup, as [`crate::Activity::Startup`]."
+        },
+        "StartupPath": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "cold",
+              "description": "Created for the turn, its image pulled on the way (or the provider\ncannot say it was not)."
+            },
+            {
+              "type": "string",
+              "const": "cached_image",
+              "description": "Created for the turn from an image the host already had."
+            },
+            {
+              "type": "string",
+              "const": "snapshot",
+              "description": "Branched from a provider snapshot or a prepared environment."
+            },
+            {
+              "type": "string",
+              "const": "resumed",
+              "description": "The branch's own kept sandbox, resumed."
+            },
+            {
+              "type": "string",
+              "const": "pool",
+              "description": "Claimed from a pool of sandboxes booted ahead of time."
+            },
+            {
+              "type": "string",
+              "const": "local",
+              "description": "No sandbox: the harness ran on this host."
+            }
+          ],
+          "description": "Which way a turn's sandbox was made ready. Serialized in snake case."
+        },
+        "Phases": {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Queued`]."
+            },
+            "placement": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Placement`]."
+            },
+            "image_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::ImageReady`]."
+            },
+            "sandbox_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SandboxReady`]."
+            },
+            "source_attached": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SourceAttached`]."
+            },
+            "harness_started": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HarnessStarted`]."
+            },
+            "handshake_done": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HandshakeDone`]."
+            },
+            "first_event": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::FirstEvent`]."
+            }
+          },
+          "description": "Millisecond offsets from admission at which each [`Phase`] was reached;\na phase that did not occur is absent."
         },
         "FleetActivity": {
           "oneOf": [
@@ -44171,6 +44320,19 @@
             {
               "type": "object",
               "properties": {
+                "startup": {
+                  "$ref": "#/$defs/Startup"
+                }
+              },
+              "required": [
+                "startup"
+              ],
+              "additionalProperties": false,
+              "description": "How long the turn took to start, phase by phase, from the\noperation's admission to the harness's first event, and the provider\nand path that made its sandbox ready. Recorded once per turn that\nstarted a harness. See [`startup::Startup`] and\n`docs/providers.md#measuring-launch-time`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "fleet": {
                   "$ref": "#/$defs/FleetActivity"
                 }
@@ -47466,6 +47628,142 @@
             "ms"
           ],
           "description": "The bytes and duration of one copy into or out of a copied sandbox."
+        },
+        "Startup": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Where the harness ran: `local`, or the sandbox provider\n(`microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe)."
+            },
+            "path": {
+              "$ref": "#/$defs/StartupPath",
+              "description": "Which way the sandbox was made ready."
+            },
+            "phases": {
+              "$ref": "#/$defs/Phases",
+              "description": "The phases that occurred.",
+              "default": {}
+            }
+          },
+          "required": [
+            "provider",
+            "path"
+          ],
+          "description": "One turn's startup, as [`crate::Activity::Startup`]."
+        },
+        "StartupPath": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "cold",
+              "description": "Created for the turn, its image pulled on the way (or the provider\ncannot say it was not)."
+            },
+            {
+              "type": "string",
+              "const": "cached_image",
+              "description": "Created for the turn from an image the host already had."
+            },
+            {
+              "type": "string",
+              "const": "snapshot",
+              "description": "Branched from a provider snapshot or a prepared environment."
+            },
+            {
+              "type": "string",
+              "const": "resumed",
+              "description": "The branch's own kept sandbox, resumed."
+            },
+            {
+              "type": "string",
+              "const": "pool",
+              "description": "Claimed from a pool of sandboxes booted ahead of time."
+            },
+            {
+              "type": "string",
+              "const": "local",
+              "description": "No sandbox: the harness ran on this host."
+            }
+          ],
+          "description": "Which way a turn's sandbox was made ready. Serialized in snake case."
+        },
+        "Phases": {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Queued`]."
+            },
+            "placement": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Placement`]."
+            },
+            "image_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::ImageReady`]."
+            },
+            "sandbox_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SandboxReady`]."
+            },
+            "source_attached": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SourceAttached`]."
+            },
+            "harness_started": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HarnessStarted`]."
+            },
+            "handshake_done": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HandshakeDone`]."
+            },
+            "first_event": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::FirstEvent`]."
+            }
+          },
+          "description": "Millisecond offsets from admission at which each [`Phase`] was reached;\na phase that did not occur is absent."
         },
         "FleetActivity": {
           "oneOf": [
@@ -56000,6 +56298,19 @@
             {
               "type": "object",
               "properties": {
+                "startup": {
+                  "$ref": "#/$defs/Startup"
+                }
+              },
+              "required": [
+                "startup"
+              ],
+              "additionalProperties": false,
+              "description": "How long the turn took to start, phase by phase, from the\noperation's admission to the harness's first event, and the provider\nand path that made its sandbox ready. Recorded once per turn that\nstarted a harness. See [`startup::Startup`] and\n`docs/providers.md#measuring-launch-time`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "fleet": {
                   "$ref": "#/$defs/FleetActivity"
                 }
@@ -59295,6 +59606,142 @@
             "ms"
           ],
           "description": "The bytes and duration of one copy into or out of a copied sandbox."
+        },
+        "Startup": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Where the harness ran: `local`, or the sandbox provider\n(`microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe)."
+            },
+            "path": {
+              "$ref": "#/$defs/StartupPath",
+              "description": "Which way the sandbox was made ready."
+            },
+            "phases": {
+              "$ref": "#/$defs/Phases",
+              "description": "The phases that occurred.",
+              "default": {}
+            }
+          },
+          "required": [
+            "provider",
+            "path"
+          ],
+          "description": "One turn's startup, as [`crate::Activity::Startup`]."
+        },
+        "StartupPath": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "cold",
+              "description": "Created for the turn, its image pulled on the way (or the provider\ncannot say it was not)."
+            },
+            {
+              "type": "string",
+              "const": "cached_image",
+              "description": "Created for the turn from an image the host already had."
+            },
+            {
+              "type": "string",
+              "const": "snapshot",
+              "description": "Branched from a provider snapshot or a prepared environment."
+            },
+            {
+              "type": "string",
+              "const": "resumed",
+              "description": "The branch's own kept sandbox, resumed."
+            },
+            {
+              "type": "string",
+              "const": "pool",
+              "description": "Claimed from a pool of sandboxes booted ahead of time."
+            },
+            {
+              "type": "string",
+              "const": "local",
+              "description": "No sandbox: the harness ran on this host."
+            }
+          ],
+          "description": "Which way a turn's sandbox was made ready. Serialized in snake case."
+        },
+        "Phases": {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Queued`]."
+            },
+            "placement": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Placement`]."
+            },
+            "image_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::ImageReady`]."
+            },
+            "sandbox_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SandboxReady`]."
+            },
+            "source_attached": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SourceAttached`]."
+            },
+            "harness_started": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HarnessStarted`]."
+            },
+            "handshake_done": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HandshakeDone`]."
+            },
+            "first_event": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::FirstEvent`]."
+            }
+          },
+          "description": "Millisecond offsets from admission at which each [`Phase`] was reached;\na phase that did not occur is absent."
         },
         "FleetActivity": {
           "oneOf": [

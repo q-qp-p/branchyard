@@ -436,6 +436,18 @@ pub enum Command {
         #[command(subcommand)]
         action: FleetAction,
     },
+    /// How long turns took to start, by provider and path
+    ///
+    /// Percentiles of each startup phase (placement, sandbox ready, source attached, harness
+    /// started, ...) from the turns recorded here; see docs/providers.md.
+    #[command(display_order = 210, subcommand_required = true, after_help = STARTUP_EXAMPLES)]
+    Startup {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: StartupAction,
+    },
     /// Open or update a ready branch's GitHub pull request
     ///
     /// Pushes the branch first; --watch feeds CI and reviews back.

@@ -847,7 +847,7 @@ fn an_agent_sandbox_may_reach_the_workers_hosts_and_mirrors_by_name() {
         image: format!("example.test/r@sha256:{}", "a".repeat(64)),
         ..AgentSandboxOptions::default()
     };
-    let config = options.config_with(None, egress, None);
+    let config = options.config_with(None, egress, None, None);
     config.validate().unwrap();
     assert_eq!(config.fqdn_hosts().len(), 5);
 }

@@ -196,6 +196,7 @@ image = "us-docker.pkg.dev/my-project/by/worker@sha256:..."
 network = "deny"
 egress_hosts = ["api.anthropic.com"]
 gateway_service = { namespace = "branchyard-system", name = "anvil-gateway", port = 8931 }
+warm_pool = 2                                # optional: sandboxes booted ahead of time; see "Warm pool"
 
 [network]
 allow = []                                   # the branch's own policy: nothing
@@ -242,6 +243,16 @@ What the cluster needs, none of which the setup helper does:
 A pod's containers share one network policy: with the sidecar the metadata server is open to the harness as well. The token it could ask for there is the turn's own, bound to its manifest, refused when the turn ends, and lives five minutes; it cannot read a token from a file, because none exists, and the ID token it can mint is not enough for a token: the server also wants the turn's secret.
 
 Not done: no pod ran this on a live cluster. Workload Identity ID tokens from the pod's metadata server, the NetworkPolicy exception, the sidecar in the gVisor and Kata runtimes, and the sidecar's image digest check on the live pod are unverified; hermetic tests (a fake `kubectl`) cover the pod spec, the policy and the verification only.
+
+## Warm pool
+
+`[agent_sandbox] warm_pool = N` (1 to 100; omitted or 0 keeps none, and nothing below changes) keeps `N` sandboxes booted ahead of time. The first allocation of a specification creates, beside its Sandbox objects, a `SandboxTemplate` (`by-tpl-<id>`) holding the same pod as a fresh Sandbox's `podTemplate`, and a `SandboxWarmPool` (`by-pool-<id>`, `replicas: N`, `sandboxTemplateRef`), both in apiVersion `extensions.agents.x-k8s.io/v1alpha1` and labelled `branchyard.io/pool` with the specification digest. The size is not part of the digest: changing it resizes the pool in place, and a pool or template that carries another digest or a foreign owner is refused rather than taken. They are shared by later allocations and never deleted by the provider.
+
+An allocation with a pool whose pods are ready creates a `SandboxClaim` naming the template (its intent is durable in the receipt first), waits for it, and reads back the Sandbox it resolved to and the warm Pod that Sandbox adopted. Each must be made from this claim and unmarked; only then are they labelled with the allocation's owner. From there they are verified exactly as a fresh allocation's: the Sandbox's pod spec, the live Pod's image digest, the network and other policies and the credential-proxy sidecar, with no check skipped for being pooled (a claimed pod that runs another image, a second pod, or someone else's Sandbox is refused). With no ready pod the allocation is created as before. Destroying a claimed allocation deletes its claim by UID and leaves the pool, which refills. The turn records `path=pool`.
+
+The kind, apiVersion and field names above are **unverified against a cluster**: this repository pins no CRD for the extensions API, and they were written from the upstream project's documentation. The fake `kubectl` accepts what the provider generates, which proves the provider is consistent with itself and nothing more.
+
+Status: hermetic (a fake `kubectl` in `crates/branchyard-agent-sandbox/tests`: generation, claim, marking, verification refusals, resize, an interrupted claim finished without a second). Not done: a live GKE cluster has not served a claim; the upstream CRD schema and the controller's adoption of the warm pod are unchecked; no time saved is measured.
 
 ## Evidence and limits
 

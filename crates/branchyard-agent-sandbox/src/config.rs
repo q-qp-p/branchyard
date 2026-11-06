@@ -234,9 +234,25 @@ pub struct Config {
     /// the gateway's tokens for sandboxes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_proxy: Option<CredentialSidecar>,
+    /// Sandboxes to keep booted ahead of time: a `SandboxTemplate` and a
+    /// `SandboxWarmPool` of this many replicas, generated for the
+    /// allocation's pod, from which an allocation claims a ready one
+    /// (`docs/agent-sandbox-gke.md#warm-pool`). `None`, or 0, keeps no
+    /// pool; every allocation creates its own Sandbox. The pool's size is
+    /// not part of an allocation's specification digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm_pool: Option<u32>,
 }
 
+/// The most replicas a warm pool may have.
+pub const MAX_WARM_POOL: u32 = 100;
+
 impl Config {
+    /// The pool size, when there is a pool (a size of zero is none).
+    pub fn pool_size(&self) -> Option<u32> {
+        self.warm_pool.filter(|size| *size > 0)
+    }
+
     /// The hosts the allocation's `FQDNNetworkPolicy` lists: `egress.hosts`
     /// and, with a store, [`STORAGE_HOST`]; sorted, once each. Empty for
     /// `unrestricted`, which needs no list.
@@ -299,6 +315,11 @@ impl Config {
         }
         if let Some(sidecar) = &self.credential_proxy {
             sidecar.validate()?;
+        }
+        if self.warm_pool.is_some_and(|size| size > MAX_WARM_POOL) {
+            return Err(invalid(&format!(
+                "the warm pool may hold at most {MAX_WARM_POOL} sandboxes"
+            )));
         }
         Ok(())
     }
