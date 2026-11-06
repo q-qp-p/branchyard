@@ -88,7 +88,7 @@ pub struct ManifestImage {
     pub reference: String,
     /// Its `sha256:` digest, when the reference is pinned by one. A turn
     /// whose provider receipt names another digest fails
-    /// `bundle_mismatch` ([`crate::bundles::verify_image`]).
+    /// `bundle_mismatch` (checked by the engine before the harness starts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// Its `dev.branchyard.toolchain` label, when Branchyard could read the
