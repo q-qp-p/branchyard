@@ -2324,6 +2324,28 @@ class Approvals(ServerCase):
         [(_, _, _, body)] = self.requests("POST", f"{REPO}/answer")
         self.assertEqual(body, {"message_id": 7, "text": "postgres"})
 
+    def test_a_message_to_a_sibling_posts_its_kind_payload_and_key_and_reads_the_meta_back(self):
+        sent = {
+            "id": 11,
+            "from": "a",
+            "to": "b",
+            "kind": "peer",
+            "text": "step one done",
+            "at_ms": 1,
+            "next_turn": True,
+            "meta": {"kind": "step", "schema_version": 1, "payload": {"n": 1}},
+        }
+        self.fake.answer("POST", f"{REPO}/branches/a/message", (200, sent))
+        message = self.app.message("a", "b", "step one done", kind="step", payload={"n": 1}, key="s1")
+        self.assertEqual((message.id, message.to, message.kind, message.next_turn), (11, "b", "peer", True))
+        self.assertEqual(message.meta.kind, "step")
+        self.assertEqual(message.meta.payload, {"n": 1})
+        [(_, _, headers, body)] = self.requests("POST", f"{REPO}/branches/a/message")
+        self.assertEqual(body, {"to": "b", "text": "step one done", "kind": "step", "payload": {"n": 1}, "key": "s1"})
+        self.assertIn("idempotency-key", headers)
+        plain = bc.Message({"id": 1, "from": "kid", "to": "lead", "kind": "report", "text": "done", "at_ms": 1})
+        self.assertIsNone(plain.meta)
+
     def test_the_persons_unread_inbox_leaves_out_what_was_answered_or_delivered(self):
         question = {"from": "root", "to": "@person", "kind": "question", "at_ms": 1}
         messages = [
@@ -3823,6 +3845,7 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/repos/{repo}/branches/{branch}/inspection": [lambda _c, r: r.inspect("b")],
     "/v1/repos/{repo}/branches/{branch}/integrate": [lambda _c, r: r.integrate("b", with_=["c"])],
     "/v1/repos/{repo}/branches/{branch}/merge": [lambda _c, r: r.merge("b")],
+    "/v1/repos/{repo}/branches/{branch}/message": [lambda _c, r: r.message("b", "c", "hi")],
     "/v1/repos/{repo}/branches/{branch}/plan": [lambda _c, r: r.plan("b")],
     "/v1/repos/{repo}/branches/{branch}/plan/approve": [lambda _c, r: r.approve_plan("b")],
     "/v1/repos/{repo}/branches/{branch}/plan/reject": [lambda _c, r: r.reject_plan("b", "no")],

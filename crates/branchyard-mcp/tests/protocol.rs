@@ -136,6 +136,7 @@ fn a_server_started_for_a_branch_without_helpers_lists_and_says_only_the_core() 
             "events",
             "inbox",
             "inspect",
+            "message",
             "report",
             "report_status"
         ]

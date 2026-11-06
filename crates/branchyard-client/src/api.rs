@@ -801,6 +801,28 @@ pub struct ReportRequest {
     pub result: Option<serde_json::Value>,
 }
 
+/// `POST /v1/repos/{repo}/branches/{branch}/message`: a message from the
+/// branch to a sibling, like `by message --as`; see `docs/messaging.md`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRequest {
+    /// The sibling, another child of the branch's parent.
+    pub to: String,
+    /// The message, one line.
+    pub text: String,
+    /// A registered message kind; `note` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// A JSON value the kind's schema checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
 /// `POST /v1/repos/{repo}/branches/{branch}/answer`: an answer to one of
 /// the branch's own descendants' messages, like `by answer`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

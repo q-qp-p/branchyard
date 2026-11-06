@@ -12,8 +12,8 @@ use branchyard::{
     SubstrateOptions, TaskOptions, Yard,
 };
 use branchyard_client::api::{
-    BudgetSpec, ForkRequest, OperationKind, OperationState, PolicySpec, SendRequest, SpawnRequest,
-    TaskRequest,
+    BudgetSpec, ForkRequest, MessageRequest, OperationKind, OperationState, PolicySpec,
+    SendRequest, SpawnRequest, TaskRequest,
 };
 use branchyard_client::{new_key, Client};
 use branchyard_testkit::wait;
@@ -390,6 +390,59 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
     assert!(asked.answer.is_none());
     let no_parent = repo.report("root", "root has no parent").unwrap_err();
     assert_eq!(no_parent.code(), Some("denied"));
+
+    // A message to a sibling through the server: the engine's `message`
+    // operation (`docs/messaging.md`), its key, and its refusal of a
+    // recipient that is not a sibling.
+    let op = repo
+        .spawn(
+            "root",
+            &SpawnRequest {
+                prompt: "WRITE kid2.txt=k".into(),
+                name: Some("kid2".into()),
+                policy: PolicySpec::allow_all(),
+                ..SpawnRequest::default()
+            },
+            &new_key(),
+        )
+        .unwrap();
+    assert_eq!(
+        await_operation(&client, &op.id).state,
+        OperationState::Succeeded
+    );
+    let request = MessageRequest {
+        to: "kid2".into(),
+        text: "lexer done".into(),
+        payload: Some(json!({"tokens": 3})),
+        key: Some("k1".into()),
+        ..MessageRequest::default()
+    };
+    let note = repo.message("kid", &request).unwrap();
+    assert_eq!((note.from.as_str(), note.to.as_str()), ("kid", "kid2"));
+    assert_eq!(note.kind, branchyard::MessageKind::Peer);
+    assert_eq!(note.kind_name(), "note");
+    assert!(note.next_turn && !note.delivered);
+    assert_eq!(
+        note.meta.as_ref().and_then(|m| m.payload.clone()),
+        Some(json!({"tokens": 3}))
+    );
+    assert_eq!(repo.inbox("kid2").unwrap().messages, [note.clone()]);
+    assert_eq!(
+        repo.message("kid", &request).unwrap(),
+        note,
+        "a repeat with the key is the first message"
+    );
+    let not_a_sibling = repo
+        .message(
+            "kid",
+            &MessageRequest {
+                to: "root".into(),
+                text: "hi".into(),
+                ..MessageRequest::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(not_a_sibling.code(), Some("denied"));
 
     // Self-reported status: a person states kid's, under the tool's rules.
     let working = repo

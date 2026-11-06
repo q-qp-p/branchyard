@@ -335,6 +335,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         }
     }
 

@@ -140,6 +140,7 @@ mod lock;
 pub mod manifest;
 mod map;
 mod map_input;
+pub mod messaging;
 pub mod models;
 mod names;
 mod native_options;
@@ -639,6 +640,41 @@ impl Yard {
         *self.hub.delivery_hook.lock_recovering("delivery_hook") = None;
     }
 
+    /// Register a kind of message branches may send with `message`
+    /// ([`messaging::KindSpec`]: a name, a class, a payload schema). A
+    /// built-in name or one registered already is refused. The registry is
+    /// this process's: a `by` outside a harness or another server knows
+    /// only the built-in kinds unless it registers the same. See
+    /// `docs/messaging.md`.
+    pub fn register_kind(&self, spec: messaging::KindSpec) -> Result<(), Error> {
+        self.hub
+            .messaging
+            .lock_recovering("messaging")
+            .registry
+            .register(spec)
+    }
+
+    /// Every kind of message this yard knows, by name.
+    pub fn message_kinds(&self) -> Vec<messaging::KindSpec> {
+        self.hub
+            .messaging
+            .lock_recovering("messaging")
+            .registry
+            .kinds()
+    }
+
+    /// Replace the stages every message goes through
+    /// ([`messaging::Pipeline`]): the standard pipeline with a stage of
+    /// yours before or after one of its own.
+    pub fn set_messaging_pipeline(&self, pipeline: messaging::Pipeline) {
+        self.hub.messaging.lock_recovering("messaging").pipeline = pipeline;
+    }
+
+    /// The registry and pipeline as they are now.
+    pub(crate) fn messaging(&self) -> messaging::Messaging {
+        self.hub.messaging.lock_recovering("messaging").clone()
+    }
+
     pub(crate) fn delivery_hook(&self) -> Option<Arc<dyn DeliveryHook>> {
         self.hub
             .delivery_hook
@@ -928,6 +964,7 @@ impl Yard {
                 asker,
                 text,
                 Some(message_id),
+                None,
             );
         }
         self.branch(&message.to)?
@@ -3454,6 +3491,11 @@ pub enum MessageKind {
     Report,
     Escalation,
     Answer,
+    /// A message between siblings, the children of one parent, of a kind
+    /// the registry names in [`Message::meta`] (`note`, or one registered
+    /// with [`Yard::register_kind`]); delivered at the recipient's next
+    /// turn. See `docs/messaging.md`.
+    Peer,
 }
 
 impl MessageKind {
@@ -3463,6 +3505,7 @@ impl MessageKind {
             MessageKind::Report => "report",
             MessageKind::Escalation => "escalation",
             MessageKind::Answer => "answer",
+            MessageKind::Peer => "peer",
         }
     }
 }
@@ -3482,6 +3525,7 @@ impl std::str::FromStr for MessageKind {
             "report" => Ok(MessageKind::Report),
             "escalation" => Ok(MessageKind::Escalation),
             "answer" => Ok(MessageKind::Answer),
+            "peer" => Ok(MessageKind::Peer),
             other => Err(Error::State(format!("unknown message kind {other:?}"))),
         }
     }
@@ -3515,6 +3559,23 @@ pub struct Message {
     /// Leave this message for the next turn instead of steering a running one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub next_turn: bool,
+    /// What the legacy fields do not carry: the registered kind and its
+    /// version, the payload, the trace and the deadline
+    /// ([`messaging::MessageMeta`]). Omitted when there is nothing to
+    /// carry, so a message of a legacy kind reads as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<messaging::MessageMeta>,
+}
+
+impl Message {
+    /// The registered kind's name: `meta.kind` when the message carries
+    /// one, else the legacy `kind`'s.
+    pub fn kind_name(&self) -> &str {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.kind.as_deref())
+            .unwrap_or_else(|| self.kind.as_str())
+    }
 }
 
 /// Activity from a named branch.

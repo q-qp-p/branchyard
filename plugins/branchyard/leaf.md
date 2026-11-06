@@ -18,7 +18,9 @@ graphs and subagents follow harness permissions and limits. `by` on PATH and in
   access granted scratch areas and parent bindings.
 - `by ask "<question>" [--wait SECS]` asks your parent, or the person if you
   have none, optionally waiting. `by report "<text>"` reports progress;
-  `by escalate "<text>"` raises a problem; `by inbox` lists your messages.
+  `by escalate "<text>"` raises a problem; `by inbox` lists your messages;
+  `by message <sibling> "<text>"` messages another child of your parent,
+  which reads it at its next turn.
 - If `by inspect` shows a `result_contract`, return JSON matching its schema.
   For `purpose: "deliverable"`, native final JSON after success needs no reporting
   tool. This turn's accepted explicit result takes precedence; prior results cannot

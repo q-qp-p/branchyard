@@ -832,6 +832,21 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             unread,
             json,
         } => commands::inbox(target, as_branch, unread, json),
+        Command::Message {
+            as_branch,
+            to,
+            text,
+            kind,
+            payload,
+            key,
+            json,
+        } => commands::message(
+            target,
+            as_branch,
+            (&to, &text),
+            (kind.as_deref(), payload.as_deref(), key.as_deref()),
+            json,
+        ),
         Command::Rig { json, action } => commands::rig(env, target, &action.into_args(json)),
         Command::Gateway { json, action } => gateway_cmd::main(target, &action, json),
         Command::Models {

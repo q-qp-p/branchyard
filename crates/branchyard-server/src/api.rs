@@ -885,6 +885,10 @@ pub fn router(app: Shared) -> Router {
             "/v1/repos/{repo}/branches/{branch}/answer",
             axum::routing::post(post_answer),
         )
+        .route(
+            "/v1/repos/{repo}/branches/{branch}/message",
+            axum::routing::post(post_message),
+        )
         .route("/v1/repos/{repo}/inbox", get(person_inbox))
         .route(
             "/v1/repos/{repo}/answer",
@@ -2796,6 +2800,33 @@ async fn post_answer(
     }
     as_person(&app, &caller, &repo, branch, "run", move |d, _| {
         d.answer(request.message_id, &request.text)
+    })
+    .await
+    .map(Json)
+}
+
+/// A message from `branch` to one of its siblings, as the person or a
+/// surface acting for it (`by message --as`): the engine's `message`
+/// operation, with its refusals (`403 denied` for a recipient that is not
+/// a sibling, a payload its kind's schema refuses, an unknown kind). Needs
+/// the `run` scope, as `ask` does. See `docs/messaging.md`.
+async fn post_message(
+    State(app): State<Shared>,
+    Path((repo, branch)): Path<(String, String)>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(request, _): JsonBody<branchyard_client::api::MessageRequest>,
+) -> Result<Json<branchyard::Message>, ApiError> {
+    if request.text.trim().is_empty() {
+        return Err(ApiError::bad_request("text is empty"));
+    }
+    as_person(&app, &caller, &repo, branch, "run", move |d, _| {
+        d.message(
+            &request.to,
+            &request.text,
+            request.kind.as_deref(),
+            request.payload.clone(),
+            request.key.as_deref(),
+        )
     })
     .await
     .map(Json)

@@ -819,6 +819,52 @@ pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: boo
     })
 }
 
+/// `by message TO TEXT [--kind K] [--payload JSON] [--key KEY]`: a message
+/// to a sibling, delivered at its next turn ([`Delegate::message`]).
+pub fn message(
+    target: &Target,
+    as_branch: Option<String>,
+    (to, text): (&str, &str),
+    (kind, payload, key): (Option<&str>, Option<&str>, Option<&str>),
+    json: bool,
+) -> Outcome {
+    let payload = match payload
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|e| branchyard::Error::Usage(format!("--payload is not JSON: {e}")))
+        })
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return fail(json, &error),
+    };
+    let result = match (harness_delegate(json)?, target) {
+        (Some(delegate), _) => as_itself(&delegate, as_branch.as_deref(), "--as")
+            .and_then(|()| delegate.message(to, text, kind, payload.clone(), key)),
+        (None, Target::Remote(remote)) => as_branch_required(as_branch, "message").and_then(|b| {
+            remote
+                .repo
+                .message(
+                    &b,
+                    &branchyard_client::api::MessageRequest {
+                        to: to.to_owned(),
+                        text: text.to_owned(),
+                        kind: kind.map(str::to_owned),
+                        payload: payload.clone(),
+                        key: key.map(str::to_owned),
+                    },
+                )
+                .map_err(remote::sdk_error)
+        }),
+        (None, Target::Local) => as_branch_required(as_branch, "message").and_then(|b| {
+            as_user(&b, TaskOptions::default())?.message(to, text, kind, payload.clone(), key)
+        }),
+    };
+    emit(json, result, |m| {
+        format!("sent {} #{} to {}: {}\n", m.kind_name(), m.id, m.to, m.text)
+    })
+}
+
 pub fn children(env: &Env, target: &Target, branch: Option<String>, json: bool) -> Outcome {
     let result = match (harness_delegate(json)?, target) {
         (Some(delegate), _) => match branch {

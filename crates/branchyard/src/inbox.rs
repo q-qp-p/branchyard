@@ -10,6 +10,10 @@
 //! authority check every surface goes through; it follows the delegation
 //! tree exactly as spawning does.
 //!
+//! Since the messaging layer (`docs/messaging.md`), [`send`] is one
+//! envelope through [`crate::messaging`]'s pipeline, whose stages call
+//! [`authorize`] and [`try_deliver_now`]; the delivery below is unchanged.
+//!
 //! Every message is durable ([`crate::state::Backend`]'s `messages` rows,
 //! both SQLite and PostgreSQL) and is also recorded as `Activity::Message`
 //! on the event log of each branch it is between (the person keeps none),
@@ -42,9 +46,8 @@
 
 use std::time::Duration;
 
-use crate::record::Recorder;
 use crate::state::Store;
-use crate::{Activity, BranchInfo, Error, Message, MessageKind, Observer, SteerState, Yard};
+use crate::{BranchInfo, Error, Message, MessageKind, Observer, SteerState, Yard};
 
 /// At most this many pending messages are rendered into one prompt; the
 /// rest stay pending for a later turn.
@@ -129,8 +132,15 @@ pub(crate) fn render_running(message: &Message) -> String {
 fn line(message: &Message) -> String {
     let mut text = format!(
         "[#{}] {} from {}: {}\n",
-        message.id, message.kind, message.from, message.text
+        message.id,
+        message.kind_name(),
+        message.from,
+        message.text
     );
+    if let Some(payload) = message.meta.as_ref().and_then(|meta| meta.payload.as_ref()) {
+        let payload: String = payload.to_string().chars().take(2000).collect();
+        text.push_str(&format!("payload: {payload}\n"));
+    }
     if let Some(handoff) = &message.handoff {
         let result: String = handoff.result.to_string().chars().take(2000).collect();
         text.push_str(&format!(
@@ -164,8 +174,10 @@ pub(crate) fn answerer(info: &BranchInfo) -> &str {
 /// `report` only to its parent; an `escalation` goes to its answerer too,
 /// or, from a delegated branch, further up an ancestor whose seat `from`'s
 /// seat's `escalates_to` names; an `answer` goes from an ancestor to one of
-/// its own descendants. The person sends only answers; [`send`] checks
-/// that each replies to a message sent to it.
+/// its own descendants; a `peer` message goes between siblings, the
+/// delegated children of one parent ([`siblings`]). The person sends only
+/// answers; the pipeline's `authorize` stage checks that each replies to
+/// a message sent to it.
 pub(crate) fn authorize(
     store: &Store,
     from: &str,
@@ -184,6 +196,7 @@ pub(crate) fn authorize(
         };
     }
     match kind {
+        MessageKind::Peer => siblings(store, from, to),
         MessageKind::Answer => {
             if crate::delegation::is_ancestor(store, from, to)? {
                 Ok(())
@@ -233,11 +246,37 @@ pub(crate) fn authorize(
     }
 }
 
+/// Whether `from` and `to` are siblings: delegated children (`depth > 0`)
+/// of one parent. A root or a fork has no siblings; a cousin, an ancestor
+/// or a branch in another tree is refused by name.
+pub(crate) fn siblings(store: &Store, from: &str, to: &str) -> Result<(), Error> {
+    if to == PERSON {
+        return Err(Error::Denied(format!(
+            "{from} may only message its siblings, not {PERSON}; ask or escalate reach the person"
+        )));
+    }
+    let sender = store.read(from)?.info;
+    let Some(parent) = sender.parent.as_deref().filter(|_| sender.depth > 0) else {
+        return Err(Error::Denied(format!(
+            "{from} was not delegated, so it has no siblings to message"
+        )));
+    };
+    let recipient = store.read(to)?.info;
+    match recipient.parent.as_deref() {
+        Some(p) if p == parent && recipient.depth > 0 => Ok(()),
+        _ => Err(Error::Denied(format!(
+            "{from} may only message its siblings, the other children of {parent}, not {to}"
+        ))),
+    }
+}
+
 /// Send `kind` from `from` (a branch, or [`PERSON`] answering) to `to`,
 /// replying to message `in_reply_to` when given, which must have been sent
-/// to `from`. Checks it ([`authorize`]), stores it, records it on the log
-/// of each branch it is between, and tries to deliver it into `to`'s
-/// running turn; otherwise it waits for `to`'s next turn to start.
+/// to `from`, carrying the sender's `trace`. One envelope of the kind's
+/// class through the messaging pipeline ([`crate::messaging`]): checked
+/// ([`authorize`]), stored, recorded on the log of each branch it is
+/// between, and delivered into `to`'s running turn when it has one;
+/// otherwise it waits for `to`'s next turn to start.
 pub(crate) fn send(
     yard: &Yard,
     observer: Option<Observer>,
@@ -246,47 +285,17 @@ pub(crate) fn send(
     to: &str,
     text: &str,
     in_reply_to: Option<u64>,
+    trace: Option<&str>,
 ) -> Result<Message, Error> {
-    if text.trim().is_empty() {
-        return Err(Error::Denied(format!("a {kind} needs text")));
-    }
-    let store = yard.store();
-    authorize(&store, from, kind, to)?;
-    if let Some(question_id) = in_reply_to {
-        let question = store
-            .backend()
-            .message(question_id)?
-            .ok_or(Error::UnknownMessage(question_id))?;
-        if question.to != from {
-            return Err(Error::Denied(format!(
-                "message #{question_id} was not sent to {from}"
-            )));
-        }
-    }
-    let message = store.backend().send_message(&Message {
-        id: 0,
-        from: from.to_owned(),
-        to: to.to_owned(),
-        kind,
-        text: text.to_owned(),
-        in_reply_to,
-        at_ms: 0,
-        delivered: false,
-        handoff: None,
-        next_turn: false,
-    })?;
-    // `authorize` above refused `to == from`, so these are two distinct
-    // logs.
-    for branch in [from, to].into_iter().filter(|b| *b != PERSON) {
-        if let Ok(mut recorder) = Recorder::open(&store, branch, observer.clone()) {
-            branchyard_support::best_effort(
-                "record the activity",
-                recorder.record(Activity::Message(message.clone())),
-            );
-        }
-    }
-    try_deliver_now(yard, &store, to, &message);
-    Ok(message)
+    let mut envelope = crate::messaging::Envelope::new(
+        kind.as_str(),
+        crate::messaging::Address::parse(from),
+        crate::messaging::Address::parse(to),
+        text,
+    );
+    envelope.correlation = in_reply_to;
+    envelope.trace = trace.map(str::to_owned);
+    crate::messaging::send(yard, observer, envelope)
 }
 
 /// Whether `from`'s rig seat lists `to`'s seat in its `escalates_to`.
@@ -306,8 +315,9 @@ fn escalates_to(store: &Store, from: &str, to: &str) -> Result<bool, Error> {
 /// [`begin_submit`]. Errors from the hook or the store are not
 /// fatal to sending the message, so they are swallowed here. For
 /// [`SteerDelivery`] the engine has already marked it, so this is a no-op.
-/// The person has no turn to deliver into.
-fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
+/// The person has no turn to deliver into. The pipeline's `deliver` stage
+/// is the caller.
+pub(crate) fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
     if message.next_turn || to == PERSON {
         return;
     }
@@ -558,7 +568,7 @@ mod tests {
         };
         let sent = store
             .backend()
-            .send_message(&message(0, MessageKind::Question, "rename it?"))
+            .send_message(&message(0, MessageKind::Question, "rename it?"), None)
             .unwrap();
         (Temp(dir), store, fence, sent.id)
     }
@@ -647,7 +657,7 @@ mod tests {
             }
             let mut reply = message(0, MessageKind::Answer, "yes, rename it");
             (reply.from, reply.to, reply.in_reply_to) = ("parent".into(), "kid".into(), Some(id));
-            store.backend().send_message(&reply).unwrap();
+            store.backend().send_message(&reply, None).unwrap();
             waiter.join().unwrap()
         });
         let answer = answered.unwrap().expect("the answer ends the wait");
@@ -663,10 +673,13 @@ mod tests {
         let (_t, store, _fence, _) = running("person");
         let asked = store
             .backend()
-            .send_message(&Message {
-                to: PERSON.into(),
-                ..message(0, MessageKind::Question, "which database?")
-            })
+            .send_message(
+                &Message {
+                    to: PERSON.into(),
+                    ..message(0, MessageKind::Question, "which database?")
+                },
+                None,
+            )
             .unwrap();
         std::thread::scope(|scope| {
             let waiter = scope.spawn(|| wait_for_answer(&store, asked.id, Duration::from_secs(30)));
@@ -677,7 +690,7 @@ mod tests {
             let mut reply = message(0, MessageKind::Answer, "postgres");
             (reply.from, reply.to, reply.in_reply_to) =
                 (PERSON.into(), "kid".into(), Some(asked.id));
-            store.backend().send_message(&reply).unwrap();
+            store.backend().send_message(&reply, None).unwrap();
             assert!(waiter.join().unwrap().unwrap().is_some());
         });
         assert!(!waiting_for_answer(&store, "kid"));
@@ -695,6 +708,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         }
     }
 

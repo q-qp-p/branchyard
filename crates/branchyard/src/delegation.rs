@@ -1506,6 +1506,29 @@ impl Delegate {
         self.typed("inbox", json!({}))
     }
 
+    /// Message a sibling, another child of this branch's parent: `text`,
+    /// as a message of `kind` (`note` when `None`; a kind the yard
+    /// registered with [`crate::Yard::register_kind`] otherwise), with a
+    /// `payload` the kind's schema checks, under an idempotency `key` (a
+    /// repeat with the same key returns the first message). It waits for
+    /// the sibling's next turn and is never steered; the sibling finds it
+    /// in its inbox and in its prompt's `<branchyard-inbox>` block. A
+    /// recipient that is not a sibling is refused `denied`. See
+    /// `docs/messaging.md`.
+    pub fn message(
+        &self,
+        to: &str,
+        text: &str,
+        kind: Option<&str>,
+        payload: Option<Value>,
+        key: Option<&str>,
+    ) -> Result<Message, Error> {
+        self.typed(
+            "message",
+            json!({"to": to, "text": text, "kind": kind, "payload": payload, "key": key}),
+        )
+    }
+
     /// The messages addressed to this branch not yet delivered to a turn.
     pub fn unread(&self) -> Result<Inbox, Error> {
         self.typed("inbox", json!({"unread": true}))
@@ -4552,9 +4575,39 @@ impl Local {
             to,
             text,
             in_reply_to,
+            self.options.trace_parent.as_deref(),
         );
         self.note("message", to, &result, |m| {
             format!("sent {} #{}", m.kind, m.id)
+        });
+        result
+    }
+
+    /// Message a sibling (another child of this branch's parent) with a
+    /// registered kind (`note` without one), a payload the kind's schema
+    /// checks, and an idempotency key: one envelope through the messaging
+    /// pipeline (`crate::messaging`), delivered at the sibling's next turn
+    /// and carrying this turn's trace.
+    fn message(
+        &self,
+        to: &str,
+        text: &str,
+        kind: Option<&str>,
+        payload: Option<Value>,
+        key: Option<&str>,
+    ) -> Result<Message, Error> {
+        let mut envelope = crate::messaging::Envelope::new(
+            kind.unwrap_or(crate::messaging::DEFAULT_KIND),
+            crate::messaging::Address::Branch(self.branch.clone()),
+            crate::messaging::Address::parse(to),
+            text,
+        );
+        envelope.payload = payload;
+        envelope.idempotency_key = key.map(str::to_owned);
+        envelope.trace = self.options.trace_parent.clone();
+        let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
+        self.note("message", to, &result, |m| {
+            format!("sent {} #{}", m.kind_name(), m.id)
         });
         result
     }
@@ -4900,6 +4953,23 @@ struct DiscardArgs {
 struct InboxArgs {
     #[serde(default)]
     unread: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageArgs {
+    to: String,
+    text: String,
+    /// The registered kind; `note` when absent.
+    #[serde(default)]
+    kind: Option<String>,
+    /// A JSON value the kind's schema checks.
+    #[serde(default)]
+    payload: Option<Value>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// message.
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -5296,6 +5366,16 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
                 true => to_json(&inbox.unread_only()),
                 false => to_json(&inbox),
             }
+        }
+        "message" => {
+            let args: MessageArgs = parse(tool, arguments)?;
+            to_json(&local.message(
+                &args.to,
+                &args.text,
+                args.kind.as_deref(),
+                args.payload,
+                args.key.as_deref(),
+            )?)
         }
         other => Err(Error::Denied(format!("no delegation tool named {other}"))),
     }

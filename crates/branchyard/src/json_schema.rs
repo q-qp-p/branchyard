@@ -78,6 +78,9 @@ pub(crate) enum Dialect {
     /// A result contract's schema: the root is `result.schema`, and
     /// `format` is refused, since a contract checks everything it says.
     Contract,
+    /// A registered message kind's payload schema (`crate::messaging`):
+    /// the root is `schema`, and `format` is refused as a contract's is.
+    Kind,
 }
 
 impl Dialect {
@@ -85,6 +88,7 @@ impl Dialect {
         match self {
             Dialect::Map => "$",
             Dialect::Contract => "result.schema",
+            Dialect::Kind => "schema",
         }
     }
 
@@ -92,6 +96,7 @@ impl Dialect {
         match self {
             Dialect::Map => "a map's schema",
             Dialect::Contract => "the contract",
+            Dialect::Kind => "a message kind",
         }
     }
 

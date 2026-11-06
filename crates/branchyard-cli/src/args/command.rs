@@ -900,6 +900,33 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Message a sibling branch; it reads the message at its next turn
+    ///
+    /// A sibling is another child of this branch's parent. The message waits in the sibling's inbox and is prepended to its next turn's prompt; it
+    /// is never steered into a running turn. --kind names a registered message kind (`note`
+    /// without one) whose schema checks --payload; --key makes a repeat return the first message.
+    #[command(hide = true, display_order = 313)]
+    Message {
+        /// Act as this branch (outside a harness; inside one, it is the harness's own)
+        #[arg(long = "as", value_name = "BRANCH")]
+        as_branch: Option<String>,
+        /// The sibling to message
+        to: String,
+        /// The message, one line
+        text: String,
+        /// A registered message kind; `note` without one
+        #[arg(long, value_name = "KIND", value_parser = non_blank)]
+        kind: Option<String>,
+        /// A JSON value the kind's schema checks
+        #[arg(long, value_name = "JSON", value_parser = non_blank)]
+        payload: Option<String>,
+        /// An idempotency key: a repeat with the same key returns the first message
+        #[arg(long, value_name = "KEY", value_parser = non_blank)]
+        key: Option<String>,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check a rig spec and print its plan, or run its root seat with a prompt
     #[command(display_order = 400, subcommand_required = true)]
     Rig {
