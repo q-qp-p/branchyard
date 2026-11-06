@@ -658,10 +658,6 @@ VM and its dedicated IAP TCP 22 firewall rule. `--internal-ip` also omits the
 external address. `--service-account EMAIL` attaches that account with the
 `cloud-platform` scope, so its IAM roles decide API access; `--scopes` narrows it.
 This command refuses harness sessions and `--remote`.
-Operators also run `by harnesses update ID --qualify` (checks a release before
-pinning it), `by images build` and `by images pin REF@DIGEST` (digest-pinned
-harness images) and `by startup report` (launch time by provider), never from
-inside a harness session.
 `--gvisor` also installs the pinned gVisor Docker runtime. Container execution
 requires permission to use the worker's local Docker socket.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and verified
@@ -669,6 +665,10 @@ forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
 `--substrate-allow-host HOST`. Saved `[substrate]` configuration avoids repeating
 connection flags. See the Substrate setup documentation for image and pool prerequisites.
+Operators also run `by harnesses update ID --qualify` (checks a release before
+pinning it), `by images build` and `by images pin REF@DIGEST` (digest-pinned
+harness images) and `by startup report` (launch time by provider), never from
+inside a harness session.
 For GKE, an operator can use `tools/substrate_gke.py --atenet-dataplane=agentgateway`
 with the required target options. This pins a compatible gateway before installation
 from a private source export; the default Envoy path is unchanged.

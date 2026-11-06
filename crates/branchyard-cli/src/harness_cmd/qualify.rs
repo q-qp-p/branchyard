@@ -542,10 +542,9 @@ fn live_run(
     .unwrap_or_default();
     match status {
         Err(e) => Check::fail("live", format!("could not run {}: {e}", runner.display())),
-        Ok(status) if !status.success() => Check::fail(
-            "live",
-            format!("{} failed ({status})", runner.display()),
-        ),
+        Ok(status) if !status.success() => {
+            Check::fail("live", format!("{} failed ({status})", runner.display()))
+        }
         Ok(_) if text.is_empty() => Check::fail(
             "live",
             format!(
