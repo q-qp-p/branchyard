@@ -2800,7 +2800,7 @@ async fn post_ask(
         .filter(|s| s.is_finite() && *s > 0.0)
         .map(|s| Duration::from_secs_f64(s).min(MAX_ASK_WAIT));
     as_person(&app, &caller, &repo, branch, "run", move |d, _| {
-        d.ask(&request.text, wait)
+        d.ask(&request.text, wait, request.key.as_deref())
     })
     .await
     .map(Json)

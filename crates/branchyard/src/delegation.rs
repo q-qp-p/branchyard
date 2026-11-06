@@ -1432,10 +1432,15 @@ impl Delegate {
     /// long for an answer (`in_reply_to` the question). A wait that passes
     /// with no answer yet is not an error: `answer` is `None`; ask `inbox`
     /// or wait again.
-    pub fn ask(&self, text: &str, wait: Option<Duration>) -> Result<Asked, Error> {
+    pub fn ask(
+        &self,
+        text: &str,
+        wait: Option<Duration>,
+        key: Option<&str>,
+    ) -> Result<Asked, Error> {
         self.typed(
             "ask",
-            json!({"text": text, "wait_seconds": wait.map(|d| d.as_secs_f64())}),
+            json!({"text": text, "wait_seconds": wait.map(|d| d.as_secs_f64()), "key": key}),
         )
     }
 
@@ -4476,10 +4481,11 @@ impl Local {
     }
 
     /// Send a `question` or an `escalation` from this branch to whoever
-    /// answers it ([`inbox::answerer`]): its parent, or the person.
-    fn send_up(&self, kind: MessageKind, text: &str) -> Result<Message, Error> {
+    /// answers it ([`inbox::answerer`]): its parent, or the person. A `key`
+    /// (only `ask` passes one) makes a repeat return the first message.
+    fn send_up(&self, kind: MessageKind, text: &str, key: Option<&str>) -> Result<Message, Error> {
         let info = self.store().read(&self.branch)?.info;
-        self.send_message(kind, inbox::answerer(&info), text, None)
+        self.send_message(kind, inbox::answerer(&info), text, None, key)
     }
 
     /// `record`'s parent, or why there is none to send `kind` to.
@@ -4501,7 +4507,7 @@ impl Local {
         let record = store.read(&self.branch)?;
         let Some(value) = contract::accept(record.result_contract.as_ref(), result)? else {
             let parent = self.parent_to(&record, MessageKind::Report)?;
-            return self.send_message(MessageKind::Report, &parent, text, None);
+            return self.send_message(MessageKind::Report, &parent, text, None, None);
         };
         let parent = self.parent_to(&record, MessageKind::Report)?;
         if text.trim().is_empty() {
@@ -4510,7 +4516,7 @@ impl Local {
         inbox::authorize(&store, &self.branch, MessageKind::Report, &parent)?;
         Recorder::open(&store, &self.branch, self.options.observer.clone())?
             .record(Activity::Result { value })?;
-        self.send_message(MessageKind::Report, &parent, text, None)
+        self.send_message(MessageKind::Report, &parent, text, None, None)
     }
 
     /// Record this branch's own status report, and escalate a `blocked` or
@@ -4552,6 +4558,7 @@ impl Local {
                     inbox::answerer(&info),
                     &report.describe(),
                     None,
+                    None,
                 ),
             ),
             false => None,
@@ -4566,7 +4573,13 @@ impl Local {
             .backend()
             .message(message_id)?
             .ok_or(Error::UnknownMessage(message_id))?;
-        self.send_message(MessageKind::Answer, &question.from, text, Some(message_id))
+        self.send_message(
+            MessageKind::Answer,
+            &question.from,
+            text,
+            Some(message_id),
+            None,
+        )
     }
 
     fn send_message(
@@ -4575,8 +4588,10 @@ impl Local {
         to: &str,
         text: &str,
         in_reply_to: Option<u64>,
+        key: Option<&str>,
     ) -> Result<Message, Error> {
         let mut envelope = inbox::envelope(&self.branch, kind, to, text, in_reply_to);
+        envelope.idempotency_key = key.map(str::to_owned);
         envelope.trace = self.options.trace_parent.clone();
         let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
         self.note("message", to, &result, |m| {
@@ -5029,6 +5044,10 @@ struct AskArgs {
     /// returns as soon as the question is sent.
     #[serde(default)]
     wait_seconds: Option<f64>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// question.
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -5327,7 +5346,7 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
         }
         "ask" => {
             let args: AskArgs = parse(tool, arguments)?;
-            let message = local.send_up(MessageKind::Question, &args.text)?;
+            let message = local.send_up(MessageKind::Question, &args.text, args.key.as_deref())?;
             let answer = match args.wait_seconds.filter(|s| *s > 0.0) {
                 Some(secs) => inbox::wait_for_answer(
                     &local.store(),
@@ -5344,7 +5363,7 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
         }
         "escalate" => {
             let args: TextArgs = parse(tool, arguments)?;
-            to_json(&local.send_up(MessageKind::Escalation, &args.text)?)
+            to_json(&local.send_up(MessageKind::Escalation, &args.text, None)?)
         }
         "report_status" => {
             let args: ReportStatusArgs = parse(tool, arguments)?;

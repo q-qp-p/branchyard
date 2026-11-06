@@ -808,8 +808,15 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             as_branch,
             text,
             wait_seconds,
+            key,
             json,
-        } => commands::ask(target, as_branch, &text, wait_seconds, json),
+        } => commands::ask(
+            target,
+            as_branch,
+            &text,
+            (wait_seconds, key.as_deref()),
+            json,
+        ),
         Command::Report {
             as_branch,
             text,

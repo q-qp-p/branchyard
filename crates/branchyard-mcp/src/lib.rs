@@ -688,6 +688,7 @@ fn all_tools() -> Vec<Tool> {
                 "properties": {
                     "text": {"type": "string"},
                     "wait_seconds": {"type": "number", "exclusiveMinimum": 0, "description": "Block up to this long for an answer"},
+                    "key": {"type": "string"},
                 },
                 "required": ["text"],
                 "additionalProperties": false,

@@ -57,6 +57,13 @@ with its configuration, with the refusals `Yard::register_kind` makes; a bad
 kind is a configuration error naming it. `by kinds [--json]` lists the built-in
 and configured kinds.
 
+`ask` takes an idempotency key like `message` does: `by ask --key KEY`, the MCP
+`ask` tool's `key`, `branchyard.ask(key=)`, `key` in the server's `POST .../ask`
+body and the Rust and Python clients. Asking again with the same key returns the
+first question (and its answer once there is one) instead of asking twice; the
+same key with other text is refused. `report`, `escalate` and `answer` do not
+take a key.
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

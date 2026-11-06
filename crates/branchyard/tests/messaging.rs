@@ -92,7 +92,7 @@ fn a_child_reports_and_asks_its_parent_across_both_event_logs() {
     }
 
     let asked = kid_delegate
-        .ask("should I rename the module?", None)
+        .ask("should I rename the module?", None, None)
         .unwrap();
     assert!(asked.answer.is_none(), "no --wait, no answer expected yet");
     assert!(asked.message.in_reply_to.is_none());
@@ -139,7 +139,7 @@ fn a_child_reports_and_asks_its_parent_across_both_event_logs() {
         .unwrap();
     let questions = root_delegate.inbox().unwrap().messages.len();
     let waiter = std::thread::spawn(move || {
-        waiting_kid.ask("ready to merge?", Some(Duration::from_secs(10)))
+        waiting_kid.ask("ready to merge?", Some(Duration::from_secs(10)), None)
     });
     wait::until("the new question to reach the root's inbox", || {
         root_delegate.inbox().unwrap().messages.len() > questions
@@ -216,7 +216,7 @@ fn messaging_authority_follows_the_delegation_tree() {
     let b_delegate = f.yard.branch("b").unwrap().delegate(options).unwrap();
 
     // A branch answers only its own descendants, never a sibling's.
-    let question = a_delegate.ask("ok?", None).unwrap().message;
+    let question = a_delegate.ask("ok?", None, None).unwrap().message;
     match b_delegate.answer(question.id, "no") {
         Err(Error::Denied(why)) => assert!(
             why.contains("descendants"),
@@ -359,7 +359,7 @@ fn a_message_waits_for_the_next_turn_when_the_parent_cannot_steer() {
         prompts(&events(&f, "root")).len() == 2
     });
 
-    let question = kid.ask("rename the module?", None).unwrap().message;
+    let question = kid.ask("rename the module?", None, None).unwrap().message;
     let root_inbox = || {
         f.yard
             .branch("root")
@@ -430,7 +430,8 @@ fn a_turn_waiting_for_an_answer_is_not_stalled() {
     });
     // The harness blocks in `ask --wait`: the same call a harness's `by ask
     // --wait` reaches through the broker, recorded in the store.
-    let asking = std::thread::spawn(move || kid.ask("which way?", Some(Duration::from_secs(2))));
+    let asking =
+        std::thread::spawn(move || kid.ask("which way?", Some(Duration::from_secs(2)), None));
     wait::settle(
         "the stall window passes while the turn waits for an answer",
         Duration::from_millis(1500),
@@ -736,7 +737,7 @@ fn a_root_asks_the_person_and_still_asks_after_its_turn_ends() {
     wait_for_own_prompt(&f, "root");
     let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
 
-    let asked = root.ask("which database?", None).unwrap().message;
+    let asked = root.ask("which database?", None, None).unwrap().message;
     assert_eq!((asked.from.as_str(), asked.to.as_str()), ("root", PERSON));
     assert!(events(&f, "root")
         .iter()
@@ -784,7 +785,7 @@ fn a_fork_asks_the_person_and_a_delegated_child_its_parent() {
     let asked = fork
         .delegate(options.clone())
         .unwrap()
-        .ask("which way?", None);
+        .ask("which way?", None, None);
     assert_eq!(asked.unwrap().message.to, PERSON);
 
     source
@@ -796,7 +797,10 @@ fn a_fork_asks_the_person_and_a_delegated_child_its_parent() {
         f.yard.branch("kid").unwrap().info().status != BranchStatus::Running
     });
     let kid = f.yard.branch("kid").unwrap().delegate(options).unwrap();
-    assert_eq!(kid.ask("which way?", None).unwrap().message.to, "source");
+    assert_eq!(
+        kid.ask("which way?", None, None).unwrap().message.to,
+        "source"
+    );
 }
 
 /// The person's answer reaches a root blocked in `ask` with a wait, and is
@@ -811,8 +815,9 @@ fn the_persons_answer_reaches_a_root_waiting_in_ask() {
     };
     wait_for_own_prompt(&f, "root");
     let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
-    let asking =
-        std::thread::spawn(move || root.ask("which database?", Some(Duration::from_secs(30))));
+    let asking = std::thread::spawn(move || {
+        root.ask("which database?", Some(Duration::from_secs(30)), None)
+    });
     wait::until("the question to reach the person", || {
         !f.yard.inbox().unwrap().messages.is_empty()
     });
@@ -855,7 +860,7 @@ fn the_persons_answer_to_a_root_whose_turn_ended_waits_for_its_next_turn() {
         .run()
         .unwrap();
     let delegate = root.delegate(options.clone()).unwrap();
-    let question = delegate.ask("which database?", None).unwrap().message;
+    let question = delegate.ask("which database?", None, None).unwrap().message;
     assert_eq!(reason(&f, "root"), Some(Reason::Question));
 
     let answer = f.yard.answer(question.id, "postgres").unwrap();
@@ -897,9 +902,9 @@ fn the_person_answers_each_question_once_and_nothing_else() {
     let options = delegating(&f, Envelope::depth(2));
     let kid = parent_and_child(&f, &options);
     let report = kid.report("tests pass").unwrap();
-    let to_root = kid.ask("rename it?", None).unwrap().message;
+    let to_root = kid.ask("rename it?", None, None).unwrap().message;
     let root = f.yard.branch("root").unwrap().delegate(options).unwrap();
-    let to_person = root.ask("which database?", None).unwrap().message;
+    let to_person = root.ask("which database?", None, None).unwrap().message;
     let denied = |id: u64, text: &str| match f.yard.answer(id, text) {
         Err(Error::Denied(why)) => why,
         other => panic!("expected a denial, got {other:?}"),
@@ -950,8 +955,8 @@ fn the_persons_inbox_marks_an_answered_question_read() {
         .run()
         .unwrap();
     let delegate = root.delegate(options).unwrap();
-    let answered = delegate.ask("which database?", None).unwrap().message;
-    let waiting = delegate.ask("which port?", None).unwrap().message;
+    let answered = delegate.ask("which database?", None, None).unwrap().message;
+    let waiting = delegate.ask("which port?", None, None).unwrap().message;
     f.yard.answer(answered.id, "postgres").unwrap();
 
     let inbox = f.yard.inbox().unwrap();

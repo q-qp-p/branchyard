@@ -769,6 +769,11 @@ pub struct AskRequest {
     /// the question is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_seconds: Option<f64>,
+    /// An idempotency key, scoped to the asking branch: a repeat with the
+    /// same key returns the first question (waiting for its answer again if
+    /// asked to), and the same key with different text is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// `POST /v1/repos/{repo}/branches/{branch}/escalate`: a message with no

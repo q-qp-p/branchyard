@@ -812,13 +812,22 @@ impl Repo {
 
     /// Ask `branch`'s parent (the person, if it has none) a question; like
     /// `by ask`. Without `wait_seconds`, returns once the question is sent;
-    /// with it, blocks on the server for up to that long for an answer.
-    pub fn ask(&self, branch: &str, text: &str, wait_seconds: Option<f64>) -> Result<Asked, Error> {
+    /// with it, blocks on the server for up to that long for an answer. A
+    /// `key` makes a repeat return the first question instead of asking
+    /// twice (scoped to `branch`; the same key with other text is refused).
+    pub fn ask(
+        &self,
+        branch: &str,
+        text: &str,
+        wait_seconds: Option<f64>,
+        key: Option<&str>,
+    ) -> Result<Asked, Error> {
         self.client.post(
             &self.branch_path(branch, "/ask"),
             &AskRequest {
                 text: text.to_owned(),
                 wait_seconds,
+                key: key.map(str::to_owned),
             },
             &new_key(),
         )

@@ -22433,6 +22433,13 @@
           ],
           "format": "double",
           "description": "Block up to this many seconds for an answer; `None` returns once\nthe question is sent."
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An idempotency key, scoped to the asking branch: a repeat with the\nsame key returns the first question (waiting for its answer again if\nasked to), and the same key with different text is refused."
         }
       },
       "required": [

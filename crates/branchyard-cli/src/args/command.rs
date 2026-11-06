@@ -799,6 +799,9 @@ pub enum Command {
         /// Block up to this many seconds for an answer (default: return once the question is sent)
         #[arg(long = "wait", value_name = "SECONDS", value_parser = seconds, allow_negative_numbers = true)]
         wait_seconds: Option<f64>,
+        /// An idempotency key: asking again with the same key returns the first question
+        #[arg(long, value_name = "KEY", value_parser = non_blank)]
+        key: Option<String>,
         /// Print JSON
         #[arg(long)]
         json: bool,

@@ -866,6 +866,7 @@ pub const OPERATIONS: &[Operation] = &[
         &[
             Param::all("<TEXT>", "text", "text"),
             Param::all("--wait", "wait_seconds", "wait"),
+            Param::all("--key", "key", "key"),
             ACT_AS,
             JSON,
         ],

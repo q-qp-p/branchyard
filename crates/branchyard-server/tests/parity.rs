@@ -386,7 +386,7 @@ fn a_person_spawns_inspects_and_integrates_through_the_server() {
     let answer = repo.answer("root", reported.id, "thanks").unwrap();
     assert_eq!((answer.from.as_str(), answer.to.as_str()), ("root", "kid"));
     assert_eq!(answer.in_reply_to, Some(reported.id));
-    let asked = repo.ask("kid", "should I rename it?", None).unwrap();
+    let asked = repo.ask("kid", "should I rename it?", None, None).unwrap();
     assert!(asked.answer.is_none());
     let no_parent = repo.report("root", "root has no parent").unwrap_err();
     assert_eq!(no_parent.code(), Some("denied"));

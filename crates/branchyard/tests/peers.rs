@@ -318,7 +318,7 @@ fn a_question_through_the_pipeline_reads_as_before_and_a_registration_is_checked
         ..delegating(&f)
     };
     let (root, a, _b) = siblings(&f, &options);
-    let asked = a.ask("which lock?", None).unwrap();
+    let asked = a.ask("which lock?", None, None).unwrap();
     assert_eq!(asked.message.kind, MessageKind::Question);
     assert_eq!(
         asked.message.meta, None,
@@ -554,4 +554,41 @@ fn configured_kinds_are_registered_and_a_bad_one_names_itself() {
         !names.contains(&"fresh".to_owned()) && !names.contains(&"loose".to_owned()),
         "a refused file registers nothing: {names:?}"
     );
+}
+
+/// `ask` takes an idempotency key as `message` does: sender-scoped, a
+/// repeat returns the first question (and its answer once there is one)
+/// and records nothing again, and the same key with other text is refused.
+#[test]
+fn a_keyed_ask_returns_the_first_question_and_refuses_other_text() {
+    let f = Fixture::new();
+    let options = delegating(&f);
+    let (root, a, b) = siblings(&f, &options);
+    let first = a.ask("which lock?", None, Some("q1")).unwrap();
+    assert_eq!(first.message.kind, MessageKind::Question);
+    let again = a.ask("which lock?", None, Some("q1")).unwrap();
+    assert_eq!(again.message, first.message);
+    denied(
+        a.ask("another question?", None, Some("q1")),
+        "a key names one message",
+    );
+    // No key: a second question. Another sender may use the same key.
+    let plain = a.ask("which lock?", None, None).unwrap();
+    assert_ne!(plain.message.id, first.message.id);
+    let from_b = b.ask("which lock?", None, Some("q1")).unwrap();
+    assert_ne!(from_b.message.id, first.message.id);
+    let asked: Vec<u64> = messages_on(&f, "a")
+        .iter()
+        .filter(|m| m.kind == MessageKind::Question)
+        .map(|m| m.id)
+        .collect();
+    assert_eq!(asked, [first.message.id, plain.message.id], "recorded once");
+
+    // Once answered, the same keyed ask finds the answer.
+    let answer = root.answer(first.message.id, "the mutex").unwrap();
+    let repeat = a
+        .ask("which lock?", Some(Duration::from_secs(30)), Some("q1"))
+        .unwrap();
+    assert_eq!(repeat.message.id, first.message.id);
+    assert_eq!(repeat.answer.map(|m| m.id), Some(answer.id));
 }

@@ -1026,17 +1026,22 @@ def children() -> Children:
     return _make(Children, _run(["children"]))
 
 
-def ask(text: str, wait: Optional[float] = None) -> Asked:
+def ask(text: str, wait: Optional[float] = None, key: Optional[str] = None) -> Asked:
     """Ask your parent (the person, if you have none) a question. Without
     `wait`, returns once it is sent.
 
     With `wait`, blocks on `by`'s side for up to that many seconds for an
     answer; a wait that passes with no answer yet is not an error, `answer`
     is just `None`: check `inbox()` later, or `ask` again.
+
+    With `key`, asking again with the same key returns the first question
+    instead of asking twice; the same key with other text raises DeniedError.
     """
     args = ["ask"]
     if wait is not None:
         args += ["--wait", str(wait)]
+    if key is not None:
+        args += ["--key", key]
     args += ["--", text]
     value = _run(args)
     return Asked(

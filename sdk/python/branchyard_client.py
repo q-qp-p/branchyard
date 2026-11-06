@@ -3119,11 +3119,14 @@ class Repo:
         body = _drop_none({"from": source, "to": to, "artifacts": list(artifacts), "note": note, "expected": expected})
         return Message(self.client.post(self._branch(source, "/handoff"), body, key=new_key()))
 
-    def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None) -> Record:
+    def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None, key: Optional[str] = None) -> Record:
         """Ask `branch`'s parent (the person, if it has none) a question, as `branch`. With `wait_seconds` (capped at
-        120 on the server) it waits for the answer, `answer` being None when none came."""
+        120 on the server) it waits for the answer, `answer` being None when none came. A repeat with the same `key`
+        returns the first question; the same key with other text is refused."""
         return Record(
-            self.client.post(self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds}))
+            self.client.post(
+                self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds, "key": key})
+            )
         )
 
     def report(self, branch: str, text: str, result: Optional[Any] = None) -> Message:

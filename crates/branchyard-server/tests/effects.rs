@@ -363,7 +363,7 @@ fn the_decisions_are_the_branches_that_need_you_or_are_ready_once_each() {
         .unwrap();
     let kid = await_operation(&client, &kid.id);
     assert_eq!(kid.state, OperationState::Succeeded, "{kid:?}");
-    repo.ask("kid", "should I rename it?", None).unwrap();
+    repo.ask("kid", "should I rename it?", None, None).unwrap();
     let again = repo
         .send(
             "root",
@@ -454,7 +454,10 @@ fn the_person_answers_a_roots_question_through_the_server() {
         },
     );
     assert_eq!(root.state, OperationState::Succeeded, "{root:?}");
-    let asked = repo.ask("root", "which database?", None).unwrap().message;
+    let asked = repo
+        .ask("root", "which database?", None, None)
+        .unwrap()
+        .message;
     assert_eq!(
         (asked.from.as_str(), asked.to.as_str()),
         ("root", branchyard::PERSON)

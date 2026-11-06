@@ -851,11 +851,12 @@ fn delegation_commands_parse_with_optional_branches() {
 #[test]
 fn messages_take_text_and_an_acting_branch() {
     assert_eq!(
-        parse_str("ask 'which lock?' --as kid --wait 2.5 --json").unwrap(),
+        parse_str("ask 'which lock?' --as kid --wait 2.5 --key q1 --json").unwrap(),
         Command::Ask {
             as_branch: Some("kid".into()),
             text: "which lock?".into(),
             wait_seconds: Some(2.5),
+            key: Some("q1".into()),
             json: true
         }
     );
