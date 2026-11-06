@@ -1503,12 +1503,14 @@ exit 1
         let reference = format!("registry.test/team/tc:1@{}", digest('d'));
         let record = f.record(&reference, "container");
         let sandboxed = branchyard::TaskOptions {
-            provider: Some(branchyard::Provider::Container(
-                branchyard::ContainerOptions {
-                    image: reference.clone(),
-                    ..branchyard::ContainerOptions::default()
-                },
-            )),
+            // From its JSON form: only crates/branchyard/src/providers names
+            // the variants (tests/provider_seam.rs).
+            provider: Some(
+                serde_json::from_value(
+                    serde_json::json!({"kind": "container", "image": reference}),
+                )
+                .unwrap(),
+            ),
             ..branchyard::TaskOptions::default()
         };
         let source = route_source(&f.repo, &sandboxed).expect("a source for a sandbox");
