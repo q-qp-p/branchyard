@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""A docker double for the toolchain image tests (crates/branchyard-cli/tests/images.rs).
+
+Every call's argv is appended to $FAKE_DOCKER_DIR/calls.jsonl. It knows two commands:
+
+  docker buildx build --tag TAG --metadata-file FILE (--push|--load) CONTEXT
+      "builds" the Dockerfile in CONTEXT: its LABEL lines become the image's labels and its
+      digest is the SHA-256 of the Dockerfile and the tag, so one context always gives one
+      digest. --push writes the digest to the metadata file, as buildx does.
+  docker image inspect REF
+      answers from the images it built, or from $FAKE_DOCKER_DIR/images.json (a preloaded
+      {"REF": {"labels": {...}, "digest": "sha256:..."}}), by tag or tag@digest; an image it
+      does not hold is "No such image".
+
+Nothing is run, pulled or pushed. $FAKE_DOCKER_FAIL_BUILD=1 makes a build fail.
+"""
+
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+state = Path(os.environ["FAKE_DOCKER_DIR"])
+state.mkdir(parents=True, exist_ok=True)
+args = sys.argv[1:]
+with (state / "calls.jsonl").open("a") as log:
+    log.write(json.dumps(args) + "\n")
+
+known = state / "images.json"
+images = json.loads(known.read_text()) if known.exists() else {}
+
+
+def option(flag):
+    return args[args.index(flag) + 1]
+
+
+if args[:2] == ["buildx", "build"]:
+    if os.environ.get("FAKE_DOCKER_FAIL_BUILD"):
+        sys.stderr.write("ERROR: failed to solve: the base image could not be pulled\n")
+        sys.exit(1)
+    tag = option("--tag")
+    context = Path(args[-1])
+    dockerfile = (context / "Dockerfile").read_text()
+    labels = {}
+    for line in dockerfile.splitlines():
+        match = re.fullmatch(r"LABEL (\S+)=(\".*\")", line)
+        if match:
+            labels[match.group(1)] = json.loads(match.group(2))
+    digest = "sha256:" + hashlib.sha256((dockerfile + tag).encode()).hexdigest()
+    pushed = "--push" in args
+    images[tag] = {"labels": labels, "digest": digest, "pushed": pushed}
+    known.write_text(json.dumps(images))
+    if pushed:
+        Path(option("--metadata-file")).write_text(json.dumps({"containerimage.digest": digest}))
+elif args[:2] == ["image", "inspect"]:
+    ref = args[2]
+    name = ref.split("@")[0]
+    found = images.get(name) or images.get(ref)
+    if found is None:
+        sys.stderr.write("Error response from daemon: No such image: %s\n" % ref)
+        sys.exit(1)
+    repo = name.rsplit(":", 1)[0] if ":" in name.rsplit("/", 1)[-1] else name
+    print(json.dumps([{
+        "Id": "sha256:" + hashlib.sha256(name.encode()).hexdigest(),
+        "RepoDigests": ["%s@%s" % (repo, found["digest"])] if found.get("pushed", True) else [],
+        "Config": {"Labels": found["labels"]},
+    }]))
+else:
+    sys.stderr.write("fake-docker: unsupported: %s\n" % " ".join(args))
+    sys.exit(2)

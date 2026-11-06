@@ -294,7 +294,7 @@ fn interactive(env: &Env) -> bool {
 }
 
 /// Installing or logging in is a person's decision, never a harness's.
-fn not_in_harness(what: &str) -> Result<(), Failure> {
+pub(crate) fn not_in_harness(what: &str) -> Result<(), Failure> {
     match crate::workspace_cmd::in_harness() {
         Some(branch) => Err(Report::new(
             "denied",
@@ -489,8 +489,13 @@ pub fn main(
     profiles: bool,
     refresh: bool,
     on: Option<&str>,
+    image: Option<&str>,
     action: Option<&HarnessesAction>,
 ) -> Outcome {
+    // What an image holds is read from its labels, here; no machine is asked.
+    if let (Some(image), None) = (image, action) {
+        return crate::images_cmd::holds(image, json);
+    }
     if on.is_some() && matches!(target, Target::Remote(_)) {
         return Err(Report::usage(
             "--on names one machine and --remote a server's workers; give one",

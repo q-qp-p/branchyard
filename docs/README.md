@@ -123,6 +123,7 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Observability](observability.md) | Server metrics, OpenTelemetry traces, and how turn trace context is passed to harnesses. |
 | [Sync](sync.md) | Backing up and syncing tasks across Cloud Storage, S3, Azure Blob, Git remotes, or local directories with leases and client-side encryption. |
 | [Environment recipes](recipes.md) | Defining custom VM or container lifecycle scripts in `branchyard.toml` and driving harnesses inside them over SSH. |
+| [Toolchain images](images.md) | Sandbox images with harness CLIs pre-installed at pinned versions, labelled and digest-pinned, and how routing reads them. |
 | [Harness lifecycle](harness-lifecycle.md) | Detecting installed harnesses, versions, logins, and quotas, and installing or updating agent CLIs under user policy. |
 | [Code mode](code-mode.md) | Benchmarks from the multi-agent delegation suite and design notes for programmatic SDK delegation. |
 | [Obligations](obligations.md) | What do my branches still owe (unknown or staged calls, approvals, lost turns, children, closing undo windows), and which command deals with each? |

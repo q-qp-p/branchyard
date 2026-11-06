@@ -22,6 +22,8 @@ by harnesses --profiles                        # the profiles Branchyard drives 
 by harnesses --all                             # every CLI in the catalog
 ```
 
+A sandbox does not install a harness at launch: [toolchain images](images.md) hold them at pinned versions, and `by harnesses --image REF` reads what one holds from its labels.
+
 ## What `by harnesses` shows
 
 ```text

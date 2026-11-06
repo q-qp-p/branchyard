@@ -604,3 +604,75 @@ fn native_required_egress_and_invalid_specs_are_refused_before_any_cli_or_branch
         assert!(calls(&bin).is_empty());
     }
 }
+
+#[test]
+fn a_sandboxed_turn_records_its_image_and_a_receipt_of_another_digest_fails_before_the_harness() {
+    use branchyard::images::{self, ImageLabels, ImageRecord, ImageStore};
+    for kind in [Native::Container, Native::Gke(AgentSandboxRuntime::Gvisor)] {
+        let (_serial, f, bin, options) = fixture(kind);
+        let image = options
+            .provider
+            .as_ref()
+            .and_then(Provider::image)
+            .expect("a native provider names its image");
+        let digest = images::digest_of(&image).unwrap().to_owned();
+        // What `by images build` recorded for it.
+        let labels = ImageLabels {
+            harnesses: [("codex".to_owned(), "0.157.1".to_owned())].into(),
+            evidence: Default::default(),
+            by: Some("0.4.0".into()),
+            anvil: None,
+        };
+        ImageStore::new(&f.root)
+            .add(ImageRecord {
+                reference: image.clone(),
+                tag: "example.test/runtime".into(),
+                digest: Some(digest.clone()),
+                image_id: None,
+                provider: "container".into(),
+                labels: labels.all(),
+                created: "2026-11-05T00:00:00.000Z".into(),
+                pushed: true,
+            })
+            .unwrap();
+        let branch = f
+            .yard
+            .task("WRITE one.txt=1")
+            .options(options.clone())
+            .name("toolchain")
+            .run()
+            .unwrap();
+        assert_eq!(branch.info().status, BranchStatus::Ready);
+        let admitted = branch.manifest().unwrap().expect("a manifest is stored");
+        let recorded = admitted
+            .image
+            .expect("a sandboxed session records its image");
+        assert_eq!(recorded.reference, image);
+        assert_eq!(recorded.digest.as_deref(), Some(digest.as_str()));
+        assert_eq!(recorded.toolchain, Some(labels.toolchain()));
+
+        // The next turn: the provider's receipt names the image admitted, so it runs.
+        let again = branch.send("WRITE two.txt=2", options.clone()).unwrap();
+        assert_eq!(again.info().status, BranchStatus::Ready);
+
+        // The manifest admitted another digest than the sandbox's receipt names.
+        let other = format!("sha256:{}", "c".repeat(64));
+        common::edit_record(&f.root, "toolchain", |record| {
+            record["manifest"]["image"]["digest"] = other.clone().into();
+        });
+        let refused = again.send("WRITE three.txt=3", options.clone()).unwrap();
+        let BranchStatus::Failed { reason } = &refused.info().status else {
+            panic!("expected a failure, got {:?}", refused.info().status);
+        };
+        assert!(reason.starts_with("bundle_mismatch: image "), "{reason}");
+        assert!(reason.contains(&other), "admitted: {reason}");
+        assert!(reason.contains(&digest), "found: {reason}");
+        assert!(refused.events().unwrap().into_iter().any(|e| matches!(
+            e.activity,
+            Activity::Warning(w) if w.starts_with("bundle_mismatch: image ")
+        )));
+        // Before the harness: its write never happened, and the sandbox was destroyed.
+        assert!(!refused.info().worktree.join("three.txt").exists());
+        assert_deleted(&bin, kind);
+    }
+}

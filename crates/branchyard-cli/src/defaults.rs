@@ -40,6 +40,70 @@ pub enum Scope {
     Continue,
 }
 
+/// A sandbox provider the command line chose without an image
+/// (`--provider container` and no `--image`) takes the default `by images
+/// pin` wrote to `[images]`; with none, the command is refused naming both
+/// ways to give one (docs/images.md). Run after [`apply`], which has put the
+/// configuration's own provider tables in place.
+pub fn settle(
+    cwd: &Path,
+    env: &dyn Fn(&str) -> Option<String>,
+    command: &mut Command,
+) -> Result<(), String> {
+    let Some(task) = command.task_args_mut() else {
+        return Ok(());
+    };
+    let images = load(cwd, env)
+        .ok()
+        .flatten()
+        .map(|config| config.images)
+        .unwrap_or_default();
+    settle_images(task, &images)
+}
+
+/// [`settle`] for one task and the configuration's `[images]`.
+pub fn settle_images(
+    task: &mut TaskArgs,
+    images: &branchyard_setup::config::ImagesConfig,
+) -> Result<(), String> {
+    let missing = |provider: &str, flag: &str| {
+        format!(
+            "--provider {provider} needs {flag}, or a default image: `by images pin REF@DIGEST \
+             --provider {provider}` writes [images] {key}",
+            key = provider.replace('-', "_")
+        )
+    };
+    if let Some(sandbox) = task.sandbox.as_mut().filter(|s| s.image.trim().is_empty()) {
+        sandbox.image = images
+            .microsandbox
+            .clone()
+            .ok_or_else(|| missing("microsandbox", "--image"))?;
+    }
+    if let Some(container) = task
+        .container
+        .as_mut()
+        .filter(|c| c.image.trim().is_empty())
+    {
+        container.image = images
+            .container
+            .clone()
+            .ok_or_else(|| missing("container", "--image pinned by @sha256:DIGEST"))?;
+        container.validate().map_err(|e| e.to_string())?;
+    }
+    if let Some(kube) = task
+        .agent_sandbox
+        .as_mut()
+        .filter(|a| a.image.trim().is_empty())
+    {
+        kube.image = images
+            .agent_sandbox
+            .clone()
+            .ok_or_else(|| missing("agent-sandbox", "--image pinned by @sha256:DIGEST"))?;
+        kube.validate().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Fill `globals` and `command` from the configuration files under `cwd`.
 /// `env` reads variables (only `BRANCHYARD_BRANCH` here).
 pub fn apply(

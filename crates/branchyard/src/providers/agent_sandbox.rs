@@ -85,6 +85,9 @@ impl ProviderKind for AgentSandboxOptions {
     fn name(&self) -> &'static str {
         "agent_sandbox"
     }
+    fn image(&self) -> Option<String> {
+        Some(self.image.clone()).filter(|image| !image.trim().is_empty())
+    }
     fn key(&self) -> String {
         native::key(self.name(), json!(self))
     }

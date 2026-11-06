@@ -633,6 +633,21 @@ cached with its ETag and checksum under ~/.cache/branchyard/catalog (or
 $BRANCHYARD_CATALOG_DIR). A cache whose checksum does not verify is refused.
 See docs/registry.md.";
 
+pub(crate) const IMAGES_EXAMPLES: &str = "\
+Examples:
+  by images build --harness codex --harness gemini-cli --tag ghcr.io/me/tc:1 --push
+  by images build --provider container --allow-unpinned --harness claude-code
+  by images list
+  by images show ghcr.io/me/tc:1
+  by images pin ghcr.io/me/tc:1@sha256:... --provider container
+  by harnesses --image ghcr.io/me/tc:1@sha256:...   # what it holds, from its labels
+
+A toolchain image installs each harness with the catalog's pinned command, so a sandboxed
+turn never installs one at launch, and labels what it holds (dev.branchyard.harness.ID,
+dev.branchyard.by, dev.branchyard.toolchain). The image holds no credentials. Docker
+buildx builds it when docker is on PATH; otherwise the build context is left and the
+command printed. Records go to .branchyard/images.json. See docs/images.md.";
+
 pub(crate) const GATEWAY_EXAMPLES: &str = "\
 Examples:
   by gateway start                 # in the background; its log in .branchyard/gateway/

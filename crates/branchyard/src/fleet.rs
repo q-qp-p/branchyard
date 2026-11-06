@@ -22,6 +22,7 @@ use crate::{
 };
 use branchyard_support::rng::SplitMix64;
 use branchyard_support::time::now_ms;
+use branchyard_support::LockExt as _;
 
 // ---------------------------------------------------------------------------
 // Task kinds
@@ -1089,6 +1090,11 @@ pub struct Route {
     pub picks: Vec<RoutePick>,
     pub excluded: Vec<Excluded>,
     pub seed: u64,
+    /// What the router could not tell and went on regardless: a sandbox
+    /// image that carries no Branchyard labels, so whether it holds the
+    /// harness is unknown (docs/images.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Why `candidate` cannot be picked now, if it cannot: its harness is
@@ -1219,6 +1225,7 @@ pub(crate) fn plan(
         picks,
         excluded,
         seed,
+        notes: Vec::new(),
     })
 }
 
@@ -1231,11 +1238,34 @@ pub(crate) fn availability(
     options: &TaskOptions,
     candidate: &FleetCandidate,
     harnesses: Option<&dyn crate::inventory::HarnessGate>,
+    images: Option<&dyn crate::images::ImageLabelSource>,
+    note: &dyn Fn(String),
 ) -> Result<(), String> {
     let profile = harness::select(Some(&candidate.harness)).map_err(|e| e.to_string())?;
     placement::check(yard, options.provider.as_ref()).map_err(|e| e.to_string())?;
-    if !placement::sandboxed(options.provider.as_ref()) {
-        let replaced = candidate.command.as_deref().or(options.command.as_deref());
+    let replaced = candidate.command.as_deref().or(options.command.as_deref());
+    if placement::sandboxed(options.provider.as_ref()) {
+        // A sandbox image that says what it holds (its labels) is asked
+        // without starting it; one that does not is not excluded, and the
+        // route says it could not tell (docs/images.md).
+        let image = options.provider.as_ref().and_then(|p| p.image());
+        if let (Some(source), Some(image), None) = (images, image, replaced) {
+            match crate::images::judge(source, &image, profile.harness) {
+                crate::images::Verdict::Holds(_) => {}
+                crate::images::Verdict::Lacks { held } => {
+                    return Err(format!(
+                        "{} is not in the image {image}: its labels say it holds {held}; build one \
+                         with it using `by images build --harness {}`",
+                        profile.harness, profile.harness
+                    ))
+                }
+                crate::images::Verdict::Unknown(why) => note(format!(
+                    "image {image}: {why}; whether it holds {} is not known, so {} is not left out",
+                    profile.harness, profile.harness
+                )),
+            }
+        }
+    } else {
         // The harness by its own name: what this machine has of it, which
         // may install it first. A replaced command is checked as a path.
         if let (Some(gate), None) = (harnesses, replaced) {
@@ -1273,6 +1303,11 @@ pub struct RouteOptions {
     /// (docs/harness-lifecycle.md): a candidate it says cannot run there
     /// is excluded, with its reason; it may install one first.
     pub harnesses: Option<std::sync::Arc<dyn crate::inventory::HarnessGate>>,
+    /// What a sandbox image's labels say it holds (docs/images.md): a
+    /// candidate whose harness a labelled image lacks is excluded, with its
+    /// reason; an image without Branchyard labels excludes nothing, and the
+    /// route notes it.
+    pub images: Option<std::sync::Arc<dyn crate::images::ImageLabelSource>>,
 }
 
 /// A routed run or fan: what the router chose, and the branches as they
@@ -1346,11 +1381,25 @@ pub(crate) fn route(
         ))
     })?;
     let history = stats(&yard.store().outcomes().outcomes(Some(kind))?);
+    let notes = std::sync::Mutex::new(Vec::<String>::new());
+    let note = |text: String| {
+        let mut seen = notes.lock_recovering("route notes");
+        if !seen.contains(&text) {
+            seen.push(text);
+        }
+    };
     let available = |c: &FleetCandidate| match how.excluded.get(&c.harness) {
         Some(why) => Err(why.clone()),
-        None => availability(yard, options, c, how.harnesses.as_deref()),
+        None => availability(
+            yard,
+            options,
+            c,
+            how.harnesses.as_deref(),
+            how.images.as_deref(),
+            &note,
+        ),
     };
-    let route = plan(
+    let mut route = plan(
         kind,
         source,
         matched,
@@ -1361,6 +1410,7 @@ pub(crate) fn route(
         attempts.or(how.attempts).unwrap_or(entry.attempts).max(1),
         how.seed.unwrap_or_else(fresh_seed),
     )?;
+    route.notes = notes.lock_recovering("route notes").clone();
     Ok((route, entry.clone()))
 }
 
@@ -1535,6 +1585,8 @@ pub struct AdviceScope<'a> {
     pub seed: Option<u64>,
     /// What this machine has of each harness, as [`RouteOptions::harnesses`].
     pub harnesses: Option<&'a dyn crate::inventory::HarnessGate>,
+    /// What the sandbox images' labels say, as [`RouteOptions::images`].
+    pub images: Option<&'a dyn crate::images::ImageLabelSource>,
 }
 
 /// The advice for `prompt`: see [`Advice`].
@@ -1612,7 +1664,16 @@ pub(crate) fn advise(
             .find(|s| candidate.same_arm(&s.harness, s.model.as_deref(), s.effort.as_deref()))
             .cloned();
         let reason = allowed(candidate)
-            .and_then(|()| availability(yard, options, candidate, scope.harnesses))
+            .and_then(|()| {
+                availability(
+                    yard,
+                    options,
+                    candidate,
+                    scope.harnesses,
+                    scope.images,
+                    &|_| {},
+                )
+            })
             .and_then(|()| over_budget(max_usd, stats.as_ref()).map_or(Ok(()), Err))
             .err();
         if reason.is_none() {
@@ -2012,15 +2073,16 @@ pub(crate) fn failover(
         .filter(|c| !tried.contains(c))
         .collect();
     let mut skipped = Vec::new();
-    let Some(next) = remaining
-        .iter()
-        .find(|c| match availability(yard, options, c, None) {
-            Ok(()) => true,
-            Err(why) => {
-                skipped.push(format!("{}: {why}", c.label()));
-                false
-            }
-        })
+    let Some(next) =
+        remaining.iter().find(
+            |c| match availability(yard, options, c, None, None, &|_| {}) {
+                Ok(()) => true,
+                Err(why) => {
+                    skipped.push(format!("{}: {why}", c.label()));
+                    false
+                }
+            },
+        )
     else {
         warn(format!(
             "not failing over: no candidate left{}",
@@ -2434,6 +2496,7 @@ mod tests {
                 tree_remaining_usd: None,
                 seed: Some(7),
                 harnesses: None,
+                images: None,
             };
             advise(
                 &yard,

@@ -920,6 +920,25 @@ fn run(
     ) {
         recorder.record(Activity::Warning(note))?;
     }
+    // The image the provider's receipt names is the one the session was
+    // admitted with (`crate::bundles::verify_image`), before the sandbox is
+    // used for anything.
+    if let Some((provider, name)) = placement.sandbox() {
+        // A receipt that cannot be read is no evidence of another image.
+        let receipt = branchyard_support::best_effort(
+            "read the sandbox's image receipt",
+            provider.image_receipt(name),
+        )
+        .flatten();
+        if let Err(mismatch) = crate::bundles::verify_image(&manifest, receipt.as_deref()) {
+            recorder.record(Activity::Warning(mismatch.to_string()))?;
+            if let Some(warning) = placement.discard() {
+                recorder.record(Activity::Warning(warning))?;
+            }
+            driven.end = End::failed(mismatch.to_string());
+            return Ok(driven);
+        }
+    }
     if let Some(started) = placement.started() {
         recorder.record(crate::snapshots::event(started.clone()))?;
         // A seed is used once: later turns resume the kept sandbox or

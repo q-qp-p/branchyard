@@ -73,6 +73,14 @@ pub(crate) trait ProviderKind {
     /// Where readiness checks look for the harness executable.
     fn harness_location(&self) -> HarnessLocation<'_>;
 
+    /// The image the provider's sandbox is made from, as it was given (the
+    /// reference, `@sha256:...` where pinned); `None` for a provider that
+    /// names none (a local harness, a recipe's machine, a Substrate actor
+    /// whose template fixes its image).
+    fn image(&self) -> Option<String> {
+        None
+    }
+
     /// Pure option validation, where supported. Other checks belong to `check`.
     fn validate_options(&self) -> Result<(), Error> {
         Ok(())
@@ -248,6 +256,12 @@ impl Provider {
     /// its stable kind, with the recipe's name when one is selected.
     pub fn label(&self) -> String {
         self.kind().label()
+    }
+
+    /// The image this provider's sandbox is made from, as it was given
+    /// (docs/images.md); `None` when it names none.
+    pub fn image(&self) -> Option<String> {
+        self.kind().image()
     }
 
     /// `by`'s banner for a run under `provider` (`None` is local): the mode

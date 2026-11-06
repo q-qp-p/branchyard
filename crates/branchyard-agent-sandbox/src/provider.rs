@@ -372,6 +372,12 @@ impl SandboxProvider for AgentSandboxProvider {
         self.running(&locked, &mut receipt).map(Some)
     }
 
+    fn image_receipt(&self, name: &str) -> Result<Option<String>, ProviderError> {
+        // The receipt alone: kubectl is not asked.
+        let locked = self.store.lock(name)?;
+        Ok(self.load(&locked, name)?.map(|receipt| receipt.image))
+    }
+
     fn exec(&self, name: &str, spec: &ExecSpec) -> Result<Box<dyn Process>, ProviderError> {
         spec.refuse_write_scope()?;
         let locked = self.store.lock(name)?;

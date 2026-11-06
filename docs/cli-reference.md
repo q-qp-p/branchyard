@@ -1817,6 +1817,7 @@ by harnesses [OPTIONS] [COMMAND]
 | `--all` | Every harness CLI in catalog/harnesses.toml, with install and login commands, API-key variables and models where known, marking the ones Branchyard can drive |
 | `--profiles` | The harness profiles Branchyard drives, and whether each is on PATH |
 | `--refresh` | Detect again rather than use what was detected in the last minute |
+| `--image <REF>` | What a sandbox image holds, read from its labels without starting it (`by images build` writes them): a reference, or REF@sha256:DIGEST |
 
 ### `by harnesses install`
 
@@ -2518,6 +2519,72 @@ by sync rotate-key [OPTIONS]
 | Option | What it does |
 |---|---|
 | `--to <WRAPPER>` | Wrap the keys from now on with this instead: `passphrase` (the new one in BRANCHYARD_SYNC_NEW_PASSPHRASE) or a kms:// URL |
+
+## `by images`
+
+Build, list and pin sandbox images with the harness CLIs pre-installed
+
+A toolchain image holds harnesses at pinned versions, labelled so routing can tell what it contains without starting it.
+
+```text
+by images [OPTIONS] <COMMAND>
+```
+
+### `by images build`
+
+Write a build context for a toolchain image and build it
+
+The catalog's pinned install command for each harness, the `by` binary and, with [connectors] anvil, Anvil's toolchain; labelled with what it holds. Builds with docker buildx when docker is on PATH, otherwise leaves the context and prints the command.
+
+```text
+by images build [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--provider <PROVIDER>` | The provider the image is for (default: container) (one of `microsandbox`, `container`, `agent-sandbox`, `substrate`) |
+| `--harness <ID>` | A harness to install, by ID; repeat it (default: [harnesses] allow, else the harnesses [fleet] and [defaults] name) |
+| `--tag <REF>` | The image's name and tag (default: branchyard-toolchain: and a prefix of its toolchain hash) |
+| `--push` | Push the image to its registry and read its digest back |
+| `--out <DIR>` | Where to write the build context (default: .branchyard/images/ under the repository) |
+| `--allow-unpinned` | Install a harness whose catalog command takes no version (a piped script); its label then reads unpinned |
+| `--base <IMAGE>` | The base image, which must have npm (default: node:22-bookworm-slim) |
+| `--by-binary <PATH>` | The Linux `by` binary to put in the image (default: this one) |
+
+### `by images list`
+
+The images built or pinned here, from .branchyard/images.json
+
+```text
+by images list [OPTIONS]
+```
+
+### `by images show`
+
+One recorded image: its reference, provider, labels and the harnesses it holds
+
+```text
+by images show [OPTIONS] <REFERENCE>
+```
+
+| Option | What it does |
+|---|---|
+| `<REFERENCE>` | The reference, tag or digest |
+
+### `by images pin`
+
+Make REF@sha256:DIGEST a provider's default image
+
+Writes the key the provider already reads ([microsandbox], [container] or [agent_sandbox] image) in branchyard.toml, or [images] PROVIDER when it has none. A tag without a digest is refused.
+
+```text
+by images pin [OPTIONS] <REFERENCE>
+```
+
+| Option | What it does |
+|---|---|
+| `<REFERENCE>` | The image, pinned by digest: REF@sha256:DIGEST |
+| `--provider <PROVIDER>` | The provider it is for (default: the one the image was built for) (one of `microsandbox`, `container`, `agent-sandbox`, `substrate`) |
 
 ## `by trigger`
 

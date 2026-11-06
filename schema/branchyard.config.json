@@ -163,6 +163,10 @@
     "approvals": {
       "$ref": "#/$defs/ApprovalsConfig",
       "description": "Your approvals for tools and connector operations\n(docs/effects.md#approvals): allow, ask, block or stage, by pattern\nand by effect class. Within a seat's, and never below an\nadministrator's on a server."
+    },
+    "images": {
+      "$ref": "#/$defs/ImagesConfig",
+      "description": "The sandbox image each provider falls back to when a run names none\n(docs/images.md): `microsandbox = \"REF@sha256:...\"`. Written by\n`by images pin`; a `--image` flag or the provider's own table wins."
     }
   },
   "title": "Branchyard configuration",
@@ -2174,6 +2178,41 @@
         }
       },
       "description": "`[approvals]`."
+    },
+    "ImagesConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "microsandbox": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Microsandbox's image when `--image` is unset."
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The container provider's image when `--image` is unset."
+        },
+        "agent_sandbox": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The Agent Sandbox provider's image when `--image` is unset."
+        },
+        "substrate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The image behind the Substrate actor template, recorded so routing can read\nits labels; Substrate starts the template, never this reference."
+        }
+      },
+      "description": "`[images]`: the default sandbox image of each provider, digest-pinned."
     }
   },
   "$id": "https://raw.githubusercontent.com/vamsiramakrishnan/branchyard/main/schema/branchyard.config.json"

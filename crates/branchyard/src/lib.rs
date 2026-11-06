@@ -126,6 +126,7 @@ mod graph;
 pub mod guard;
 pub mod handoff;
 mod harness;
+pub mod images;
 mod inbox;
 mod integrate;
 pub mod inventory;
@@ -547,6 +548,28 @@ impl Yard {
     /// The mirror hosts set with [`Yard::use_mirrors`].
     pub fn mirrors(&self) -> Vec<branchyard_provision::network::HostRule> {
         self.hub.mirrors.lock_recovering("mirrors").clone()
+    }
+
+    /// Read sandbox images' labels from `source` when a turn's manifest
+    /// records its image (docs/images.md). Without one, the labels
+    /// `by images build` recorded in `.branchyard/images.json`. Replaces any
+    /// set before. Shared by every clone of this `Yard`.
+    pub fn use_image_labels(&self, source: Arc<dyn images::ImageLabelSource>) {
+        *self.hub.image_labels.lock_recovering("image labels") = Some(source);
+    }
+
+    /// The label source set with [`Yard::use_image_labels`], or the
+    /// repository's recorded images.
+    pub fn image_labels(&self) -> Arc<dyn images::ImageLabelSource> {
+        match self
+            .hub
+            .image_labels
+            .lock_recovering("image labels")
+            .clone()
+        {
+            Some(source) => source,
+            None => Arc::new(images::RecordedLabels::new(self.root())),
+        }
     }
 
     /// The store set with [`Yard::use_tool_store`], if any.

@@ -69,6 +69,53 @@ impl fmt::Display for Mismatch {
     }
 }
 
+/// The sandbox image a provider's receipt names is not the one the manifest
+/// admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageMismatch {
+    /// The image reference the manifest recorded.
+    pub reference: String,
+    /// The digest the manifest recorded.
+    pub expected: String,
+    /// The digest the provider's receipt names, or what it named instead.
+    pub found: String,
+}
+
+impl fmt::Display for ImageMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{BUNDLE_MISMATCH}: image {}: the session was admitted with {} but the sandbox the \
+             provider made is from {}; the turn did not start. Start a new session to admit the \
+             image the provider now uses",
+            self.reference, self.expected, self.found
+        )
+    }
+}
+
+/// Check that the image a provider's receipt names (`receipt`, its image
+/// reference) has the digest `manifest` admitted. A manifest with no image
+/// or no digest, and a provider that keeps no receipt (`None`), check nothing.
+pub(crate) fn verify_image(
+    manifest: &TurnManifest,
+    receipt: Option<&str>,
+) -> Result<(), ImageMismatch> {
+    let (Some(image), Some(receipt)) = (&manifest.image, receipt) else {
+        return Ok(());
+    };
+    let Some(expected) = &image.digest else {
+        return Ok(());
+    };
+    match crate::images::digest_of(receipt) {
+        Some(found) if found == expected => Ok(()),
+        found => Err(ImageMismatch {
+            reference: image.reference.clone(),
+            expected: expected.clone(),
+            found: found.map_or_else(|| format!("{receipt} (no digest)"), str::to_owned),
+        }),
+    }
+}
+
 /// The digest of every skill this build embeds, by name, computed once.
 fn embedded() -> &'static HashMap<String, String> {
     static DIGESTS: OnceLock<HashMap<String, String>> = OnceLock::new();
@@ -216,6 +263,7 @@ mod tests {
                 content: Some("content-1".into()),
             }],
             skill_digests: skill_digests(Some(&only)).unwrap(),
+            image: None,
             helpers: None,
             models: None,
             network: None,
@@ -235,6 +283,37 @@ mod tests {
         let recorded = one.iter().find(|s| s.id == "docx").unwrap();
         assert_eq!(recorded.digest, crate::toolstore::skill_digest(docx));
         assert!(skill_digests(Some(&["no-such-skill".to_owned()])).is_err());
+    }
+
+    #[test]
+    fn an_image_receipt_of_another_digest_is_a_mismatch_naming_both() {
+        use crate::manifest::ManifestImage;
+        let admitted = format!("sha256:{}", "a".repeat(64));
+        let mut m = manifest(&[]);
+        // A session with no image, or one admitted by tag, checks nothing.
+        verify_image(&m, Some("x@sha256:other")).unwrap();
+        m.image = Some(ManifestImage {
+            reference: "r:1".into(),
+            digest: None,
+            toolchain: None,
+        });
+        verify_image(&m, Some("x@sha256:other")).unwrap();
+        m.image = Some(ManifestImage {
+            reference: format!("r:1@{admitted}"),
+            digest: Some(admitted.clone()),
+            toolchain: None,
+        });
+        verify_image(&m, Some(&format!("r:1@{admitted}"))).unwrap();
+        // A provider that keeps no receipt says nothing against it.
+        verify_image(&m, None).unwrap();
+        let other = format!("sha256:{}", "b".repeat(64));
+        let mismatch = verify_image(&m, Some(&format!("r:1@{other}"))).unwrap_err();
+        let text = mismatch.to_string();
+        assert!(text.starts_with("bundle_mismatch: image r:1@"), "{text}");
+        assert!(text.contains(&admitted) && text.contains(&other), "{text}");
+        // A receipt with no digest at all is not the digest admitted either.
+        let bare = verify_image(&m, Some("r:1")).unwrap_err();
+        assert!(bare.found.contains("no digest"), "{bare}");
     }
 
     #[test]

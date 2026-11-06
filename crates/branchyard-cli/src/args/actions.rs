@@ -683,6 +683,68 @@ pub enum CatalogAction {
     Status,
 }
 
+/// `by images ...`; see docs/images.md.
+#[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
+pub enum ImagesAction {
+    /// Write a build context for a toolchain image and build it
+    ///
+    /// The catalog's pinned install command for each harness, the `by` binary and, with
+    /// [connectors] anvil, Anvil's toolchain; labelled with what it holds. Builds with docker
+    /// buildx when docker is on PATH, otherwise leaves the context and prints the command.
+    Build(ImagesBuild),
+    /// The images built or pinned here, from .branchyard/images.json
+    List,
+    /// One recorded image: its reference, provider, labels and the harnesses it holds
+    Show {
+        /// The reference, tag or digest
+        reference: String,
+    },
+    /// Make REF@sha256:DIGEST a provider's default image
+    ///
+    /// Writes the key the provider already reads ([microsandbox], [container] or
+    /// [agent_sandbox] image) in branchyard.toml, or [images] PROVIDER when it has none.
+    /// A tag without a digest is refused.
+    Pin {
+        /// The image, pinned by digest: REF@sha256:DIGEST
+        reference: String,
+        /// The provider it is for (default: the one the image was built for)
+        #[arg(long, value_name = "PROVIDER", value_parser = ["microsandbox", "container", "agent-sandbox", "substrate"])]
+        provider: Option<String>,
+    },
+}
+
+/// What `by images build` takes.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct ImagesBuild {
+    /// The provider the image is for (default: container)
+    #[arg(long, value_name = "PROVIDER", value_parser = ["microsandbox", "container", "agent-sandbox", "substrate"])]
+    pub provider: Option<String>,
+    /// A harness to install, by ID; repeat it (default: [harnesses] allow, else the harnesses
+    /// [fleet] and [defaults] name)
+    #[arg(long, value_name = "ID")]
+    pub harness: Vec<String>,
+    /// The image's name and tag (default: branchyard-toolchain: and a prefix of its toolchain
+    /// hash)
+    #[arg(long, value_name = "REF")]
+    pub tag: Option<String>,
+    /// Push the image to its registry and read its digest back
+    #[arg(long)]
+    pub push: bool,
+    /// Where to write the build context (default: .branchyard/images/ under the repository)
+    #[arg(long, value_name = "DIR")]
+    pub out: Option<std::path::PathBuf>,
+    /// Install a harness whose catalog command takes no version (a piped script); its label then
+    /// reads unpinned
+    #[arg(long)]
+    pub allow_unpinned: bool,
+    /// The base image, which must have npm (default: node:22-bookworm-slim)
+    #[arg(long, value_name = "IMAGE")]
+    pub base: Option<String>,
+    /// The Linux `by` binary to put in the image (default: this one)
+    #[arg(long, value_name = "PATH")]
+    pub by_binary: Option<std::path::PathBuf>,
+}
+
 /// `by gateway ...`; see docs/connectors.md.
 #[derive(Subcommand, Clone, Debug, PartialEq, Eq)]
 pub enum GatewayAction {

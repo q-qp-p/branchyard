@@ -80,6 +80,23 @@ pub struct ManifestSkill {
     pub digest: String,
 }
 
+/// The sandbox image a session was admitted with (docs/images.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestImage {
+    /// The image reference as the provider was given it, `REF@sha256:...`
+    /// where it is pinned.
+    pub reference: String,
+    /// Its `sha256:` digest, when the reference is pinned by one. A turn
+    /// whose provider receipt names another digest fails
+    /// `bundle_mismatch` ([`crate::bundles::verify_image`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// Its `dev.branchyard.toolchain` label, when Branchyard could read the
+    /// image's labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<String>,
+}
+
 /// What a session was admitted with.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnManifest {
@@ -102,6 +119,10 @@ pub struct TurnManifest {
     /// were recorded, which checks nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skill_digests: Vec<ManifestSkill>,
+    /// The sandbox image of a sandboxed session: absent for a local
+    /// harness, a recipe's machine and a Substrate actor, which name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ManifestImage>,
     /// What the session may delegate; absent when it may not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Envelope>,
@@ -310,6 +331,11 @@ fn resolve(
         connectors,
         skill_digests: crate::bundles::skill_digests(spec.and_then(|p| p.skills.as_deref()))
             .unwrap_or_default(),
+        image: crate::providers::of(record.provider.as_ref())
+            .image()
+            .map(|reference| {
+                crate::images::manifest_image(yard.image_labels().as_ref(), &reference)
+            }),
         helpers: record.grant.as_ref().map(|g| g.envelope.clone()),
         models: scopes.models.clone(),
         network: scopes.network.as_ref().map(|n| n.policy.clone()),
@@ -337,6 +363,7 @@ mod tests {
                 content: None,
             }],
             skill_digests: Vec::new(),
+            image: None,
             helpers: None,
             models: Some(vec!["claude-*".into()]),
             network: Some("open".into()),

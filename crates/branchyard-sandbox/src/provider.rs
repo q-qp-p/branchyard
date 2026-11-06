@@ -394,6 +394,15 @@ pub trait SandboxProvider: Send + Sync {
     /// The sandbox's state, or `None` if it does not exist.
     fn inspect(&self, name: &str) -> Result<Option<SandboxInfo>, ProviderError>;
 
+    /// The image reference (`REF@sha256:...`) the provider's own receipt
+    /// records for sandbox `name`, when it keeps one. `None`: no receipt, or
+    /// a provider that keeps none (the default). The engine holds a
+    /// sandbox's image to the one its turn manifest admitted.
+    fn image_receipt(&self, name: &str) -> Result<Option<String>, ProviderError> {
+        let _ = name;
+        Ok(None)
+    }
+
     /// Start `spec.argv` inside the sandbox with piped stdio.
     fn exec(&self, name: &str, spec: &ExecSpec) -> Result<Box<dyn Process>, ProviderError>;
 

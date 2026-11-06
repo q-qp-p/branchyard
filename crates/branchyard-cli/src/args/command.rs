@@ -525,6 +525,14 @@ pub enum Command {
         /// repository's recipe)
         #[arg(long, value_name = "TARGET", global = true)]
         on: Option<String>,
+        /// What a sandbox image holds, read from its labels without starting it (`by images
+        /// build` writes them): a reference, or REF@sha256:DIGEST
+        #[arg(
+            long,
+            value_name = "REF",
+            conflicts_with_all = ["all", "profiles", "refresh", "on"]
+        )]
+        image: Option<String>,
         #[command(subcommand)]
         action: Option<HarnessesAction>,
     },
@@ -1224,9 +1232,44 @@ pub enum Command {
         #[command(subcommand)]
         action: CatalogAction,
     },
+    /// Build, list and pin sandbox images with the harness CLIs pre-installed
+    ///
+    /// A toolchain image holds harnesses at pinned versions, labelled so routing can tell what
+    /// it contains without starting it.
+    #[command(display_order = 408, subcommand_required = true, after_help = IMAGES_EXAMPLES)]
+    Images {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: ImagesAction,
+    },
 }
 
 impl Command {
+    /// The task options of a command that starts or continues a branch, for
+    /// filling in what configuration supplies.
+    pub fn task_args_mut(&mut self) -> Option<&mut TaskArgs> {
+        Some(match self {
+            Command::Run { task, .. } => task,
+            Command::Fan { task, .. } => task,
+            Command::Fork { task, .. } => task,
+            Command::Reincarnate { task, .. } => task,
+            Command::Send { task, .. } => task,
+            Command::Review { task, .. } => task,
+            Command::Spawn { spawn, .. } => &mut spawn.task,
+            Command::Map {
+                action: None, map, ..
+            } => &mut map.task,
+            Command::Task(task) => match &mut task.action {
+                TaskAction::New(new) => &mut new.task,
+                TaskAction::Fork(fork) => &mut fork.flags,
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
     /// The recipe `--provider recipe:NAME` names, for commands that take
     /// it: a server never runs one, so remote mode refuses it before
     /// connecting.

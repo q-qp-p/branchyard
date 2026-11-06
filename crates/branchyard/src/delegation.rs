@@ -3918,6 +3918,7 @@ impl Local {
             tree_remaining_usd: tightest.map(|cap| cap.left()),
             seed: None,
             harnesses: None,
+            images: None,
         };
         crate::fleet::advise(&self.yard, &options, prompt, kind, scope)
     }

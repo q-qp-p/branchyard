@@ -170,6 +170,65 @@ pub struct ProjectConfig {
     /// administrator's on a server.
     #[serde(default, skip_serializing_if = "ApprovalsConfig::is_empty")]
     pub approvals: ApprovalsConfig,
+    /// The sandbox image each provider falls back to when a run names none
+    /// (docs/images.md): `microsandbox = "REF@sha256:..."`. Written by
+    /// `by images pin`; a `--image` flag or the provider's own table wins.
+    #[serde(default, skip_serializing_if = "ImagesConfig::is_empty")]
+    pub images: ImagesConfig,
+}
+
+/// `[images]`: the default sandbox image of each provider, digest-pinned.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImagesConfig {
+    /// Microsandbox's image when `--image` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microsandbox: Option<String>,
+    /// The container provider's image when `--image` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
+    /// The Agent Sandbox provider's image when `--image` is unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_sandbox: Option<String>,
+    /// The image behind the Substrate actor template, recorded so routing can read
+    /// its labels; Substrate starts the template, never this reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substrate: Option<String>,
+}
+
+impl ImagesConfig {
+    /// No provider has a default image.
+    pub fn is_empty(&self) -> bool {
+        self == &ImagesConfig::default()
+    }
+
+    /// The pinned image for the provider whose serialized kind is `kind`
+    /// (`microsandbox`, `container`, `agent_sandbox`, `substrate`).
+    pub fn get(&self, kind: &str) -> Option<&str> {
+        match kind {
+            "microsandbox" => self.microsandbox.as_deref(),
+            "container" => self.container.as_deref(),
+            "agent_sandbox" => self.agent_sandbox.as_deref(),
+            "substrate" => self.substrate.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Every image must be pinned by digest: a tag moves.
+    pub fn check(&self) -> Result<(), ConfigError> {
+        for (kind, image) in [
+            ("microsandbox", &self.microsandbox),
+            ("container", &self.container),
+            ("agent_sandbox", &self.agent_sandbox),
+            ("substrate", &self.substrate),
+        ] {
+            if let Some(image) = image {
+                validate_sandbox_image(image)
+                    .map_err(|why| ConfigError(format!("images.{kind}: {why}")))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `[approvals]`.
@@ -2328,6 +2387,7 @@ impl ProjectConfig {
             }
         }
         self.approvals.policy()?;
+        self.images.check()?;
         self.network.policy()?;
         self.network.mirror_rules()?;
         self.models.check()?;
@@ -2983,6 +3043,21 @@ pub fn render(config: &ProjectConfig, heading: &str) -> String {
         for (key, value) in [
             ("store", &config.tools.store),
             ("store_bucket", &config.tools.store_bucket),
+        ] {
+            if let Some(value) = value {
+                out.push_str(&format!("{key} = {}\n", toml_string(value)));
+            }
+        }
+    }
+    if !config.images.is_empty() {
+        out.push_str(
+            "\n# The sandbox image each provider falls back to; see docs/images.md.\n[images]\n",
+        );
+        for (key, value) in [
+            ("microsandbox", &config.images.microsandbox),
+            ("container", &config.images.container),
+            ("agent_sandbox", &config.images.agent_sandbox),
+            ("substrate", &config.images.substrate),
         ] {
             if let Some(value) = value {
                 out.push_str(&format!("{key} = {}\n", toml_string(value)));
