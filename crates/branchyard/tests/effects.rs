@@ -561,8 +561,12 @@ fn an_ask_nobody_answers_expires_with_the_turns_budget() {
     let branch = f
         .task("PERMISSION WRITE p.txt=1")
         .policy(Policy::allow_all())
+        // The budget must outlast the agent's start and its permission
+        // request, or the turn ends before anything is asked: two seconds
+        // lost that race on a loaded coverage runner. The ask then waits out
+        // the rest of the budget, so this is how long the test takes.
         .budget(Budget {
-            max_duration: Some(Duration::from_secs(2)),
+            max_duration: Some(branchyard_testkit::wait::scaled(Duration::from_secs(10))),
             ..Budget::default()
         })
         .name("unanswered")
