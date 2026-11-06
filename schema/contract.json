@@ -19570,6 +19570,13 @@
         "TimelineTurn": {
           "type": "object",
           "properties": {
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The number, from 1, of the event that started the turn in the\nbranch's log: where `GET …/event-page?cursor=` reads its prompt.",
+              "default": 0
+            },
             "started_at_ms": {
               "type": "integer",
               "format": "uint64",
@@ -19610,6 +19617,33 @@
                 "$ref": "#/$defs/TimelineTool"
               },
               "description": "Its tool calls, in the order they started."
+            },
+            "startup": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Startup"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How long the turn took to start, phase by phase, and the provider\nand path that made its sandbox ready ([`Activity::Startup`])."
+            },
+            "tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The input and output tokens the turn used, when the harness\nreported any: a running total counts only its growth."
+            },
+            "marks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TimelineMark"
+              },
+              "description": "What else happened in the turn, in the order it was recorded."
             }
           },
           "required": [
@@ -19814,6 +19848,13 @@
             "call_id": {
               "type": "string",
               "description": "The harness's ID for the call. With [`TimelineTool::at_ms`] it\nnames the call, so a client that keeps a timeline current from the\nevent stream can tell a call it already has from a new one."
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The event's number, from 1, in the branch's log.",
+              "default": 0
             }
           },
           "required": [
@@ -19822,6 +19863,241 @@
             "call_id"
           ],
           "description": "A tool call's start."
+        },
+        "Startup": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Where the harness ran: `local`, or the sandbox provider\n(`microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe)."
+            },
+            "path": {
+              "$ref": "#/$defs/StartupPath",
+              "description": "Which way the sandbox was made ready."
+            },
+            "phases": {
+              "$ref": "#/$defs/Phases",
+              "description": "The phases that occurred.",
+              "default": {}
+            }
+          },
+          "required": [
+            "provider",
+            "path"
+          ],
+          "description": "One turn's startup, as [`crate::Activity::Startup`]."
+        },
+        "StartupPath": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "cold",
+              "description": "Created for the turn, its image pulled on the way (or the provider\ncannot say it was not)."
+            },
+            {
+              "type": "string",
+              "const": "cached_image",
+              "description": "Created for the turn from an image the host already had."
+            },
+            {
+              "type": "string",
+              "const": "snapshot",
+              "description": "Branched from a provider snapshot or a prepared environment."
+            },
+            {
+              "type": "string",
+              "const": "resumed",
+              "description": "The branch's own kept sandbox, resumed."
+            },
+            {
+              "type": "string",
+              "const": "pool",
+              "description": "Claimed from a pool of sandboxes booted ahead of time."
+            },
+            {
+              "type": "string",
+              "const": "local",
+              "description": "No sandbox: the harness ran on this host."
+            }
+          ],
+          "description": "Which way a turn's sandbox was made ready. Serialized in snake case."
+        },
+        "Phases": {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Queued`]."
+            },
+            "placement": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::Placement`]."
+            },
+            "image_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::ImageReady`]."
+            },
+            "sandbox_ready": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SandboxReady`]."
+            },
+            "source_attached": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::SourceAttached`]."
+            },
+            "harness_started": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HarnessStarted`]."
+            },
+            "handshake_done": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::HandshakeDone`]."
+            },
+            "first_event": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "See [`Phase::FirstEvent`]."
+            }
+          },
+          "description": "Millisecond offsets from admission at which each [`Phase`] was reached;\na phase that did not occur is absent."
+        },
+        "TimelineMark": {
+          "type": "object",
+          "properties": {
+            "at_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "When it was recorded."
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The event's number, from 1, in the branch's log.",
+              "default": 0
+            },
+            "kind": {
+              "$ref": "#/$defs/MarkKind",
+              "description": "What it is."
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The tool a permission was about, or the child a delegation named."
+            },
+            "ok": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether a decision allowed the call, or a delegation was carried out."
+            },
+            "score": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "description": "A judge's score."
+            }
+          },
+          "required": [
+            "at_ms",
+            "kind"
+          ],
+          "description": "A point in a turn that is not a tool call; see [`MarkKind`]."
+        },
+        "MarkKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "steer",
+              "description": "A person's input written into the running turn\n([`Activity::Steered`])."
+            },
+            {
+              "type": "string",
+              "const": "steer_rejected",
+              "description": "The harness refused or dropped steered input."
+            },
+            {
+              "type": "string",
+              "const": "permission",
+              "description": "The harness asked for permission to use the tool in `label`."
+            },
+            {
+              "type": "string",
+              "const": "decision",
+              "description": "The permission request just before it was answered: `ok` says\nwhether it was allowed."
+            },
+            {
+              "type": "string",
+              "const": "stall",
+              "description": "No harness activity for the stall window ([`Activity::Stalled`])."
+            },
+            {
+              "type": "string",
+              "const": "resumed",
+              "description": "Activity after a stall ([`Activity::Resumed`])."
+            },
+            {
+              "type": "string",
+              "const": "delegation",
+              "description": "A delegation the branch asked for: `label` is the child's name, `ok`\nis false when it was refused."
+            },
+            {
+              "type": "string",
+              "const": "judged",
+              "description": "A judge scored the branch: `score` is from 0 to 100."
+            },
+            {
+              "type": "string",
+              "const": "warning",
+              "description": "The engine noticed something, or the harness warned."
+            }
+          ],
+          "description": "What a [`TimelineMark`] marks."
         }
       }
     },
