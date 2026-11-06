@@ -554,6 +554,17 @@ pub async fn start(config: Config) -> Result<Running, String> {
             error.body.message
         )
     })?;
+    // An OTLP push collects the gauges without a scrape to fill them: they
+    // are read from this app's store and registry when found stale. A weak
+    // reference, so the metrics do not keep the app alive.
+    let gauges_of = Arc::downgrade(&app);
+    registry
+        .observability()
+        .metrics
+        .set_source(Arc::new(move |board| match gauges_of.upgrade() {
+            Some(app) => crate::api::fill_gauges(&app, board).map_err(|e| e.to_string()),
+            None => Ok(()),
+        }));
     registry
         .start(Arc::new(crate::work::AppExecutor(app.clone())))
         .map_err(|e| format!("could not start the operation dispatcher: {e}"))?;

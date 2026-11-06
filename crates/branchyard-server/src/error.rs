@@ -61,7 +61,12 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let unauthorized = self.status == StatusCode::UNAUTHORIZED;
+        let code = self.body.code.clone();
         let mut response = (self.status, Json(ErrorResponse { error: *self.body })).into_response();
+        // For the request metrics (`api::request_metrics`).
+        response
+            .extensions_mut()
+            .insert(crate::api::ErrorCode(code));
         if unauthorized {
             response.headers_mut().insert(
                 header::WWW_AUTHENTICATE,

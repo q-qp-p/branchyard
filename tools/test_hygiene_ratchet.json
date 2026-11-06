@@ -49,7 +49,6 @@
     "crates/branchyard-cli/tests/egress.rs": 1,
     "crates/branchyard-client/src/http.rs": 2,
     "crates/branchyard-runtime/tests/egress.rs": 2,
-    "crates/branchyard-server/src/telemetry.rs": 1,
     "crates/branchyard-server/tests/companion.rs": 1,
     "crates/branchyard/src/models/discover.rs": 1,
     "crates/branchyard/src/models/gateway.rs": 1,

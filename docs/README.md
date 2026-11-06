@@ -120,7 +120,7 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Console execution presets and source titles](superpowers/specs/2026-10-29-console-execution-presets-contract.md) | Design spec for operator-defined execution presets, side-effect-free readiness discovery, and Unicode source filenames. |
 | [Skill delivery design](superpowers/specs/2026-10-29-skill-delivery-design.md) | Design spec for repository, workspace, user, and team skills, per-turn skill provenance, and packaging the document runtime. |
 | [Sandbox snapshots](sandbox-snapshots.md) | How sandbox providers pause between turns, take checkpoint snapshots, and branch or rewind from snapshots with Git fallback. |
-| [Observability](observability.md) | Server metrics, OpenTelemetry traces, and how turn trace context is passed to harnesses. |
+| [Observability](observability.md) | Metrics and traces on `tracing` and OpenTelemetry: `/metrics`, OTLP export from the standard `OTEL_*` variables, the span tree, and how turn trace context is passed to harnesses. |
 | [Sync](sync.md) | Backing up and syncing tasks across Cloud Storage, S3, Azure Blob, Git remotes, or local directories with leases and client-side encryption. |
 | [Environment recipes](recipes.md) | Defining custom VM or container lifecycle scripts in `branchyard.toml` and driving harnesses inside them over SSH. |
 | [Toolchain images](images.md) | Sandbox images with harness CLIs pre-installed at pinned versions, labelled and digest-pinned, and how routing reads them. |

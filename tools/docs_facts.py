@@ -268,6 +268,87 @@ def profile_facts():
     return profiles
 
 
+def prometheus_name(name, unit, counter):
+    """The name `GET /metrics` gives an instrument: the translation
+    `branchyard_telemetry::prometheus::prometheus_name` makes (a Rust test
+    in metrics.rs checks that every family's name is in the docs)."""
+
+    def sanitize(text):
+        text = re.sub(r"[^A-Za-z0-9_]", "_", text)
+        return "_" + text if text[:1].isdigit() else text
+
+    base = sanitize(name)
+    if counter and base.endswith("_total"):
+        base = base[: -len("_total")]
+    unit = unit.strip()
+    suffix = None
+    if unit and unit != "1" and not (unit.startswith("{") and unit.endswith("}")):
+        suffix = {
+            "s": "seconds",
+            "ms": "milliseconds",
+            "us": "microseconds",
+            "ns": "nanoseconds",
+            "By": "bytes",
+            "%": "percent",
+        }.get(unit, sanitize(unit.lower()))
+    if suffix and not base.endswith("_" + suffix):
+        base += "_" + suffix
+    return base + "_total" if counter else base
+
+
+def metric_facts():
+    """Every metric family the server exposes, from the declarations in
+    crates/branchyard-server/src/metrics.rs: name, type, unit, labels in
+    the order they are written, and help."""
+    text = (ROOT / "crates" / "branchyard-server" / "src" / "metrics.rs").read_text()
+    consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', text))
+    body = text[text.index("pub const FAMILIES") :]
+    body = body[: body.index("\n];")]
+    literal = r'"((?:[^"\\]|\\.)*)"'
+    entry = re.compile(
+        r"family\(\s*(\w+),\s*Kind::(\w+),\s*" + literal + r",\s*" + literal + r",?\s*\)"
+        r"|histogram\(\s*(\w+),\s*" + literal + r",\s*" + literal + r",\s*\w+,?\s*\)"
+    )
+    order_body = text[text.index("pub fn label_order") :]
+    order_body = order_body[: order_body.index("\n}\n")]
+    orders = {}
+    for arm in re.finditer(r"([A-Z_][A-Z_0-9 |\n]*?)\s*=>\s*&\[(.*?)\]", order_body, re.S):
+        labels = re.findall(r'"([^"]+)"', arm[2])
+        for const in re.findall(r"[A-Z_][A-Z_0-9]*", arm[1]):
+            orders[const] = labels
+    families = []
+    for m in entry.finditer(body):
+        if m[1]:
+            const, kind, unit, help_ = m[1], m[2], m[3], m[4]
+        else:
+            const, kind, unit, help_ = m[5], "Histogram", m[6], m[7]
+        counter = kind in ("Counter", "ObservedCounter")
+        name = consts[const]
+        families.append(
+            {
+                "name": name,
+                "exposed": prometheus_name(name, rust_string(unit), counter),
+                "type": "counter" if counter else "histogram" if kind == "Histogram" else "gauge",
+                "unit": rust_string(unit),
+                "labels": [re.sub(r"[^A-Za-z0-9_]", "_", label) for label in orders.get(const, [])],
+                "help": rust_string(help_),
+            }
+        )
+    return families
+
+
+def metric_table(families):
+    rows = [
+        "| Metric | Type | Unit | Labels | What |",
+        "|---|---|---|---|---|",
+    ]
+    for f in families:
+        labels = ", ".join(f"`{label}`" for label in f["labels"]) or "none"
+        unit = f"`{f['unit']}`" if f["unit"] else ""
+        rows.append(f"| `{f['exposed']}` | {f['type']} | {unit} | {labels} | {f['help']} |")
+    return "\n\n" + "\n".join(rows) + "\n\n"
+
+
 def compute():
     crates = workspace_crates()
     return {
@@ -290,6 +371,7 @@ def compute():
         "vendor": vendor_facts(),
         "derivatives": derivative_facts(),
         "http": http_facts(),
+        "metrics": metric_facts(),
         "runtime": runtime_facts(),
         "profiles": profile_facts(),
         "cli": {"exit_codes": exit_facts()},
@@ -362,6 +444,8 @@ def regions(facts):
         "artifact_preview.row_page": str(facts["artifact_preview"]["row_page"]),
         "workspace.crate_count": str(facts["workspace"]["crate_count"]),
         "http.route_count": str(facts["http"]["route_count"]),
+        "metrics.count": str(len(facts["metrics"])),
+        "metrics.table": metric_table(facts["metrics"]),
         "runtime.strip_prefixes": join_and([f"`{p}*`" for p in facts["runtime"]["strip_prefixes"]]),
         "profiles.summary": profile_summary(facts["profiles"]),
         "profiles.table": profile_table(facts["profiles"]),

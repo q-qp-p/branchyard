@@ -59,7 +59,6 @@ use crate::store::{
     Admission, AdmissionQuota, Claim, Idempotency, Lane, OperationStore, Scheduling,
     StoredOperation, Worker,
 };
-use crate::telemetry::SpanContext;
 
 /// What a finished operation reports.
 pub struct Finished {
@@ -663,18 +662,19 @@ impl Registry {
         }
         let id = format!("op_{}", &branchyard_client::new_key()[..24]);
         let observability = &self.options.observability;
-        let tracer = &observability.tracer;
-        let context = tracer.start_context(new.trace.as_deref());
-        let mut span = context.map(|(context, parent)| {
-            let mut span = tracer.start("admission", context, parent.as_ref());
-            span.kind(crate::telemetry::SpanKind::Server);
-            span.set("by.operation", id.clone());
-            span.set("by.repo", new.repo.clone());
-            span.set("by.kind", kind_name(new.kind));
-            span.set("by.tenant", new.principal.tenant.clone());
-            span.set("by.priority", i64::from(new.priority));
-            span
-        });
+        // The admission span: live for the transaction below, a child of
+        // the request's `traceparent` when it sent a valid one.
+        let admission_span = crate::telemetry::admission(
+            &crate::telemetry::Admission {
+                operation: &id,
+                repo: &new.repo,
+                kind: &kind_name(new.kind),
+                tenant: &new.principal.tenant,
+                priority: new.priority,
+            },
+            new.trace.as_deref(),
+        );
+        let _admitting = admission_span.enter();
         let stored = StoredOperation {
             operation: Operation {
                 id: id.clone(),
@@ -697,7 +697,7 @@ impl Registry {
             tenant: new.principal.tenant.clone(),
             principal: Some(new.principal),
             creates: new.creates,
-            trace: span.as_ref().map(|s| s.context().traceparent()),
+            trace: crate::telemetry::traceparent(&admission_span, new.trace.as_deref()),
             lane: new.lane,
         };
         let mut mutations = mutations.to_vec();
@@ -765,13 +765,11 @@ impl Registry {
             .store
             .admit_console(&stored, &work, &new.quota, &mutations)
             .map_err(|e| {
-                if let Some(span) = &mut span {
-                    span.fail(e.to_string());
-                }
+                crate::telemetry::fail(&admission_span, &e.to_string());
                 console_error(e)
             })?;
-        if let (Some(span), false) = (&mut span, admitted == Admission::Admitted) {
-            span.set("by.admitted", false);
+        if admitted != Admission::Admitted {
+            crate::telemetry::attr(&admission_span, "by.admitted", false);
         }
         match admitted {
             Admission::Admitted => {
@@ -912,29 +910,20 @@ impl Registry {
         if claim.took_over {
             metrics.inc(metrics::EXPIRIES, &[]);
         }
-        let tracer = &observability.tracer;
-        let admission = claim
-            .operation
-            .trace
-            .as_deref()
-            .and_then(SpanContext::parse);
-        if let (Some(admission), true) = (admission, tracer.enabled()) {
+        if let Some(admission) = claim.operation.trace.as_deref() {
             // The claim's span is the operation's wait in the queue: from
             // its admission to this claim.
-            tracer.record(
-                crate::telemetry::SpanData::new(
-                    "claim",
-                    admission.child(),
-                    Some(&admission),
-                    op.created_at_ms,
-                    now_ms(),
-                )
-                .attr("by.operation", op.id.clone())
-                .attr("by.worker", self.worker.id.clone())
-                .attr("by.fence", claim.fence)
-                .attr("by.took_over", claim.took_over)
-                .attr("by.waited_ms", waited as i64)
-                .attr("by.priority", i64::from(op.priority)),
+            crate::telemetry::claim(
+                &crate::telemetry::Claimed {
+                    operation: &op.id,
+                    worker: &self.worker.id,
+                    fence: claim.fence,
+                    took_over: claim.took_over,
+                    priority: op.priority,
+                    admitted_ms: op.created_at_ms,
+                    claimed_ms: now_ms(),
+                },
+                admission,
             );
         }
     }
@@ -1038,35 +1027,36 @@ impl Registry {
         }
         // The operation's span, a child of its admission's: the executor
         // gets its context as the operation's trace, for the turns it runs.
-        let tracer = &self.options.observability.tracer;
-        let mut span = stored
-            .trace
-            .as_deref()
-            .and_then(SpanContext::parse)
-            .map(|admission| {
-                let mut span = tracer.start(
-                    &format!("operation {}", kind_name(stored.operation.kind)),
-                    admission.child(),
-                    Some(&admission),
-                );
-                span.set("by.operation", id.clone());
-                span.set("by.repo", stored.operation.repo.clone());
-                span.set("by.kind", kind_name(stored.operation.kind));
-                span.set("by.tenant", stored.tenant().to_owned());
-                span.set("by.branches", stored.operation.branches.join(","));
-                span.set("by.fence", fence);
-                span
-            });
+        let span = crate::telemetry::operation(
+            &crate::telemetry::Running {
+                operation: &id,
+                repo: &stored.operation.repo,
+                kind: &kind_name(stored.operation.kind),
+                tenant: stored.tenant(),
+                branches: &stored.operation.branches.join(","),
+                fence,
+            },
+            stored.trace.as_deref(),
+        );
         let mut admitted = stored.clone();
-        admitted.trace = span.as_ref().map(|s| s.context().traceparent());
-        let finished = catch_unwind(AssertUnwindSafe(|| executor.execute(&admitted, &work)))
-            .unwrap_or_else(|_| Finished {
-                result: Err(*ApiError::internal("the operation panicked; see the server log").body),
-                end_cursor: None,
-            });
-        if let (Some(span), Err(error)) = (&mut span, &finished.result) {
-            span.set("by.error", error.code.clone());
-            span.fail(error.message.clone());
+        admitted.trace = crate::telemetry::traceparent(&span, stored.trace.as_deref());
+        let started = Instant::now();
+        let finished = {
+            // The executor, and the engine's spans and log lines under it,
+            // run inside the operation's span.
+            let _running = span.enter();
+            catch_unwind(AssertUnwindSafe(|| executor.execute(&admitted, &work))).unwrap_or_else(
+                |_| Finished {
+                    result: Err(
+                        *ApiError::internal("the operation panicked; see the server log").body,
+                    ),
+                    end_cursor: None,
+                },
+            )
+        };
+        if let Err(error) = &finished.result {
+            crate::telemetry::attr(&span, "by.error", error.code.clone());
+            crate::telemetry::fail(&span, &error.message);
         }
         drop(span);
         let (outcome, result, error) = match finished.result {
@@ -1081,7 +1071,19 @@ impl Registry {
         stored.operation.error = error;
         stored.operation.end_cursor = finished.end_cursor;
         stored.operation.finished_at_ms = Some(now_ms());
-        self.record(&stored, fence);
+        if self.record(&stored, fence) {
+            self.options.observability.metrics.observe(
+                metrics::OPERATION_DURATION,
+                &[
+                    ("kind", &kind_name(stored.operation.kind)),
+                    (
+                        "state",
+                        &format!("{:?}", stored.operation.state).to_lowercase(),
+                    ),
+                ],
+                started.elapsed().as_secs_f64(),
+            );
+        }
         self.done(&id);
     }
 
@@ -1377,6 +1379,83 @@ mod tests {
     use super::*;
     use crate::store::{MemoryStore, SqliteStore};
     use std::sync::mpsc;
+
+    /// The admission's trace is stored with the operation, so the worker
+    /// that claims it, on any server sharing the database, continues the
+    /// trace: its `claim` and `operation` spans are children of the
+    /// admission, in its trace.
+    #[test]
+    fn another_worker_continues_the_admissions_stored_trace() {
+        use branchyard_telemetry::testing::{capture, span_id_of, trace_id_of};
+        let capture = capture().unwrap();
+        let registry = Registry::open(
+            Box::new(SqliteStore::memory()),
+            Options::new(vec!["r".into()]),
+        )
+        .unwrap();
+        // Not started: nothing here claims the operation.
+        let trace = branchyard_client::new_key();
+        let mut request = new(Some("handoff"), &["a"]);
+        request.trace = Some(format!("00-{trace}-00f067aa0ba902b7-01"));
+        let (operation, _) = registry.submit(request, Value::Null).unwrap();
+        let admission = capture
+            .trace(&trace)
+            .into_iter()
+            .find(|s| {
+                s.name == "admission" && s.attributes.get("by.operation") == Some(&operation.id)
+            })
+            .expect("the admission span");
+        assert_eq!(admission.parent_id.as_deref(), Some("00f067aa0ba902b7"));
+        // Another process claims it from the shared store.
+        let other = Worker {
+            id: "worker-in-another-process".into(),
+            ..registry.worker().clone()
+        };
+        let claim = registry
+            .store
+            .claim(&other, &["r".into()], &registry.labels(), DEFAULT_LEASE)
+            .unwrap()
+            .unwrap();
+        let stored = claim.operation.trace.clone().expect("a stored trace");
+        assert_eq!(trace_id_of(&stored).as_deref(), Some(trace.as_str()));
+        assert_eq!(
+            span_id_of(&stored).as_deref(),
+            Some(admission.span_id.as_str())
+        );
+        // What that worker does with it, as the dispatcher does.
+        crate::telemetry::claim(
+            &crate::telemetry::Claimed {
+                operation: &operation.id,
+                worker: &other.id,
+                fence: claim.fence,
+                took_over: false,
+                priority: 0,
+                admitted_ms: operation.created_at_ms,
+                claimed_ms: now_ms(),
+            },
+            &stored,
+        );
+        let span = crate::telemetry::operation(
+            &crate::telemetry::Running {
+                operation: &operation.id,
+                repo: "r",
+                kind: &kind_name(operation.kind),
+                tenant: "default",
+                branches: "a",
+                fence: claim.fence,
+            },
+            Some(&stored),
+        );
+        drop(span);
+        let continued = capture.trace(&trace);
+        for name in ["claim", "operation send"] {
+            let span = continued
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("no {name} span in {continued:#?}"));
+            assert_eq!(span.parent_id.as_ref(), Some(&admission.span_id), "{name}");
+        }
+    }
 
     #[test]
     fn core_execution_host_labels_prevent_foreign_dispatcher_claims() {

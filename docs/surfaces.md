@@ -434,12 +434,30 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 | `tenants.<name>.weight`, `max_priority`; `aging_seconds`, `fair_share_window_seconds` in the configuration | none | the tenant's fair share and priority ceiling; aging step and usage decay |
 | `GET /metrics`; `--metrics`, `--metrics-addr`, `--metrics-token-file`; `metrics` in the configuration | none | Prometheus text, for `admin` or the metrics token; off by default |
 | `GET /v1/problems` (`ProblemList`, `Problem`, `ProblemKind`); `Client::problems`, Python `Client.problems` | none | what background work could not do that a person can act on (a trigger that paused itself, an operation no live worker can claim), oldest first, for the caller's tenant or, with `admin`, every tenant; in `schema/contract.json` ([problems](server.md#problems)) |
-| `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP/HTTP traces (protobuf or JSON) of admission, claim, operation, turns, tool and connector calls |
+| `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP traces of admission, claim, operation, turns, tool and connector calls, and OTLP metrics ([OpenTelemetry stack](#added-with-the-opentelemetry-stack)) |
 | `traceparent` request header | ignored | the operation's trace continues it |
 | `TRACEPARENT` in a server-run turn's environment; `TaskOptions::trace_parent` | none | the operation's span, for the harness and what it calls (a connector SDK's `_meta.traceparent`) |
 | `traceparent` on webhook deliveries | none | the trace of the operation that last worked on the branch here |
 | `by startup report [--provider P] [--since DUR] [--json]` | none | p50 and p95 of each startup phase per provider and path, from the turns recorded here |
 | `by stats [--json]` | none | branches, turns, outcomes, durations, tools, connectors and cost locally; branches and the server's queue by priority with `--remote` |
+
+## Added with the OpenTelemetry stack
+
+[Observability](observability.md) rebuilt on `tracing`, `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and `tracing-opentelemetry`, in the new `branchyard-telemetry` crate. Hermetic tests only (in-memory exporters and stand-in collectors on loopback): no real collector or Prometheus.
+
+| Surface | Before | Now |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (and `_TRACES_`, `_METRICS_` forms), `OTEL_EXPORTER_OTLP_PROTOCOL`, `_HEADERS`, `_TIMEOUT` in the environment of `by serve`, `by worker` or any other `by` command | OTLP/HTTP traces from a server only; `grpc` refused | traces and metrics over OTLP, `http/protobuf`, `http/json` or `grpc`, from a server, a worker or a local command |
+| `OTEL_SDK_DISABLED`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `OTEL_SDK_DISABLED` and `OTEL_TRACES_EXPORTER=none` | the same, per signal; `none` wins over an endpoint |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | every operation traced | `parentbased_always_on` by default; the ratio samplers and the others |
+| `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_*` | ignored | read by the SDK; every resource has `service.name`, `service.version`, `host.name` and `by.role` (`server`, `worker`, `cli`) |
+| `TRACEPARENT` in the environment of a local `by` command | passed to the harness | also the parent of the command's `by <command>` span when telemetry is on |
+| `by <command>` span, `turn`, `tool` and `connector` spans of a local run | none | exported when an endpoint is set; none otherwise |
+| `GET /metrics`: `http_server_request_duration_seconds`, `http_server_active_requests`, `branchyard_api_errors_total` | none | requests by route template, method and status class; requests in flight; refusals by error code |
+| `GET /metrics`: `branchyard_operation_duration_seconds`, `branchyard_turn_first_event_seconds`, `branchyard_turns_in_flight`, `branchyard_turn_stalls_total` | none | an operation's run time; the prompt to the harness's first event; branches with a turn running; branches left stalled |
+| `GET /metrics`: `gen_ai_client_operation_duration_seconds`, `gen_ai_client_token_usage`, `branchyard_usage_cost_usd_total` | none | a turn as an `invoke_agent` operation by harness and outcome; tokens harnesses reported, by type, harness and model; cost by harness and model |
+| `GET /metrics`: `branchyard_tool_call_duration_seconds`, `branchyard_connector_call_duration_seconds` | `branchyard_tool_calls_total`, `branchyard_connector_calls_total` only | tool calls by harness and tool (a closed list, else `other`); connector calls by connector and decision |
+| `GET /metrics` label order | as written by the encoder | unchanged for every existing family; names and labels are what they were |
 | `branchyard_server::metrics`, `telemetry`, `observe`; `Config::observability`; `store::Scheduling`, `check_scheduling` | none | Rust only: the registry and encoder, the tracer with a pluggable `SpanExporter`, and the scheduling conformance |
 | `tenant_usage` (SQLite), `by_tenant_usage` (PostgreSQL); `priority`, `tenant`, `enqueued_ms` on the queue | none | each tenant's decayed recent claims; what the claim orders by |
 

@@ -12,7 +12,7 @@
     "branchyard-qualify": 2,
     "branchyard-runtime": 1,
     "branchyard-sandbox": 1,
-    "branchyard-server": 18,
+    "branchyard-server": 16,
     "branchyard-setup": 3,
     "branchyard-substrate": 3,
     "branchyard-sync": 9
@@ -24,7 +24,6 @@
     "crates/branchyard-sandbox/src/conformance.rs",
     "crates/branchyard-server/src/companion/store.rs",
     "crates/branchyard-server/src/store.rs",
-    "crates/branchyard-server/src/telemetry.rs",
     "crates/branchyard-server/src/triggers/store.rs",
     "crates/branchyard-substrate/src/fake.rs"
   ]

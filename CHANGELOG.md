@@ -25,6 +25,21 @@ Reported by @arsenyspb in
 [#62](https://github.com/vamsiramakrishnan/branchyard/issues/62); the details
 are in [composing with a harness's own permissions](docs/harness-integration.md#composing-with-a-harnesss-own-permissions).
 
+Observability is rebuilt on the standard Rust stack: `tracing`,
+`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and
+`tracing-opentelemetry`, set up for every binary by the new
+`branchyard-telemetry` crate. The hand-written span model, `traceparent` parser
+and OTLP encoder are gone. Traces and metrics are configured by the standard
+`OTEL_*` variables and exported over OTLP (HTTP with protobuf or JSON bodies,
+or gRPC) from `by serve`, `by worker` and now any local `by` command, and only
+when an endpoint is set. `GET /metrics` keeps every existing name and label and
+gains HTTP request rate and duration by route template, refusals by error code,
+operation duration, turns in flight, first-event latency and stalls, tool and
+connector call durations, and the GenAI client metrics `gen_ai.client.operation.duration`
+and `gen_ai.client.token.usage`. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` for a
+harness's own telemetry now also makes a `by` that inherits it export; see
+[observability](docs/observability.md#configuration).
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved
