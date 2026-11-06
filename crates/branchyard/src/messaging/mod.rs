@@ -27,7 +27,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::record::Recorder;
 use crate::{Activity, Error, Message, MessageKind, Observer, Yard, PERSON};
 
 mod registry;
@@ -615,14 +614,16 @@ impl Stage for Persist {
             },
             key.as_deref(),
         )?;
+        store.notify();
         cx.message = Some(message);
         Ok(())
     }
 }
 
-/// [`Activity::Message`] on the sender's and the recipient's log (the
-/// person keeps none). A handoff's commit appended its events itself, in
-/// its transaction; a repeat records nothing again.
+/// Tell the observer of the [`Activity::Message`] each endpoint's log now
+/// holds (the person keeps none). The events were appended by `persist`, in
+/// the transaction that stored the message, as a handoff's commit appends
+/// its own; a repeat records and announces nothing again.
 struct Observe;
 
 impl Stage for Observe {
@@ -630,25 +631,28 @@ impl Stage for Observe {
         "observe"
     }
 
-    fn apply(&self, yard: &Yard, cx: &mut Context) -> Result<(), Error> {
+    fn apply(&self, _yard: &Yard, cx: &mut Context) -> Result<(), Error> {
         if cx.repeated || cx.handoff.is_some() {
             return Ok(());
         }
         let Some(message) = &cx.message else {
             return Ok(());
         };
-        let store = yard.store();
+        let Some(observer) = &cx.observer else {
+            return Ok(());
+        };
         // `authorize` refused `to == from`, so these are two distinct logs.
         for branch in [&message.from, &message.to]
             .into_iter()
             .filter(|b| *b != PERSON)
         {
-            if let Ok(mut recorder) = Recorder::open(&store, branch, cx.observer.clone()) {
-                branchyard_support::best_effort(
-                    "record the activity",
-                    recorder.record(Activity::Message(message.clone())),
-                );
-            }
+            crate::record::observe(
+                observer,
+                &crate::BranchEvent {
+                    branch: branch.clone(),
+                    activity: Activity::Message(message.clone()),
+                },
+            );
         }
         Ok(())
     }

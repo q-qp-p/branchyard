@@ -1900,12 +1900,24 @@ impl Backend for Sqlite {
                 ],
             )
             .map_err(|e| db("message", e))?;
-            Ok(Message {
+            let stored = Message {
                 id: from_db("id", tx.last_insert_rowid())?,
                 at_ms,
                 delivered: false,
                 ..message.clone()
-            })
+            };
+            // The row and its log entries commit together, or neither does.
+            let event = RecordedEvent {
+                at_ms,
+                activity: Activity::Message(stored.clone()),
+            };
+            for (n, branch) in [&stored.from, &stored.to].into_iter().enumerate() {
+                let logged = n == 0 || stored.from != stored.to;
+                if logged && branch != crate::PERSON && incarnation(tx, branch)?.is_some() {
+                    insert_event(tx, branch, &event)?;
+                }
+            }
+            Ok(stored)
         })
     }
 

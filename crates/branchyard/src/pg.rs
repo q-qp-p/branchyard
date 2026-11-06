@@ -2248,7 +2248,7 @@ impl Backend for Postgres {
             .as_ref()
             .map(|meta| encode("meta", meta))
             .transpose()?;
-        self.tx(true, |tx| {
+        self.appending(true, |tx, feed| {
             let at_ms = now_ms();
             let row = tx
                 .query_one(
@@ -2270,12 +2270,24 @@ impl Backend for Postgres {
                     ],
                 )
                 .map_err(db("message"))?;
-            Ok(Message {
+            let stored = Message {
                 id: from_db("id", row.get(0))?,
                 at_ms,
                 delivered: false,
                 ..message.clone()
-            })
+            };
+            // The row and its log entries commit together, or neither does.
+            let event = RecordedEvent {
+                at_ms,
+                activity: Activity::Message(stored.clone()),
+            };
+            for (n, branch) in [&stored.from, &stored.to].into_iter().enumerate() {
+                let logged = n == 0 || stored.from != stored.to;
+                if logged && branch != crate::PERSON && self.incarnation(tx, branch)?.is_some() {
+                    self.insert_event(tx, feed, branch, &event)?;
+                }
+            }
+            Ok(stored)
         })
     }
 

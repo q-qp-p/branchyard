@@ -64,6 +64,11 @@ first question (and its answer once there is one) instead of asking twice; the
 same key with other text is refused. `report`, `escalate` and `answer` do not
 take a key.
 
+A message and its entries on the sender's and the recipient's event logs are now
+written in one transaction, on SQLite and on PostgreSQL, as a handoff's already
+were: a failure writing either leaves neither, so no crash leaves a message that
+no log names.
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

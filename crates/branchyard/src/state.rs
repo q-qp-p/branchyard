@@ -692,7 +692,12 @@ pub(crate) trait Backend: Send + Sync + fmt::Debug {
     fn head(&self) -> Result<u64, Error>;
 
     /// Store a harness-to-harness message: assigns its id (counting from 1
-    /// across the repository) and `at_ms`, and returns the stored copy.
+    /// across the repository) and `at_ms`, appends [`crate::Activity::Message`]
+    /// to the log of each of its endpoints that is a stored branch (the
+    /// person keeps none), and returns the stored copy. The row and the log
+    /// entries are one transaction, as [`Backend::commit_handoff`]'s are:
+    /// a failure writing either leaves neither, so no message exists that
+    /// no log names and no log names a message that does not exist.
     /// `key` is its idempotency key as [`crate::messaging::Envelope::scoped_key`]
     /// scopes it, unique across the repository: a second row with the same
     /// key is refused by the store (the pipeline reads the first with

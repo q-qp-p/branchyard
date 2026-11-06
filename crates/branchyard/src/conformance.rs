@@ -782,6 +782,116 @@ pub(crate) fn messages(s: Opened) {
     assert_eq!(store.message(plain.id).unwrap().unwrap().meta, None);
 }
 
+/// An ordinary message and its two log entries are one transaction: a
+/// failure writing the recipient's entry (injected as a trigger on the
+/// events table) leaves neither the row, nor the sender's entry, nor the
+/// idempotency key, and the same send succeeds once the fault is gone,
+/// logging once on each side. Run on SQLite here and on PostgreSQL in CI.
+pub(crate) fn message_logs(s: Opened) {
+    let store = &s.backend;
+    let raw = &s.raw;
+    store.write(&record("sender"), None).unwrap();
+    store.write(&record("receiver"), None).unwrap();
+    let peer = |text: &str| crate::Message {
+        id: 0,
+        from: "sender".into(),
+        to: "receiver".into(),
+        kind: crate::MessageKind::Peer,
+        text: text.into(),
+        in_reply_to: None,
+        at_ms: 0,
+        delivered: false,
+        handoff: None,
+        next_turn: true,
+        meta: None,
+    };
+    let logged = |branch: &str| -> Vec<u64> {
+        store
+            .events_since(branch, 0, 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.1.activity {
+                Activity::Message(m) => Some(m.id),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // A message is logged on both endpoints in the transaction that stores it.
+    let first = store.send_message(&peer("one"), None).unwrap();
+    assert_eq!(logged("sender"), [first.id]);
+    assert_eq!(logged("receiver"), [first.id]);
+    // The person keeps no log, and a branch that is not stored gets none.
+    let mut to_person = peer("to the person");
+    to_person.to = crate::PERSON.into();
+    to_person.kind = crate::MessageKind::Question;
+    to_person.next_turn = false;
+    let asked = store.send_message(&to_person, None).unwrap();
+    assert_eq!(logged("sender"), [first.id, asked.id]);
+    assert_eq!(store.event_count("receiver").unwrap(), 1);
+
+    // Fail the recipient's log entry: the sender's entry, written first in
+    // the same transaction, and the row go with it.
+    // A name of its own on PostgreSQL, where functions are shared by every
+    // test in the database; the scope is unique to this test.
+    let fault = format!(
+        "fail_message_log_{}",
+        s.scope
+            .as_deref()
+            .unwrap_or("")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    );
+    let (install, remove) = match &s.scope {
+        None => (
+            format!(
+                "CREATE TRIGGER {fault} BEFORE INSERT ON events WHEN NEW.branch = 'receiver' \
+                 BEGIN SELECT RAISE(ABORT, 'injected log failure'); END"
+            ),
+            format!("DROP TRIGGER {fault}"),
+        ),
+        Some(repo) => (
+            format!(
+                "CREATE FUNCTION {fault}() RETURNS trigger LANGUAGE plpgsql AS \
+                 $$ BEGIN RAISE EXCEPTION 'injected log failure'; END $$; \
+                 CREATE TRIGGER {fault} BEFORE INSERT ON by_events FOR EACH ROW \
+                 WHEN (NEW.repo = '{repo}' AND NEW.branch = 'receiver') \
+                 EXECUTE FUNCTION {fault}()"
+            ),
+            format!("DROP TRIGGER {fault} ON by_events; DROP FUNCTION {fault}()"),
+        ),
+    };
+    raw(&install);
+    let inbox_before = store.inbox("receiver").unwrap();
+    let events_before = (
+        store.event_count("sender").unwrap(),
+        store.event_count("receiver").unwrap(),
+    );
+    let refused = store.send_message(&peer("two"), Some("sender/two"));
+    raw(&remove);
+    assert!(refused.is_err(), "the injected fault must fail the send");
+    assert_eq!(store.inbox("receiver").unwrap(), inbox_before, "no row");
+    assert_eq!(
+        (
+            store.event_count("sender").unwrap(),
+            store.event_count("receiver").unwrap()
+        ),
+        events_before,
+        "no log entry on either side"
+    );
+    assert_eq!(store.message_by_key("sender/two").unwrap(), None, "no key");
+
+    // Retried without the fault, it is stored and logged once each.
+    let retried = store
+        .send_message(&peer("two"), Some("sender/two"))
+        .unwrap();
+    assert_eq!(
+        store.message_by_key("sender/two").unwrap().as_ref(),
+        Some(&retried)
+    );
+    assert_eq!(logged("sender"), [first.id, asked.id, retried.id]);
+    assert_eq!(logged("receiver"), [first.id, retried.id]);
+}
+
 pub(crate) fn records(s: Opened) {
     let store = &s.backend;
     assert!(!store.taken("a").unwrap());
@@ -3160,7 +3270,7 @@ macro_rules! suite {
     ($open:expr) => {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
-            concurrent_appends, contended_feed, races, storage, artifact_capture, messages, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
+            concurrent_appends, contended_feed, races, storage, artifact_capture, messages, message_logs, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
             outcomes, knowledge, pools, usage, effects, timers, clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {
