@@ -1190,6 +1190,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         });
         let question = t.observe("app", "child", &message).unwrap();
         assert_eq!(question.kind, "question");
@@ -1210,6 +1211,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         });
         let question = t.observe("app", "root", &to_you).unwrap();
         assert_eq!(

@@ -451,6 +451,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         })
     }
 
@@ -585,6 +586,7 @@ mod tests {
                 delivered: false,
                 handoff: None,
                 next_turn: false,
+                meta: None,
             })
         };
         let escalation = |id, text: &str| to("impl", "lead", MessageKind::Escalation, id, text);

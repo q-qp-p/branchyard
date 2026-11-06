@@ -2434,6 +2434,7 @@ mod tests {
                 delivered,
                 handoff: None,
                 next_turn: false,
+                meta: None,
             })
         };
         let usage = |cumulative, input, output| {

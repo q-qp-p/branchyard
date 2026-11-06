@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 144,
+    "route_count": 145,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -134,6 +134,7 @@
       "/v1/repos/{repo}/branches/{branch}/inspection",
       "/v1/repos/{repo}/branches/{branch}/integrate",
       "/v1/repos/{repo}/branches/{branch}/merge",
+      "/v1/repos/{repo}/branches/{branch}/message",
       "/v1/repos/{repo}/branches/{branch}/plan",
       "/v1/repos/{repo}/branches/{branch}/plan/approve",
       "/v1/repos/{repo}/branches/{branch}/plan/reject",

@@ -37,6 +37,7 @@ Task-focused guides for daily workflows.
 | [Plans and goals](plans-and-goals.md) | Run a branch in read-only planning mode for approval before editing files, and verify completion criteria with a goal judge. |
 | [Repository knowledge](knowledge.md) | Distill reusable repository rules from completed branches, review and adopt them, and inject them into matching harnesses. |
 | [Delegation](delegation.md) | Let an agent spawn and coordinate child branches via `by`, Python, Rust, or MCP within bounded budgets, paths, and permissions. |
+| [Messaging](messaging.md) | The one layer every harness-to-harness message goes through: envelope, addresses, kind registry, pipeline and delivery classes; what is built and what is designed. |
 | [Rigs](rigs.md) | Define a multi-agent team layout in TOML, validate it with `by rig check`, and run it with `by rig run`. |
 | [Wide map](map.md) | Run a prompt across a list of inputs in parallel (`by map`), validate each branch's output against a JSON schema, and collect results into a table. |
 | [Triggers and schedules](triggers.md) | Start tasks on cron schedules, intervals, or signed webhooks from GitHub, Slack, and Linear with deduplication and failure circuit-breakers. |

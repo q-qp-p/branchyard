@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->144<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->145<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -148,6 +148,7 @@ A person acts with their own authority, or the server's, bounded by the branch's
 | Escalate to the parent, or further up if a rig seat allows | `Delegate::escalate` | `escalate "<text>"` | yes | `POST …/escalate` | `escalate` |
 | Answer a descendant's message | `Delegate::answer` | `answer <message-id> "<text>"` | yes | `POST …/answer` | `answer` |
 | The branch's own inbox | `Delegate::inbox` | `inbox [--unread]` | yes | `GET …/inbox` | `inbox` |
+| Message a sibling, of a registered kind, read at its next turn ([messaging](messaging.md)) | `Delegate::message` | `message TO "<text>" [--kind K] [--payload JSON] [--key KEY]` | yes | `POST …/message` | `message` |
 
 `by --remote` prints the same JSON as `by` for each, and the same `{"error": {"kind", "message", "next", "detail"}}` for refusals; tests compare them. [The `--json` contract](#the---json-contract) below says what every command does with it. Outside a harness every messaging command needs `--as <branch>`, since there is no other way to say who is asking; see [delegation](delegation.md#inbox). A message to a branch with a running turn is steered into it on every surface (`SteerDelivery`, the default `DeliveryHook` of every `Yard`), and otherwise delivered at its next turn's start; `Activity::MessagesDelivered` (`messages_delivered` in `by log --json`) records which ([delegation](delegation.md#delivery)).
 
@@ -254,6 +255,15 @@ Every command that takes a branch or prints a result takes `--json`. This round 
 | `Activity` | no messages | `message` (the `Message`) on the sender's and recipient's logs; `messages_delivered` (`ids`, `via`: `{"path": "steer", "steer"}` or `{"path": "turn_start"}`) on the recipient's |
 | `DeliveryHook`, `Yard::set_delivery_hook`/`clear_delivery_hook`, `SteerDelivery` | none | every `Yard` steers a message into its recipient's running turn by default ([delegation](delegation.md#delivery)) |
 | Stall detection | children and permission answers excluded | a turn blocked in `ask --wait` is excluded too ([lifecycle](lifecycle.md#stall-detection)) |
+
+## Added with the messaging layer
+
+| Surface | Before | Now |
+|---|---|---|
+| `Delegate::message`, `by message TO TEXT [--kind K] [--payload JSON] [--key KEY]`, the MCP `message` tool, `branchyard.message(to, text, kind=, payload=, key=)`, `POST …/branches/{b}/message`, `Repo::message` in the client and `Repo.message` in Python | a branch messaged its parent or its descendants only | a message to a sibling, of a registered kind, delivered at the sibling's next turn ([messaging](messaging.md)) |
+| `Message` | `{id, from, to, kind, text, in_reply_to, at_ms, delivered, handoff?, next_turn?}` | the same, plus `kind` `peer` and `meta` (`{kind?, schema_version?, payload?, trace?, deadline_ms?}`) only when the message carries one of them; a message of a legacy kind reads as before |
+| `Yard::register_kind`, `message_kinds`, `set_messaging_pipeline`; `branchyard::messaging::{Envelope, Address, Class, Delivery, KindSpec, Registry, Pipeline, Stage}` | none | kinds registered by schema, and the pipeline every message goes through, in the Rust SDK |
+| The store | `messages` rows with no payload | the additive columns `meta` and `idempotency_key` on SQLite and PostgreSQL, which an older binary ignores |
 
 ## Added with tenants
 

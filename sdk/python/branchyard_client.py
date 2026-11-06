@@ -899,6 +899,13 @@ class Message(Record):
         """Whether delivery waits for a later turn without steering the active one."""
         return bool(self.get("next_turn", False))
 
+    @property
+    def meta(self) -> Optional[Record]:
+        """What the legacy fields do not carry (`docs/messaging.md`): the registered `kind`, its
+        `schema_version`, the `payload`, the `trace` and the `deadline_ms`; None when there is nothing."""
+        value = self.get("meta")
+        return Record(value) if isinstance(value, dict) else None
+
 
 class Approval(Record):
     """`ApprovalAsk`: `id`, `branch`, `turn`, `subject`, `about`
@@ -3157,6 +3164,21 @@ class Repo:
     def answer(self, branch: str, message_id: int, text: str) -> Message:
         """Answer one of `branch`'s descendants' messages, as `branch`."""
         return Message(self.client.post(self._branch(branch, "/answer"), {"message_id": message_id, "text": text}))
+
+    def message(
+        self,
+        branch: str,
+        to: str,
+        text: str,
+        kind: Optional[str] = None,
+        payload: Optional[Any] = None,
+        key: Optional[str] = None,
+    ) -> Message:
+        """Message `to`, one of `branch`'s siblings, as `branch` (`by message --as branch`): `kind` is a
+        registered message kind (`note` when None) whose schema checks `payload`, and a repeat with the same
+        `key` returns the first message. It waits for the sibling's next turn."""
+        body = _drop_none({"to": to, "text": text, "kind": kind, "payload": payload, "key": key})
+        return Message(self.client.post(self._branch(branch, "/message"), body, key=new_key()))
 
     # -- the inbox, as the person ------------------------------------------
 

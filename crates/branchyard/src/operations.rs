@@ -927,6 +927,23 @@ pub const OPERATIONS: &[Operation] = &[
         &[Param::all("--unread", "unread", "unread"), ACT_AS, JSON],
     ),
     op(
+        "message",
+        &["message"],
+        "message",
+        "message",
+        "message",
+        Capability::Message,
+        &[
+            Param::all("<TO>", "to", "to"),
+            Param::all("<TEXT>", "text", "text"),
+            Param::all("--kind", "kind", "kind"),
+            Param::all("--payload", "payload", "payload"),
+            Param::all("--key", "key", "key"),
+            ACT_AS,
+            JSON,
+        ],
+    ),
+    op(
         "approve_plan",
         &["plan", "approve"],
         "approve_plan",
@@ -1180,6 +1197,7 @@ mod tests {
                 "events",
                 "inbox",
                 "inspect",
+                "message",
                 "report",
                 "report_status"
             ]

@@ -80,9 +80,9 @@ use api::{
     AnswerRequest, AskRequest, BranchEvents, BranchList, CancelRequest, CancelResult, CheckRequest,
     Diff, DiscardRequest, ErrorBody, ErrorResponse, FeedEntry, ForkRequest, GraphRequest,
     HarnessList, IntegrateRequest, InventoryReport, MapList, MapRequest, MapResumeRequest,
-    MergeRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry, RepoList,
-    ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest,
-    TaskList, TaskRequest, TextRequest, WaitRequest,
+    MergeRequest, MessageRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry,
+    RepoList, ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest,
+    SteerRequest, TaskList, TaskRequest, TextRequest, WaitRequest,
 };
 use branchyard_support::time::now_ms;
 use http::{encode, Endpoint, Reply};
@@ -899,6 +899,17 @@ impl Repo {
             },
             &new_key(),
         )
+    }
+
+    /// Message one of `branch`'s siblings as `branch`, like `by message
+    /// --as branch`: `request.to` is the sibling, `kind` a registered
+    /// message kind (`note` when omitted), `payload` a JSON value its
+    /// schema checks, `key` an idempotency key. The message waits for the
+    /// sibling's next turn. Needs the `run` scope; a recipient that is not
+    /// a sibling is `403 denied`. See `docs/messaging.md`.
+    pub fn message(&self, branch: &str, request: &MessageRequest) -> Result<Message, Error> {
+        self.client
+            .post(&self.branch_path(branch, "/message"), request, &new_key())
     }
 
     /// Answer question or escalation `message_id` as whoever it was sent

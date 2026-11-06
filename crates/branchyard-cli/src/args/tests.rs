@@ -880,6 +880,40 @@ fn messages_take_text_and_an_acting_branch() {
     assert!(err("ask hi --wait -1").contains("needs a number of seconds"));
 }
 
+/// `by message` names the sibling and the text, and takes the kind, the
+/// payload and the key as flags.
+#[test]
+fn a_message_to_a_sibling_takes_a_kind_a_payload_and_a_key() {
+    assert_eq!(
+        parse_str(
+            "message b 'step one done' --kind step --payload '{\"n\": 1}' --key s1 --as a --json"
+        )
+        .unwrap(),
+        Command::Message {
+            as_branch: Some("a".into()),
+            to: "b".into(),
+            text: "step one done".into(),
+            kind: Some("step".into()),
+            payload: Some("{\"n\": 1}".into()),
+            key: Some("s1".into()),
+            json: true
+        }
+    );
+    assert_eq!(
+        parse_str("message b hi").unwrap(),
+        Command::Message {
+            as_branch: None,
+            to: "b".into(),
+            text: "hi".into(),
+            kind: None,
+            payload: None,
+            key: None,
+            json: false
+        }
+    );
+    assert!(err("message b").contains("<TEXT>"));
+}
+
 #[test]
 fn send_steer_is_a_switch() {
     let Command::Send {
@@ -1708,11 +1742,12 @@ fn typos_get_suggestions_and_usage_errors_exit_2() {
     let error = parse_str("mrege b").unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
     assert_eq!(error.exit_code(), 2);
-    // `review`, `recipe` and `remote` are close to `mrege` too, so clap lists them.
+    // `review`, `recipe`, `remote` and `message` are close to `mrege` too, so
+    // clap lists them.
     assert!(
-        error
-            .to_string()
-            .contains("similar subcommands exist: 'review', 'recipe', 'remote', 'merge'"),
+        error.to_string().contains(
+            "similar subcommands exist: 'review', 'recipe', 'remote', 'message', 'merge'"
+        ),
         "{error}"
     );
     assert!(err("run go --budget 2").contains("a similar argument exists: '--budget-usd'"));
@@ -2033,6 +2068,7 @@ const HIDDEN: &[&str] = &[
     "ask",
     "answer",
     "inbox",
+    "message",
     "escalate",
     "report",
     "report-status",

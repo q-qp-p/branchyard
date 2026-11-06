@@ -9971,6 +9971,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -9984,12 +9995,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -10113,6 +10133,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         },
         "DecisionOutput": {
           "type": "object",
@@ -20904,6 +20965,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -20917,12 +20989,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -21046,6 +21127,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         }
       }
     },
@@ -22440,6 +22562,44 @@
       ],
       "description": "`POST /v1/repos/{repo}/branches/{branch}/answer`: an answer to one of\nthe branch's own descendants' messages, like `by answer`.",
       "title": "AnswerRequest",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "MessageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "to": {
+          "type": "string",
+          "description": "The sibling, another child of the branch's parent."
+        },
+        "text": {
+          "type": "string",
+          "description": "The message, one line."
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A registered message kind; `note` when omitted."
+        },
+        "payload": {
+          "description": "A JSON value the kind's schema checks."
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "An idempotency key: a repeat with the same key returns the first\nmessage."
+        }
+      },
+      "required": [
+        "to",
+        "text"
+      ],
+      "description": "`POST /v1/repos/{repo}/branches/{branch}/message`: a message from the\nbranch to a sibling, like `by message --as`; see `docs/messaging.md`.",
+      "title": "MessageRequest",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "OperationKind": {
@@ -40478,6 +40638,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -40491,12 +40662,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -40620,6 +40800,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         },
         "DeliveredVia": {
           "oneOf": [
@@ -46258,6 +46479,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -46271,12 +46503,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -46400,6 +46641,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         },
         "DeliveredVia": {
           "oneOf": [
@@ -58236,6 +58518,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -58249,12 +58542,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -58378,6 +58680,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         },
         "DeliveredVia": {
           "oneOf": [
@@ -61855,6 +62198,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -61868,12 +62222,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -61997,6 +62360,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         }
       }
     },
@@ -62055,6 +62459,17 @@
         "next_turn": {
           "type": "boolean",
           "description": "Leave this message for the next turn instead of steering a running one."
+        },
+        "meta": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageMeta"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
         }
       },
       "required": [
@@ -62070,12 +62485,21 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "$defs": {
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -62199,6 +62623,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         }
       }
     },
@@ -62282,6 +62747,17 @@
             "next_turn": {
               "type": "boolean",
               "description": "Leave this message for the next turn instead of steering a running one."
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/MessageMeta"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What the legacy fields do not carry: the registered kind and its\nversion, the payload, the trace and the deadline\n([`messaging::MessageMeta`]). Omitted when there is nothing to\ncarry, so a message of a legacy kind reads as it always did."
             }
           },
           "required": [
@@ -62295,12 +62771,21 @@
           "description": "One harness-to-harness message, durable in the store; see\n`docs/delegation.md#inbox`."
         },
         "MessageKind": {
-          "type": "string",
-          "enum": [
-            "question",
-            "report",
-            "escalation",
-            "answer"
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "question",
+                "report",
+                "escalation",
+                "answer"
+              ]
+            },
+            {
+              "type": "string",
+              "const": "peer",
+              "description": "A message between siblings, the children of one parent, of a kind\nthe registry names in [`Message::meta`] (`note`, or one registered\nwith [`Yard::register_kind`]); delivered at the recipient's next\nturn. See `docs/messaging.md`."
+            }
           ],
           "description": "What a message means, and so who it may go to: a `question` and a\n`report` go to the sender's parent; an `escalation` goes to the parent\ntoo, or further up an ancestor its rig seat's `escalates_to` names; an\n`answer` goes from a branch to one of its own descendants, and normally\ncarries `in_reply_to` a question's id. A branch nobody delegated (a\nroot, or a fork) sends its questions and escalations to the person,\n`@person`, whose answers carry `in_reply_to`."
         },
@@ -62424,6 +62909,47 @@
             "created_at"
           ],
           "description": "An immutable published artifact's provenance, as `by artifact list/get`,\nthe SDK and the server report it. `id` identifies this publish; `digest`\nis the blake3 hash (hex, lower case) of its bytes, the artifact's content\nidentity, checked on every read."
+        },
+        "MessageMeta": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The registered kind, when it is not the legacy one the `kind`\nfield already names (`note`, or a custom kind)."
+            },
+            "schema_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The kind's schema version the payload was checked against."
+            },
+            "payload": {
+              "description": "The payload, a JSON value the kind's schema accepted."
+            },
+            "trace": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The W3C `traceparent` of the sender's turn, so the recipient's work\non the message can join the trace."
+            },
+            "deadline_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Milliseconds since the Unix epoch after which the message should\nnot be delivered. Recorded; not yet enforced (`docs/messaging.md`)."
+            }
+          },
+          "description": "What a stored [`Message`] carries beyond its legacy fields. Present\nonly when there is something to carry, so a message of a legacy kind\nwith no payload and no trace serializes as it always did."
         }
       }
     },
