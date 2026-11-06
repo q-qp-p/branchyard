@@ -1297,6 +1297,39 @@ fn inspection_commands() {
             }),
         }
     );
+    assert_eq!(
+        parse_str("harnesses update codex --qualify --with-model --version 1.2 --json").unwrap(),
+        Command::Harnesses {
+            json: true,
+            all: false,
+            profiles: false,
+            refresh: false,
+            on: None,
+            action: Some(HarnessesAction::Update {
+                change: HarnessChange {
+                    id: "codex".into(),
+                    version: Some("1.2".into()),
+                    yes: false,
+                },
+                qualify: true,
+                with_model: true,
+            }),
+        }
+    );
+    assert_eq!(
+        parse_str("harnesses qualified --json").unwrap(),
+        Command::Harnesses {
+            json: true,
+            all: false,
+            profiles: false,
+            refresh: false,
+            on: None,
+            action: Some(HarnessesAction::Qualified),
+        }
+    );
+    // A model run belongs to a qualification, and only an update qualifies.
+    assert!(parse_str("harnesses update codex --with-model").is_err());
+    assert!(parse_str("harnesses install codex --qualify").is_err());
     assert!(parse_str("harnesses --all --on ssh://h").is_err());
     assert_eq!(
         parse_str("connectors --json catalog").unwrap(),

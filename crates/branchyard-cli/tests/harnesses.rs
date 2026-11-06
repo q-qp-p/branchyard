@@ -2334,3 +2334,649 @@ fn a_codex_model_providers_key_is_a_login_the_preflight_accepts() {
     );
     assert_eq!(w.branches(), ["cx"]);
 }
+
+// Qualified harness updates (docs/harness-lifecycle.md, "Qualifying an
+// update"): a release installed into a private prefix by a fake `npm` that
+// honors `--prefix`, checked without a model, pinned on a pass.
+
+/// A fake `npm` whose `install --prefix PREFIX PACKAGE@VERSION` lays down a
+/// fake Qwen Code in `PREFIX/node_modules/.bin/qwen` and an npm lockfile.
+/// The binary prints its version and `--help`, and otherwise speaks ACP as
+/// the fake agent. `FAKE_NPM_MODE` picks a fault: `wrong-version` (it
+/// prints 0.0.1), `no-handshake` (it exits at once), `missing-flag` (its
+/// `--help` lacks `--acp`), `fail` (npm exits 1) or `nothing` (npm succeeds
+/// and installs nothing).
+fn fake_prefix_npm(w: &World) {
+    let agent = fake_agent!().display().to_string();
+    w.script(
+        "npm",
+        &format!(
+            r#"#!/bin/sh
+echo "npm $*" >> "$FAKE_LOG"
+[ "$1" = install ] || exit 2
+shift
+prefix=; package=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --prefix) prefix=$2; shift 2;;
+    -g|--global) echo "a global install is not a side install" >&2; exit 2;;
+    -*) shift;;
+    *) package=$1; shift;;
+  esac
+done
+[ -n "$prefix" ] && [ -n "$package" ] || exit 2
+version=${{package##*@}}
+name=${{package%@*}}
+case "$FAKE_NPM_MODE" in
+  fail) echo "npm ERR! 404 Not Found" >&2; exit 1;;
+  nothing) echo "added 0 packages"; exit 0;;
+esac
+reported=$version
+[ "$FAKE_NPM_MODE" = wrong-version ] && reported=0.0.1
+help="  --acp  Run as an ACP agent"
+[ "$FAKE_NPM_MODE" = missing-flag ] && help="  --experimental-acp  Run as an ACP agent"
+crash=
+[ "$FAKE_NPM_MODE" = no-handshake ] && crash="exit 1"
+mkdir -p "$prefix/node_modules/.bin"
+cat > "$prefix/node_modules/.bin/qwen" <<EOF
+#!/bin/sh
+case "\$1" in
+  --version) echo "$reported"; exit 0;;
+  --help) echo "Usage: qwen [options]"; echo "$help"; exit 0;;
+esac
+$crash
+exec {agent} --approval-mode default "\$@"
+EOF
+chmod +x "$prefix/node_modules/.bin/qwen"
+printf '{{"packages":{{"node_modules/%s":{{"version":"%s","integrity":"sha512-fake-%s"}}}}}}\n' "$name" "$version" "$version" > "$prefix/package-lock.json"
+echo "added 1 package"
+"#
+        ),
+    );
+}
+
+/// The current install of Qwen Code the qualification must leave alone.
+fn current_qwen(w: &World, version: &str) {
+    w.script(
+        "qwen",
+        &format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo {version}; exit 0; fi\nexit 3\n"),
+    );
+}
+
+fn qualify_world() -> World {
+    let w = World::new();
+    fake_prefix_npm(&w);
+    current_qwen(&w, "0.4.0");
+    w.user_config("[harnesses]\ninstall = \"ask\"\n");
+    w
+}
+
+fn candidate_prefix(w: &World, version: &str) -> PathBuf {
+    w.home
+        .join(".cache/branchyard/candidates/qwen-code")
+        .join(version)
+}
+
+fn pins_file(w: &World) -> PathBuf {
+    fs::create_dir_all(w.user.parent().unwrap()).unwrap();
+    w.user.parent().unwrap().join("qualified.toml")
+}
+
+/// The qualification of `version` as `--json` reports it, whether it passed
+/// (stdout) or failed (the error's `result`).
+fn qualification(out: &Output) -> Value {
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    match value.get("error") {
+        Some(error) => error["result"].clone(),
+        None => value,
+    }
+}
+
+fn check<'a>(result: &'a Value, name: &str) -> &'a Value {
+    result["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no {name} check in {result}"))
+}
+
+const QUALIFY_QWEN: [&str; 7] = [
+    "harnesses",
+    "update",
+    "qwen-code",
+    "--qualify",
+    "--version",
+    "0.5.1",
+    "--yes",
+];
+
+fn qualify_args<'a>(more: &[&'a str]) -> Vec<&'a str> {
+    QUALIFY_QWEN
+        .iter()
+        .copied()
+        .chain(more.iter().copied())
+        .collect()
+}
+
+#[test]
+fn a_release_that_passes_is_pinned_beside_an_untouched_install_and_logged() {
+    let w = qualify_world();
+    let out = w.by(&qualify_args(&["--json"]));
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let result = qualification(&out);
+    assert_eq!(result["qualified"], true, "{result}");
+    assert_eq!(result["evidence"], "hermetic", "{result}");
+    let names: Vec<&str> = result["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["install", "version", "handshake", "flags", "plugin"]
+    );
+    for c in result["checks"].as_array().unwrap() {
+        assert_eq!(c["passed"], true, "{c}");
+    }
+    assert!(check(&result, "handshake")["detail"]
+        .as_str()
+        .unwrap()
+        .contains("ACP initialize succeeded"));
+    // npm was asked for a private prefix, never a global install.
+    let prefix = candidate_prefix(&w, "0.5.1");
+    assert_eq!(
+        w.calls("npm "),
+        [format!(
+            "npm install --prefix {} @qwen-code/qwen-code@0.5.1",
+            prefix.display()
+        )]
+    );
+    // The current install is untouched.
+    let inventory = w.json(&["harnesses", "--json", "--refresh"]);
+    assert_eq!(
+        harness(&inventory, "qwen-code").unwrap()["version"],
+        "0.4.0"
+    );
+    // The pin is stored beside the user configuration, with the integrity
+    // npm's lockfile recorded and no live record.
+    let stored = fs::read_to_string(pins_file(&w)).unwrap();
+    assert!(
+        stored.contains("[[pin]]") && stored.contains("version = \"0.5.1\""),
+        "{stored}"
+    );
+    assert!(
+        stored.contains("integrity = \"sha512-fake-0.5.1\""),
+        "{stored}"
+    );
+    assert!(!stored.contains("live_record"), "{stored}");
+    // `qualified` lists it, as hermetic evidence.
+    let listed = w.json(&["harnesses", "qualified", "--json"]);
+    let pin = &listed[0];
+    assert_eq!(pin["id"], "qwen-code");
+    assert_eq!(pin["version"], "0.5.1");
+    assert_eq!(pin["package"], "@qwen-code/qwen-code");
+    assert_eq!(pin["profile"], "qwen-code-acp");
+    assert_eq!(pin["evidence"], "hermetic");
+    assert!(pin.get("live_record").is_none(), "{pin}");
+    let table = text(&w.ok(&["harnesses", "qualified"]).stdout);
+    assert!(
+        table.contains("qwen-code") && table.contains("0.5.1") && table.contains("hermetic"),
+        "{table}"
+    );
+    assert!(
+        table.contains("install, version, handshake, flags, plugin"),
+        "{table}"
+    );
+    // The harness log records the qualification and its outcome.
+    let log = w.json(&["harnesses", "log", "--json"]);
+    let event = log.as_array().unwrap().last().unwrap();
+    assert_eq!(event["action"], "qualify", "{event}");
+    assert_eq!(event["outcome"], "qualified", "{event}");
+    assert_eq!(event["version_before"], "0.4.0");
+    assert_eq!(event["version_after"], "0.5.1");
+    assert!(event["detail"].as_str().unwrap().contains("hermetic"));
+}
+
+#[test]
+fn a_release_that_reports_another_version_is_not_pinned() {
+    let w = qualify_world();
+    let out = w.by_env(
+        &qualify_args(&["--json"]),
+        &[("FAKE_NPM_MODE", "wrong-version")],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["kind"], "command_failed", "{error}");
+    let result = qualification(&out);
+    assert_eq!(result["qualified"], false);
+    let version = check(&result, "version");
+    assert_eq!(version["passed"], false);
+    assert!(
+        version["detail"]
+            .as_str()
+            .unwrap()
+            .contains("reports 0.0.1, not the requested 0.5.1"),
+        "{version}"
+    );
+    // The other checks ran and passed: the report names the one that did not.
+    assert_eq!(check(&result, "handshake")["passed"], true);
+    assert!(!pins_file(&w).exists());
+    let log = w.json(&["harnesses", "log", "--json"]);
+    let event = log.as_array().unwrap().first().unwrap();
+    assert_eq!(
+        (event["action"].as_str(), event["outcome"].as_str()),
+        (Some("qualify"), Some("failed"))
+    );
+    assert!(event["detail"]
+        .as_str()
+        .unwrap()
+        .contains("version: reports 0.0.1"));
+    assert!(event.get("version_after").is_none(), "{event}");
+    // As text, the failing check is named and the install is untouched.
+    let plain = text(
+        &w.by_env(&qualify_args(&[]), &[("FAKE_NPM_MODE", "wrong-version")])
+            .stderr,
+    );
+    assert!(
+        plain.contains("did not qualify; nothing was pinned or changed"),
+        "{plain}"
+    );
+    assert!(plain.contains("FAIL  version"), "{plain}");
+}
+
+#[test]
+fn a_release_whose_handshake_fails_is_not_pinned() {
+    let w = qualify_world();
+    let out = w.by_env(
+        &qualify_args(&["--json"]),
+        &[("FAKE_NPM_MODE", "no-handshake")],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let result = qualification(&out);
+    let handshake = check(&result, "handshake");
+    assert_eq!(handshake["passed"], false, "{result}");
+    assert!(
+        handshake["detail"]
+            .as_str()
+            .unwrap()
+            .contains("ACP initialize (qwen-code-acp) failed"),
+        "{handshake}"
+    );
+    // It still reports its version: only the handshake is named.
+    assert_eq!(check(&result, "version")["passed"], true);
+    assert!(!pins_file(&w).exists());
+}
+
+#[test]
+fn a_release_that_lost_a_launch_flag_is_not_pinned() {
+    let w = qualify_world();
+    let out = w.by_env(
+        &qualify_args(&["--json"]),
+        &[("FAKE_NPM_MODE", "missing-flag")],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let result = qualification(&out);
+    let flags = check(&result, "flags");
+    assert_eq!(flags["passed"], false, "{result}");
+    assert!(
+        flags["detail"]
+            .as_str()
+            .unwrap()
+            .contains("--acp no longer in"),
+        "{flags}"
+    );
+    assert!(!pins_file(&w).exists());
+}
+
+#[test]
+fn an_install_that_fails_or_installs_nothing_stops_at_the_install_check() {
+    let w = qualify_world();
+    for (mode, expect) in [
+        ("fail", "npm exited with status 1"),
+        ("nothing", "installed none of qwen"),
+    ] {
+        let out = w.by_env(&qualify_args(&["--json"]), &[("FAKE_NPM_MODE", mode)]);
+        assert_eq!(out.status.code(), Some(1), "{mode}: {}", text(&out.stderr));
+        let result = qualification(&out);
+        assert_eq!(result["checks"].as_array().unwrap().len(), 1, "{result}");
+        let install = check(&result, "install");
+        assert_eq!(install["passed"], false);
+        assert!(
+            install["detail"].as_str().unwrap().contains(expect),
+            "{install}"
+        );
+    }
+    assert!(!pins_file(&w).exists());
+    // A failure leaves an earlier pin as it was.
+    fs::write(
+        pins_file(&w),
+        "[[pin]]\nid = \"qwen-code\"\nversion = \"0.4.5\"\npackage = \"@qwen-code/qwen-code\"\n\
+         profile = \"qwen-code-acp\"\nqualified_at = \"2026-11-01T10:00:00Z\"\n",
+    )
+    .unwrap();
+    let before = fs::read_to_string(pins_file(&w)).unwrap();
+    w.by_env(&qualify_args(&[]), &[("FAKE_NPM_MODE", "wrong-version")]);
+    assert_eq!(fs::read_to_string(pins_file(&w)).unwrap(), before);
+}
+
+#[test]
+fn a_piped_installer_cannot_be_installed_beside_the_current_one() {
+    let w = qualify_world();
+    let args = [
+        "harnesses",
+        "update",
+        "claude-code",
+        "--qualify",
+        "--version",
+        "2.2.0",
+        "--yes",
+    ];
+    let out = w.by(&[&args[..], &["--json"]].concat());
+    assert_eq!(out.status.code(), Some(4), "{}", text(&out.stderr));
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(error["error"]["kind"], "unsupported", "{error}");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("a piped installer") && message.contains("curl"),
+        "{message}"
+    );
+    assert!(w.calls("npm ").is_empty());
+    assert!(!pins_file(&w).exists());
+    let plain = w.fails(&args);
+    assert!(
+        plain.contains("next: by harnesses update claude-code --version 2.2.0 --yes"),
+        "{plain}"
+    );
+}
+
+#[test]
+fn a_qualification_installs_only_as_the_policy_allows() {
+    let w = qualify_world();
+    // Without --yes and without a terminal, "ask" refuses and names the way.
+    let ask = w.fails(&[
+        "harnesses",
+        "update",
+        "qwen-code",
+        "--qualify",
+        "--version",
+        "0.5.1",
+    ]);
+    assert!(ask.contains("pass --yes"), "{ask}");
+    w.user_config("");
+    let never = w.fails(&QUALIFY_QWEN);
+    assert!(never.contains("\"never\""), "{never}");
+    assert!(
+        never.contains("by harnesses update qwen-code --qualify --yes"),
+        "{never}"
+    );
+    assert!(w.calls("npm ").is_empty());
+    let log = w.json(&["harnesses", "log", "--json"]);
+    assert!(log
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["action"] == "qualify" && e["outcome"] == "refused"));
+}
+
+#[test]
+fn a_qualification_needs_a_release_that_is_one_safe_word_and_this_machine() {
+    let w = qualify_world();
+    let none = w.fails(&["harnesses", "update", "qwen-code", "--qualify", "--yes"]);
+    assert!(
+        none.contains("there is no release of qwen-code to qualify"),
+        "{none}"
+    );
+    assert!(none.contains("by catalog refresh"), "{none}");
+    let bad = w.fails(&[
+        "harnesses",
+        "update",
+        "qwen-code",
+        "--qualify",
+        "--version",
+        "1.0; touch pwned",
+        "--yes",
+    ]);
+    assert!(bad.contains("is not a release number"), "{bad}");
+    assert!(!w.base.join("pwned").exists() && !w.repo.join("pwned").exists());
+    let remote = w.fails(&qualify_args(&["--on", "ssh://vm.test"]));
+    assert!(remote.contains("on this machine"), "{remote}");
+    assert!(w.calls("npm ").is_empty());
+}
+
+#[test]
+fn an_update_without_a_version_takes_a_pin_newer_than_the_checked_version() {
+    let w = World::new();
+    w.fake_npm();
+    w.user_config("[harnesses]\ninstall = \"ask\"\n");
+    let pin = |version: &str| {
+        format!(
+            "[[pin]]\nid = \"codex\"\nversion = \"{version}\"\npackage = \"@openai/codex\"\n\
+             profile = \"codex-app-server\"\nqualified_at = \"2026-11-05T10:00:00Z\"\n"
+        )
+    };
+    // Codex's profile was checked against 0.157.1: a pin of 0.170.0 is newer.
+    fs::write(pins_file(&w), pin("0.170.0")).unwrap();
+    let out = w.by(&["harnesses", "update", "codex", "--yes"]);
+    assert!(
+        text(&out.stderr).contains("updating to the qualified pin 0.170.0"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(w.calls("npm "), ["npm install -g @openai/codex@0.170.0"]);
+    // An explicit version wins over the pin.
+    w.by(&[
+        "harnesses",
+        "update",
+        "codex",
+        "--version",
+        "0.180.0",
+        "--yes",
+    ]);
+    assert_eq!(
+        w.calls("npm ").last().unwrap(),
+        "npm install -g @openai/codex@0.180.0"
+    );
+    // A pin that is not newer than the checked version is not taken.
+    fs::write(pins_file(&w), pin("0.150.0")).unwrap();
+    w.by(&["harnesses", "update", "codex", "--yes"]);
+    assert_eq!(
+        w.calls("npm ").last().unwrap(),
+        "npm install -g @openai/codex@0.157.1"
+    );
+    // And an install never reads the pin.
+    fs::write(pins_file(&w), pin("0.170.0")).unwrap();
+    w.by(&["harnesses", "install", "codex", "--yes"]);
+    assert_eq!(
+        w.calls("npm ").last().unwrap(),
+        "npm install -g @openai/codex@0.157.1"
+    );
+}
+
+#[test]
+fn the_listing_says_hermetic_or_live_and_an_empty_one_says_how_to_start() {
+    let w = World::new();
+    let empty = text(&w.ok(&["harnesses", "qualified"]).stdout);
+    assert!(
+        empty.contains("no harness version has been qualified here"),
+        "{empty}"
+    );
+    assert!(
+        empty.contains("by harnesses update ID --qualify"),
+        "{empty}"
+    );
+    assert_eq!(
+        w.json(&["harnesses", "qualified", "--json"]),
+        serde_json::json!([])
+    );
+    fs::write(
+        pins_file(&w),
+        "[[pin]]\nid = \"codex\"\nversion = \"0.170.0\"\npackage = \"@openai/codex\"\n\
+         profile = \"codex-app-server\"\nintegrity = \"sha512-x\"\n\
+         qualified_at = \"2026-11-05T10:00:00Z\"\n\
+         live_record = \"/records/codex-app-server-0.170.0.json\"\n\n\
+         [[pin.checks]]\nname = \"version\"\npassed = true\ndetail = \"reports 0.170.0\"\n\n\
+         [[pin]]\nid = \"qwen-code\"\nversion = \"0.5.1\"\npackage = \"@qwen-code/qwen-code\"\n\
+         profile = \"qwen-code-acp\"\nqualified_at = \"2026-11-05T11:00:00Z\"\n\n\
+         [[pin.checks]]\nname = \"version\"\npassed = true\ndetail = \"reports 0.5.1\"\n",
+    )
+    .unwrap();
+    let listed = w.json(&["harnesses", "qualified", "--json"]);
+    let by_id = |id: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_id("codex")["evidence"], "live");
+    assert_eq!(
+        by_id("codex")["live_record"],
+        "/records/codex-app-server-0.170.0.json"
+    );
+    assert_eq!(by_id("qwen-code")["evidence"], "hermetic");
+    let table = text(&w.ok(&["harnesses", "qualified"]).stdout);
+    assert!(
+        table.contains("/records/codex-app-server-0.170.0.json"),
+        "{table}"
+    );
+    assert!(table.contains("2026-11-05 11:00"), "{table}");
+    // A pin file that does not parse is named.
+    fs::write(pins_file(&w), "[[pin]]\nid = 3\n").unwrap();
+    let broken = w.fails(&["harnesses", "qualified"]);
+    assert!(broken.contains("qualified.toml"), "{broken}");
+}
+
+/// A stand-in for `branchyard-qualify` that records its arguments and
+/// writes the record it was asked for, with one scenario failed: it makes
+/// no model call, and a failed record never makes a pin live.
+fn stub_runner(w: &World) -> PathBuf {
+    let path = w.base.join("stub-qualify");
+    write_exec(
+        &path,
+        r#"#!/bin/sh
+echo "$@" >> "$FAKE_LOG.runner"
+while [ $# -gt 0 ]; do
+  case $1 in
+    --report) report=$2; shift 2;;
+    *) shift;;
+  esac
+done
+cat > "$report" <<EOF
+{"profile":"qwen-code-acp","harness_version":"0.5.1","date":"2026-11-05",
+ "scenarios":[{"name":"fresh_turn","passed":true},{"name":"resume","passed":false}]}
+EOF
+exit 1
+"#,
+    );
+    path
+}
+
+#[test]
+fn with_model_runs_the_recorded_scenarios_and_a_failed_record_pins_nothing() {
+    let w = qualify_world();
+    let runner = stub_runner(&w).display().to_string();
+    let out = w.by_env(
+        &qualify_args(&["--with-model", "--json"]),
+        &[
+            ("BRANCHYARD_QUALIFY", &runner),
+            ("OPENAI_API_KEY", "sk-test-0123456789"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(!text(&out.stdout).contains("sk-test-0123456789"));
+    let result = qualification(&out);
+    // The hermetic checks passed; the live one did not, so no pin, and no
+    // claim of a live run.
+    assert_eq!(check(&result, "handshake")["passed"], true);
+    let live = check(&result, "live");
+    assert_eq!(live["passed"], false, "{result}");
+    assert!(
+        live["detail"]
+            .as_str()
+            .unwrap()
+            .contains("1 of 2 scenarios failed (resume)"),
+        "{live}"
+    );
+    assert_eq!(result["evidence"], Value::Null);
+    assert!(!pins_file(&w).exists());
+    // The runner got the profile, the candidate, the record's path under the
+    // user configuration, how it was installed and the key's name.
+    let args =
+        fs::read_to_string(format!("{}.runner", w.base.join("calls.log").display())).unwrap();
+    let prefix = candidate_prefix(&w, "0.5.1");
+    assert!(args.contains("--profile qwen-code-acp"), "{args}");
+    assert!(
+        args.contains(&format!(
+            "--command {}",
+            prefix.join("node_modules/.bin/qwen").display()
+        )),
+        "{args}"
+    );
+    let record = w
+        .user
+        .parent()
+        .unwrap()
+        .join("qualification/qwen-code-acp-0.5.1.json");
+    assert!(
+        args.contains(&format!("--report {}", record.display())),
+        "{args}"
+    );
+    assert!(
+        args.contains("--installed_from npm @qwen-code/qwen-code@0.5.1"),
+        "{args}"
+    );
+    assert!(
+        args.contains("--keep-env OPENAI_API_KEY") && !args.contains("sk-test"),
+        "{args}"
+    );
+    assert!(record.is_file());
+}
+
+#[test]
+fn with_model_without_a_runner_fails_the_live_check_and_after_a_failed_check_never_starts_one() {
+    let w = qualify_world();
+    let missing = w.base.join("no-such-runner").display().to_string();
+    let out = w.by_env(
+        &qualify_args(&["--with-model", "--json"]),
+        &[("BRANCHYARD_QUALIFY", &missing)],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let result = qualification(&out);
+    let live = check(&result, "live");
+    assert_eq!(live["passed"], false, "{result}");
+    assert!(
+        live["detail"].as_str().unwrap().contains("could not run"),
+        "{live}"
+    );
+    assert!(!pins_file(&w).exists());
+    // A release that already failed spends nothing on a model.
+    let runner = stub_runner(&w).display().to_string();
+    let out = w.by_env(
+        &qualify_args(&["--with-model", "--json"]),
+        &[
+            ("BRANCHYARD_QUALIFY", &runner),
+            ("FAKE_NPM_MODE", "wrong-version"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("--with-model skipped"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!w.base.join("calls.log.runner").exists());
+    assert!(qualification(&out)["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| c["name"] != "live"));
+}

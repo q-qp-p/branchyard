@@ -1837,6 +1837,8 @@ by harnesses install [OPTIONS] <ID>
 
 Install a harness again at a newer or pinned version, then check it
 
+Install a harness again at a newer or pinned version, then check it. Without --version, the version it installs is the qualified pin, if `--qualify` recorded one newer than the version the harness's profile was checked against; else that checked version. With --qualify, the release is installed beside the current one instead, checked without a model, and pinned only if it passes; the current install is not touched.
+
 ```text
 by harnesses update [OPTIONS] <ID>
 ```
@@ -1845,6 +1847,8 @@ by harnesses update [OPTIONS] <ID>
 |---|---|
 | `<ID>` | The harness's ID, as `by harnesses --all` lists it |
 | `--yes` | Install without asking, where [harnesses] install = "ask" |
+| `--qualify` | Install the release into a private prefix, check it (version, the profile's protocol handshake, launch flags, hook install files), and pin it on a pass instead of updating the harness. The release is --version, else the latest `by catalog refresh` found |
+| `--with-model` | With --qualify, also run the harness's recorded qualification scenarios with a model (branchyard-qualify, which spends the harness's credentials) and write the dated record; only this makes the pin live |
 
 ### `by harnesses login`
 
@@ -1867,6 +1871,16 @@ Every install, update and login recorded on this machine
 
 ```text
 by harnesses log [OPTIONS]
+```
+
+### `by harnesses qualified`
+
+The versions that passed `update --qualify`, with their evidence
+
+The versions `by harnesses update ID --qualify` pinned here, from qualified.toml beside your user configuration: the release, when it was qualified, and whether the evidence is the hermetic checks alone or a recorded run with a model.
+
+```text
+by harnesses qualified [OPTIONS]
 ```
 
 ## `by open`
