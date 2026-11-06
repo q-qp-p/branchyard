@@ -542,18 +542,31 @@ fn live_run(
     .unwrap_or_default();
     match status {
         Err(e) => Check::fail("live", format!("could not run {}: {e}", runner.display())),
-        Ok(status) if !status.success() => {
-            Check::fail("live", format!("{} failed ({status})", runner.display()))
-        }
-        Ok(_) if text.is_empty() => Check::fail(
+        Ok(status) if text.is_empty() => Check::fail(
             "live",
             format!(
-                "{} wrote no record to {}",
+                "{} wrote no record to {} ({status})",
                 runner.display(),
                 record.display()
             ),
         ),
-        Ok(_) => qualified::live_check(&text, profile, &side.version, record),
+        // The record was written by this run (an earlier one was removed
+        // above), so it says what failed; a runner that failed can still
+        // never pass, whatever its record claims.
+        Ok(status) => {
+            let check = qualified::live_check(&text, profile, &side.version, record);
+            if check.passed && !status.success() {
+                Check::fail(
+                    "live",
+                    format!(
+                        "{} failed ({status}) though its record reads as passed",
+                        runner.display()
+                    ),
+                )
+            } else {
+                check
+            }
+        }
     }
 }
 
@@ -1025,7 +1038,7 @@ mod tests {
         // first, and a failed runner fails whatever record is there.
         let crashed = live(&script("crashed", "exit 3\n"));
         assert!(
-            !crashed.passed && crashed.detail.contains("failed"),
+            !crashed.passed && crashed.detail.contains("wrote no record"),
             "{crashed:?}"
         );
         assert!(!record.exists(), "the earlier record is not left to pass");
