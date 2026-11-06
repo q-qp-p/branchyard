@@ -35,6 +35,13 @@ pub struct Timeline {
     /// When the branch merged, if it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_at_ms: Option<u64>,
+    /// The running token total the harness last reported for the current
+    /// session, when it reports one ([`branchyard_harness::Usage::cumulative`]).
+    /// A reader that folds later usage onto this timeline subtracts it from
+    /// the next running total, so the tokens already counted are not
+    /// counted again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_tokens: Option<u64>,
 }
 
 /// One turn: from its prompt to the status that ended it.
@@ -292,6 +299,7 @@ impl Timeline {
                 _ => {}
             }
         }
+        timeline.session_tokens = (session_high > 0).then_some(session_high);
         timeline
     }
 }
@@ -436,6 +444,43 @@ mod tests {
             serde_json::json!({"turns": [{"seq": 1, "started_at_ms": 1}]})
         );
         assert_eq!(serde_json::from_value::<Timeline>(wire).unwrap(), timeline);
+    }
+
+    #[test]
+    fn the_timeline_carries_the_session_running_total_a_reader_folds_onto() {
+        use branchyard_harness::Usage;
+        let total = |input| {
+            Activity::Harness(Event::UsageObserved {
+                turn: Some(1),
+                usage: Usage {
+                    cumulative: true,
+                    input_tokens: Some(input),
+                    output_tokens: Some(0),
+                    ..Usage::default()
+                },
+            })
+        };
+        let events = [at(1, Activity::Prompt("go".into())), at(2, total(100))];
+        let timeline = Timeline::of(&events);
+        assert_eq!(timeline.turns[0].tokens, Some(100));
+        // A reader that later sees a running total of 110 adds the 10 it grew
+        // by, not 110, because the timeline says where the session stood.
+        assert_eq!(timeline.session_tokens, Some(100));
+        let wire = serde_json::to_value(&timeline).unwrap();
+        assert_eq!(wire["session_tokens"], 100);
+        // A new session starts its running total again.
+        let restarted = Timeline::of(&[
+            at(1, Activity::Prompt("go".into())),
+            at(2, total(100)),
+            at(
+                3,
+                Activity::Harness(Event::SessionStarted {
+                    session: branchyard_harness::NativeSession::new("s2").unwrap(),
+                    forked_from: None,
+                }),
+            ),
+        ]);
+        assert_eq!(restarted.session_tokens, None);
     }
 
     #[test]

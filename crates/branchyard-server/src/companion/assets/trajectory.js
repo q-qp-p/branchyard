@@ -98,7 +98,7 @@
 
   // A lane from a `Timeline` as the server sends it.
   function laneOf(name, timeline) {
-    const lane = { name, turns: [], merged: timeline && timeline.merged_at_ms != null ? timeline.merged_at_ms : null, sessionHigh: 0 };
+    const lane = { name, turns: [], merged: timeline && timeline.merged_at_ms != null ? timeline.merged_at_ms : null, sessionHigh: timeline && timeline.session_tokens != null ? timeline.session_tokens : 0 };
     for (const t of (timeline && timeline.turns) || []) {
       const turn = newTurn(lane, t.started_at_ms, t.seq);
       turn.end = t.ended_at_ms == null ? null : t.ended_at_ms;

@@ -96,6 +96,11 @@ function checkModel(path) {
     }],
   });
   eq(wire.turns[0].marks.map((m) => [m.kind, m.label, m.ok]), turn.marks.map((m) => [m.kind, m.label, m.ok]), 'the wire and the fold agree on marks');
+  // A page opened mid-session folds the next running total onto the
+  // session's tokens so far: 100 counted, a total of 110 adds 10.
+  const mid = model.laneOf('m', { session_tokens: 100, turns: [{ seq: 1, started_at_ms: T, tokens: 100, tools: [], marks: [] }] });
+  model.fold(mid, { harness: { type: 'usage_observed', usage: { cumulative: true, input_tokens: 110, output_tokens: 0 } } }, T + 5);
+  eq(mid.turns[0].tokens, 110, 'a running total after a timeline adds its growth only');
   // A turn's time is tiled: model, tool, wait, tool again, model.
   const { segs, steps } = model.stepsOf(wire, wire.turns[0], T + 500);
   eq(segs.map((s) => [s.kind, s.from - T, s.to - T]), [['model', 1, 10], ['tool', 10, 20], ['wait', 20, 50], ['tool', 50, 110]], 'segments');

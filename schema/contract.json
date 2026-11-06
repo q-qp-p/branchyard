@@ -19619,6 +19619,15 @@
           "format": "uint64",
           "minimum": 0,
           "description": "When the branch merged, if it has."
+        },
+        "session_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The running token total the harness last reported for the current\nsession, when it reports one ([`branchyard_harness::Usage::cumulative`]).\nA reader that folds later usage onto this timeline subtracts it from\nthe next running total, so the tokens already counted are not\ncounted again."
         }
       },
       "required": [
