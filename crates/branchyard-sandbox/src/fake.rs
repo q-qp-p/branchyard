@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::provider::{
-    Checkpoint, ExecSpec, Process, ProviderError, SandboxInfo, SandboxProvider, SandboxSpec,
+    Checkpoint, ExecSpec, Launch, Process, ProviderError, SandboxInfo, SandboxProvider, SandboxSpec,
 };
 use crate::{
     Capabilities, Consistency, Locality, Operation, SandboxState, SnapshotGuarantee, SnapshotScope,
@@ -114,6 +114,7 @@ struct State {
     next: u64,
     failing: Vec<Operation>,
     destroy_fails: bool,
+    launch: Option<Launch>,
 }
 
 /// See the module documentation.
@@ -245,6 +246,13 @@ impl FakeProvider {
         self.lock().destroy_fails = on;
     }
 
+    /// Make every sandbox report `launch` as how it was made ready, as a
+    /// provider with a warm pool or an image cache would; `None` reports
+    /// nothing, as most providers do.
+    pub fn set_launch(&self, launch: Option<Launch>) {
+        self.lock().launch = launch;
+    }
+
     /// Remove `name` without recording a call, as if it vanished.
     pub fn vanish(&self, name: &str) {
         if let Some(sandbox) = self.lock().sandboxes.remove(name) {
@@ -333,6 +341,10 @@ impl SandboxProvider for FakeProvider {
             });
         }
         self.create(spec, None)
+    }
+
+    fn launch(&self, _name: &str) -> Option<Launch> {
+        self.lock().launch
     }
 
     fn inspect(&self, name: &str) -> Result<Option<SandboxInfo>, ProviderError> {

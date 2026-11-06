@@ -149,6 +149,7 @@ impl Work {
         repo: &RepoState,
         principal: Option<&crate::config::Principal>,
         trace: Option<&str>,
+        admitted_ms: u64,
     ) -> Result<OperationResult, ErrorBody> {
         let trace_parent = trace.map(str::to_owned);
         let sdk = |e: branchyard::Error| *error::sdk(&e).body;
@@ -170,6 +171,7 @@ impl Work {
                     actor: actor.clone(),
                     trigger,
                     trace_parent: trace_parent.clone(),
+                    admitted_ms: Some(admitted_ms),
                     ..task_options(app, repo, &request).map_err(api)?
                 };
                 let builder = yard.task(request.prompt.clone()).options(options);
@@ -185,6 +187,7 @@ impl Work {
             Work::Send { branch, request } => {
                 let options = TaskOptions {
                     trace_parent: trace_parent.clone(),
+                    admitted_ms: Some(admitted_ms),
                     ..send_options(app, repo, &request).map_err(api)?
                 };
                 let target = yard.branch(&branch).map_err(sdk)?;
@@ -577,6 +580,7 @@ impl Executor for AppExecutor {
                         repo,
                         stored.principal.as_ref(),
                         stored.trace.as_deref(),
+                        operation.created_at_ms,
                     )
                 })
         };

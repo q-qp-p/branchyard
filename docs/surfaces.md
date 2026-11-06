@@ -85,7 +85,7 @@ and `runc`; Agent Sandbox runtimes are `gvisor` and `microvm`. Agent Sandbox als
 requires an operator-controlled `context` and `namespace`. Both default to
 `gvisor` and `network = "deny"`; `unrestricted` must be selected explicitly.
 These tables reject retained allocations, lifecycle scripts and daemon or
-kubeconfig executable overrides. User and project tables merge key by key.
+kubeconfig executable overrides. Agent Sandbox also accepts `warm_pool` (1 to 100), a count of sandboxes the cluster keeps booted ahead of time ([GKE](agent-sandbox-gke.md#warm-pool)). User and project tables merge key by key.
 Guided project setup preserves and can select existing native sections, includes
 their private-home credential choices, and leaves workload readiness unverified.
 
@@ -438,6 +438,7 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 | `traceparent` request header | ignored | the operation's trace continues it |
 | `TRACEPARENT` in a server-run turn's environment; `TaskOptions::trace_parent` | none | the operation's span, for the harness and what it calls (a connector SDK's `_meta.traceparent`) |
 | `traceparent` on webhook deliveries | none | the trace of the operation that last worked on the branch here |
+| `by startup report [--provider P] [--since DUR] [--json]` | none | p50 and p95 of each startup phase per provider and path, from the turns recorded here |
 | `by stats [--json]` | none | branches, turns, outcomes, durations, tools, connectors and cost locally; branches and the server's queue by priority with `--remote` |
 | `branchyard_server::metrics`, `telemetry`, `observe`; `Config::observability`; `store::Scheduling`, `check_scheduling` | none | Rust only: the registry and encoder, the tracer with a pluggable `SpanExporter`, and the scheduling conformance |
 | `tenant_usage` (SQLite), `by_tenant_usage` (PostgreSQL); `priority`, `tenant`, `enqueued_ms` on the queue | none | each tenant's decayed recent claims; what the claim orders by |

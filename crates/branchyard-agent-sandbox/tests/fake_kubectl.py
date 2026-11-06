@@ -34,9 +34,15 @@ def emit(value):
     sys.exit(0)
 
 
+POOL_KINDS = {"sandboxtemplates": "sandboxtemplate", "sandboxwarmpools": "sandboxwarmpool",
+              "sandboxclaims": "sandboxclaim"}
+
+
 def kind(value, named=True):
     if value.startswith("sandboxes"):
         return "sandbox"
+    if value.split(".")[0] in POOL_KINDS:
+        return POOL_KINDS[value.split(".")[0]]
     if value.startswith("fqdnnetworkpolicies"):
         return "fqdnnetworkpolicy" if named else "fqdnnetworkpolicies"
     return value
@@ -70,6 +76,13 @@ if operation == "get":
         "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}}
     if resource == "networkpolicy" and name == "branchyard-default-deny":
         emit(default)
+    if resource == "pods":
+        emit({"items": [value for key, value in state["objects"].items() if key.startswith("pod/")]})
+    if resource == "sandboxwarmpool" and f"{resource}/{name}" in state["objects"]:
+        # The controller's view: how many pods of the pool are ready.
+        pool = state["objects"][f"{resource}/{name}"]
+        pool["status"] = {"readyReplicas": state.get("pool_ready", 0)}
+        emit(pool)
     if resource == "networkpolicies":
         emit({"items": [default] + [value for key, value in state["objects"].items()
             if key.startswith("networkpolicy/")] + state["extra_policies"]})
@@ -79,17 +92,48 @@ if operation == "get":
     emit(state["objects"].get(f"{resource}/{name}"))
 
 if operation == "create":
-    resource = {"Sandbox": "sandbox", "FQDNNetworkPolicy": "fqdnnetworkpolicy"}.get(body["kind"], "networkpolicy")
+    resource = {"Sandbox": "sandbox", "FQDNNetworkPolicy": "fqdnnetworkpolicy", "SandboxTemplate": "sandboxtemplate",
+                "SandboxWarmPool": "sandboxwarmpool", "SandboxClaim": "sandboxclaim"}.get(body["kind"], "networkpolicy")
     name = body["metadata"]["name"]
     key = f"{resource}/{name}"
     if key in state["objects"]:
         sys.exit(1)
-    # Prove the durable intent precedes external creation.
-    receipts = list(root.glob("*-receipts/*.json")) + list(root.glob("receipts/*.json"))
-    assert receipts and any(json.loads(path.read_text())["owner"] == body["metadata"]["labels"]["branchyard.io/owner"] for path in receipts)
+    # Prove the durable intent precedes external creation. The shared template and pool are no
+    # allocation's: they carry no owner.
+    if resource not in ("sandboxtemplate", "sandboxwarmpool"):
+        receipts = list(root.glob("*-receipts/*.json")) + list(root.glob("receipts/*.json"))
+        assert receipts and any(json.loads(path.read_text())["owner"] == body["metadata"]["labels"]["branchyard.io/owner"] for path in receipts)
+        if resource == "sandboxclaim":
+            assert any((json.loads(path.read_text()).get("pooled") or {}).get("template") == body["spec"]["sandboxTemplateRef"]["name"]
+                       for path in receipts), "the claim's intent is durable before the claim exists"
     state["counter"] += 1
     body["metadata"]["uid"] = f"uid-{state['counter']}"
     state["objects"][key] = body
+    if resource == "sandboxclaim":
+        # The controller adopts a ready pod of the pool: a Sandbox for the claim, owning that pod.
+        template = state["objects"][f"sandboxtemplate/{body['spec']['sandboxTemplateRef']['name']}"]
+        sandbox_name = state.get("claimed_sandbox_name", name)
+        state["counter"] += 1
+        sandbox = {"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox",
+            "metadata": {"name": sandbox_name, "namespace": namespace, "uid": f"uid-{state['counter']}",
+                "ownerReferences": [{"kind": "SandboxClaim", "uid": body["metadata"]["uid"], "controller": True}]},
+            "spec": {"podTemplate": json.loads(json.dumps(template["spec"]["podTemplate"]))},
+            "status": {"conditions": [{"type": "Ready", "status": "True"}]}}
+        if state.get("claimed_foreign_owner"):
+            sandbox["metadata"]["labels"] = {"branchyard.io/owner": "someone-else"}
+        state["objects"][f"sandbox/{sandbox_name}"] = sandbox
+        for index in range(state.get("claimed_pods", 1)):
+            pod = json.loads(json.dumps(template["spec"]["podTemplate"]))
+            pod_name = f"{state.get('warm_pod_name', 'warm-pod')}-{index}"
+            state["counter"] += 1
+            pod["metadata"].update({"name": pod_name, "namespace": namespace, "uid": f"pod-{state['counter']}",
+                "ownerReferences": [{"kind": "Sandbox", "uid": sandbox["metadata"]["uid"], "controller": True}]})
+            pod["spec"]["nodeName"] = "test-node"
+            pod["status"] = {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}],
+                "containerStatuses": [{"name": c["name"], "ready": True, "state": {"running": {}},
+                "imageID": state.get("claimed_image_id") or c["image"]} for c in pod["spec"]["containers"]]}
+            state["objects"][f"pod/{pod_name}"] = pod
+        body["status"] = {"sandbox": {"name": sandbox_name}, "conditions": [{"type": "Ready", "status": "True"}]}
     if resource == "sandbox":
         body["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
         pod = json.loads(json.dumps(body["spec"]["podTemplate"]))
@@ -106,10 +150,28 @@ if operation == "create":
         sys.exit(1)
     emit(body)
 
+if operation in ("label", "annotate"):
+    resource = kind(args[0])
+    key, value = args[2].split("=", 1)
+    metadata = state["objects"][f"{resource}/{args[1]}"]["metadata"]
+    field = metadata.setdefault("labels" if operation == "label" else "annotations", {})
+    if field.get(key, value) != value:  # no --overwrite: another value stays
+        sys.exit(1)
+    field[key] = value
+    save()
+    sys.exit(0)
+
+if operation == "patch":
+    resource = kind(args[0])
+    state["objects"][f"{resource}/{args[1]}"]["spec"].update(json.loads(args[5])["spec"])
+    save()
+    sys.exit(0)
+
 if operation == "delete":
     path = args[1]
     name = path.rsplit("/", 1)[1]
-    resource = ("sandbox" if "/sandboxes/" in path else "pod" if "/pods/" in path
+    resource = ("sandboxclaim" if "/sandboxclaims/" in path else "sandbox" if "/sandboxes/" in path
+                else "pod" if "/pods/" in path
                 else "fqdnnetworkpolicy" if "/fqdnnetworkpolicies/" in path else "networkpolicy")
     key = f"{resource}/{name}"
     if state.get("replace_on_delete"):
@@ -118,6 +180,16 @@ if operation == "delete":
     if state["objects"][key]["metadata"]["uid"] != body["preconditions"]["uid"]:
         sys.exit(1)
     del state["objects"][key]
+    if resource in ("sandbox", "sandboxclaim"):
+        # Garbage collection: whatever the deleted object owns goes too, and so on down.
+        def collect(uid):
+            for other, value in list(state["objects"].items()):
+                if any(ref["uid"] == uid for ref in value["metadata"].get("ownerReferences", [])):
+                    state["objects"].pop(other, None)
+                    state["objects"].pop(f"networkpolicy/{value['metadata']['name']}", None)
+                    state["objects"].pop(f"fqdnnetworkpolicy/{value['metadata']['name']}", None)
+                    collect(value["metadata"]["uid"])
+        collect(body["preconditions"]["uid"])
     if resource == "sandbox":
         state["objects"].pop(f"pod/{name}", None)
         state["objects"].pop(f"networkpolicy/{name}", None)

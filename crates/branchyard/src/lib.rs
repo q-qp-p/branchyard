@@ -174,6 +174,7 @@ mod snapshots;
 mod spotlight;
 mod sqlite;
 pub mod stage;
+pub mod startup;
 mod state;
 mod steer;
 mod storage;
@@ -1747,6 +1748,12 @@ pub struct TaskOptions {
     /// the caller's trace. Not stored with the branch. A server sets it to
     /// its operation's span; see `docs/observability.md`.
     pub trace_parent: Option<String>,
+    /// When the operation these turns belong to was admitted, in
+    /// milliseconds since the Unix epoch: where each turn's startup phases
+    /// are counted from ([`startup::Startup`]), so the queue's wait is
+    /// the first of them. `None`: a turn counts from its own start. A
+    /// server sets it to its operation's creation time.
+    pub admitted_ms: Option<u64>,
     /// Plan first: a new branch's first turn runs read-only with a planning
     /// prompt and the branch then waits, `awaiting_plan_approval`, for
     /// [`Yard::approve_plan`] or [`Yard::reject_plan`]. Read only when a
@@ -3160,6 +3167,12 @@ pub enum Activity {
     /// provider snapshot) and what became of it: kept, destroyed, evicted,
     /// a snapshot released. See `docs/sandbox-snapshots.md`.
     Sandbox(Box<SandboxEvent>),
+    /// How long the turn took to start, phase by phase, from the
+    /// operation's admission to the harness's first event, and the provider
+    /// and path that made its sandbox ready. Recorded once per turn that
+    /// started a harness. See [`startup::Startup`] and
+    /// `docs/providers.md#measuring-launch-time`.
+    Startup(Box<startup::Startup>),
     /// Routing, failover and judging: the router's choice for this branch,
     /// its harness failing over to the next candidate, a judge's scratch
     /// branch, or a judge's score. See [`FleetActivity`] and

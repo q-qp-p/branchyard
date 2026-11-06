@@ -649,6 +649,16 @@
             }
           ],
           "description": "The connector gateway, when it runs in the cluster: a `deny`\nallocation may reach its pods on its port."
+        },
+        "warm_pool": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Sandboxes to keep booted ahead of time (a `SandboxWarmPool` of this\nmany replicas for the allocation's `SandboxTemplate`), claimed by a\nturn when one is ready; omitted, or 0, keeps none and every turn\ncreates its own. See `docs/agent-sandbox-gke.md#warm-pool`.",
+          "maximum": 100
         }
       },
       "required": [

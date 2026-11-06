@@ -92,10 +92,35 @@ fn the_server_keeps_the_pool_full_and_a_task_starts_from_it() {
         "{text}"
     );
     assert_eq!(
-        sample(&text, r#"branchyard_start_seconds_count{pool="miss"}"#),
+        sample(
+            &text,
+            r#"branchyard_start_seconds_count{pool="miss",provider="local",path="local"}"#
+        ),
         Some(1.0),
         "{text}"
     );
+    // The turn's phases: a local harness reaches no sandbox phase, so the
+    // series for them do not exist.
+    for (phase, count) in [
+        ("queued", Some(1.0)),
+        ("placement", Some(1.0)),
+        ("harness_started", Some(1.0)),
+        ("handshake_done", Some(1.0)),
+        ("first_event", Some(1.0)),
+        ("sandbox_ready", None),
+        ("source_attached", None),
+    ] {
+        assert_eq!(
+            sample(
+                &text,
+                &format!(
+                    r#"branchyard_start_phase_seconds_count{{provider="local",path="local",phase="{phase}"}}"#
+                )
+            ),
+            count,
+            "{phase}: {text}"
+        );
+    }
     server.stop();
     assert!(ready(&f).is_empty());
 
@@ -140,7 +165,10 @@ fn the_server_keeps_the_pool_full_and_a_task_starts_from_it() {
         "{text}"
     );
     assert_eq!(
-        sample(&text, r#"branchyard_start_seconds_count{pool="hit"}"#),
+        sample(
+            &text,
+            r#"branchyard_start_seconds_count{pool="hit",provider="local",path="local"}"#
+        ),
         Some(1.0),
         "{text}"
     );

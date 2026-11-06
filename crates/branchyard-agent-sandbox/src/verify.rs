@@ -114,13 +114,26 @@ pub(crate) fn namespace_uid(control: &Control) -> Result<String, ProviderError> 
     Ok(uid(&namespace)?.to_owned())
 }
 
+/// `object` is one of the allocation's own objects, named like its claim
+/// and policies.
 pub(crate) fn owned(
     object: &Value,
     receipt: &Receipt,
     expected_uid: Option<&str>,
 ) -> Result<String, ProviderError> {
+    owned_named(object, receipt, &receipt.resource_name(), expected_uid)
+}
+
+/// `object` is the allocation's, called `name`: the Sandbox and Pod of a
+/// claimed allocation are named by the pool, not by Branchyard.
+pub(crate) fn owned_named(
+    object: &Value,
+    receipt: &Receipt,
+    name: &str,
+    expected_uid: Option<&str>,
+) -> Result<String, ProviderError> {
     check(
-        text(object, "/metadata/name")? == receipt.resource_name(),
+        text(object, "/metadata/name")? == name,
         "resource name differs from receipt",
     )?;
     check(
@@ -146,14 +159,161 @@ pub(crate) fn owned(
 }
 
 pub(crate) fn sandbox(object: &Value, receipt: &Receipt) -> Result<String, ProviderError> {
-    let uid = owned(object, receipt, receipt.sandbox_uid.as_deref())?;
+    let uid = owned_named(
+        object,
+        receipt,
+        &receipt.sandbox_name(),
+        receipt.sandbox_uid.as_deref(),
+    )?;
     check(
         object.pointer("/metadata/deletionTimestamp").is_none(),
         "Sandbox is being deleted",
     )?;
-    let expected = manifest::sandbox(receipt);
-    subset(&expected["spec"], &object["spec"], "Sandbox.spec")?;
+    sandbox_spec(object, receipt)?;
     Ok(uid)
+}
+
+/// The Sandbox runs the pod the receipt says. A claimed Sandbox was made
+/// by the pool from its template, so only its pod, which is what runs, is
+/// held to the specification; every other field is the controller's.
+fn sandbox_spec(object: &Value, receipt: &Receipt) -> Result<(), ProviderError> {
+    let expected = manifest::sandbox(receipt);
+    match receipt.pooled {
+        None => subset(&expected["spec"], &object["spec"], "Sandbox.spec"),
+        Some(_) => subset(
+            &expected["spec"]["podTemplate"]["spec"],
+            &object["spec"]["podTemplate"]["spec"],
+            "Sandbox.spec.podTemplate.spec",
+        ),
+    }
+}
+
+/// The warm pool's `SandboxTemplate` is Branchyard's, for this
+/// specification, and boots the pod the specification describes.
+pub(crate) fn template(object: &Value, receipt: &Receipt) -> Result<(), ProviderError> {
+    pool_owned(object, receipt, "SandboxTemplate")?;
+    subset(
+        &manifest::template(receipt)["spec"],
+        &object["spec"],
+        "SandboxTemplate.spec",
+    )
+}
+
+/// The `SandboxWarmPool` is Branchyard's, for this specification, and
+/// keeps pods of exactly this specification's template.
+pub(crate) fn warm_pool(object: &Value, receipt: &Receipt) -> Result<(), ProviderError> {
+    pool_owned(object, receipt, "SandboxWarmPool")?;
+    check(
+        object.pointer("/spec/sandboxTemplateRef/name")
+            == Some(&json!(manifest::template_name(receipt))),
+        "SandboxWarmPool names another template",
+    )
+}
+
+fn pool_owned(object: &Value, receipt: &Receipt, kind: &str) -> Result<(), ProviderError> {
+    check(
+        object.pointer("/metadata/deletionTimestamp").is_none(),
+        &format!("{kind} is being deleted"),
+    )?;
+    check(
+        text(object, "/metadata/labels/branchyard.io~1pool")? == receipt.pool_id()
+            && text(object, "/metadata/annotations/branchyard.io~1spec")? == receipt.digest,
+        &format!("{kind} has foreign ownership or another specification"),
+    )
+}
+
+/// The allocation's `SandboxClaim`, which names this specification's
+/// template.
+pub(crate) fn claim(object: &Value, receipt: &Receipt) -> Result<String, ProviderError> {
+    let uid = owned(
+        object,
+        receipt,
+        receipt.pooled.as_ref().and_then(|p| p.claim_uid.as_deref()),
+    )?;
+    check(
+        object.pointer("/spec/sandboxTemplateRef/name")
+            == Some(&json!(manifest::template_name(receipt))),
+        "SandboxClaim names another template",
+    )?;
+    Ok(uid)
+}
+
+/// Whether `object` carries `claim_uid`'s claim among its owners.
+fn claimed_by(object: &Value, kind: &str, uid: &str) -> bool {
+    object
+        .pointer("/metadata/ownerReferences")
+        .and_then(Value::as_array)
+        .is_some_and(|refs| refs.iter().any(|r| r["uid"] == uid && r["kind"] == kind))
+}
+
+/// The Sandbox a claim resolved to, before the allocation marks it: made
+/// from this claim, not being deleted, of the specification, and not
+/// already marked as anyone else's. Returns its UID.
+pub(crate) fn claimed_sandbox(
+    object: &Value,
+    receipt: &Receipt,
+    name: &str,
+    claim_uid: &str,
+) -> Result<String, ProviderError> {
+    check(
+        text(object, "/metadata/name")? == name
+            && text(object, "/metadata/namespace")? == receipt.target.namespace,
+        "claimed Sandbox differs from the claim's status",
+    )?;
+    check(
+        object.pointer("/metadata/deletionTimestamp").is_none(),
+        "claimed Sandbox is being deleted",
+    )?;
+    check(
+        claimed_by(object, "SandboxClaim", claim_uid),
+        "claimed Sandbox is not owned by this allocation's claim",
+    )?;
+    unmarked_or_ours(object, receipt, "claimed Sandbox")?;
+    sandbox_spec(object, receipt)?;
+    Ok(uid(object)?.to_owned())
+}
+
+/// The warm Pod a claimed Sandbox adopted, before the allocation marks it.
+/// Everything else about it is checked with the live pod, as a fresh
+/// allocation's is ([`pod`]).
+pub(crate) fn claimed_pod(
+    object: &Value,
+    receipt: &Receipt,
+    sandbox_uid: &str,
+) -> Result<(), ProviderError> {
+    check(
+        object.pointer("/metadata/deletionTimestamp").is_none(),
+        "warm Pod is being deleted",
+    )?;
+    check(
+        object
+            .pointer("/metadata/ownerReferences")
+            .and_then(Value::as_array)
+            .is_some_and(|refs| {
+                refs.iter().any(|r| {
+                    r["uid"] == sandbox_uid && r["kind"] == "Sandbox" && r["controller"] == true
+                })
+            }),
+        "warm Pod is not controlled by the claimed Sandbox",
+    )?;
+    unmarked_or_ours(object, receipt, "warm Pod")
+}
+
+/// A pooled object carries no owner until the allocation marks it; one
+/// that carries another's is not claimable.
+fn unmarked_or_ours(object: &Value, receipt: &Receipt, what: &str) -> Result<(), ProviderError> {
+    check(
+        object
+            .pointer("/metadata/labels/branchyard.io~1owner")
+            .is_none_or(|owner| owner == &json!(receipt.owner)),
+        &format!("{what} is already marked as another allocation's"),
+    )?;
+    check(
+        object
+            .pointer("/metadata/annotations/branchyard.io~1spec")
+            .is_none_or(|digest| digest == &json!(receipt.digest)),
+        &format!("{what} carries another specification"),
+    )
 }
 
 pub(crate) fn policy(
@@ -329,7 +489,12 @@ pub(crate) fn pod(
         }
         None => live,
     };
-    let pod_uid = owned(object, receipt, receipt.pod_uid.as_deref())?;
+    let pod_uid = owned_named(
+        object,
+        receipt,
+        &receipt.pod_name(),
+        receipt.pod_uid.as_deref(),
+    )?;
     check(
         object.pointer("/metadata/deletionTimestamp").is_none(),
         "Pod is being deleted",

@@ -2,13 +2,13 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use branchyard_sandbox::{ExecSpec, Mount, Resources, SandboxProvider, SandboxSpec};
+use branchyard_sandbox::{ExecSpec, Launch, Mount, Resources, SandboxProvider, SandboxSpec};
 use branchyard_testkit::Scratch;
 use serde_json::{json, Value};
 
 use super::{
     AgentSandboxProvider, Config, CredentialSidecar, Egress, GatewayService, Network, Runtime,
-    StoreVolume, GOOGLE_API_BLOCKS,
+    StoreVolume, GOOGLE_API_BLOCKS, MAX_WARM_POOL,
 };
 
 fn config() -> Config {
@@ -20,6 +20,7 @@ fn config() -> Config {
         store: None,
         egress: Egress::default(),
         credential_proxy: None,
+        warm_pool: None,
     }
 }
 
@@ -1244,4 +1245,438 @@ fn a_sidecar_needs_a_pinned_image_and_a_pod_with_a_stranger_in_it_fails() {
             .push(json!({"name":"miner","ready":true,"state":{"running":{}}}));
     });
     assert!(true_in(&fixture).is_err());
+}
+
+// ---- The warm pool. The kinds and fields the pool objects use are the
+// upstream extensions API as this repository records it; none of it was run
+// against a cluster (`docs/agent-sandbox-gke.md#warm-pool`).
+
+fn pooled(network: Network, sidecar: Option<CredentialSidecar>, size: u32) -> Fixture {
+    let mut fixture = Fixture::build_full(network, None, sidecar);
+    fixture.provider.control.config.warm_pool = Some(size);
+    fixture
+}
+
+fn receipt_json(fixture: &Fixture) -> Value {
+    serde_json::from_slice(&fs::read(fixture.receipt()).unwrap()).unwrap()
+}
+
+/// The names the shared template and pool have.
+fn pool_names(fixture: &Fixture) -> (String, String) {
+    let id = receipt_json(fixture)["digest"].as_str().unwrap()[..32].to_owned();
+    (format!("by-tpl-{id}"), format!("by-pool-{id}"))
+}
+
+fn touched(fixture: &Fixture, needle: &str) -> Vec<Value> {
+    fixture
+        .calls()
+        .into_iter()
+        .filter(|call| call.to_string().contains(needle))
+        .collect()
+}
+
+/// A first allocation of a specification makes the pool and (none being
+/// ready) is created as ever; it is destroyed, and the pool has one ready
+/// sandbox now.
+fn with_a_ready_pool(fixture: &Fixture) {
+    fixture.provider.ensure(&spec()).unwrap();
+    fixture.provider.destroy("allocation").unwrap();
+    fixture.edit(|state| state["pool_ready"] = 1.into());
+}
+
+#[test]
+fn without_a_pool_no_pool_object_is_asked_for_and_the_receipt_is_what_it_was() {
+    let fixture = Fixture::new(Network::Deny);
+    fixture.provider.ensure(&spec()).unwrap();
+    for needle in [
+        "sandboxtemplate",
+        "sandboxwarmpool",
+        "sandboxclaim",
+        "SandboxClaim",
+    ] {
+        assert!(touched(&fixture, needle).is_empty(), "{needle}");
+    }
+    assert!(receipt_json(&fixture).get("pooled").is_none());
+    assert_eq!(
+        fixture.provider.launch("allocation"),
+        Some(Launch::default()),
+        "nothing pooled, nothing else measured"
+    );
+    assert_eq!(fixture.provider.launch("unknown"), None);
+    // A pool of zero is no pool.
+    let zero = pooled(Network::Deny, None, 0);
+    zero.provider.ensure(&spec()).unwrap();
+    assert!(touched(&zero, "sandboxwarmpool").is_empty());
+}
+
+#[test]
+fn a_pool_nothing_is_ready_in_is_generated_and_the_allocation_is_created_as_ever() {
+    let fixture = pooled(Network::Unrestricted, None, 3);
+    fixture.provider.ensure(&spec()).unwrap();
+    let (template, pool) = pool_names(&fixture);
+    let state = fixture.state();
+    let objects = &state["objects"];
+    let tpl = &objects[format!("sandboxtemplate/{template}")];
+    let warm = &objects[format!("sandboxwarmpool/{pool}")];
+    assert_eq!(tpl["apiVersion"], "extensions.agents.x-k8s.io/v1alpha1");
+    assert_eq!(tpl["kind"], "SandboxTemplate");
+    assert_eq!(warm["kind"], "SandboxWarmPool");
+    assert_eq!(warm["spec"]["replicas"], 3);
+    assert_eq!(warm["spec"]["sandboxTemplateRef"]["name"], template);
+    // None ready: no claim, and the Sandbox is the allocation's own.
+    assert!(objects
+        .get(format!("sandboxclaim/{}", fixture.name()))
+        .is_none());
+    assert_eq!(
+        fixture.provider.launch("allocation"),
+        Some(Launch::default())
+    );
+    assert!(receipt_json(&fixture).get("pooled").is_none());
+
+    // The template boots the very pod a fresh Sandbox runs, owned by no
+    // one yet, under the same specification digest.
+    let sandbox = &objects[format!("sandbox/{}", fixture.name())];
+    let (mut made, mut booted) = (
+        sandbox["spec"]["podTemplate"].clone(),
+        tpl["spec"]["podTemplate"].clone(),
+    );
+    assert!(made["metadata"]["labels"]["branchyard.io/owner"].is_string());
+    assert!(booted["metadata"]["labels"]
+        .get("branchyard.io/owner")
+        .is_none());
+    made["metadata"]["labels"] = Value::Null;
+    booted["metadata"]["labels"] = Value::Null;
+    assert_eq!(made, booted);
+    let digest = receipt_json(&fixture)["digest"].clone();
+    assert_eq!(tpl["metadata"]["annotations"]["branchyard.io/spec"], digest);
+
+    // The size of the pool is not part of the specification: the same
+    // allocation without a pool has the same digest.
+    let plain = Fixture::build_full(Network::Unrestricted, None, None);
+    plain.provider.ensure(&spec()).unwrap();
+    assert_eq!(receipt_json(&plain)["digest"], digest);
+}
+
+#[test]
+fn a_ready_sandbox_of_the_pool_is_claimed_marked_and_verified_like_a_fresh_one() {
+    let fixture = pooled(Network::Unrestricted, None, 2);
+    with_a_ready_pool(&fixture);
+    fixture.edit(|state| state["claimed_sandbox_name"] = "pool-named-sandbox".into());
+    fixture.provider.ensure(&spec()).unwrap();
+    let receipt = receipt_json(&fixture);
+    let claimed = &receipt["pooled"];
+    assert_eq!(claimed["bound"], true);
+    assert_eq!(claimed["sandbox"], "pool-named-sandbox");
+    assert_eq!(claimed["pod"], "warm-pod-0");
+    assert_eq!(
+        fixture.provider.launch("allocation"),
+        Some(Launch {
+            pooled: true,
+            ..Launch::default()
+        })
+    );
+    let state = fixture.state();
+    let objects = &state["objects"];
+    let claim = &objects[format!("sandboxclaim/{}", fixture.name())];
+    assert_eq!(claim["metadata"]["uid"], claimed["claim_uid"]);
+    assert_eq!(
+        claim["metadata"]["labels"]["branchyard.io/owner"],
+        receipt["owner"]
+    );
+    // The claimed Sandbox and Pod are marked as the allocation's only after
+    // they were shown to be unmarked and made from this claim.
+    let sandbox = &objects["sandbox/pool-named-sandbox"];
+    assert_eq!(
+        sandbox["metadata"]["labels"]["branchyard.io/owner"],
+        receipt["owner"]
+    );
+    assert_eq!(
+        sandbox["metadata"]["annotations"]["branchyard.io/spec"],
+        receipt["digest"]
+    );
+    let pod = &objects["pod/warm-pod-0"];
+    assert_eq!(
+        pod["metadata"]["labels"]["branchyard.io/owner"],
+        receipt["owner"]
+    );
+    // Its policy is the allocation's own, owned by the Sandbox the pool named.
+    let policy = &objects[format!("networkpolicy/{}", fixture.name())];
+    assert_eq!(
+        policy["metadata"]["ownerReferences"][0]["name"],
+        "pool-named-sandbox"
+    );
+    assert_eq!(
+        policy["metadata"]["ownerReferences"][0]["uid"],
+        sandbox["metadata"]["uid"]
+    );
+    // And the allocation runs in the pod it claimed, nowhere else.
+    true_in(&fixture).unwrap();
+    assert_eq!(
+        fixture
+            .provider
+            .inspect("allocation")
+            .unwrap()
+            .unwrap()
+            .state,
+        branchyard_sandbox::SandboxState::Running
+    );
+    let marks: Vec<String> = fixture
+        .calls()
+        .iter()
+        .filter(|call| call["operation"] == "label" || call["operation"] == "annotate")
+        .map(|call| call["args"].to_string())
+        .collect();
+    assert_eq!(marks.len(), 3, "{marks:?}");
+    assert!(marks.iter().all(|mark| !mark.contains("--overwrite")));
+}
+
+#[test]
+fn destroying_a_claimed_allocation_deletes_its_claim_by_uid_and_leaves_the_pool() {
+    let fixture = pooled(Network::Unrestricted, None, 2);
+    with_a_ready_pool(&fixture);
+    fixture.provider.ensure(&spec()).unwrap();
+    let claim_uid = receipt_json(&fixture)["pooled"]["claim_uid"].clone();
+    let (template, pool) = pool_names(&fixture);
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(!fixture.receipt().exists());
+    let deletes: Vec<Value> = fixture
+        .calls()
+        .into_iter()
+        .filter(|call| call["operation"] == "delete" && call.to_string().contains("sandboxclaims"))
+        .collect();
+    assert_eq!(deletes.len(), 1, "the first allocation never had a claim");
+    assert_eq!(deletes[0]["body"]["preconditions"]["uid"], claim_uid);
+    assert_eq!(deletes[0]["body"]["propagationPolicy"], "Foreground");
+    let state = fixture.state();
+    let mut left: Vec<&String> = state["objects"].as_object().unwrap().keys().collect();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            &format!("sandboxtemplate/{template}"),
+            &format!("sandboxwarmpool/{pool}")
+        ],
+        "the shared template and pool stay"
+    );
+    fixture.provider.destroy("allocation").unwrap();
+}
+
+#[test]
+fn a_claimed_pod_is_held_to_every_check_a_fresh_one_is() {
+    for mutation in [
+        "runtime",
+        "security",
+        "resources",
+        "pod_uid",
+        "sidecar_missing",
+        "stranger",
+        "sidecar_image",
+        "policy",
+    ] {
+        let fixture = pooled(Network::Unrestricted, Some(CredentialSidecar::default()), 2);
+        with_a_ready_pool(&fixture);
+        fixture.provider.ensure(&spec()).unwrap();
+        true_in(&fixture).unwrap();
+        fixture.edit(|state| {
+            let pod = &mut state["objects"]["pod/warm-pod-0"];
+            match mutation {
+                "runtime" => pod["spec"]["runtimeClassName"] = "runc".into(),
+                "security" => {
+                    pod["spec"]["containers"][1]["securityContext"]["privileged"] = true.into()
+                }
+                "resources" => {
+                    pod["spec"]["containers"][0]["resources"]["limits"]["cpu"] = "2".into()
+                }
+                "pod_uid" => pod["metadata"]["uid"] = "replacement-pod".into(),
+                "sidecar_missing" => {
+                    pod["status"]["containerStatuses"]
+                        .as_array_mut()
+                        .unwrap()
+                        .pop();
+                }
+                "stranger" => {
+                    pod["spec"]["containers"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"name":"miner"}));
+                    pod["status"]["containerStatuses"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"name":"miner","ready":true,"state":{"running":{}}}));
+                }
+                "sidecar_image" => {
+                    pod["spec"]["containers"][1]["image"] = "example.test/other:1".into()
+                }
+                "policy" => {
+                    state["extra_policies"] = json!([{"metadata":{"name":"foreign-allow"},"spec":{"podSelector":{},"egress":[{}]}}])
+                }
+                _ => unreachable!(),
+            }
+        });
+        let before = fixture.calls().len();
+        assert!(true_in(&fixture).is_err(), "{mutation}");
+        assert!(
+            !fixture.calls()[before..]
+                .iter()
+                .any(|call| call["operation"] == "exec"),
+            "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn a_claimed_pod_that_does_not_run_the_requested_image_is_refused() {
+    let fixture = pooled(Network::Deny, None, 2);
+    with_a_ready_pool(&fixture);
+    fixture.edit(|state| state["claimed_image_id"] = "sha256:wrong".into());
+    let error = fixture.provider.ensure(&spec()).unwrap_err().to_string();
+    assert!(error.contains("image digest differs"), "{error}");
+    // The allocation can still be given back: its claim is deleted.
+    fixture.provider.destroy("allocation").unwrap();
+    assert!(!fixture.receipt().exists());
+}
+
+#[test]
+fn a_claim_that_resolves_to_someone_elses_sandbox_or_to_two_pods_is_refused_unmarked() {
+    let fixture = pooled(Network::Deny, None, 2);
+    with_a_ready_pool(&fixture);
+    fixture.edit(|state| state["claimed_foreign_owner"] = true.into());
+    let error = fixture.provider.ensure(&spec()).unwrap_err().to_string();
+    assert!(
+        error.contains("already marked as another allocation's"),
+        "{error}"
+    );
+    assert!(touched(&fixture, "\"label\"").is_empty());
+    assert!(touched(&fixture, "\"annotate\"").is_empty());
+    // Giving it back deletes the claim and nothing of the foreign Sandbox.
+    let before = fixture.calls().len();
+    fixture.provider.destroy("allocation").unwrap();
+    let deletes: Vec<String> = fixture.calls()[before..]
+        .iter()
+        .filter(|call| call["operation"] == "delete")
+        .map(|call| call["args"].to_string())
+        .collect();
+    assert!(
+        deletes.iter().all(|d| d.contains("sandboxclaims")),
+        "{deletes:?}"
+    );
+
+    let two = pooled(Network::Deny, None, 2);
+    with_a_ready_pool(&two);
+    two.edit(|state| state["claimed_pods"] = 2.into());
+    let error = two.provider.ensure(&spec()).unwrap_err().to_string();
+    assert!(error.contains("exactly one Pod"), "{error}");
+    assert!(touched(&two, "\"label\"").is_empty());
+}
+
+#[test]
+fn the_pool_is_resized_in_place_and_a_drifted_or_foreign_one_is_refused() {
+    let fixture = pooled(Network::Deny, None, 2);
+    fixture.provider.ensure(&spec()).unwrap();
+    let (template, pool) = pool_names(&fixture);
+    fixture.provider.destroy("allocation").unwrap();
+    // The same specification asked for a bigger pool is patched, not made again.
+    let mut config = fixture.provider.control.config.clone();
+    config.warm_pool = Some(5);
+    let bigger = {
+        let mut provider =
+            AgentSandboxProvider::new(config, fixture.scratch.join("receipts")).unwrap();
+        provider.control.binary = fixture.provider.control.binary.clone();
+        provider
+    };
+    bigger.ensure(&spec()).unwrap();
+    assert_eq!(
+        fixture.state()["objects"][format!("sandboxwarmpool/{pool}")]["spec"]["replicas"],
+        5
+    );
+    assert_eq!(touched(&fixture, "\"patch\"").len(), 1);
+    assert_eq!(
+        fixture
+            .calls()
+            .iter()
+            .filter(
+                |call| call["operation"] == "create" && call["body"]["kind"] == "SandboxWarmPool"
+            )
+            .count(),
+        1
+    );
+    bigger.destroy("allocation").unwrap();
+
+    // A template whose pod no longer is the specification's.
+    fixture.edit(|state| {
+        state["objects"][format!("sandboxtemplate/{template}")]["spec"]["podTemplate"]["spec"]
+            ["runtimeClassName"] = "runc".into()
+    });
+    let error = bigger.ensure(&spec()).unwrap_err().to_string();
+    assert!(
+        error.contains("differs from the recorded specification"),
+        "{error}"
+    );
+    assert!(!fixture.state()["objects"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .any(|key| key.starts_with("sandbox/")));
+    bigger.destroy("allocation").unwrap();
+
+    // A pool that is not Branchyard's for this specification.
+    fixture.edit(|state| {
+        state["objects"][format!("sandboxwarmpool/{pool}")]["metadata"]["labels"]
+            ["branchyard.io/pool"] = "someone-elses".into();
+        state["objects"][format!("sandboxtemplate/{template}")]["spec"]["podTemplate"]["spec"]
+            ["runtimeClassName"] = "gvisor".into();
+    });
+    let error = bigger.ensure(&spec()).unwrap_err().to_string();
+    assert!(error.contains("foreign ownership"), "{error}");
+}
+
+#[test]
+fn an_interrupted_claim_is_finished_without_a_second_claim() {
+    let fixture = pooled(Network::Deny, None, 2);
+    with_a_ready_pool(&fixture);
+    fixture.provider.ensure(&spec()).unwrap();
+    // As if this process had stopped after the claim, before the marks
+    // reached the receipt: nothing is marked and the receipt says so.
+    let mut receipt = receipt_json(&fixture);
+    receipt["pooled"]["bound"] = false.into();
+    fs::write(fixture.receipt(), serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let sandbox_key = format!("sandbox/{}", fixture.name());
+    fixture.edit(|state| {
+        let sandbox = state["objects"][sandbox_key.as_str()]["metadata"]
+            .as_object_mut()
+            .unwrap();
+        sandbox.remove("labels");
+        sandbox.remove("annotations");
+        // The pod's digest annotation comes from the template; only its owner
+        // label is the allocation's.
+        let pod = state["objects"]["pod/warm-pod-0"]["metadata"]["labels"]
+            .as_object_mut()
+            .unwrap();
+        pod.remove("branchyard.io/owner");
+    });
+    fixture.provider.ensure(&spec()).unwrap();
+    assert_eq!(receipt_json(&fixture)["pooled"]["bound"], true);
+    assert_eq!(
+        fixture
+            .calls()
+            .iter()
+            .filter(|call| call["operation"] == "create" && call["body"]["kind"] == "SandboxClaim")
+            .count(),
+        1,
+        "the claim already existed"
+    );
+    true_in(&fixture).unwrap();
+}
+
+#[test]
+fn the_pool_size_is_bounded_and_a_zero_is_no_pool() {
+    let mut target = config();
+    target.warm_pool = Some(MAX_WARM_POOL);
+    target.validate().unwrap();
+    assert_eq!(target.pool_size(), Some(MAX_WARM_POOL));
+    target.warm_pool = Some(MAX_WARM_POOL + 1);
+    assert!(target.validate().is_err());
+    target.warm_pool = Some(0);
+    target.validate().unwrap();
+    assert_eq!(target.pool_size(), None);
 }
