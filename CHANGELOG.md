@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+The console reviews a branch's diff. A **Changes** page (`#/changes/<repo>/<branch>`,
+linked from the board row, the branch page and the Trajectory page) shows the
+candidate against its base file by file, with a path filter, line numbers on
+both sides, viewed boxes, and `j`/`k` for files, `n`/`p` for hunks and `c` to
+comment. Select lines (click, drag, Shift-click or the arrow keys), write a
+multiline comment, collect comments in a tray and send them as one review,
+as the next turn or steered into the running turn: the branch receives one
+prompt in `by review`'s format that names each file and line and quotes the
+code, and the comments are recorded on its log like `by review`'s. Sent
+comments show inline and are marked addressed when a later candidate changes
+their lines. New routes `GET …/branches/{b}/changes`, `GET …/branches/{b}/reviews`
+and `POST …/branches/{b}/reviews` (read, read and run scope; `409
+stale_candidate` when the branch moved), `Branch::changes` and `Branch::reviews`
+in the SDK, `Repo::changes`, `reviews` and `review` in the Rust client and
+`Repo.changes`, `reviews` and `review` in the Python one. See
+[Changes and review](docs/companion.md#changes-and-review).
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard

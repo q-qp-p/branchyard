@@ -102,6 +102,7 @@ mod bundle;
 pub mod bundles;
 mod capabilities;
 mod capacity;
+mod changes;
 mod checkpoint;
 mod compare;
 pub mod configure;
@@ -238,6 +239,11 @@ pub use branchyard_provision::{
 use branchyard_workspace::Repository;
 pub use bundle::BundleEntry;
 pub use capacity::AUTO as AUTO_HARNESS;
+pub use changes::{
+    check_review, review_prompt, ChangedFile, Changes, DiffLine, DiffSide, FileStatus, Hunk,
+    LineKind, Review, ReviewComment, Reviews, SentComment, MAX_FILES, MAX_FILE_LINES,
+    MAX_LINE_CHARS, MAX_REVIEW_COMMENTS, MAX_REVIEW_TEXT, MAX_TOTAL_LINES,
+};
 pub use checkpoint::{
     entries as checkpoint_entries, recorded as recorded_checkpoints, CheckpointEntry, Checkpoints,
     Rewound,

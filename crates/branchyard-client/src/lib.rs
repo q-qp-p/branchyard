@@ -1052,6 +1052,32 @@ impl Repo {
             .diff)
     }
 
+    /// The branch's candidate against its base, file by file and bounded;
+    /// no files while it has no candidate. See [`branchyard::Changes`].
+    pub fn changes(&self, name: &str) -> Result<branchyard::Changes, Error> {
+        self.client.get(&self.branch_path(name, "/changes"))
+    }
+
+    /// The reviews sent to a branch, from `by review` and the console, with
+    /// the comments whose lines a later candidate changed marked
+    /// addressed. See [`branchyard::Reviews`].
+    pub fn reviews(&self, name: &str) -> Result<branchyard::Reviews, Error> {
+        self.client.get(&self.branch_path(name, "/reviews"))
+    }
+
+    /// Send comments written on the branch's diff as one prompt, as the
+    /// console's Changes view does; `409 stale_candidate` when
+    /// `request.commit` is not the branch's candidate any more.
+    pub fn review(
+        &self,
+        name: &str,
+        request: &api::ReviewRequest,
+        key: &str,
+    ) -> Result<api::ReviewSent, Error> {
+        self.client
+            .post(&self.branch_path(name, "/reviews"), request, key)
+    }
+
     /// A branch's recorded events after the first `cursor`.
     pub fn events(&self, name: &str, cursor: u64) -> Result<BranchEvents, Error> {
         self.client

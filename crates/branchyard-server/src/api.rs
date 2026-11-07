@@ -913,6 +913,8 @@ pub fn router(app: Shared) -> Router {
         .merge(crate::turn_token::router())
         // Rewinding to a checkpoint: `checkpoint_routes`.
         .merge(crate::checkpoint_routes::router())
+        // A branch's diff file by file, and review comments on it: `review_routes`.
+        .merge(crate::review_routes::router())
         // Wide maps: `map_routes`.
         .merge(crate::map_routes::router())
         // Tasks and their attempts: `task_routes`.
