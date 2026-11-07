@@ -425,6 +425,19 @@ pub enum Command {
         #[command(subcommand)]
         action: KnowledgeAction,
     },
+    /// Memory as skills: what a team or you learned, found by search
+    ///
+    /// Add, list, show, edit, remove or export the memory bundles under
+    /// .agents/skills/memory-TOPIC (the team's, through a pull request) or your own skills
+    /// folder (--mine).
+    #[command(display_order = 113, subcommand_required = true, after_help = MEMORY_EXAMPLES)]
+    Memory {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
     /// The fleet table's routing: statistics and where a prompt goes
     ///
     /// Outcome statistics, or what a prompt would be routed to.

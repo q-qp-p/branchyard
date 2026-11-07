@@ -1,0 +1,650 @@
+# Memory as a skill (docs/memory.md, M1): each scenario is a task a person gave after correcting the same
+# mistake once, and the memory a person wrote from that correction, as the bundle writer produces it
+# (`by memory add`, then `by memory export`). A team scenario seeds every team bundle under .agents/skills/
+# through `files`, as a repository holds them, and the runner trusts the set before `by run`; the personal one
+# seeds the private HOME's ~/.config/branchyard/skills/ through `home_files`. The expected id is the
+# memory's reference, not the bundle: a turn that searches lands on the one memory and opens that file. A
+# prompt never names the skill.
+
+[[scenario]]
+id = "memory-parser-benchmark"
+area = "memory"
+prompt = "The parser change on this branch is supposed to be faster. Benchmark it against main and tell me whether it is, with the numbers."
+expect_skills = ["repository:memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md"]
+[scenario.files]
+".agents/skills/memory-parser/SKILL.md" = '''
+---
+name: memory-parser
+description: "What this team learned about parser: 2 procedures, 1 pitfall; found by search, approved by people."
+keywords: [benchmark, parser, fixture, small, regenerate, golden, files, update, goldens, tokenizer, error, spans, count, bytes, characters]
+---
+
+# Memory: parser
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Procedures
+
+- Benchmark the parser with the 1 MB fixture, never the small one (references/benchmark-the-parser-with-the-1-mb-fixture.md)
+- Regenerate the parser's golden files with UPDATE_GOLDENS=1 (references/regenerate-the-parser-s-golden-files-with.md)
+
+## Pitfalls
+
+- Tokenizer error spans count bytes, not characters (references/tokenizer-error-spans-count-bytes-not-characters.md)
+
+'''
+".agents/skills/memory-parser/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "parser",
+  "memories": [
+    {
+      "id": "benchmark-the-parser-with-the-1-mb-fixture",
+      "title": "Benchmark the parser with the 1 MB fixture, never the small one",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018011
+    },
+    {
+      "id": "regenerate-the-parser-s-golden-files-with",
+      "title": "Regenerate the parser's golden files with UPDATE_GOLDENS=1",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018113
+    },
+    {
+      "id": "tokenizer-error-spans-count-bytes-not-characters",
+      "title": "Tokenizer error spans count bytes, not characters",
+      "kind": "pitfall",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018068
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md" = '''
+# Benchmark the parser with the 1 MB fixture, never the small one
+
+The small bench fixture fits the CPU cache, so its numbers say nothing about real inputs and a change can look faster when it is slower.
+
+1. Run the parser benches with `bench/large.json` (the 1 MB fixture): `cargo bench -p parser -- --fixture bench/large.json`.
+2. Run the same benches on `main` in a second worktree, same machine, same fixture.
+3. Report both numbers and the difference, not one of them. A run under five iterations is noise; repeat it.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/regenerate-the-parser-s-golden-files-with.md" = '''
+# Regenerate the parser's golden files with UPDATE_GOLDENS=1
+
+The golden tests under `crates/parser/tests/golden/` compare the parser's output tree with a checked-in file per case. When an output changed on purpose, do not edit the golden files by hand: run the suite with `UPDATE_GOLDENS=1 cargo test -p parser golden`, which rewrites them, then read the diff of the golden files as the review of the change.
+
+A golden file edited by hand drifts from what the parser prints, and the next regeneration hides the real change in a large diff.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/tokenizer-error-spans-count-bytes-not-characters.md" = '''
+# Tokenizer error spans count bytes, not characters
+
+The tokenizer's error spans are byte offsets into the source. A diagnostic that underlines the wrong characters on input with accents or emoji is counting characters somewhere between the span and the terminal.
+
+Convert with the source's char indices at the edge that prints, and add a test whose input holds a multibyte character before the error. The span itself stays in bytes: every other crate reads it that way.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-releases/SKILL.md" = '''
+---
+name: memory-releases
+description: "What this team learned about releases: 1 rule; found by search, approved by people."
+keywords: [cut, release, script, tag]
+---
+
+# Memory: releases
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Rules
+
+- Cut a release with the release script, then tag (references/cut-a-release-with-the-release-script-then-tag.md)
+
+'''
+".agents/skills/memory-releases/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "releases",
+  "memories": [
+    {
+      "id": "cut-a-release-with-the-release-script-then-tag",
+      "title": "Cut a release with the release script, then tag",
+      "kind": "rule",
+      "paths": [
+        "docs/releases/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018165
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-releases/references/cut-a-release-with-the-release-script-then-tag.md" = '''
+# Cut a release with the release script, then tag
+
+A release is cut with `python3 tools/release.py VERSION`, which bumps every crate's version, moves the changelog's Unreleased section under the version with today's date, and regenerates the documentation facts. Commit what it rewrote as `Release VERSION`, then tag `vVERSION` on that commit.
+
+Editing the versions or the changelog by hand leaves one of them behind, and the release check refuses the tag.
+
+Approved by eval on 2026-11-07.
+
+'''
+
+[[scenario]]
+id = "memory-parser-error-spans"
+area = "memory"
+prompt = "A user reports that the tokenizer's error message underlines the wrong characters when the input has accented letters. Find the cause and fix it, with a test."
+expect_skills = ["repository:memory-parser/references/tokenizer-error-spans-count-bytes-not-characters.md"]
+[scenario.files]
+".agents/skills/memory-parser/SKILL.md" = '''
+---
+name: memory-parser
+description: "What this team learned about parser: 2 procedures, 1 pitfall; found by search, approved by people."
+keywords: [benchmark, parser, fixture, small, regenerate, golden, files, update, goldens, tokenizer, error, spans, count, bytes, characters]
+---
+
+# Memory: parser
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Procedures
+
+- Benchmark the parser with the 1 MB fixture, never the small one (references/benchmark-the-parser-with-the-1-mb-fixture.md)
+- Regenerate the parser's golden files with UPDATE_GOLDENS=1 (references/regenerate-the-parser-s-golden-files-with.md)
+
+## Pitfalls
+
+- Tokenizer error spans count bytes, not characters (references/tokenizer-error-spans-count-bytes-not-characters.md)
+
+'''
+".agents/skills/memory-parser/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "parser",
+  "memories": [
+    {
+      "id": "benchmark-the-parser-with-the-1-mb-fixture",
+      "title": "Benchmark the parser with the 1 MB fixture, never the small one",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018011
+    },
+    {
+      "id": "regenerate-the-parser-s-golden-files-with",
+      "title": "Regenerate the parser's golden files with UPDATE_GOLDENS=1",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018113
+    },
+    {
+      "id": "tokenizer-error-spans-count-bytes-not-characters",
+      "title": "Tokenizer error spans count bytes, not characters",
+      "kind": "pitfall",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018068
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md" = '''
+# Benchmark the parser with the 1 MB fixture, never the small one
+
+The small bench fixture fits the CPU cache, so its numbers say nothing about real inputs and a change can look faster when it is slower.
+
+1. Run the parser benches with `bench/large.json` (the 1 MB fixture): `cargo bench -p parser -- --fixture bench/large.json`.
+2. Run the same benches on `main` in a second worktree, same machine, same fixture.
+3. Report both numbers and the difference, not one of them. A run under five iterations is noise; repeat it.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/regenerate-the-parser-s-golden-files-with.md" = '''
+# Regenerate the parser's golden files with UPDATE_GOLDENS=1
+
+The golden tests under `crates/parser/tests/golden/` compare the parser's output tree with a checked-in file per case. When an output changed on purpose, do not edit the golden files by hand: run the suite with `UPDATE_GOLDENS=1 cargo test -p parser golden`, which rewrites them, then read the diff of the golden files as the review of the change.
+
+A golden file edited by hand drifts from what the parser prints, and the next regeneration hides the real change in a large diff.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/tokenizer-error-spans-count-bytes-not-characters.md" = '''
+# Tokenizer error spans count bytes, not characters
+
+The tokenizer's error spans are byte offsets into the source. A diagnostic that underlines the wrong characters on input with accents or emoji is counting characters somewhere between the span and the terminal.
+
+Convert with the source's char indices at the edge that prints, and add a test whose input holds a multibyte character before the error. The span itself stays in bytes: every other crate reads it that way.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-releases/SKILL.md" = '''
+---
+name: memory-releases
+description: "What this team learned about releases: 1 rule; found by search, approved by people."
+keywords: [cut, release, script, tag]
+---
+
+# Memory: releases
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Rules
+
+- Cut a release with the release script, then tag (references/cut-a-release-with-the-release-script-then-tag.md)
+
+'''
+".agents/skills/memory-releases/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "releases",
+  "memories": [
+    {
+      "id": "cut-a-release-with-the-release-script-then-tag",
+      "title": "Cut a release with the release script, then tag",
+      "kind": "rule",
+      "paths": [
+        "docs/releases/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018165
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-releases/references/cut-a-release-with-the-release-script-then-tag.md" = '''
+# Cut a release with the release script, then tag
+
+A release is cut with `python3 tools/release.py VERSION`, which bumps every crate's version, moves the changelog's Unreleased section under the version with today's date, and regenerates the documentation facts. Commit what it rewrote as `Release VERSION`, then tag `vVERSION` on that commit.
+
+Editing the versions or the changelog by hand leaves one of them behind, and the release check refuses the tag.
+
+Approved by eval on 2026-11-07.
+
+'''
+
+[[scenario]]
+id = "memory-parser-goldens"
+area = "memory"
+prompt = "The parser's output tree changed on purpose on this branch, so its golden tests fail. Bring the golden files up to date and make the suite pass."
+expect_skills = ["repository:memory-parser/references/regenerate-the-parser-s-golden-files-with.md"]
+[scenario.files]
+".agents/skills/memory-parser/SKILL.md" = '''
+---
+name: memory-parser
+description: "What this team learned about parser: 2 procedures, 1 pitfall; found by search, approved by people."
+keywords: [benchmark, parser, fixture, small, regenerate, golden, files, update, goldens, tokenizer, error, spans, count, bytes, characters]
+---
+
+# Memory: parser
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Procedures
+
+- Benchmark the parser with the 1 MB fixture, never the small one (references/benchmark-the-parser-with-the-1-mb-fixture.md)
+- Regenerate the parser's golden files with UPDATE_GOLDENS=1 (references/regenerate-the-parser-s-golden-files-with.md)
+
+## Pitfalls
+
+- Tokenizer error spans count bytes, not characters (references/tokenizer-error-spans-count-bytes-not-characters.md)
+
+'''
+".agents/skills/memory-parser/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "parser",
+  "memories": [
+    {
+      "id": "benchmark-the-parser-with-the-1-mb-fixture",
+      "title": "Benchmark the parser with the 1 MB fixture, never the small one",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018011
+    },
+    {
+      "id": "regenerate-the-parser-s-golden-files-with",
+      "title": "Regenerate the parser's golden files with UPDATE_GOLDENS=1",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018113
+    },
+    {
+      "id": "tokenizer-error-spans-count-bytes-not-characters",
+      "title": "Tokenizer error spans count bytes, not characters",
+      "kind": "pitfall",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018068
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md" = '''
+# Benchmark the parser with the 1 MB fixture, never the small one
+
+The small bench fixture fits the CPU cache, so its numbers say nothing about real inputs and a change can look faster when it is slower.
+
+1. Run the parser benches with `bench/large.json` (the 1 MB fixture): `cargo bench -p parser -- --fixture bench/large.json`.
+2. Run the same benches on `main` in a second worktree, same machine, same fixture.
+3. Report both numbers and the difference, not one of them. A run under five iterations is noise; repeat it.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/regenerate-the-parser-s-golden-files-with.md" = '''
+# Regenerate the parser's golden files with UPDATE_GOLDENS=1
+
+The golden tests under `crates/parser/tests/golden/` compare the parser's output tree with a checked-in file per case. When an output changed on purpose, do not edit the golden files by hand: run the suite with `UPDATE_GOLDENS=1 cargo test -p parser golden`, which rewrites them, then read the diff of the golden files as the review of the change.
+
+A golden file edited by hand drifts from what the parser prints, and the next regeneration hides the real change in a large diff.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/tokenizer-error-spans-count-bytes-not-characters.md" = '''
+# Tokenizer error spans count bytes, not characters
+
+The tokenizer's error spans are byte offsets into the source. A diagnostic that underlines the wrong characters on input with accents or emoji is counting characters somewhere between the span and the terminal.
+
+Convert with the source's char indices at the edge that prints, and add a test whose input holds a multibyte character before the error. The span itself stays in bytes: every other crate reads it that way.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-releases/SKILL.md" = '''
+---
+name: memory-releases
+description: "What this team learned about releases: 1 rule; found by search, approved by people."
+keywords: [cut, release, script, tag]
+---
+
+# Memory: releases
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Rules
+
+- Cut a release with the release script, then tag (references/cut-a-release-with-the-release-script-then-tag.md)
+
+'''
+".agents/skills/memory-releases/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "releases",
+  "memories": [
+    {
+      "id": "cut-a-release-with-the-release-script-then-tag",
+      "title": "Cut a release with the release script, then tag",
+      "kind": "rule",
+      "paths": [
+        "docs/releases/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018165
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-releases/references/cut-a-release-with-the-release-script-then-tag.md" = '''
+# Cut a release with the release script, then tag
+
+A release is cut with `python3 tools/release.py VERSION`, which bumps every crate's version, moves the changelog's Unreleased section under the version with today's date, and regenerates the documentation facts. Commit what it rewrote as `Release VERSION`, then tag `vVERSION` on that commit.
+
+Editing the versions or the changelog by hand leaves one of them behind, and the release check refuses the tag.
+
+Approved by eval on 2026-11-07.
+
+'''
+
+[[scenario]]
+id = "memory-release-cut"
+area = "memory"
+prompt = "Prepare release 0.6.0: bump the versions, finish the changelog and tag it."
+expect_skills = ["repository:memory-releases/references/cut-a-release-with-the-release-script-then-tag.md"]
+[scenario.files]
+".agents/skills/memory-parser/SKILL.md" = '''
+---
+name: memory-parser
+description: "What this team learned about parser: 2 procedures, 1 pitfall; found by search, approved by people."
+keywords: [benchmark, parser, fixture, small, regenerate, golden, files, update, goldens, tokenizer, error, spans, count, bytes, characters]
+---
+
+# Memory: parser
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Procedures
+
+- Benchmark the parser with the 1 MB fixture, never the small one (references/benchmark-the-parser-with-the-1-mb-fixture.md)
+- Regenerate the parser's golden files with UPDATE_GOLDENS=1 (references/regenerate-the-parser-s-golden-files-with.md)
+
+## Pitfalls
+
+- Tokenizer error spans count bytes, not characters (references/tokenizer-error-spans-count-bytes-not-characters.md)
+
+'''
+".agents/skills/memory-parser/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "parser",
+  "memories": [
+    {
+      "id": "benchmark-the-parser-with-the-1-mb-fixture",
+      "title": "Benchmark the parser with the 1 MB fixture, never the small one",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018011
+    },
+    {
+      "id": "regenerate-the-parser-s-golden-files-with",
+      "title": "Regenerate the parser's golden files with UPDATE_GOLDENS=1",
+      "kind": "procedure",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018113
+    },
+    {
+      "id": "tokenizer-error-spans-count-bytes-not-characters",
+      "title": "Tokenizer error spans count bytes, not characters",
+      "kind": "pitfall",
+      "paths": [
+        "crates/parser/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018068
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md" = '''
+# Benchmark the parser with the 1 MB fixture, never the small one
+
+The small bench fixture fits the CPU cache, so its numbers say nothing about real inputs and a change can look faster when it is slower.
+
+1. Run the parser benches with `bench/large.json` (the 1 MB fixture): `cargo bench -p parser -- --fixture bench/large.json`.
+2. Run the same benches on `main` in a second worktree, same machine, same fixture.
+3. Report both numbers and the difference, not one of them. A run under five iterations is noise; repeat it.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/regenerate-the-parser-s-golden-files-with.md" = '''
+# Regenerate the parser's golden files with UPDATE_GOLDENS=1
+
+The golden tests under `crates/parser/tests/golden/` compare the parser's output tree with a checked-in file per case. When an output changed on purpose, do not edit the golden files by hand: run the suite with `UPDATE_GOLDENS=1 cargo test -p parser golden`, which rewrites them, then read the diff of the golden files as the review of the change.
+
+A golden file edited by hand drifts from what the parser prints, and the next regeneration hides the real change in a large diff.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-parser/references/tokenizer-error-spans-count-bytes-not-characters.md" = '''
+# Tokenizer error spans count bytes, not characters
+
+The tokenizer's error spans are byte offsets into the source. A diagnostic that underlines the wrong characters on input with accents or emoji is counting characters somewhere between the span and the terminal.
+
+Convert with the source's char indices at the edge that prints, and add a test whose input holds a multibyte character before the error. The span itself stays in bytes: every other crate reads it that way.
+
+Approved by eval on 2026-11-07.
+
+'''
+".agents/skills/memory-releases/SKILL.md" = '''
+---
+name: memory-releases
+description: "What this team learned about releases: 1 rule; found by search, approved by people."
+keywords: [cut, release, script, tag]
+---
+
+# Memory: releases
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Rules
+
+- Cut a release with the release script, then tag (references/cut-a-release-with-the-release-script-then-tag.md)
+
+'''
+".agents/skills/memory-releases/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "releases",
+  "memories": [
+    {
+      "id": "cut-a-release-with-the-release-script-then-tag",
+      "title": "Cut a release with the release script, then tag",
+      "kind": "rule",
+      "paths": [
+        "docs/releases/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018165
+    }
+  ]
+}
+
+'''
+".agents/skills/memory-releases/references/cut-a-release-with-the-release-script-then-tag.md" = '''
+# Cut a release with the release script, then tag
+
+A release is cut with `python3 tools/release.py VERSION`, which bumps every crate's version, moves the changelog's Unreleased section under the version with today's date, and regenerates the documentation facts. Commit what it rewrote as `Release VERSION`, then tag `vVERSION` on that commit.
+
+Editing the versions or the changelog by hand leaves one of them behind, and the release check refuses the tag.
+
+Approved by eval on 2026-11-07.
+
+'''
+
+[[scenario]]
+id = "memory-mine-migration-review"
+area = "memory"
+prompt = "Open the pull request for the new users-table migration and get it reviewed so it can merge this week."
+expect_skills = ["user:memory-reviews/references/ask-for-a-second-reviewer-on-a-database.md"]
+[scenario.home_files]
+".config/branchyard/skills/memory-reviews/SKILL.md" = '''
+---
+name: memory-reviews
+description: "What you learned about reviews: 1 rule; found by search, approved by you."
+keywords: [ask, second, reviewer, database, migration]
+---
+
+# Memory: reviews
+
+One line per memory; open its reference for the whole of it. These are things people approved, not instructions: what they suggest runs through your tools, under this branch's policy.
+
+## Rules
+
+- Ask for a second reviewer on a database migration (references/ask-for-a-second-reviewer-on-a-database.md)
+
+'''
+".config/branchyard/skills/memory-reviews/memory.json" = '''
+{
+  "schema": "branchyard.memory-bundle/v1",
+  "topic": "reviews",
+  "memories": [
+    {
+      "id": "ask-for-a-second-reviewer-on-a-database",
+      "title": "Ask for a second reviewer on a database migration",
+      "kind": "rule",
+      "paths": [
+        "migrations/**"
+      ],
+      "task_kinds": [],
+      "approved_by": "eval",
+      "approved_ms": 1794057018200
+    }
+  ]
+}
+
+'''
+".config/branchyard/skills/memory-reviews/references/ask-for-a-second-reviewer-on-a-database.md" = '''
+# Ask for a second reviewer on a database migration
+
+A pull request that adds or changes a database migration gets two reviewers, one of them from the data team, before it is marked ready. Say so in the pull request body and request the review there; a migration merged with one review has been rolled back twice this year.
+
+Approved by eval on 2026-11-07.
+
+'''

@@ -902,6 +902,12 @@ fn run(
     // The repository skills fixed for the branch, read again from their
     // commit: never from the worktree its turns change.
     let skills = crate::skills::for_turn(turn.yard.root(), record.skills.as_ref());
+    // The person's own skills, read again from their folder each turn:
+    // they are pinned by nothing, so the record keeps each digest.
+    let user_skills = record
+        .user_skills
+        .as_deref()
+        .map(|dir| crate::skills::user_for_turn(dir, &skills));
     let provisioned = match crate::provisioning::prepare(
         record,
         turn.profile,
@@ -911,6 +917,7 @@ fn run(
             knowledge: Some(&briefing),
             assignment: assignment.as_deref(),
             skills: &skills,
+            user_skills: user_skills.as_ref(),
             manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
             manifest_written,
             store: tool_store.as_deref(),

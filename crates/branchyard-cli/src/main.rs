@@ -66,6 +66,7 @@ mod json;
 mod knowledge_cmd;
 mod live_catalog;
 mod map_cmd;
+mod memory_cmd;
 mod models_cmd;
 mod models_list;
 mod notify;
@@ -481,6 +482,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         ),
         Command::Plan { json, action } => plan_cmd::main(env, target, &action, json),
         Command::Knowledge { json, action } => knowledge_cmd::main(env, target, &action, json),
+        Command::Memory { json, action } => memory_cmd::main(target, &action, json),
         Command::Fleet { json, action } => match action {
             args::FleetAction::Stats { kind } => fleet_cmd::stats(env, target, kind, json),
             args::FleetAction::Advise { prompt, kind, seed } => fleet_cmd::advise(

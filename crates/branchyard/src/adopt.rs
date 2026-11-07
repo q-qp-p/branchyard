@@ -86,6 +86,7 @@ pub(crate) fn adopt(yard: &Yard, spec: AdoptSpec) -> Result<Branch, Error> {
             deny: Vec::new(),
             unapproved_tools: false,
             skills: None,
+            user_skills: None,
             provision: None,
             workspace: None,
             seed: None,

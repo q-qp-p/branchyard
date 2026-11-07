@@ -1,6 +1,8 @@
 //! The argument groups and nested subcommands of the commands that take an
 //! action (`by approvals`, `by sync`, `by models`, `by harnesses`, …).
 
+use std::path::PathBuf;
+
 use super::*;
 
 /// Operator workspace management, separate from branch delegation.
@@ -886,6 +888,121 @@ pub enum SkillsAction {
     Trust,
     /// Forget the trust decision for this repository's skills
     Untrust,
+    /// Copy a skill into your own skills folder, which your new branches stage
+    ///
+    /// The folder is ~/.config/branchyard/skills/NAME (the local `user` source). A skill
+    /// there is yours alone: it reaches the sessions you start, under the label user:NAME,
+    /// after the repository's skills and before the built-in ones, whose names stay reserved.
+    Add {
+        /// The skill directory: the one holding SKILL.md
+        path: PathBuf,
+        /// Install it under this name (default: its frontmatter's)
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Remove a skill from your own skills folder
+    Remove {
+        /// Its name, as `by skills ls` lists it under user
+        name: String,
+    },
+}
+
+/// `by memory`'s actions; see docs/memory.md.
+#[derive(Subcommand, Clone, Debug, PartialEq)]
+pub enum MemoryAction {
+    /// Add a memory: a reference in its topic's bundle, whose SKILL.md and memory.json are rewritten
+    ///
+    /// Into .agents/skills/memory-TOPIC of this checkout (commit it and open the pull request;
+    /// new branches stage it after `by skills trust`), or with --mine into your own skills
+    /// folder, approved by you at once. A harness on a branch is refused.
+    Add {
+        /// One line, at most 80 characters (default: the draft's)
+        #[arg(long, value_name = "TEXT", value_parser = non_blank)]
+        title: Option<String>,
+        /// The body, Markdown of at most 8,000 characters, read from this file
+        #[arg(long, value_name = "FILE", conflicts_with = "from")]
+        body_file: Option<PathBuf>,
+        /// A draft `by knowledge distill` wrote under .branchyard/memory-drafts/, or any Markdown
+        /// file: title, kind and paths from its frontmatter or first heading, the rest the body;
+        /// removed once added
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
+        /// rule, procedure, fact or pitfall (default: rule, or the draft's)
+        #[arg(long, value_name = "KIND", value_parser = memory_kind)]
+        kind: Option<branchyard::MemoryKind>,
+        /// A path glob it applies to, such as crates/parser/**; repeatable
+        #[arg(long = "path", value_name = "GLOB")]
+        paths: Vec<String>,
+        /// A kind of task it applies to; repeatable
+        #[arg(long = "task-kind", value_name = "KIND", value_parser = task_kind)]
+        task_kinds: Vec<branchyard::TaskKind>,
+        /// The topic, which names the bundle memory-TOPIC (default: the first path's last plain
+        /// component, such as parser for crates/parser/**, else general)
+        #[arg(long, value_name = "TOPIC")]
+        topic: Option<String>,
+        /// Your own memory, in your skills folder, instead of the repository's
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Every memory of the repository's bundles and your own, by topic
+    List {
+        /// Only your own
+        #[arg(long)]
+        mine: bool,
+    },
+    /// One memory, whole
+    Show {
+        /// Its slug, as `by memory list` shows it
+        slug: String,
+        /// Look only in your own skills folder
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+    Edit {
+        /// Its slug
+        slug: String,
+        /// A new title
+        #[arg(long, value_name = "TEXT", value_parser = non_blank)]
+        title: Option<String>,
+        /// A new body, read from this file
+        #[arg(long, value_name = "FILE")]
+        body_file: Option<PathBuf>,
+        /// A new kind: rule, procedure, fact or pitfall
+        #[arg(long, value_name = "KIND", value_parser = memory_kind)]
+        kind: Option<branchyard::MemoryKind>,
+        /// The path globs it applies to, replacing the old ones; "" alone for the whole repository
+        #[arg(long = "path", value_name = "GLOB")]
+        paths: Vec<String>,
+        /// The kinds of task it applies to, replacing the old ones
+        #[arg(long = "task-kind", value_name = "KIND", value_parser = task_kind)]
+        task_kinds: Vec<branchyard::TaskKind>,
+        /// Look only in your own skills folder
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Remove a memory; a topic left empty loses its bundle
+    Remove {
+        /// Its slug
+        slug: String,
+        /// Look only in your own skills folder
+        #[arg(long)]
+        mine: bool,
+    },
+    /// The bundles as the writer produces them from what is stored, for inspection and the eval
+    Export {
+        /// Write them under this directory, one memory-TOPIC each
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Your own, instead of the repository's
+        #[arg(long)]
+        mine: bool,
+    },
+}
+
+/// A `--kind` for `by memory`: rule, procedure, fact or pitfall.
+pub(crate) fn memory_kind(text: &str) -> Result<branchyard::MemoryKind, String> {
+    text.parse().map_err(|e: branchyard::Error| e.to_string())
 }
 
 /// `by workspace ...`; see docs/workspace.md.

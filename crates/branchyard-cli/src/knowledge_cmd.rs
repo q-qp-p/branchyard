@@ -4,6 +4,7 @@
 //! (`branchyard::configure`). See docs/knowledge.md.
 
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 use std::sync::Arc;
 
 use branchyard::{
@@ -356,9 +357,57 @@ fn run(env: &Env, target: &Target, action: &KnowledgeAction, json: bool) -> Outc
                     repo.distill(branch)?
                 }
             };
-            emit(json, &distilled, || distilled_text(&distilled))
+            // The extractor's corrections longer than an entry may be
+            // become memory drafts in the checkout, for a person to add.
+            let mut draft_files = Vec::new();
+            if let Store::Local(yard) = &store {
+                for draft in &distilled.drafts {
+                    let text = draft.render();
+                    let path = crate::memory_cmd::draft_path(yard.root(), &draft.slug, &text);
+                    let fail = |e: std::io::Error| {
+                        crate::errors::Report::new(
+                            "io",
+                            format!("could not write the memory draft {}: {e}", path.display()),
+                        )
+                        .next("check .branchyard/ is writable")
+                    };
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent).map_err(fail)?;
+                    }
+                    std::fs::write(&path, &text).map_err(fail)?;
+                    draft_files.push(path);
+                }
+            }
+            if json {
+                let mut value = serde_json::to_value(&distilled)
+                    .map_err(|e| crate::errors::Report::new("io", e.to_string()))?;
+                value["draft_files"] = serde_json::json!(draft_files);
+                return print(&format!("{value:#}\n"));
+            }
+            let mut text = distilled_text(&distilled);
+            for (draft, path) in distilled.drafts.iter().zip(&draft_files) {
+                text.push_str(&format!(
+                    "memory draft {} ({} characters, from turn {}): by memory add --from {}\n",
+                    draft.slug,
+                    draft.text.chars().count(),
+                    draft.turn.map_or("?".to_owned(), |t| t.to_string()),
+                    path.strip_prefix(yard_root(&store))
+                        .unwrap_or(path)
+                        .display()
+                ));
+            }
+            print(&text)
         }
         KnowledgeAction::Review { editor } => review(&store, editor.as_deref(), json, style),
+    }
+}
+
+/// The checkout a local store is in, for relative paths; a remote store
+/// has none.
+fn yard_root<'a>(store: &'a Store<'a>) -> &'a Path {
+    match store {
+        Store::Local(yard) => yard.root(),
+        Store::Remote(_) => Path::new(""),
     }
 }
 

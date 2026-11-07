@@ -85,8 +85,53 @@ class Scenarios(unittest.TestCase):
             "helpers",
             "distractors",
             "references",
+            "memory",
         ):
             self.assertIn(area, areas)
+
+    def test_memory_scenarios_seed_the_bundles_they_expect(self):
+        """docs/memory.md, M1: a memory scenario seeds a bundle under .agents/skills/ (`files`) or the private
+        HOME's skills folder (`home_files`), and expects one of its references, never the bundle."""
+        memory = [s for s in SCENARIOS.values() if s.area == "memory"]
+        self.assertEqual(len(memory), 5)
+        for s in memory:
+            seeded = s.seeded_skills
+            self.assertTrue(seeded, s.id)
+            for name in s.expect_skills:
+                self.assertIn("/references/", name, s.id)
+                self.assertIn(skill_eval.reference_skill(name), seeded, s.id)
+            self.assertIsNone(skill_eval.seeded_reference_problem(s, s.expect_skills[0]), s.id)
+            self.assertEqual(s.seeds_repository_skills, not s.home_files, s.id)
+        team = SCENARIOS["memory-parser-benchmark"]
+        self.assertEqual(sorted(team.seeded_skills), ["repository:memory-parser", "repository:memory-releases"])
+        self.assertEqual(team.seeded_skills["repository:memory-parser"], Path(".agents/skills/memory-parser"))
+        mine = SCENARIOS["memory-mine-migration-review"]
+        self.assertEqual(list(mine.seeded_skills), ["user:memory-reviews"])
+        self.assertFalse(mine.seeds_repository_skills)
+        for s in memory:
+            for rel, text in {**s.files, **s.home_files}.items():
+                if rel.endswith("SKILL.md"):
+                    self.assertIn("found by search", text, rel)
+                    self.assertLess(len(text), 4096, rel)
+                if rel.endswith("memory.json"):
+                    self.assertEqual(json.loads(text)["schema"], "branchyard.memory-bundle/v1", rel)
+
+    def test_a_seeded_skill_is_validated_against_what_is_seeded(self):
+        good = SCENARIOS["memory-parser-benchmark"]
+        self.assertEqual(skill_eval.problems([good]), [])
+        chosen = skill_eval.Scenario(**{**good.__dict__, "skills": ["calculate"]})
+        self.assertEqual(skill_eval.problems([chosen]), [], "a seeded skill need not be among the chosen built-ins")
+        cases = {
+            "a reference the scenario does not seed": {
+                "expect_skills": ["repository:memory-parser/references/none.md"]
+            },
+            "a seeded skill nobody seeds": {"expect_skills": ["repository:memory-other/references/a.md"]},
+            "a home file outside the skills folder": {"home_files": {".bashrc": "x"}},
+            "a home file leaving HOME": {"home_files": {"../x": "y"}},
+        }
+        for why, change in cases.items():
+            bad = skill_eval.Scenario(**{**good.__dict__, **change})
+            self.assertTrue(skill_eval.problems([bad]), why)
 
     def test_every_scenario_is_sound(self):
         self.assertEqual(skill_eval.problems(SCENARIOS.values()), [])
@@ -673,6 +718,25 @@ class Runner(unittest.TestCase):
                 skill_eval.evaluate_checks(SCENARIOS["docx-status-report"], Path(tmp))["files"], {"status.docx": False}
             )
 
+    def test_the_trust_step_runs_only_when_a_repository_skill_is_seeded(self):
+        """A seeded .agents/skills/ set is withheld until trusted, so the runner trusts it before `by run`."""
+        options = self.options(by="/x/by")
+        self.assertEqual(
+            skill_eval.trust_argv(SCENARIOS["memory-parser-benchmark"], options), ["/x/by", "skills", "trust"]
+        )
+        self.assertIsNone(skill_eval.trust_argv(SCENARIOS["memory-mine-migration-review"], options))
+        self.assertIsNone(skill_eval.trust_argv(SCENARIOS["docx-status-report"], options))
+
+    def test_home_files_seed_the_private_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, home = Path(tmp) / "repo", Path(tmp) / "home"
+            skill_eval.seed(repo, SCENARIOS["memory-mine-migration-review"], home)
+            self.assertTrue((home / ".config/branchyard/skills/memory-reviews/SKILL.md").is_file())
+            self.assertFalse(repo.exists(), "nothing of a personal memory goes into the repository")
+            skill_eval.seed(repo, SCENARIOS["memory-parser-benchmark"], home)
+            self.assertTrue((repo / ".agents/skills/memory-parser/memory.json").is_file())
+            self.assertTrue((repo / ".agents/skills/memory-releases/SKILL.md").is_file())
+
     def test_the_sandbox_env_has_a_private_home_and_no_tokens(self):
         os.environ["SKILL_EVAL_TEST_TOKEN"] = "secret"
         try:
@@ -718,7 +782,8 @@ class Rank(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.tree = Path(cls.tmp.name) / "tools"
         cls.contents = skill_eval.shipped_tree(Path(cls.tmp.name))
-        cls.report = skill_eval.rank_scenarios(list(SCENARIOS.values()), cls.tree)
+        # Each scenario over the shipped tree plus what it seeds: what a turn in its repository sees.
+        cls.report = skill_eval.rank_scenarios(list(SCENARIOS.values()), None)
 
     @classmethod
     def tearDownClass(cls):
@@ -729,6 +794,8 @@ class Rank(unittest.TestCase):
         self.assertEqual(self.contents["skills"], [s["id"] for s in listed["skills"]])
         self.assertEqual(self.contents["connectors"], ["github", "linear"])
         self.assertEqual(self.contents["notes"], [])
+        self.assertEqual(self.contents["seeded"], [])
+        self.assertEqual(self.report["mount"], "own")
         index = (self.tree / "INDEX.md").read_text(encoding="utf-8")
         self.assertIn("## Skills", index)
         self.assertIn("- github", index)
@@ -766,8 +833,66 @@ class Rank(unittest.TestCase):
         """The hermetic number docs/skill-eval.md quotes; a change that lowers it is read before it merges."""
         self.assertGreaterEqual(self.report["overall"]["top3_rate"], 0.95, self.report["overall"])
 
+    def test_the_memory_scenarios_reach_the_top_three(self):
+        """docs/memory.md, M1: the memory.toml scenarios at a top-3 rate of 0.8 or better, each over a tree
+        holding its own bundles, and the expected id is the reference, found as a document of its own."""
+        ranks = [
+            e["rank"]
+            for r in self.report["scenarios"]
+            if r["area"] == "memory"
+            for e in r["expected"]
+            if not e["absent"]
+        ]
+        self.assertEqual(len(ranks), 5)
+        self.assertGreaterEqual(sum(1 for at in ranks if at <= 3) / len(ranks), 0.8, ranks)
+
+    def test_a_scenarios_seeded_skills_are_mounted_in_its_own_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            contents = skill_eval.shipped_tree(
+                Path(tmp), [SCENARIOS["memory-parser-benchmark"], SCENARIOS["memory-mine-migration-review"]]
+            )
+            tree = Path(tmp) / "tools"
+            self.assertEqual(
+                contents["seeded"], ["repository:memory-parser", "repository:memory-releases", "user:memory-reviews"]
+            )
+            self.assertTrue((tree / "skills/repository/memory-parser/SKILL.md").is_file())
+            self.assertTrue((tree / "skills/repository/memory-parser/references").is_dir())
+            self.assertTrue((tree / "skills/user/memory-reviews/memory.json").is_file())
+            index = (tree / "INDEX.md").read_text(encoding="utf-8")
+            self.assertIn("- repository:memory-parser: What this team learned about parser:", index)
+            self.assertIn("- user:memory-reviews: What you learned about reviews:", index)
+            tools = skill_eval.load_tools()
+            ids = {(d.kind, d.id) for d in tools.documents(tree)}
+            self.assertIn(("skill", "repository:memory-parser"), ids)
+            self.assertIn(
+                ("reference", "repository:memory-parser/references/benchmark-the-parser-with-the-1-mb-fixture.md"), ids
+            )
+            self.assertIn(
+                ("reference", "user:memory-reviews/references/ask-for-a-second-reviewer-on-a-database.md"), ids
+            )
+
+    def test_memory_bundles_leave_the_existing_scenarios_where_they_were(self):
+        """No existing scenario ranks lower than before M1: it seeds nothing, so its tree is the shipped one."""
+        existing = [s for s in SCENARIOS.values() if s.area != "memory"]
+        shipped = skill_eval.rank_scenarios(existing, self.tree)
+        own = {r["id"]: r for r in self.report["scenarios"]}
+        for row in shipped["scenarios"]:
+            self.assertEqual(own[row["id"]]["expected"], row["expected"], row["id"])
+        # 47/48 before the workflow skills; with them (and claim-verify's keywords) every expected id is top-3.
+        self.assertEqual(shipped["overall"]["top3_rate"], 1.0)
+
+    def test_every_bundle_in_one_tree_is_measured_not_hidden(self):
+        """`--mount all` puts every scenario's bundles in one tree; the memory scenarios still reach the top
+        three, and what the extra reference documents do to the existing scenarios is reported, not hidden."""
+        together = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, mount="all")
+        self.assertEqual(together["mount"], "all")
+        self.assertGreater(together["documents"], self.report["documents"])
+        ranks = [e["rank"] for r in together["scenarios"] if r["area"] == "memory" for e in r["expected"]]
+        self.assertGreaterEqual(sum(1 for at in ranks if at <= 3) / len(ranks), 0.8, ranks)
+        self.assertLessEqual(together["overall"]["top3_rate"], self.report["overall"]["top3_rate"])
+
     def test_plain_turns_the_chosen_factor_off(self):
-        plain = skill_eval.rank_scenarios(list(SCENARIOS.values()), self.tree, plain=True)
+        plain = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, plain=True)
         self.assertTrue(plain["plain"])
         self.assertFalse(self.report["plain"])
         self.assertEqual(plain["overall"]["expected"], self.report["overall"]["expected"])
@@ -793,7 +918,7 @@ class Rank(unittest.TestCase):
         """`--tools` ranks with another copy of the script, so a before and after can be measured at one tree."""
         copy = Path(self.tmp.name) / "tools-copy.py"
         copy.write_text(skill_eval.TOOLS_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-        again = skill_eval.rank_scenarios(list(SCENARIOS.values()), self.tree, script=copy)
+        again = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, script=copy)
         self.assertEqual(again["overall"], self.report["overall"])
         self.assertEqual(again["tools"], str(copy))
 

@@ -339,11 +339,15 @@ pub(crate) struct Access<'a> {
 /// repository knowledge given it, and what its parent assigned it (the
 /// paths it owns, the shared brief; [`crate::assignment`]); and the
 /// repository skills it stages beside the built-in ones
-/// ([`crate::skills::for_turn`]).
+/// ([`crate::skills::for_turn`]) and the person's own
+/// ([`crate::skills::user_for_turn`]).
 pub(crate) struct Standing<'a> {
     pub knowledge: Option<&'a crate::knowledge::Briefing>,
     pub assignment: Option<&'a str>,
     pub skills: &'a crate::skills::ForTurn,
+    /// The person's own skills, read this turn from the folder the branch
+    /// was created with; `None` for a branch created without one.
+    pub user_skills: Option<&'a crate::skills::UserSet>,
     /// The digest of the turn manifest written into the home
     /// ([`crate::manifest`]); `None` for a branch without a private home.
     pub manifest: Option<&'a str>,
@@ -375,6 +379,7 @@ pub(crate) fn prepare(
         knowledge,
         assignment,
         skills,
+        user_skills,
         manifest,
         manifest_written,
         store,
@@ -403,6 +408,7 @@ pub(crate) fn prepare(
     let capabilities = crate::capabilities::stage_from(
         &capability_home,
         repository,
+        user_skills,
         spec.skills.as_deref(),
         store,
     )?;
@@ -420,7 +426,7 @@ pub(crate) fn prepare(
         Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.listed)?,
         None => Vec::new(),
     };
-    let skill_set = crate::skills::skill_set(capabilities.built_in, skills);
+    let skill_set = crate::skills::skill_set(capabilities.built_in, skills, user_skills);
     // Branchyard's own server first, then the task's, with the variables
     // they take from secrets. A sandboxed harness gets Branchyard's over
     // HTTP, from the turn's endpoint on this host.

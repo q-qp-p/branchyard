@@ -15,12 +15,27 @@
 //! and checks their digest (`for_turn`); `crate::capabilities` stages them
 //! beside the built-in skills, and every turn's `Provisioned` activity
 //! names the whole set ([`SkillSet`]). See `docs/knowledge-skills.md`.
+//!
+//! A person's own skills, the local `user` source of the skill registry
+//! (`docs/skill-registry.md`), are the directories of their skills folder
+//! (`~/.config/branchyard/skills/<name>/`, [`USER_SKILLS`] below the user
+//! configuration directory; `by skills add` copies a bundle there, `by
+//! memory add --mine` writes a memory bundle there). They are not fixed
+//! with the branch: a turn reads the folder the branch was created with
+//! again each time (`user_for_turn`), stages what it holds under
+//! `user/<name>/` and records each skill's digest, so what a turn saw is
+//! known from its record. A repository's staged skill shadows a user
+//! skill of the same name, and a built-in's name stays reserved; a skill
+//! the folder holds and the turn does not stage is withheld by name with
+//! its reason ([`SkillSet::user_withheld`]).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use branchyard_provision::skillset;
-pub use branchyard_provision::skillset::{Layer, Skill, SkillEntry};
+pub use branchyard_provision::skillset::{
+    frontmatter, reserved, Frontmatter, Skill, SkillEntry, Source,
+};
 use branchyard_workspace::Git;
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +43,10 @@ use crate::Error;
 
 /// Where a repository keeps its skills, one directory each.
 pub const REPOSITORY_SKILLS: &str = ".agents/skills";
+
+/// Where a person keeps their own skills, below the user configuration
+/// directory (`~/.config/branchyard/skills/`), one directory each.
+pub const USER_SKILLS: &str = "skills";
 
 /// Why a branch has no repository skills when its creator took no
 /// decision: [`SkillGate`]'s default.
@@ -68,11 +87,41 @@ pub struct RepositorySet {
 }
 
 impl RepositorySet {
-    /// Each skill's entry, in the repository layer.
+    /// Each skill's entry, from the repository source.
     pub fn entries(&self) -> Vec<SkillEntry> {
         self.skills
             .iter()
-            .map(|skill| skill.entry(Layer::Repository))
+            .map(|skill| skill.entry(Source::Repository))
+            .collect()
+    }
+}
+
+/// A skill found and not staged, and why.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithheldSkill {
+    /// Its directory's name.
+    pub name: String,
+    /// Why it was not staged.
+    pub reason: String,
+}
+
+/// A person's own skills as one turn reads them from their folder: those
+/// staged, checked and in name order, and those withheld by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserSet {
+    /// The skills staged under `user/<name>/`, in name order.
+    pub skills: Vec<Skill>,
+    /// The directories of the folder that are not staged, and why.
+    pub withheld: Vec<WithheldSkill>,
+}
+
+impl UserSet {
+    /// Each staged skill's entry, from the user source.
+    pub fn entries(&self) -> Vec<SkillEntry> {
+        self.skills
+            .iter()
+            .map(|skill| skill.entry(Source::User))
             .collect()
     }
 }
@@ -109,14 +158,20 @@ pub struct BranchSkills {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillSet {
-    /// BLAKE3 over `entries`' layers, names and digests, in layer and name
-    /// order.
+    /// BLAKE3 over `entries`' sources, names and digests, in source and
+    /// name order.
     pub set: String,
-    /// Every skill staged for the turn, built-in and custom.
+    /// Every skill staged for the turn: built-in, the repository's and
+    /// the person's own (`user:` labels).
     pub entries: Vec<SkillEntry>,
     /// The repository's skills that were found and not staged, and why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub withheld: Option<WithheldSkills>,
+    /// The person's own skills that were found and not staged, each with
+    /// why: a bad bundle, a built-in's name, or a repository skill of the
+    /// same name staged before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_withheld: Vec<WithheldSkill>,
 }
 
 /// Repository skills a turn did not stage.
@@ -140,8 +195,8 @@ pub(crate) enum ForTurn {
     Withheld(WithheldSkills),
 }
 
-/// The built-in skills every turn stages, each in the built-in layer, in
-/// catalog order.
+/// The built-in skills every turn stages, each from the built-in source,
+/// in catalog order.
 pub fn built_in() -> Result<Vec<SkillEntry>, Error> {
     Ok(crate::capabilities::catalogued()
         .map_err(Error::State)?
@@ -310,14 +365,15 @@ pub fn read(root: &Path, rev: &str) -> Result<Found, Error> {
             Err(why) => return refused(why),
         }
     }
-    if let Err(why) = skillset::custom_index(branchyard_provision::skills::INDEX, &checked, &commit)
+    if let Err(why) =
+        skillset::custom_index(branchyard_provision::skills::INDEX, &checked, &[], &commit)
     {
         return refused(why);
     }
     let digest = skillset::set_digest(
         &checked
             .iter()
-            .map(|skill| skill.entry(Layer::Repository))
+            .map(|skill| skill.entry(Source::Repository))
             .collect::<Vec<_>>(),
     );
     Ok(Found::Skills(RepositorySet {
@@ -493,8 +549,13 @@ pub(crate) fn for_turn(root: &Path, skills: Option<&BranchSkills>) -> ForTurn {
     }
 }
 
-/// The record of a turn that staged `built_in` and what `repository` says.
-pub(crate) fn skill_set(built_in: Vec<SkillEntry>, repository: &ForTurn) -> SkillSet {
+/// The record of a turn that staged `built_in`, what `repository` says,
+/// and the person's own `user` skills when the branch has a folder.
+pub(crate) fn skill_set(
+    built_in: Vec<SkillEntry>,
+    repository: &ForTurn,
+    user: Option<&UserSet>,
+) -> SkillSet {
     let mut entries = built_in;
     let withheld = match repository {
         ForTurn::Nothing => None,
@@ -504,11 +565,162 @@ pub(crate) fn skill_set(built_in: Vec<SkillEntry>, repository: &ForTurn) -> Skil
         }
         ForTurn::Withheld(withheld) => Some(withheld.clone()),
     };
+    let user_withheld = match user {
+        Some(user) => {
+            entries.extend(user.entries());
+            user.withheld.clone()
+        }
+        None => Vec::new(),
+    };
     SkillSet {
         set: skillset::set_digest(&entries),
         entries,
         withheld,
+        user_withheld,
     }
+}
+
+/// A person's skills folder: [`USER_SKILLS`] beside the user configuration
+/// file `config` (`~/.config/branchyard/config.toml` gives
+/// `~/.config/branchyard/skills`).
+pub fn user_dir(config: &Path) -> PathBuf {
+    config.with_file_name(USER_SKILLS)
+}
+
+/// Read the person's own skills under `dir`, their skills folder. A skill
+/// is a directory there with a `SKILL.md`; a loose file, and a directory
+/// without one, is skipped. A directory that is a symbolic link, holds
+/// one, holds a file that is not UTF-8 text, or that the skill checks
+/// refuse is withheld by name with the reason; a folder that does not
+/// exist holds nothing, and one that cannot be read withholds everything
+/// under the name `*`.
+pub fn read_user(dir: &Path) -> UserSet {
+    let mut set = UserSet::default();
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return set,
+        Err(error) => {
+            set.withheld.push(WithheldSkill {
+                name: "*".into(),
+                reason: format!("{} could not be read: {error}", dir.display()),
+            });
+            return set;
+        }
+    };
+    let mut names: Vec<(String, PathBuf)> = Vec::new();
+    for entry in listing.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        names.push((name, entry.path()));
+    }
+    names.sort();
+    for (name, path) in names {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            set.withheld.push(WithheldSkill {
+                name,
+                reason: "is a symbolic link; skills are read only from the folder's own \
+                         directories"
+                    .into(),
+            });
+            continue;
+        }
+        if !meta.is_dir() || !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        match read_directory(&name, &path) {
+            Ok(skill) => set.skills.push(skill),
+            Err(reason) => set.withheld.push(WithheldSkill { name, reason }),
+        }
+    }
+    set
+}
+
+/// The files of the skill directory `dir`, named `name`, checked as a
+/// skill: no symbolic link, UTF-8 text only, within the limits, a
+/// `SKILL.md` whose frontmatter names `name`.
+pub fn read_directory(name: &str, dir: &Path) -> Result<Skill, String> {
+    let mut files = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let here = dir.join(&relative);
+        let listing = std::fs::read_dir(&here)
+            .map_err(|e| format!("{} could not be read: {e}", here.display()))?;
+        for entry in listing {
+            let entry = entry.map_err(|e| format!("{} could not be read: {e}", here.display()))?;
+            let path = relative.join(entry.file_name());
+            let shown = path.display().to_string();
+            let meta = std::fs::symlink_metadata(entry.path())
+                .map_err(|e| format!("{shown} could not be read: {e}"))?;
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "{shown} is a symbolic link, which a skill may not hold"
+                ));
+            }
+            if meta.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if meta.len() > skillset::MAX_SKILL_BYTES {
+                return Err(format!(
+                    "skill {name}: {shown} holds {} bytes; a skill holds at most {} (1 MiB)",
+                    meta.len(),
+                    skillset::MAX_SKILL_BYTES
+                ));
+            }
+            let bytes = std::fs::read(entry.path())
+                .map_err(|e| format!("{shown} could not be read: {e}"))?;
+            let text = String::from_utf8(bytes).map_err(|_| {
+                format!("skill {name}: {shown} is not UTF-8 text; skills hold text files only")
+            })?;
+            files.push((shown, text));
+            if files.len() > skillset::MAX_SKILL_FILES {
+                return Err(format!(
+                    "skill {name} has more than {} files",
+                    skillset::MAX_SKILL_FILES
+                ));
+            }
+        }
+    }
+    Skill::new(name, files)
+}
+
+/// The person's own skills for one turn: [`read_user`] over `dir`, then
+/// the precedence rule ([`Source::precedence`]): a skill with a built-in's
+/// name is withheld (reserved), and so is one the repository's staged set
+/// names, as shadowed by `repository:<name>`.
+pub(crate) fn user_for_turn(dir: &Path, repository: &ForTurn) -> UserSet {
+    let mut set = read_user(dir);
+    let staged: Vec<&str> = match repository {
+        ForTurn::Staged(set) => set.skills.iter().map(|s| s.name.as_str()).collect(),
+        ForTurn::Nothing | ForTurn::Withheld(_) => Vec::new(),
+    };
+    let mut kept = Vec::new();
+    for skill in std::mem::take(&mut set.skills) {
+        if skillset::reserved(&skill.name) {
+            set.withheld.push(WithheldSkill {
+                reason: format!(
+                    "{} is a built-in skill's name, which is reserved",
+                    skill.name
+                ),
+                name: skill.name,
+            });
+        } else if staged.contains(&skill.name.as_str()) {
+            set.withheld.push(WithheldSkill {
+                reason: format!(
+                    "shadowed by {}: a repository's skill comes before yours",
+                    skillset::label(Source::Repository, &skill.name)
+                ),
+                name: skill.name,
+            });
+        } else {
+            kept.push(skill);
+        }
+    }
+    set.skills = kept;
+    set.withheld.sort_by(|a, b| a.name.cmp(&b.name));
+    set
 }
 
 #[cfg(test)]
@@ -549,6 +761,10 @@ mod tests {
     }
 
     fn skill(root: &Path, name: &str, description: &str) {
+        skill_in_repo(root, name, description);
+    }
+
+    fn skill_in_repo(root: &Path, name: &str, description: &str) {
         write(
             root,
             &format!(".agents/skills/{name}/SKILL.md"),
@@ -689,7 +905,7 @@ mod tests {
         skill(root, "a", "Changed.");
         commit(root);
         assert_eq!(for_turn(root, Some(&staged)), ForTurn::Staged(set.clone()));
-        let record = skill_set(Vec::new(), &for_turn(root, Some(&staged)));
+        let record = skill_set(Vec::new(), &for_turn(root, Some(&staged)), None);
         assert_eq!(record.entries, set.entries());
         assert_eq!(record.set, skillset::set_digest(&set.entries()));
         assert_eq!(record.withheld, None);
@@ -791,6 +1007,141 @@ mod tests {
         let reason = missing.withheld.unwrap();
         assert!(reason.contains("could not be read at commit"), "{reason}");
         assert!(missing.entries.is_empty());
+    }
+
+    #[test]
+    fn a_persons_skills_are_read_from_their_folder_and_withheld_by_name() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = user_dir(&home.path().join("config.toml"));
+        assert_eq!(dir, home.path().join("skills"));
+        assert_eq!(read_user(&dir), UserSet::default(), "no folder: nothing");
+        let skill = |name: &str, description: &str| {
+            write(
+                &dir,
+                &format!("{name}/SKILL.md"),
+                &format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+            );
+        };
+        skill("memory-parser", "What you learned about the parser.");
+        write(&dir, "memory-parser/references/bench.md", "# Bench\n");
+        skill("docx", "Mine.");
+        skill("style-guide", "Mine too.");
+        write(&dir, "notes.md", "a loose file is not a skill");
+        write(&dir, "empty/README.md", "no SKILL.md: not a skill");
+        write(
+            &dir,
+            "bad/SKILL.md",
+            "---\nname: other\ndescription: d\n---\n",
+        );
+        std::fs::write(dir.join("memory-parser/bin"), [0xff, 0xfe]).unwrap();
+        let set = read_user(&dir);
+        assert_eq!(
+            set.skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["docx", "style-guide"]
+        );
+        assert_eq!(set.withheld.len(), 2, "{:?}", set.withheld);
+        assert_eq!(set.withheld[0].name, "bad");
+        assert!(set.withheld[0]
+            .reason
+            .contains("the name must be its directory's"));
+        assert_eq!(set.withheld[1].name, "memory-parser");
+        assert!(set.withheld[1].reason.contains("bin is not UTF-8 text"));
+
+        std::fs::remove_file(dir.join("memory-parser/bin")).unwrap();
+        std::os::unix::fs::symlink("SKILL.md", dir.join("style-guide/link.md")).unwrap();
+        std::os::unix::fs::symlink("docx", dir.join("linked")).unwrap();
+        let set = read_user(&dir);
+        assert_eq!(
+            set.skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["docx", "memory-parser"]
+        );
+        let reasons: Vec<(&str, &str)> = set
+            .withheld
+            .iter()
+            .map(|w| (w.name.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(reasons[1].0, "linked");
+        assert!(reasons[1]
+            .1
+            .contains("is a symbolic link; skills are read only"));
+        assert_eq!(reasons[2].0, "style-guide");
+        assert!(reasons[2].1.contains("link.md is a symbolic link"));
+        assert_eq!(
+            set.skills[1]
+                .files
+                .iter()
+                .map(|(p, _)| p.as_str())
+                .collect::<Vec<_>>(),
+            ["SKILL.md", "references/bench.md"]
+        );
+        assert_eq!(set.entries()[0].label(), "user:docx");
+
+        // Precedence: a built-in's name is reserved, a staged repository
+        // skill shadows a user skill of its name, and a withheld repository
+        // set shadows nothing.
+        std::fs::remove_file(dir.join("style-guide/link.md")).unwrap();
+        let repo = repo();
+        skill_in_repo(repo.path(), "style-guide", "House style.");
+        let base = commit(repo.path());
+        let staged = ForTurn::Staged(found(repo.path(), &base));
+        let turn = user_for_turn(&dir, &staged);
+        assert_eq!(
+            turn.skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["memory-parser"]
+        );
+        let withheld: Vec<(&str, &str)> = turn
+            .withheld
+            .iter()
+            .map(|w| (w.name.as_str(), w.reason.as_str()))
+            .collect();
+        assert_eq!(withheld[1].0, "docx");
+        assert!(withheld[1]
+            .1
+            .contains("built-in skill's name, which is reserved"));
+        assert_eq!(withheld[3].0, "style-guide");
+        assert_eq!(
+            withheld[3].1,
+            "shadowed by repository:style-guide: a repository's skill comes before yours"
+        );
+        let unstaged = user_for_turn(&dir, &ForTurn::Nothing);
+        assert_eq!(
+            unstaged
+                .skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["memory-parser", "style-guide"]
+        );
+        let record = skill_set(Vec::new(), &ForTurn::Nothing, Some(&unstaged));
+        assert_eq!(
+            record
+                .entries
+                .iter()
+                .map(SkillEntry::label)
+                .collect::<Vec<_>>(),
+            ["user:memory-parser", "user:style-guide"]
+        );
+        assert_eq!(record.user_withheld.len(), 3);
+        assert_eq!(record.set, skillset::set_digest(&record.entries));
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["entries"][0]["layer"], "user");
+        assert_eq!(json["user_withheld"][0]["name"], "bad");
+        let empty = skill_set(Vec::new(), &ForTurn::Nothing, Some(&UserSet::default()));
+        assert!(!serde_json::to_string(&empty)
+            .unwrap()
+            .contains("user_withheld"));
+        let mut unreadable = user_dir(&home.path().join("config.toml"));
+        unreadable.push("notes.md");
+        assert_eq!(read_user(&unreadable).withheld[0].name, "*");
     }
 
     #[test]

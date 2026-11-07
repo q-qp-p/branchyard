@@ -288,6 +288,7 @@ fn run_local(
     let options = TaskOptions {
         workspace,
         repository_skills,
+        user_skills: crate::skills_cmd::user_skills_for_new_branch(),
         ..live.options(task)?
     };
     let mut map = MapOptions {

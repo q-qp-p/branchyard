@@ -14214,6 +14214,13 @@
         "trigger": {
           "type": "string",
           "description": "What started it: `merged`, `judged_best`, `ready` or `asked`."
+        },
+        "drafts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryDraft"
+          },
+          "description": "The deterministic extractor's corrections that were longer than an\nentry may be ([`TEXT_MAX`]), whole, for a person to add as memory\n(`by memory add --from`); the entry proposed above holds the cut\ntext. Nothing is written anywhere for them here."
         }
       },
       "required": [
@@ -14475,6 +14482,55 @@
             }
           ],
           "description": "Who decided a judgement."
+        },
+        "MemoryDraft": {
+          "type": "object",
+          "properties": {
+            "slug": {
+              "type": "string",
+              "description": "The file's name without `.md`: the title's slug."
+            },
+            "title": {
+              "type": "string",
+              "description": "The first [`TITLE_MAX`] characters of the text, cut at a word."
+            },
+            "text": {
+              "type": "string",
+              "description": "The whole correction, which was over the knowledge limit."
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The path glob the correction was about, when it named one."
+            },
+            "branch": {
+              "type": "string",
+              "description": "The branch it came from."
+            },
+            "turn": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "The turn it came from."
+            },
+            "via": {
+              "type": "string",
+              "description": "`send`, `steer`, `review` or `pull_request`."
+            }
+          },
+          "required": [
+            "slug",
+            "title",
+            "text",
+            "branch",
+            "via"
+          ],
+          "description": "A long correction the knowledge extractor set aside\n([`crate::Distilled::drafts`]): a file under [`DRAFTS`] of the worktree\nfor a person to read, edit and add with `by memory add --from`. Never\na bundle."
         }
       }
     },
@@ -40680,14 +40736,14 @@
           "properties": {
             "set": {
               "type": "string",
-              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+              "description": "BLAKE3 over `entries`' sources, names and digests, in source and\nname order."
             },
             "entries": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/SkillEntry"
               },
-              "description": "Every skill staged for the turn, built-in and custom."
+              "description": "Every skill staged for the turn: built-in, the repository's and\nthe person's own (`user:` labels)."
             },
             "withheld": {
               "anyOf": [
@@ -40699,6 +40755,13 @@
                 }
               ],
               "description": "The repository's skills that were found and not staged, and why."
+            },
+            "user_withheld": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WithheldSkill"
+              },
+              "description": "The person's own skills that were found and not staged, each with\nwhy: a bad bundle, a built-in's name, or a repository skill of the\nsame name staged before it."
             }
           },
           "required": [
@@ -40711,8 +40774,8 @@
           "type": "object",
           "properties": {
             "layer": {
-              "$ref": "#/$defs/Layer2",
-              "description": "Where it came from."
+              "$ref": "#/$defs/Source",
+              "description": "Where it came from. Serialized as `layer`, the field's first name,\nso recorded events read back."
             },
             "name": {
               "type": "string",
@@ -40730,7 +40793,7 @@
           ],
           "description": "One skill of a set: where it came from, its name and its digest."
         },
-        "Layer2": {
+        "Source": {
           "oneOf": [
             {
               "type": "string",
@@ -40741,9 +40804,14 @@
               "type": "string",
               "const": "built_in",
               "description": "Shipped in the `by` binary."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "The person's own, from `~/.config/branchyard/skills/<name>/` on the\nmachine the branch runs on; reaches only the sessions they start."
             }
           ],
-          "description": "Where a skill came from, most specific first."
+          "description": "Where a skill came from (`docs/skill-registry.md`, \"Sources\").\n\nThe declaration order is the order [`set_digest`] sorts entries in, so\na new source goes after the ones that exist, or every recorded set\ndigest changes. Precedence between sources when two name one skill is\na different order: repository, then user, then built-in\n([`Source::precedence`])."
         },
         "WithheldSkills": {
           "type": "object",
@@ -40765,6 +40833,24 @@
             "reason"
           ],
           "description": "Repository skills a turn did not stage."
+        },
+        "WithheldSkill": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why it was not staged."
+            }
+          },
+          "required": [
+            "name",
+            "reason"
+          ],
+          "description": "A skill found and not staged, and why."
         },
         "ManagedWritten": {
           "type": "object",
@@ -46718,14 +46804,14 @@
           "properties": {
             "set": {
               "type": "string",
-              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+              "description": "BLAKE3 over `entries`' sources, names and digests, in source and\nname order."
             },
             "entries": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/SkillEntry"
               },
-              "description": "Every skill staged for the turn, built-in and custom."
+              "description": "Every skill staged for the turn: built-in, the repository's and\nthe person's own (`user:` labels)."
             },
             "withheld": {
               "anyOf": [
@@ -46737,6 +46823,13 @@
                 }
               ],
               "description": "The repository's skills that were found and not staged, and why."
+            },
+            "user_withheld": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WithheldSkill"
+              },
+              "description": "The person's own skills that were found and not staged, each with\nwhy: a bad bundle, a built-in's name, or a repository skill of the\nsame name staged before it."
             }
           },
           "required": [
@@ -46749,8 +46842,8 @@
           "type": "object",
           "properties": {
             "layer": {
-              "$ref": "#/$defs/Layer2",
-              "description": "Where it came from."
+              "$ref": "#/$defs/Source",
+              "description": "Where it came from. Serialized as `layer`, the field's first name,\nso recorded events read back."
             },
             "name": {
               "type": "string",
@@ -46768,7 +46861,7 @@
           ],
           "description": "One skill of a set: where it came from, its name and its digest."
         },
-        "Layer2": {
+        "Source": {
           "oneOf": [
             {
               "type": "string",
@@ -46779,9 +46872,14 @@
               "type": "string",
               "const": "built_in",
               "description": "Shipped in the `by` binary."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "The person's own, from `~/.config/branchyard/skills/<name>/` on the\nmachine the branch runs on; reaches only the sessions they start."
             }
           ],
-          "description": "Where a skill came from, most specific first."
+          "description": "Where a skill came from (`docs/skill-registry.md`, \"Sources\").\n\nThe declaration order is the order [`set_digest`] sorts entries in, so\na new source goes after the ones that exist, or every recorded set\ndigest changes. Precedence between sources when two name one skill is\na different order: repository, then user, then built-in\n([`Source::precedence`])."
         },
         "WithheldSkills": {
           "type": "object",
@@ -46803,6 +46901,24 @@
             "reason"
           ],
           "description": "Repository skills a turn did not stage."
+        },
+        "WithheldSkill": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why it was not staged."
+            }
+          },
+          "required": [
+            "name",
+            "reason"
+          ],
+          "description": "A skill found and not staged, and why."
         },
         "ManagedWritten": {
           "type": "object",
@@ -59609,14 +59725,14 @@
           "properties": {
             "set": {
               "type": "string",
-              "description": "BLAKE3 over `entries`' layers, names and digests, in layer and name\norder."
+              "description": "BLAKE3 over `entries`' sources, names and digests, in source and\nname order."
             },
             "entries": {
               "type": "array",
               "items": {
                 "$ref": "#/$defs/SkillEntry"
               },
-              "description": "Every skill staged for the turn, built-in and custom."
+              "description": "Every skill staged for the turn: built-in, the repository's and\nthe person's own (`user:` labels)."
             },
             "withheld": {
               "anyOf": [
@@ -59628,6 +59744,13 @@
                 }
               ],
               "description": "The repository's skills that were found and not staged, and why."
+            },
+            "user_withheld": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WithheldSkill"
+              },
+              "description": "The person's own skills that were found and not staged, each with\nwhy: a bad bundle, a built-in's name, or a repository skill of the\nsame name staged before it."
             }
           },
           "required": [
@@ -59640,8 +59763,8 @@
           "type": "object",
           "properties": {
             "layer": {
-              "$ref": "#/$defs/Layer2",
-              "description": "Where it came from."
+              "$ref": "#/$defs/Source",
+              "description": "Where it came from. Serialized as `layer`, the field's first name,\nso recorded events read back."
             },
             "name": {
               "type": "string",
@@ -59659,7 +59782,7 @@
           ],
           "description": "One skill of a set: where it came from, its name and its digest."
         },
-        "Layer2": {
+        "Source": {
           "oneOf": [
             {
               "type": "string",
@@ -59670,9 +59793,14 @@
               "type": "string",
               "const": "built_in",
               "description": "Shipped in the `by` binary."
+            },
+            {
+              "type": "string",
+              "const": "user",
+              "description": "The person's own, from `~/.config/branchyard/skills/<name>/` on the\nmachine the branch runs on; reaches only the sessions they start."
             }
           ],
-          "description": "Where a skill came from, most specific first."
+          "description": "Where a skill came from (`docs/skill-registry.md`, \"Sources\").\n\nThe declaration order is the order [`set_digest`] sorts entries in, so\na new source goes after the ones that exist, or every recorded set\ndigest changes. Precedence between sources when two name one skill is\na different order: repository, then user, then built-in\n([`Source::precedence`])."
         },
         "WithheldSkills": {
           "type": "object",
@@ -59694,6 +59822,24 @@
             "reason"
           ],
           "description": "Repository skills a turn did not stage."
+        },
+        "WithheldSkill": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Its directory's name."
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why it was not staged."
+            }
+          },
+          "required": [
+            "name",
+            "reason"
+          ],
+          "description": "A skill found and not staged, and why."
         },
         "ManagedWritten": {
           "type": "object",
