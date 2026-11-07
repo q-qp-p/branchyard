@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 
@@ -109,10 +110,20 @@ async fn post_review(
     Extension(caller): Extension<Caller>,
     headers: HeaderMap,
     JsonBody(request, canonical): JsonBody<ReviewRequest>,
-) -> Result<Json<ReviewSent>, ApiError> {
+) -> Result<Response, ApiError> {
     let repo = app.authorized_repo(&caller, &repo, "run")?.clone();
     let route = format!("POST /v1/repos/{}/branches/{branch}/reviews", repo.name);
     let idem = idempotency(&headers, &caller, &route, &canonical)?;
+    // A steer makes no operation, so its answer is kept here: a retry with
+    // the same key gets it back and steers nothing.
+    if let (ReviewDelivery::Steer, Some(idem)) = (request.delivery, &idem) {
+        if let Some((status, value)) =
+            app.storage_idem
+                .get(&idem.caller, &idem.key, &idem.fingerprint)?
+        {
+            return Ok(crate::storage_routes::replayed(status, value));
+        }
+    }
     let target = existing(&repo.yard, &branch).await?;
     // The comments are placed on the diff as it is now, and refused when
     // the reviewer read another candidate.
@@ -177,7 +188,8 @@ async fn post_review(
                 prompt,
                 operation: Some(op.id),
                 steer: None,
-            }))
+            })
+            .into_response())
         }
         ReviewDelivery::Steer => {
             let yard = repo.yard.clone();
@@ -200,13 +212,23 @@ async fn post_review(
             blocking(move || target.record_feedback(&recorded, record))
                 .await?
                 .map_err(|e| error::sdk(&e))?;
-            Ok(Json(ReviewSent {
+            let sent = ReviewSent {
                 delivery: ReviewDelivery::Steer,
                 comments,
                 prompt,
                 operation: None,
                 steer: Some(steer),
-            }))
+            };
+            if let (Some(idem), Ok(value)) = (&idem, serde_json::to_value(&sent)) {
+                app.storage_idem.put_value(
+                    &idem.caller,
+                    &idem.key,
+                    &idem.fingerprint,
+                    StatusCode::OK,
+                    value,
+                );
+            }
+            Ok(Json(sent).into_response())
         }
     }
 }

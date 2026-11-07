@@ -228,6 +228,71 @@ impl Git {
         }
     }
 
+    /// Runs git, requiring success, and reads at most `max_bytes` of its
+    /// stdout: past that the process is killed and the text is cut at its
+    /// last whole line. Returns the text and whether it was cut. For
+    /// commands whose output grows with the repository (a large diff).
+    pub fn run_capped(mut self, max_bytes: usize) -> Result<(String, bool), GitError> {
+        use std::io::Read;
+        let mut child = self
+            .cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(GitError::Spawn)?;
+        let stderr = child.stderr.take();
+        let drain = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut stderr) = stderr {
+                // Only the start is kept; the rest is read and dropped so
+                // git never blocks on a full pipe.
+                branchyard_support::best_effort(
+                    "read git's stderr",
+                    (&mut stderr).take(64 << 10).read_to_end(&mut text),
+                );
+                branchyard_support::best_effort(
+                    "drain git's stderr",
+                    io::copy(&mut stderr, &mut io::sink()),
+                );
+            }
+            text
+        });
+        let mut bytes = Vec::new();
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| GitError::Io(io::Error::other("git's stdout was not captured")))?;
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        (&mut stdout).take(limit).read_to_end(&mut bytes)?;
+        let cut = bytes.len() > max_bytes;
+        if cut {
+            bytes.truncate(max_bytes);
+            branchyard_support::best_effort("stop a capped git", child.kill());
+        }
+        drop(stdout);
+        let status = child.wait()?;
+        let stderr = drain.join().unwrap_or_default();
+        if !cut && !status.success() {
+            return Err(GitError::Failed {
+                args: self.args,
+                code: status.code(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            });
+        }
+        if cut {
+            // Back to the end of the last whole line.
+            if let Some(end) = bytes.iter().rposition(|b| *b == b'\n') {
+                bytes.truncate(end + 1);
+            }
+        }
+        let text = String::from_utf8(bytes)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        Ok((text, cut))
+    }
+
     /// Runs git and says whether it exited successfully, for commands
     /// whose failure is an answer (any non-zero exit is `false`).
     pub fn succeeds(self) -> Result<bool, GitError> {

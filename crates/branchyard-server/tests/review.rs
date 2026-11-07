@@ -232,8 +232,11 @@ fn a_review_can_steer_the_running_turn_and_is_refused_when_none_runs() {
             &new_key(),
         )
         .unwrap();
+    // One key for every attempt: an attempt that was accepted but was slow
+    // to answer is replayed, not steered a second time.
+    let key = new_key();
     let steered = wait::until("the turn to take a steer", || {
-        repo.review("steady", &request, &new_key())
+        repo.review("steady", &request, &key)
             .map_err(|e| e.to_string())
     });
     assert_eq!(steered.delivery, ReviewDelivery::Steer);
@@ -251,4 +254,9 @@ fn a_review_can_steer_the_running_turn_and_is_refused_when_none_runs() {
     let reviews = repo.reviews("steady").unwrap();
     assert_eq!(reviews.reviews.len(), 1, "{reviews:?}");
     assert_eq!(reviews.reviews[0].comments[0].body, "Why three?");
+    // The same request again, with the same key, gets the same answer and
+    // steers and records nothing more.
+    let again = repo.review("steady", &request, &key).unwrap();
+    assert_eq!(again.steer.map(|s| s.id), Some(steer.id));
+    assert_eq!(repo.reviews("steady").unwrap().reviews.len(), 1);
 }

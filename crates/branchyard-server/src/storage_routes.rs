@@ -146,7 +146,7 @@ type IdemEntry = (String, StatusCode, serde_json::Value);
 pub struct StorageIdem(Mutex<HashMap<(String, String), IdemEntry>>);
 
 impl StorageIdem {
-    fn get(
+    pub(crate) fn get(
         &self,
         caller: &str,
         key: &str,
@@ -175,6 +175,18 @@ impl StorageIdem {
         value: &ArtifactRef,
     ) {
         let value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
+        self.put_value(caller, key, fingerprint, status, value);
+    }
+
+    /// Remember the answer `value` for this key and request.
+    pub(crate) fn put_value(
+        &self,
+        caller: &str,
+        key: &str,
+        fingerprint: &str,
+        status: StatusCode,
+        value: serde_json::Value,
+    ) {
         self.0.lock_recovering("idempotency").insert(
             (caller.to_owned(), key.to_owned()),
             (fingerprint.to_owned(), status, value),
@@ -184,7 +196,7 @@ impl StorageIdem {
 
 /// A cached response, replayed with `Idempotent-Replayed: true` like the
 /// operation registry's own replays.
-fn replayed(status: StatusCode, value: serde_json::Value) -> Response {
+pub(crate) fn replayed(status: StatusCode, value: serde_json::Value) -> Response {
     let mut response = (status, Json(value)).into_response();
     response
         .headers_mut()

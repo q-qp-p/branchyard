@@ -23,6 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use branchyard_workspace::Git;
+
 use crate::{git, Activity, Branch, Error, FeedbackSource};
 
 /// The most files [`Changes`] lists; the rest are counted in
@@ -35,6 +37,15 @@ pub const MAX_FILE_LINES: usize = 2_000;
 pub const MAX_TOTAL_LINES: usize = 20_000;
 /// The most characters kept of one line; a longer one ends in `…`.
 pub const MAX_LINE_CHARS: usize = 1_000;
+/// The most bytes of `git diff` output read; past it the diff is cut at a
+/// whole line and [`Changes::truncated`] is set. The line limits above
+/// bound what is kept, this bounds what is read.
+pub const MAX_DIFF_BYTES: usize = 16 << 20;
+/// The most recent reviews whose comments [`Branch::reviews`] checks for
+/// being addressed; older ones are listed unmarked.
+pub const MAX_ADDRESSED_REVIEWS: usize = 20;
+/// The most `git diff` runs one [`Branch::reviews`] makes to mark comments.
+const MAX_ADDRESSED_DIFFS: usize = 100;
 /// The most comments one review carries.
 pub const MAX_REVIEW_COMMENTS: usize = 100;
 /// The most characters of one comment or note.
@@ -736,9 +747,9 @@ impl Branch {
                 ..Changes::default()
             });
         };
-        let diff = git::run(
-            self.yard().root(),
-            &[
+        let (diff, cut) = Git::new(self.yard().root())
+            .args([
+                "--literal-pathspecs",
                 "-c",
                 "core.quotepath=off",
                 "diff",
@@ -747,9 +758,12 @@ impl Branch {
                 &info.base,
                 &candidate.commit,
                 "--",
-            ],
-        )?;
-        Ok(Changes::parse(&info.base, Some(&candidate.commit), &diff))
+            ])
+            .run_capped(MAX_DIFF_BYTES)
+            .map_err(git::error)?;
+        let mut changes = Changes::parse(&info.base, Some(&candidate.commit), &diff);
+        changes.truncated |= cut;
+        Ok(changes)
     }
 
     /// The reviews sent to this branch, from `by review` and the console,
@@ -809,7 +823,11 @@ impl Branch {
     /// A commit git cannot compare leaves its comments unmarked.
     fn mark_addressed(&self, reviews: &mut [Review], current: &str) {
         let mut cache: BTreeMap<(String, String), OldRanges> = BTreeMap::new();
-        for review in reviews {
+        // Only the latest reviews, and a bounded number of diffs: a branch
+        // with a long review history costs a read-scope GET no more than
+        // this.
+        let latest = reviews.len().saturating_sub(MAX_ADDRESSED_REVIEWS);
+        for review in &mut reviews[latest..] {
             let Some(sent) = review.commit.clone().filter(|c| c != current) else {
                 continue;
             };
@@ -817,28 +835,31 @@ impl Branch {
                 if comment.side != DiffSide::New || comment.line == 0 {
                     continue;
                 }
-                let ranges = cache
-                    .entry((sent.clone(), comment.path.clone()))
-                    .or_insert_with(|| {
-                        git::run(
-                            self.yard().root(),
-                            &[
-                                "-c",
-                                "core.quotepath=off",
-                                "diff",
-                                "--no-color",
-                                "--no-ext-diff",
-                                "--no-renames",
-                                "-U0",
-                                &sent,
-                                current,
-                                "--",
-                                &comment.path,
-                            ],
-                        )
-                        .ok()
-                        .map(|diff| old_ranges(&diff))
-                    });
+                let key = (sent.clone(), comment.path.clone());
+                if !cache.contains_key(&key) && cache.len() >= MAX_ADDRESSED_DIFFS {
+                    continue;
+                }
+                let ranges = cache.entry(key).or_insert_with(|| {
+                    git::run(
+                        self.yard().root(),
+                        &[
+                            "--literal-pathspecs",
+                            "-c",
+                            "core.quotepath=off",
+                            "diff",
+                            "--no-color",
+                            "--no-ext-diff",
+                            "--no-renames",
+                            "-U0",
+                            &sent,
+                            current,
+                            "--",
+                            &comment.path,
+                        ],
+                    )
+                    .ok()
+                    .map(|diff| old_ranges(&diff))
+                });
                 let start = comment.start_line.unwrap_or(comment.line);
                 if ranges
                     .as_ref()

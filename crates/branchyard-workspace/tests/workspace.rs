@@ -1382,6 +1382,85 @@ fn push_sends_exactly_the_commit_to_a_remote_branch() {
 }
 
 #[test]
+fn a_capped_git_run_reads_no_more_than_the_cap_and_stops_at_a_whole_line() {
+    use branchyard_workspace::Git;
+    let fixture = Fixture::new();
+    let root = fixture.root();
+    let lines: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+    fs::write(root.join("big.txt"), &lines).unwrap();
+    git(&root, &["add", "big.txt"]);
+    git(&root, &["commit", "-q", "-m", "big"]);
+    let (text, cut) = Git::new(&root)
+        .args(["show", "HEAD:big.txt"])
+        .run_capped(1_000)
+        .unwrap();
+    assert!(cut);
+    assert!(
+        text.len() <= 1_000 && text.ends_with('\n'),
+        "{}",
+        text.len()
+    );
+    assert!(lines.starts_with(&text));
+    let (all, cut) = Git::new(&root)
+        .args(["show", "HEAD:big.txt"])
+        .run_capped(10_000_000)
+        .unwrap();
+    assert!(!cut);
+    assert_eq!(all, lines);
+    let failed = Git::new(&root)
+        .args(["show", "HEAD:missing"])
+        .run_capped(100);
+    assert!(matches!(failed, Err(GitError::Failed { .. })), "{failed:?}");
+}
+
+#[test]
+fn a_leased_push_replaces_only_the_commit_it_expects() {
+    let fixture = Fixture::new();
+    let remote = fixture.dir.join("remote.git");
+    git(
+        &fixture.dir,
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    git(
+        &fixture.root(),
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    let first = fixture.candidate("feature", "feature.txt", "feature\n");
+    fixture
+        .repo
+        .push("origin", &first.head, "by/feature", false)
+        .unwrap();
+    // Someone else moves the remote branch after `first` was read.
+    let theirs = fixture.candidate("theirs", "theirs.txt", "theirs\n");
+    fixture
+        .repo
+        .push("origin", &theirs.head, "by/feature", true)
+        .unwrap();
+    let mine = fixture.candidate("mine", "mine.txt", "mine\n");
+    let refused = fixture
+        .repo
+        .push_leased("origin", &mine.head, "by/feature", &first.head);
+    assert!(
+        matches!(refused, Err(GitError::Failed { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(
+        git(&remote, &["rev-parse", "refs/heads/by/feature"]).trim(),
+        theirs.head.as_str(),
+        "the lease did not hold"
+    );
+    // Where it still is what was expected, it is replaced.
+    fixture
+        .repo
+        .push_leased("origin", &mine.head, "by/feature", &theirs.head)
+        .unwrap();
+    assert_eq!(
+        git(&remote, &["rev-parse", "refs/heads/by/feature"]).trim(),
+        mine.head.as_str()
+    );
+}
+
+#[test]
 fn worktreeinclude_names_only_ignored_literal_paths_that_exist() {
     use branchyard_workspace::include;
     let f = Fixture::new();
