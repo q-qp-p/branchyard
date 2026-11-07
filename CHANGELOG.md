@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+The delegate skill is now a small core plus reference files. `SKILL.md` fell
+from 38,969 to about 7,500 bytes, and a spawning branch's instructions from
+42,875 to 11,682 characters (`spawning-branch` cap 44,500 to 12,500). The rest of
+the guidance moved word for word into 14 files under
+`plugins/branchyard/skills/delegate/references/`, each opening with a
+`Read when:` line, and a table in the core names the file for each need. They
+are installed beside the skill (plugin directory, `by init plugin`, the
+standalone zip), and a turn with helpers finds them in its tool tree at
+`helpers/delegate/references/`.
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard
