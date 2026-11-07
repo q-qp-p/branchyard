@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-11-07
+
 A harness's own permissions and Branchyard's policy now compose: a Branchyard
 approval never overrides a native denial, and a native approval never bypasses
 a restriction of the branch's policy. A run whose policy restricts anything
@@ -68,6 +70,59 @@ A message and its entries on the sender's and the recipient's event logs are now
 written in one transaction, on SQLite and on PostgreSQL, as a handoff's already
 were: a failure writing either leaves neither, so no crash leaves a message that
 no log names.
+
+Connectors, skills and helpers are now one tools model: each passes through the
+same states (available, allowed, ready, chosen, mounted), with one owner for
+each. Tool policy lives in the store by tenant, group and person
+(`GET/PUT/DELETE /v1/admin/policies`, and `GET/PUT /v1/me/policy` for a
+person's own narrower choice), and a session's tools are one start field,
+`tools`, checked against one catalogue (`GET /v1/tools`) with workspace defaults.
+A turn mounts one searched tool tree instead of copying every skill into its
+sandbox, and Branchyard's own MCP surface follows the grant. A turn's manifest
+is pinned by digest and a worker holds a turn to the policy it was admitted
+under. Connector calls from a sandbox go through a credential proxy inside it,
+which fetches each turn's token from the server with a per-turn secret, and
+egress is enforced. On Google Cloud, gateway tokens can be signed with Cloud KMS,
+people can sign in through IAP or a federated OIDC issuer with their groups, and
+the store can reach PostgreSQL over TLS with IAM tokens (AlloyDB). The console
+gains a Tools page and one Tools control in the composer. See
+[tools](docs/tools-model.md).
+
+Harness images and launch time. `by images build` builds a toolchain image with
+the harness CLIs preinstalled at pinned versions and labelled with what it holds,
+installing Git when the base lacks it; `by images pin REF@DIGEST` makes a
+digest-pinned image a provider's default, and the router reads what an image
+holds from its labels. `by harnesses update ID --qualify` installs a release in a
+private prefix, checks it, and pins it only on a pass; with `--with-model` only
+this run's record counts. Every turn now records its startup phases by provider
+and path, `by startup report` gives their p50 and p95, and GKE sandboxes can be
+pre-booted in a warm pool. See [toolchain images](docs/images.md) and
+[providers](docs/providers.md).
+
+The console's board is drawn from each branch's timeline and kept current from
+the event stream, instead of re-reading events. A new Trajectory page
+(`#/trajectory/<repo>/<branch>`) shows what one agent did, step by step: a
+zoomable waterfall of turns, startup phases, tool calls, permission waits,
+steers, stalls and delegations, nested lanes for the helpers it delegated to
+with a side-by-side comparison of siblings or `by fan` attempts, and a step's
+content read only when it is opened. The timeline gained each turn's `seq`,
+`startup`, `tokens` and `marks`, and the session's `session_tokens`, all without
+content. See [Trajectory](docs/companion.md#trajectory).
+
+Harness-to-harness messages go through one messaging layer: an envelope, a
+registry of message kinds with JSON Schema payloads, and a pipeline of stages
+(authorize, validate, persist, observe, deliver) that `ask`, `answer`,
+`report`, `escalate` and peer handoffs now use, with unchanged output. Sibling
+branches can message each other with a registered kind (`by message`, the MCP
+`message` tool, `POST .../branches/{b}/message`, `Repo::message`,
+`branchyard.message`), delivered at the recipient's next turn, idempotent under
+a key and carrying the sender's trace. The store gains the additive `meta` and
+`idempotency_key` message columns, which a store from before them gets when it
+is opened. A session-start hook reads an unread message that carries them. See
+[messaging](docs/messaging.md).
+
+The release's checksum file no longer lists the per-job reports the release host
+removes, so every name in it matches a published asset.
 
 ## 0.4.0 - 2026-11-02
 
