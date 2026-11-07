@@ -1,15 +1,15 @@
 # Skill registry: one index, every skill, opened only when needed
 
-Written 7 November 2026. Status: **design; nothing on this page is built.** It is written for the engineers who build it next, so it names types, fields, commands and routes, and it says for each slice what the hermetic tests and the skill-discovery eval must show. What exists today is named with its file in [Today](#today); every other claim is a proposal. Two pieces of work run beside this design and plug into it: the skill-discovery eval (`tools/skill_eval.py` and `evals/skills/`, [the eval](#the-eval)) and the split of the delegate skill into a core and `references/` ([progressive disclosure](#progressive-disclosure)).
+Written 7 November 2026, and revised the same day after a review that read it against the code. Status: **design; nothing on this page is built.** It is written for the engineers who build it next, so it names types, fields, commands and routes, and it says for each slice what the hermetic tests and the skill-discovery eval must show. What exists today is named with its file in [Today](#today); every other claim is a proposal. Two pieces of work run beside this design: the skill-discovery eval, which is built and hermetically tested (`tools/skill_eval.py`, `evals/skills/`, [skill-discovery eval](skill-eval.md)), and the split of the delegate skill into a core and `references/`, which is in flight ([progressive disclosure](#progressive-disclosure)).
 
-The mechanism the page describes is what the owner called **skillsfuse**: every skill a turn may see is in one index that is always mounted, and a skill's body appears on disk the first time something reads it. The model reads one line, searches, and opens one skill. Nothing it did not open costs context, bytes or time.
+The mechanism the page describes is what the owner called **skillsfuse**: every skill a turn may see is in one index that is always mounted, and the model reads one line, searches, and opens one skill or one reference. Nothing it did not open costs context, bytes or time. Where the sandbox sees the tool store (a local harness, Microsandbox, GKE), a mounted skill's body is a link that costs nothing, so *mounted* can mean *linked* there and no new machinery is needed. Where the home is copied in (a container, Substrate, a recipe machine), only the chosen bodies travel today, and a fetch in `tools show` comes last in the plan, once a server-side source exists for it to fetch from.
 
 ## The problem
 
-- **Today's index is the chosen set, pasted.** `INDEX.md` lists the skills staged for the turn ([tools model, section 3](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)), and `tools search` ranks only what is on disk. A skill that was not chosen cannot be found, so a person has to choose well in advance, and the default is to stage all of the built-in skills, about 425 KB copied into a fresh sandbox every turn.
+- **Today's index is the chosen set, pasted.** `INDEX.md` lists the skills staged for the turn ([tools model, section 3](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted)), and `tools search` ranks only what is on disk. A skill that was not chosen cannot be found, so a person has to choose well in advance, and the default is to stage all of the built-in skills: about 425 KB, linked from the store where the provider sees it (a local harness, Microsandbox, GKE) and copied into the sandbox every turn where it does not (a container, Substrate, a recipe machine; [tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)).
 - **Two sources, two mechanisms.** Built-in skills are compiled into `by`; repository skills are read from `.agents/skills/` at the base commit and gated by `by skills trust` ([your repository's skills](knowledge-skills.md#your-repositorys-skills)). The user, workspace and team layers the [skill delivery design](superpowers/specs/2026-10-29-skill-delivery-design.md) decided on are not built, and nothing fetches a skill from anywhere.
-- **No identity beyond a digest.** A skill has a name and a BLAKE3 digest. It has no version, no publisher, no lockfile, so an update is a new build of `by` or a new commit, and a rollback is a revert.
-- **Connectors are indexed one way, skills another.** A connector's operations are found through Anvil's `search.json`; a skill's references are not indexed at all, so a model that needs one paragraph of `pptx`'s references reads the whole skill.
+- **A skill's references are not indexed.** A connector's operations are found through Anvil's `search.json`; a skill's `references/` are invisible to search, so a model that needs one paragraph of `pptx`'s references reads the whole skill, and the delegate skill's 39 KB is paid by every spawning branch whether or not the turn delegates ([what a turn pays for](skill-eval.md#what-a-turn-pays-for-statically)).
+- **No identity beyond a digest.** A skill has a name and a BLAKE3 digest. A repository skill is pinned by the base commit and the trusted set's digest, a built-in by the `by` version; nothing else has a pin, and a server has no source of its own to pin.
 
 ## Today
 
@@ -17,79 +17,72 @@ What this design starts from, by file:
 
 | Piece | Where | What it does |
 |---|---|---|
-| Built-in skills | `plugins/branchyard/skills/`, embedded by `crates/branchyard-provision/src/skills.rs` (generated by `tools/artifact_assets.py`) | Staged into `.branchyard/capabilities/` of the home by `crates/branchyard/src/capabilities.rs`; chosen per task with `provision.skills` or a session's `tools` |
-| Repository skills | `crates/branchyard/src/skills.rs`, `crates/branchyard-provision/src/skillset.rs` | `.agents/skills/<name>/` at the base commit; `Layer::{BuiltIn, Repository}`, `SkillEntry {layer, name, digest}`, `SkillSet`, the `Custom` topic; limits 1 MiB and 200 files |
-| The tool tree | `crates/branchyard/src/tooltree.rs` | `INDEX.md` (≤ 4,096 bytes), `bin/tools`, `skills`, `connectors`, `helpers/INDEX.md` (≤ 2,048 bytes); native links into `~/.claude/skills` and `~/.codex/skills`; the one line (≤ 300 characters) |
-| Search | `plugins/branchyard/skills/find-tools/scripts/tools.py` | BM25 (`K1 = 1.5`, `B = 0.75`) over frontmatter and headings of each skill, Anvil's `search.json` per connector, helper lines; `search`, `show`, `schema`; standard library only |
-| The store | `crates/branchyard/src/toolstore/` | `skills/<name>@<digest>/`, `connectors/<id>@<hash>/`, `store.json`; `by tools publish` and `pull`; linked where the provider sees the store, copied elsewhere |
-| Policy | `crates/branchyard-server` ([tool policy](server.md#tool-policy)) | `tenant:`, `group:`, `principal:` and `self:` records with a `skills` part (built-in ids), the policy version, `GET /v1/tools` with the state machine of [tools model, section 1](tools-model.md#1-the-model) |
+| Built-in skills | `plugins/branchyard/skills/`, embedded by `crates/branchyard-provision/src/skills.rs` (`Skill {name, files}`, generated by `tools/artifact_assets.py`) | Staged into `.branchyard/capabilities/` of the home by `crates/branchyard/src/capabilities.rs` for the ids `plugins/branchyard/capabilities.json` lists (19 skills and 5 topics; `delegate` and `setup` are embedded but not staged); chosen per task with `provision.skills` or a session's `tools` |
+| The delegate skill | `crates/branchyard/src/projection.rs` | A spawning branch gets `SKILL.md` as instruction text (`skill_text`) and a plugin directory holding `skills/delegate/SKILL.md` and nothing else; a leaf gets `plugins/branchyard/leaf.md`. `check_model_surface.py` counts it in `spawning-branch` (cap 44,500) and holds four `STATED_LIMITS` rows against its text; `crates/branchyard-cli/src/operations.rs` checks every `by` command it names |
+| Repository skills | `crates/branchyard/src/skills.rs`, `crates/branchyard-provision/src/skillset.rs` | `.agents/skills/<name>/` at the base commit; `Layer::{Repository, BuiltIn}`, `SkillEntry {layer, name, digest}`, `SkillSet`, the `Custom` topic; limits 1 MiB and 200 files; a set is fixed when the branch is created (`by skills ls --help`) |
+| The tool tree | `crates/branchyard/src/tooltree.rs` | `INDEX.md` (≤ 4,096 bytes) with an overflow line `- ...N more: bin/tools search WORDS` when the budget runs out, `bin/tools`, `skills`, `connectors`, `helpers/INDEX.md` (≤ 2,048 bytes); `describe` cuts a description at a character cap with `...`; `link_native` links the **chosen** skills into `~/.claude/skills` and `~/.codex/skills`; the one line (≤ 300 characters) |
+| Search | `plugins/branchyard/skills/find-tools/scripts/tools.py` | BM25 (`K1 = 1.5`, `B = 0.75`) over frontmatter and headings of each skill, Anvil's `search.json` per connector, helper lines; `search`, `show`, `schema`; ids `pptx`, `repository:tone` for a custom skill, `kind:id` to disambiguate; standard library only |
+| The store | `crates/branchyard/src/toolstore.rs` (tests in `toolstore/tests.rs`) | `skills/<name>@<digest>/`, `connectors/<id>@<hash>/`, `store.json`; `by tools publish` and `pull`; linked where the provider sees the store (Microsandbox mounts the store root read-only; GKE mounts the bucket through gcsfuse), copied elsewhere |
+| Policy | `crates/branchyard-server` ([tool policy](server.md#tool-policy)) | `tenant:`, `group:`, `principal:` and `self:` records with a `skills` part (built-in ids), the policy version (a recheck at a claim only *removes* tools), `GET /v1/tools` with the state machine of [tools model, section 1](tools-model.md#1-the-model) |
 | The manifest | `crates/branchyard/src/manifest.rs` ([the turn manifest](connectors.md#the-turn-manifest)) | `skills: all \| {chosen}`, `skill_digests`, enforced as `bundle_mismatch` before the harness starts |
+| The gateway token | `crates/branchyard/src/connectors/issue.rs` | Issued only to a turn with a connector grant (`RefusalKind::NoGrant` otherwise), with the gateway URL as audience and the manifest digest as `by_manifest`; it is not a credential for the Branchyard server |
 | The record | `Activity::Provisioned.skills` | Every turn's staged skills by layer, name and digest, and what was withheld |
+| The eval | `tools/skill_eval.py`, `evals/skills/scenarios/*.toml`, `tests/test_skill_eval.py` | 48 scenarios (a prompt that never names the skill, the tools chosen, `expect_skills`, `must_not`, checks); `score` reads `by log --json` and reports `discovery_recall`, `discovery_precision`, `searched_rate`, `tokens_per_success`; `run` drives a harness with a model, or a fake agent with `--command`; `sizes` measures the static text; records go to `evals/skills/records/` |
 
 ## Goals and non-goals
 
 1. One index over every source, and one search over it, with the same ranking in the sandbox and on the server.
-2. A turn's index lists every skill the turn *may* see; bodies are materialized only when read. `INDEX.md` stays at 4 KB.
-3. Every skill has a content identity, a version and a provenance, and every workspace has a lockfile, so an update is a diff and a rollback is a line.
-4. Each source has one trust rule and one policy owner, and the states are the tools model's.
-5. Each slice ships on its own, hermetically tested, and the eval says before and after whether discovery got better or worse.
+2. A turn's index lists every skill the turn *may* see, and `INDEX.md` stays at 4 KB. Where the provider links the store, every mounted body is linked; elsewhere the chosen bodies are copied and the rest are fetched on `tools show`, last in the plan.
+3. A reference is a document of its own: a search can land on one paragraph of a skill without the model reading the skill.
+4. Every skill has a content identity (its digest) and a provenance, recorded in the manifest and the turn's record, so what a turn saw is known from the record.
+5. Each source has one trust rule and one policy owner, and the states are the tools model's.
+6. Each slice ships on its own, hermetically tested, and the eval says before and after whether discovery got better or worse.
 
-Not goals: a public marketplace of Branchyard's own (a marketplace is a source the registry reads, pinned by digest); signing infrastructure beyond what a digest and a publisher record give (an open decision below); changing what native harnesses load from their own folders.
+Not goals now: a marketplace, a lockfile, signatures, embeddings, a usage or recency signal in ranking ([Later](#later)); changing what native harnesses load from their own folders.
 
 ## 1. Sources
 
-A skill comes from one of these sources. The `Layer` enum of `skillset.rs` becomes `Source`, with the two values it has plus the rest; `layer` stays the serialized field name so recorded events read back.
+A skill comes from one of these sources. The `Layer` enum of `skillset.rs` becomes `Source`, with the two values it has plus the rest; `layer` stays the serialized field name so recorded events read back, and `Repository` stays declared before `BuiltIn`: `set_digest` sorts by the derived `Ord`, so a new variant goes after the two that exist or every recorded trust digest changes.
 
-| Source | Who adds | Where it lives | Trust rule | Policy owner |
-|---|---|---|---|---|
-| `built_in` | The release | The `by` binary and the tool store | Shipped and embedded; the embed tests compare it with the files | Administrator (`skills` part of the policy) |
-| `repository` | Repository writers, through git | `.agents/skills/`, and, proposed, `.branchyard/skills/` and `.claude/skills/` of the base commit, in that order of precedence | A person trusts the set by digest locally (`by skills trust`); a server stages it only under `allow_repository_skills` | Operator |
-| `user` | The person | The server store (`user:<tenant>:<subject>`), or `~/.config/branchyard/skills/` locally | The person's own; reaches only sessions they start, never a fork or snapshot of another's | The person (`self:` policy) |
-| `organisation` | A tenant administrator | The server store, per tenant and group, as policy is keyed | On by default; an operator setting `skills.require_approval` makes each digest need an administrator's approval before it is `allowed` | Administrator |
-| `marketplace` | Whoever the lockfile names | A remote registry (OCI or an HTTPS index), **pinned by digest in the lockfile** | Never resolved live: a turn sees only a digest the lockfile pins and the store holds; a marketplace is a place to fetch from, not a source of truth | Administrator (which registries; `skills.marketplaces`) |
-| `connector` | Anvil, through the gateway | The connector package's `SKILL.md` and `reference/` | The connector grant ([connectors](connectors.md)); an operation is listed only when its package's `search.json` is valid | Administrator (connector ceilings) |
-| `helper` | The envelope | `helpers/INDEX.md` lines, derived from `catalog/harnesses.toml` | The envelope | Administrator (`helpers`, `max_helpers`) |
-| `memory` | Consolidation, after review | The server store, as an `organisation` or `user` skill with provenance to events | A person approved it; see [memory](memory.md) | As its scope's source |
+| Source | Who adds | Where it lives | Trust rule | Policy owner | Slice |
+|---|---|---|---|---|---|
+| `built_in` | The release | The `by` binary and the shared tool store | Shipped and embedded; the embed tests compare it with the files | Administrator (`skills` part of the policy) | today |
+| `repository` | Repository writers, through git | `.agents/skills/` of the base commit | A person trusts the set by digest locally (`by skills trust`); a server stages it only under `allow_repository_skills` | Operator | today |
+| `user` | The person | `~/.config/branchyard/skills/<name>/` locally (M1); the server's per-tenant cache under `user:<tenant>:<subject>` (R4) | The person's own; reaches only sessions they start, never a fork or snapshot of another's | The person (`self:` policy) | M1, R4 |
+| `organisation` | A tenant administrator | The server's per-tenant cache, per tenant and group, as policy is keyed | On by default; an operator setting `skills.require_approval` makes each digest need an administrator's approval before it is `allowed` | Administrator | R4 |
+| `connector` | Anvil, through the gateway | The connector package's `SKILL.md` and `reference/` | The connector grant ([connectors](connectors.md)); an operation is listed only when its package's `search.json` is valid | Administrator (connector ceilings) | today |
+| `helper` | The envelope | `helpers/INDEX.md` lines, derived from `catalog/harnesses.toml` | The envelope | Administrator (`helpers`, `max_helpers`) | today |
+| `memory` | A person, or consolidation after review | As a `repository` skill (team memory, through git) or a `user` skill (personal memory); see [memory](memory.md) | The source's own rule: `by skills trust` for the repository set, the person's own for theirs | As its source | M1 |
 
-**Precedence** when two sources name one skill: `repository`, then `user`, then `organisation`, then `marketplace`, then `built_in`; the [skill delivery decision](superpowers/specs/2026-10-29-skill-delivery-design.md#decisions) of 29 October 2026 put workspace first, repository, personal, team, and this page keeps that order with the workspace folded into `organisation` (a workspace is a group). A built-in name is reserved today; with sources it is *shadowable*: a `repository:find-tools` is refused (the search skill is Branchyard's), every other built-in may be shadowed, and the index says `shadows built_in` on the entry. Open decision 2 asks whether to keep the reservation.
+**Precedence** when two sources name one skill is an open decision ([open decision 1](#open-decisions)). The [skill delivery decision](superpowers/specs/2026-10-29-skill-delivery-design.md#decisions) of 29 October 2026 is workspace, then repository, then personal, then team, with workspace skills owner-only; this page's first draft put `repository` first and folded the owner-only workspace into an administrator-owned `organisation`, which is a different decision, not the same one restated. Until it is settled, the two sources that exist today keep their order (`repository`, then `built_in`), and the local `user` source of M1 sits between them: a person's own skill shadows a built-in and not a repository's. A built-in name is reserved today; with sources it is *shadowable* except `find-tools` (the search skill is Branchyard's), and the index says `shadows built_in` on the entry ([open decision 2](#open-decisions)).
 
 **States, per source.** The five states of the tools model, and a sixth this page adds:
 
 | State | Means for a skill | Who owns it |
 |---|---|---|
-| Available | Its digest is in the registry (built in, published by an administrator, pulled from a marketplace, committed to the repository) | Operator |
+| Available | Its digest is known (built in, committed to the repository, in the person's folder, published to the tenant) | Operator |
 | Allowed | The caller's effective policy lists the skill or its source | Administrator |
-| Ready | It is installed in the person's library (user skills), trusted (repository skills), or approved (organisation skills under `require_approval`); built-in skills are ready once allowed | Person |
+| Ready | It is trusted (repository skills), the person's own (user skills), or approved (organisation skills under `require_approval`); built-in skills are ready once allowed | Person |
 | On by default | The workspace's defaults name it | Workspace owner |
-| Chosen | The session's `tools` name it; its body is **materialized** before the harness starts, as today | Person, per query |
-| **Mounted** | Its index entry is in the turn's tree, and its body appears on first read | The engine |
+| Chosen | The session's `tools` name it; its body is in the tree before the harness starts, as today | Person, per query |
+| **Mounted** | Its index entry is in the turn's tree and its digest is in the manifest; its body is linked where the provider links the store | The engine |
 
-Mounted ⊆ Ready: a turn's index lists every skill that is ready for the caller, chosen or not; a skill that is only allowed is not listed (the person has not installed or trusted it), and one that is not allowed does not exist for the turn. `GET /v1/tools` reports the sixth state as `mounted: true` on a skill row that a session would list. Admission computes it again, as for the rest.
+Mounted ⊆ Ready: a turn's index lists every skill that is ready for the caller, chosen or not; a skill that is only allowed is not listed (the person has not trusted or installed it), and one that is not allowed does not exist for the turn. `GET /v1/tools` reports the sixth state as `mounted: true` on a skill row that a session would list. Admission computes it again, as for the rest. A set is fixed when the session is created, as today: a skill published or trusted afterwards reaches **new sessions**, not running ones, and a publish does not move the policy version (the recheck at a claim only removes tools; moving the version on every publish would recheck every session of the tenant for nothing).
 
-**What a turn may see** is therefore `ready(caller) ∩ policy(tenant, groups, principal, self)`, resolved once into the manifest ([section 4](#4-identity-the-manifest-and-the-lockfile)); a harness on a branch (`BRANCHYARD_BRANCH` set) can add nothing to it, the rule repository skills already follow.
+**What a turn may see** is `ready(caller) ∩ policy(tenant, groups, principal, self)`, resolved once into the manifest ([section 4](#4-identity-the-manifest)); a harness on a branch (`BRANCHYARD_BRANCH` set) can add nothing to it, the rule repository skills already follow.
+
+**Where bodies live, by source.** The shared tool store (`[tools] store`, the Microsandbox volume, the GKE bucket) holds **only `built_in` and `connector` packages**: a Microsandbox guest sees the store root and a GKE pod sees the bucket, so anything private to a tenant or a person in it would be readable by every guest that mounts it. `user`, `organisation` and `memory` bundles live in a **per-tenant cache** on the server (`<store>/tenants/<tenant>/skills/<name>@<digest>/`, keyed by digest, never mounted whole into a guest) or in the person's own folder locally, and reach a turn as links or copies in the turn's own tree (`.branchyard/capabilities/`), which is the only directory a guest is given. A guest is never handed a directory that holds another tenant's or another person's skills.
 
 ## 2. Packaging and identity
 
-A **skill bundle** is a directory as today (`SKILL.md` with frontmatter, `references/`, `scripts/`, other UTF-8 files; 1 MiB and 200 files; no links, no `..`) plus two generated files the publisher writes beside it, never inside the digest:
-
-```text
-skills/<name>@<digest>/          the bundle, content-addressed as today
-  SKILL.md
-  references/…
-  scripts/…
-skills/<name>@<digest>.index.json   the entry (section 3), generated from the bundle
-skills/<name>@<digest>.provenance.json
-```
-
-The digest stays `skillset::digest`: BLAKE3 over relative paths and contents in path order, length-prefixed, lowercase hex. The two sidecars are derived from the bundle, so they are reproducible and are checked, not trusted: `by skills verify` recomputes both.
+A **skill bundle** is a directory as today: `SKILL.md` with frontmatter, `references/`, `scripts/`, other UTF-8 files; 1 MiB and 200 files; no links, no `..`. Its **digest** stays `skillset::digest`: BLAKE3 over relative paths and contents in path order, length-prefixed, lowercase hex. Nothing is written beside the bundle: what the index needs is computed from the bundle at search time ([section 3](#3-the-index-and-search)); a sidecar file per digest is a later optimisation ([Later](#later)), written by `toolstore::publish_skill` if it comes, never by `tools/artifact_assets.py`, which generates the Rust embeds and knows no store digest.
 
 ```rust
-/// What the registry knows about one published digest.
+/// What the registry knows about one digest (R4; locally the manifest's entry is enough).
 pub struct SkillRecord {
     pub name: String,            // the directory's name, as the frontmatter's `name`
     pub digest: String,          // skillset::digest
     pub source: Source,
-    pub version: Option<String>, // frontmatter `version`, semver when given; None for a repository skill
     pub requires: Vec<String>,   // frontmatter `requires: [artifact-tools]`; today's "pptx brings artifact-tools", declared
     pub size: u64,
     pub files: u32,
@@ -99,76 +92,41 @@ pub struct SkillRecord {
 }
 
 pub struct Provenance {
-    pub origin: Origin,          // Release { by_version }, Commit { repo, commit, path }, Person { subject },
-                                 // Marketplace { registry, reference }, Consolidation { job, memory_ids }
-    pub publisher: String,       // who ran the publish: a subject, a token's name, or "release"
-    pub signature: Option<Signature>, // open decision 4
+    pub origin: Origin,    // Release { by_version }, Commit { repo, commit, path }, Person { subject },
+                           // Memory { scope, memory_ids }
+    pub publisher: String, // who ran the publish: a subject, a token's name, or "release"
 }
 ```
 
-**References are inside the digest.** A skill's `references/` and `scripts/` travel in its bundle, as now, so a reference can never be newer or older than the SKILL.md that cites it. A reference to a *sibling* skill (`../artifact-tools/INDEX.md`) is a dependency, declared in frontmatter as `requires`, and the engine materializes the required skill when it materializes the dependent one; a relative path that leaves the bundle and is not covered by `requires` is refused at publish time, naming the file and the path. The delegate skill's split keeps its `references/` inside the `delegate` bundle, so the split changes the index ([section 3](#3-the-index-and-search)) and nothing here.
+**References are inside the digest.** A skill's `references/` and `scripts/` travel in its bundle, as now, so a reference can never be newer or older than the SKILL.md that cites it. A reference to a *sibling* skill (`../artifact-tools/INDEX.md`) is a dependency, declared in frontmatter as `requires`, and the engine stages the required skill with the dependent one; a relative path that leaves the bundle and is not covered by `requires` is refused at publish time, naming the file and the path.
 
-**Versions.** `version` is optional and informational: identity is the digest. A registry maps `name → [{version, digest, published_ms, yanked}]`; `by skills update` moves the lockfile from one digest to another and shows the version pair when both have one. A yanked digest stays fetchable for a lockfile that pins it (a rollback must work) and is not offered by `update`.
+**The delegate skill's split** is the one skill that does not go through this path today, because delegate is not a staged skill: it is embedded, given to a spawning branch as instruction text, and installed as a plugin directory holding only `skills/delegate/SKILL.md` (`projection.rs`). The split therefore has to do its own installing, and [progressive disclosure](#progressive-disclosure) says what.
 
-**Updates and rollback** are lockfile edits:
-
-```text
-by skills update [NAME...] [--source S] [--dry-run]   # move pins to the newest allowed digest; prints a diff
-by skills pin NAME@DIGEST                             # pin one, from the registry or a marketplace
-by skills rollback [NAME] [--to DIGEST | --previous]  # the lockfile's last entry for NAME; the git history has the rest
-by skills verify                                      # every pinned digest is in the store and hashes to itself
-```
-
-A pinned digest the store lacks is fetched by `by skills pull` (today's `by tools pull`, kept as an alias) from the registry or the marketplace the record names, checked against the digest, and refused with the path on a mismatch. Nothing is ever fetched during a turn except through the materialization path of [section 5](#5-delivery-lazy-materialization), which fetches only digests the manifest already names.
+**What pins a skill.** A repository skill is pinned by the base commit and the trusted set's digest; a built-in by the `by` version; a local user skill by nothing, which is why the manifest records its digest ([section 4](#4-identity-the-manifest)): a turn is reproducible from its record, and a person who wants a pin commits the skill to the repository. A lockfile, versions, `update`, `rollback` and `yank` are deferred with the marketplace that would need them ([Later](#later)).
 
 ## 3. The index and search
 
-One entry format, whatever the source. Anvil's `search.json` ([contract v2, item 3](anvil-contract-v2.md#3-operation-search-index-and-a-lean-skillmd)) stays the connector's own file; the registry reads it into entries of the same shape, so one ranker serves both.
+One document shape, whatever the source. Anvil's `search.json` ([contract v2, item 3](anvil-contract-v2.md#3-operation-search-index-and-a-lean-skillmd)) stays the connector's own file; `tools.py` reads it into documents of the same shape, so one ranker serves both. The documents are built in memory from the tree when `tools search` runs, as today, from each skill's frontmatter, its headings and, new, its `references/*.md`:
 
-```json
-{
-  "schema": "branchyard.skill-index/v1",
-  "id": "pptx",
-  "source": "built_in",
-  "digest": "3f2a…",
-  "version": null,
-  "line": "Create, edit and validate PowerPoint decks with python-pptx and the artifact toolkit.",
-  "description": "…the frontmatter's description, whole…",
-  "summary": "…the first paragraph of SKILL.md after the title, ≤ 600 characters…",
-  "keywords": ["pptx", "powerpoint", "deck", "slides", "python-pptx"],
-  "headings": ["Create a deck", "Edit in place", "Validate"],
-  "requires": ["artifact-tools"],
-  "references": [
-    {"path": "references/layouts.md", "title": "Slide layouts", "summary": "…first paragraph…", "bytes": 4120}
-  ],
-  "scripts": [{"path": "scripts/run.py", "line": "python3 scripts/run.py setup|doctor|…"}],
-  "bytes": 61230,
-  "files": 9,
-  "updated_ms": 1762473600000,
-  "usage": {"opens_30d": 41, "searches_hit_30d": 37}
-}
-```
-
-- `line` is what `INDEX.md` prints: the description cut at a sentence, as `tooltree::describe` cuts it today. `keywords` come from frontmatter `keywords:` when given, else the tokens of the name, the description and the headings, computed by the publisher as Anvil computes `terms`. `summary` and each reference's `summary` are what let a search hit a reference without reading the skill.
-- A connector's entry is `{"id": "github", "source": "connector", …}` with one entry per operation beside it (`"id": "github.issues.list"`, `kind: operation`), read from `search.json` strictly, as today; the tolerant path for a package without one stays and is marked `tolerant: true` in the entry.
-- A helper's entry is one line from the catalog, as `render_helpers` writes it.
-- `usage` is written by the server from telemetry ([section 7](#7-observability)) and is absent locally; a ranker treats absent as zero.
-
-**Where entries live.** The publisher writes `<name>@<digest>.index.json` beside each bundle; `store.json` gains an `index` field per entry pointing at it. Per turn, the engine concatenates the entries of every mounted skill into `.branchyard/tools/index.jsonl` (one entry a line), which `bin/tools` reads first and falls back from to frontmatter when a line is missing, so a tree an older `by` wrote still searches. `index.jsonl` is for the script, not the model: it is not budgeted, and `INDEX.md` does not mention it.
-
-**`INDEX.md` stays at 4 KB** and lists the *chosen* skills in full, as today, then one line for the rest: `- 38 more skills are mounted: bin/tools search WORDS finds them`. With no choice (today's default) the chosen set is the built-ins the policy allows, as now, and the line counts what the registry adds. `helpers/INDEX.md` is unchanged.
-
-**Ranking.** BM25 as `tools.py` has it, over fields with weights: `id` and `keywords` ×3, `line` ×2, `headings`, `description`, `summary` and each reference's `title` and `summary` ×1. A reference is a document of its own (`id: pptx/references/layouts.md`) so a query can land on it; `tools show pptx/references/layouts.md` prints it. Three signals multiply the score, each bounded so none can lift an irrelevant result above a relevant one:
-
-| Signal | Factor | Why |
+| Field | From | Weight |
 |---|---|---|
-| State | chosen ×1.25; mounted ×1.0 | What the person picked for this query ranks first on a tie |
-| Recency | ×(1 + 0.1 · e^(−age_days/90)), so at most ×1.1 | A freshly updated skill wins ties with a stale one, and nothing more |
-| Usage | ×(1 + 0.1 · log10(1 + opens_30d)), capped at ×1.3 | A skill the tenant's turns open after searching for it is likelier right; never from an id a client could forge, only from the server's own telemetry |
+| `id` | the grammar below | ×3 |
+| `keywords` | frontmatter `keywords:` when given, else the tokens of the name | ×3 |
+| `line` | the description cut at the character cap, as `tooltree::describe` cuts it | ×2 |
+| `description` | the frontmatter's description, whole | ×1 |
+| `summary` | the first paragraph of `SKILL.md` after the title, ≤ 600 characters | ×1 |
+| `headings` | `##` and `###` lines | ×1 |
+| a reference's `title` and `summary` | its first heading and its first paragraph | ×1, as a document of its own |
 
-Policy is not a signal: a skill that is not mounted is not in the index, so it has no score. The eval is what decides whether these factors stay; each is a constant in one place and `tools search --plain` turns all three off, so the eval measures BM25 alone and with the factors.
+**Ids.** Today's are `pptx`, `repository:tone` for a custom skill and `kind:id` to disambiguate a skill from a connector or helper of the same name (`tools.py`). The grammar becomes `[kind:][source:]name[/references/FILE.md]`: `pptx`, `repository:tone`, `pptx/references/layouts.md`, `skill:pptx`. The source prefix is written only when the name is not a built-in's, as now. The eval's scenario ids freeze what `expect_skills` may name, so this grammar is fixed in R1 before scenarios name a reference.
 
-**Embeddings: not now.** BM25 over frontmatter and reference summaries is what the eval measures first. Embeddings come only if the eval shows misses BM25 cannot close: the criterion is **recall@3 below 0.90 on the eval set after the keywords and summaries of slice 1 are in**, and the misses being paraphrase misses (the query says "slideshow", the skill says "deck") rather than missing summaries. Then: a small local model (an ONNX sentence embedder under 100 MB) run by the publisher, vectors in the entry (`"embedding": {"model", "dims", "values"}`), a dot product in `tools.py`, and BM25 and the embedding fused by reciprocal rank; nothing calls a model service during a turn, and a tree without embeddings still searches.
+**`INDEX.md` stays at 4 KB** and lists the *chosen* skills in full, as today. The overflow line `tooltree.rs` already writes when the budget runs out (`- ...N more: bin/tools search WORDS`) is **extended**, not invented: it counts the mounted-but-unchosen skills too, so a turn with three chosen skills and forty mounted reads `- ...40 more: bin/tools search WORDS`. With no choice (today's default) the chosen set is the built-ins the policy allows, as now, and the line counts what the other sources add. `helpers/INDEX.md` is unchanged.
+
+**Ranking.** BM25 as `tools.py` has it, over the fields with the weights above. One factor multiplies the score: a *chosen* skill ×1.25, so what the person picked for this query wins a tie; `tools search --plain` turns it off, so the eval measures BM25 alone and with it. A skill that is not mounted is not in the index, so policy is not a signal. The recency and usage factors of the first draft are deferred, with the fix the review asked for, in [Later](#later).
+
+**One ranker.** `tools.py` is the reference implementation and the only one until something outside a sandbox needs to rank: `GET /v1/skills?q=` (R4) and consolidation's clustering ([memory](memory.md#4-consolidation-deterministic)) each need the same ranking in Rust. That is one port, `branchyard::rank`, with a golden fixture test: the same documents and queries ranked by `tools.py` and by the port, identical order, checked in `tests/test_find_tools.py` with the fixture committed.
+
+**Embeddings: not now.** BM25 over frontmatter, keywords and reference summaries is what the eval measures first; the criterion for revisiting is in [Later](#later).
 
 ### Progressive disclosure
 
@@ -177,164 +135,171 @@ Five levels, each a file read smaller than the next, and each the smallest thing
 | Level | What the model reads | Size | How |
 |---|---|---|---|
 | 0 | One line per chosen skill, and the count of the rest | `INDEX.md`, ≤ 4 KB | Always in the tree |
-| 1 | Frontmatter and summary of one skill | ≤ 1 KB | `tools show ID --brief`, or reading `skills/ID/SKILL.md` **before** it is materialized, which is a stub holding exactly this ([section 5](#5-delivery-lazy-materialization)) |
+| 1 | Frontmatter and summary of one skill | ≤ 1 KB | `tools show ID --brief` |
 | 2 | `SKILL.md`, the core | the budget of `tools/model_surface_budget.json` for `skill:ID` | `tools show ID`, or any read of the file |
 | 3 | One reference | its own size | `tools show ID/references/X.md`; a search can land here directly |
-| 4 | A script | run, not read | `scripts/` of the materialized bundle |
+| 4 | A script | run, not read | `scripts/` of the staged bundle |
 
-The delegate skill's split into a core and `references/` is this table applied to one skill: the core is level 2 and must fit `skill:delegate`'s cap; each reference is a level-3 document in the index with its own summary line, so a leaf that needs "how do I report a result" searches and opens one reference, not 38 KB. `check_model_surface.py`'s `spawning-branch` case keeps counting the core plus the instructions; a new row `skill:delegate/references` caps the sum of the reference summaries that the index carries for it, so the split cannot move the weight into the index.
+Where the provider links the store, every level is a local read. In a copied home, levels 1 to 3 of an unchosen skill need the fetch of [section 5](#5-delivery), which is why that placement stays chosen-only until R5.
 
-## 4. Identity: the manifest and the lockfile
+**The delegate skill's split** is this table applied to one skill, with the mechanics that skill has today ([Today](#today)):
 
-**The lockfile** is what a repository or workspace pins. One file, committed in a repository (`.branchyard/skills.lock.json`), kept in the server store for a workspace, and under `~/.config/branchyard/` for a person's own:
+- The core `SKILL.md` is level 2 and is what a spawning branch keeps receiving as instruction text (`projection::skill_text`). It cites each reference by its path **in the plugin directory** (`<plugin>/skills/delegate/references/report.md`), not relatively: a harness that takes the skill as text has no file for a relative path to resolve against.
+- `projection` installs `skills/delegate/references/*` from `branchyard_provision::skills::skill("delegate").files` (the embed already carries every file of the skill), instead of the one `include_str!` of `SKILL.md` it installs today.
+- `crates/branchyard-cli/src/operations.rs` (`the_skill_names_only_commands_and_flags_that_exist`) scans `delegate/references/*.md` as it scans `delegate/SKILL.md`.
+- `check_model_surface.py`: `spawning-branch` keeps counting the core plus the MCP instructions and is lowered with `--write` once the core shrinks; a new group `references:delegate` in `groups()` caps the references' total, so the split cannot move the weight somewhere uncounted; each `STATED_LIMITS` row whose number moves into a reference points its `text` at that reference.
+- `tools/skill_eval.py sizes` keeps its `delegate SKILL.md` row and gains one per reference.
+- Delegate stays **out of the searchable index** for now: it is not in `capabilities.json`, not staged into the tree, and a leaf never receives it (a leaf gets `leaf.md`). Whether it should join the index, so a leaf or a spawning branch can search for "how do I report a result", is [open decision 3](#open-decisions); nothing on this page depends on it.
 
-```json
-{
-  "schema": "branchyard.skills-lock/v1",
-  "skills": [
-    {"name": "pptx", "source": "built_in", "digest": "3f2a…", "version": null},
-    {"name": "style-guide", "source": "repository", "digest": "9c01…", "commit": "ab7537cf"},
-    {"name": "release-notes", "source": "marketplace", "digest": "77e4…", "version": "1.4.0",
-     "from": "oci://registry.example.com/skills/release-notes:1.4.0"}
-  ],
-  "updated_ms": 1762473600000,
-  "previous": [{"name": "release-notes", "digest": "51a0…", "version": "1.3.2", "until_ms": 1762387200000}]
-}
-```
+## 4. Identity: the manifest
 
-`previous` keeps the last digest per name so `rollback --previous` needs no registry; the git history has the rest. A lockfile is read from the base commit, as repository skills are, never from the worktree. A session's effective pins are the union of the three lockfiles, most specific first (repository, then workspace, then the person's), and an entry a lockfile pins that policy does not allow is withheld with the reason, as a repository set is today.
-
-**The manifest** gains one field and one rule. `skills` becomes:
+The manifest's `skills` field becomes:
 
 ```json
 "skills": {
   "chosen": ["pptx", "find-tools"],
-  "mounted": [{"id": "pptx", "digest": "3f2a…", "source": "built_in"}, {"id": "style-guide", "digest": "9c01…", "source": "repository"}, "…"]
+  "mounted": [{"id": "pptx", "digest": "3f2a…", "source": "built_in"},
+              {"id": "repository:style-guide", "digest": "9c01…", "source": "repository"},
+              {"id": "user:memory-parser", "digest": "c4e1…", "source": "user"}]
 }
 ```
 
-`chosen` is what is materialized before the harness starts (today's `chosen`; `all` means every mounted built-in, as now). `mounted` is every entry the turn's index lists, with its digest; `skill_digests` is folded into it. The rule: **a turn may materialize a digest only if `mounted` names it**, and a fetched body is checked against that digest before it is linked in. The `bundle_mismatch` check extends to the mounted list: an index entry whose store sidecar hashes to another digest fails the turn by name, as a staged skill does today.
+`chosen` is what is in the tree before the harness starts (today's `chosen`; `all` means every mounted built-in, as now). `mounted` is every entry the turn's index lists, with its digest; `skill_digests` is folded into it. The rule: **a turn may read or fetch a digest only if `mounted` names it**, and a body is checked against that digest before it is linked in. The `bundle_mismatch` check extends to the mounted list: an entry whose staged or linked files hash to another digest fails the turn by name, as a staged skill does today. `provisioned.skills` records the same list, so `by log` shows what a turn could find, and a withheld set keeps its reason there as now.
 
-## 5. Delivery: lazy materialization
+## 5. Delivery
 
-The turn's tree lists everything mounted and holds the bodies of what was chosen. For the rest, `skills/<id>/` exists and holds one file, the **stub** `SKILL.md`: the frontmatter, the summary, and one line, `This skill is not materialized yet: run bin/tools show <id>, or read this file again in a moment.` The stub is level 1 of the disclosure table, so a harness that opens the file by itself (Claude Code's native skill loader reads frontmatter from `~/.claude/skills/<id>/SKILL.md`) gets exactly the frontmatter and nothing stale. Materializing replaces the stub directory by a link to the store entry, or by a copy, atomically (write beside, rename over).
+**Where the provider links the store** (a local harness, Microsandbox's read-only volume, GKE's gcsfuse volume), a mounted built-in or connector package is a link into the store, body and all, so mounting everything ready costs what linking the chosen set costs today: a directory of links. A repository skill is read from the base commit into the tree, as today; a local user skill is copied from the person's folder into the tree. Nothing new is fetched, no stub exists, and a harness that opens `skills/<id>/SKILL.md` by itself reads the body. This is R2 and it needs no network, no token and no new component.
 
-Four ways to make the body appear, compared honestly:
+Of these, only the local harness and Microsandbox have been run with the store; the GKE mount is configured and asserted in tests and **has not been run live** ([tools model](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery), "Not done"), so R2's GKE row is a claim from configuration until a dated record says otherwise.
+
+**Where the home is copied in** (a container under gVisor, Substrate, a recipe machine), the turn carries only the chosen bodies today, and stays **chosen-only** until R5. R5 adds the one mechanism that works there: a fetch in `tools show`, through the credential proxy that already runs in those sandboxes, from `GET /v1/skills/bundles/{digest}` on the Branchyard server. Three facts about the credential decide its shape:
+
+- the gateway token a turn holds is issued only when the turn has a connector grant (`issue.rs`, `RefusalKind::NoGrant`), has the gateway URL as its audience and carries no server scope, so it cannot be the credential for a server route;
+- Substrate's proxy is configuration only, and a local process has no token of any kind;
+- so R5 issues a **separate per-turn skills credential**: bound to `(tenant, session, turn, manifest digest)`, with the server as audience, issued to every sandboxed turn whether or not it has a connector grant, and checked by the server as `digest ∈ manifest.mounted` of the manifest it stored with the session. The route has no `read` scope and takes no person's token; a person's `by skills pull` is a different route ([section 6](#6-surfaces)).
+
+Four ways to make a body appear, compared honestly, with the verdict the plan follows:
 
 | Option | How | Where it works | What it costs | Verdict |
 |---|---|---|---|---|
-| **A. A literal FUSE mount** of the registry | A filesystem that fetches a file on `open` | Only where the guest can mount: Cloud Storage FUSE already serves the tool store on GKE through the CSI driver ([tools model, step 3](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery)); a local FUSE needs `/dev/fuse` and `CAP_SYS_ADMIN` or `fusermount`, which a Microsandbox guest, a container under gVisor and a Substrate actor do not have, and a developer's machine often lacks | A privileged helper per placement; a second filesystem to debug; a mount is per template on Substrate ([why not a gcsfuse mount](superpowers/specs/2026-10-29-skill-delivery-design.md#why-not-a-gcsfuse-mount)) | **Use only what exists**: the gcsfuse store on GKE. Build no FUSE of our own |
-| **B. A fetch shim in `tools show`** | `tools show` finds a stub, fetches the bundle over HTTP as a tar, checks the digest, and swaps it in | Everywhere the guest reaches the Branchyard server: through the credential proxy in the sandbox ([the credential proxy](connectors.md#the-credential-proxy-in-the-sandbox)), which already forwards gateway calls with the turn's token and gains one more upstream, the server's `GET /v1/skills/bundles/{digest}` | One route, one `tools.py` function (stdlib `urllib`, no new dependency), and the proxy forwarding a second host; a harness that reads the file instead of running `tools show` sees the stub | **Build this**; it is the fallback everywhere and the only option on Substrate and in a container |
-| **C. A per-host content-addressed cache shared across turns** | The tool store (`[tools] store`), linked into the turn | A local harness, a private home, Microsandbox (read-only volume of the store root), GKE (gcsfuse) | Already built; a store miss is a copy today | **Keep as the first tier**: a mounted skill whose digest the store holds is linked at once, body and all, and needs no stub |
-| **D. Prefetch from the search query** | `tools search` materializes its top-3 results after printing them | Everywhere B works | Three fetches a search, most wasted; a model that searches five times before opening anything pulls fifteen bundles | **Narrow it**: prefetch only the top result, only when its bundle is under 64 KB, in the background, so the open that usually follows is a local read; measured by `branchyard_skill_fetch_seconds` and dropped if the eval's open-after-search rate does not rise |
+| **A. A literal FUSE mount** | A filesystem that fetches a file on `open` | Only where the guest can mount: the gcsfuse CSI volume on GKE (not run live); a local FUSE needs `/dev/fuse` and `CAP_SYS_ADMIN` or `fusermount`, which a Microsandbox guest, a container under gVisor and a Substrate actor do not have ([why not a gcsfuse mount](superpowers/specs/2026-10-29-skill-delivery-design.md#why-not-a-gcsfuse-mount)) | A privileged helper per placement; a second filesystem to debug | **Use only what exists**; build no FUSE of our own |
+| **B. A fetch in `tools show`** | `tools show` finds an unstaged mounted id, fetches the bundle as a tar through the proxy, checks the digest, swaps it in atomically | Every sandbox that runs the credential proxy | One route, one `tools.py` function (stdlib `urllib`), the proxy forwarding one more upstream, the skills credential above; a harness that reads the file instead of running `tools show` finds a stub | **Build last (R5)**: only the copied placements need it, and only once R4 gives them a source to fetch from |
+| **C. The shared store, linked** | `[tools] store` linked into the turn | Local, Microsandbox, GKE | Already built | **First (R2)**: mounted equals linked there |
+| **D. Prefetch from the search query** | `tools search` fetches its top result | Everywhere B works | Fetches that are mostly wasted | **Deferred** until a live record shows fetch latency matters |
 
-**Recommendation per placement:**
-
-| Placement | Index | Bodies | Why |
-|---|---|---|---|
-| Local process, private home | `index.jsonl` written per turn | C: links into the host store for every mounted digest the store holds; B for a digest it lacks, fetched by the engine on the host **before** the turn when the skill is chosen, and by the shim during the turn otherwise (the harness has the host's network and `by`) | No sandbox to cross; the store is a directory |
-| Microsandbox | the same | C: the store is a read-only virtiofs volume, so every digest in it is a file read away; B through the in-guest credential proxy for a digest the store lacks, written to `~/.branchyard/skills-cache/` in the guest's home | The guest cannot mount or fetch on its own; the proxy already runs there |
-| Container (gVisor) | the same | B through the host's proxy; the store is copied, not mounted, so only chosen bodies are copied in and the rest are stubs | A private volume at `/tools`, no store mount |
-| GKE Agent Sandbox | the same | A/C: the gcsfuse CSI volume with its file cache *is* the lazy materialization; a stub is replaced by a link into the mount; B through the sidecar for a digest the bucket lacks (a marketplace skill not yet mirrored) | The mount exists and the FQDN policy already allows `storage.googleapis.com` |
-| Substrate | the same | B through the actor's credential proxy sidecar (configuration only today); chosen bodies copied in with the home as now | No mounts, ever; copying the whole registry would cost what the whole skill set costs today |
-
-So one mechanism (B) with one fast path (C, or the gcsfuse mount where it exists), and no new privileged component anywhere. **The route:** `GET /v1/skills/bundles/{digest}` (scope `read`), answering `application/x-tar` of the bundle's files with `X-Branchyard-Digest`; it checks that the caller's token is a turn token whose manifest's `mounted` list names the digest (the manifest digest is `by_manifest` in the token, and the server stores manifests with sessions), so a turn cannot fetch a skill it was not admitted with, and a bundle is served to a person's own `by skills pull` under their policy. `GET /v1/skills/bundles/{digest}/files/{path}` serves one file for a level-3 read that does not want the rest. The shim writes to a 0700 directory, verifies the digest over the unpacked files with the same function as `skillset::digest`, then renames into place; a mismatch leaves the stub and prints the digest pair, and the turn's log gets a warning event.
-
-**What stays as it is:** the chosen skills are materialized before the harness starts, so a turn that chose well never fetches; `link_native` links the chosen skills and the stubs into the harness's own skills directory, so Claude Code's and Codex's native loaders see every mounted skill's frontmatter and only that.
+**Stubs**, which exist only in R5 and only in a copied home: `skills/<id>/SKILL.md` holds the frontmatter, the summary, and one line: `This skill is not staged in this sandbox: run bin/tools show <id> to fetch it.` Nothing materializes on a read, so the stub never says it will. Claude Code's native loader reads frontmatter from `~/.claude/skills/<id>/SKILL.md`, but `link_native` links **chosen skills only** (as `tooltree.rs` does today, and R2 keeps it): a native directory holding every mounted skill would paste every name and description into the harness's own context with no budget, which is the cost this page exists to remove.
 
 ## 6. Surfaces
 
-**CLI.** `by skills` grows from `ls | trust | untrust` (kept as aliases) into the registry's command; `by tools publish | pull` stay for the store and gain the sidecars.
+**CLI.** `by skills` grows from `ls | trust | untrust` (kept) into the registry's command; `by tools publish | pull` stay for the shared store.
 
 ```text
-by skills list [--source S] [--state S] [--json]        # every skill with its source, digest, version, state
-by skills search WORDS... [--plain] [--json]            # the same ranker as bin/tools, over the caller's mounted set
-by skills show ID [--references] [--json]               # the index entry; --references lists level-3 documents
-by skills add PATH | oci://… | https://…[@DIGEST]       # publish to the user library (default) or --org (an administrator)
-by skills pin NAME@DIGEST | update | rollback | verify  # the lockfile (section 2)
-by skills remove NAME [--org]                           # from the library or the organisation registry; the lockfile is edited
+by skills list [--source S] [--state S] [--json]        # every skill with its source, digest and state (R2)
+by skills search WORDS... [--plain] [--json]            # the same ranker as bin/tools, over the caller's mounted set (R2)
+by skills show ID [--references] [--json]               # the entry; --references lists the level-3 documents (R2)
+by skills add PATH [--name N]                           # copy a bundle into ~/.config/branchyard/skills/ (M1); --org publishes to the tenant (R4)
+by skills remove NAME [--org]                           # the reverse (M1, R4)
 by skills trust | untrust                               # repository sets, as today
-by skills index --out DIR                               # write index.jsonl and stubs for the caller's set, for the eval
-by skills usage [--since 30d]                           # searches, opens and fetches by skill, from the events
+by skills usage [--since 30d]                           # searches and opens by skill, from the events (R2)
+by skills pull [DIGEST...]                              # fill the local store or cache from a server (R4; today's `by tools pull` kept)
 ```
 
-`by skills` refuses to run inside a harness for everything but `list`, `search` and `show`, the rule `by knowledge` follows: what a turn may see is decided by people. With `--remote` every command acts as the token's principal.
+`by skills` refuses to run inside a harness for everything but `list`, `search` and `show`, the rule `by knowledge` follows: what a turn may see is decided by people. Locally that refusal is **advisory** (`BRANCHYARD_BRANCH` is an environment variable, and a local harness can write the folder directly); on a server it is enforced, because a turn holds no `run` token. With `--remote` every command acts as the token's principal. A new refusal is a `Report` with a kind and a `next:`, not a `Failure::Message` (`tools/failure_message_ratchet.json` only goes down).
 
-**Server API.** Skills keep their rows in `GET /v1/tools` (kind `skill`, with `mounted` added); the registry gets its own routes for what the tools list does not carry:
+**Server API (R4).** Skills keep their rows in `GET /v1/tools` (kind `skill`, with `mounted` added); the registry gets its own routes for what the tools list does not carry:
 
-| Route | Does | Scope |
+| Route | Does | Credential |
 |---|---|---|
-| `GET /v1/skills?workspace=&source=&q=` | the caller's registry view: records with state, ranked by `q` with the same ranker | `read` |
-| `GET /v1/skills/{name}` | the record and its versions | `read` |
-| `GET /v1/skills/bundles/{digest}`, `…/files/{path}` | the bundle, for the shim and `by skills pull` | `read`, turn or person, held to the manifest or the policy |
-| `POST /v1/me/skills` | publish a bundle (tar, ≤ 1 MiB) to the caller's library; answers the record | `run` |
-| `DELETE /v1/me/skills/{name}` | remove it | `run` |
-| `POST /v1/admin/skills` | publish to the tenant's registry, with `groups` | `admin` |
-| `POST /v1/admin/skills/{name}@{digest}/approve` | under `require_approval` | `admin` |
-| `GET`, `PUT /v1/workspaces/{workspace}/skills.lock` | the workspace lockfile, guarded by `revision` | owner or editor |
+| `GET /v1/skills?source=&q=` | the caller's registry view: records with state, ranked by `q` with the Rust ranker | `read` |
+| `GET /v1/skills/{name}` | the record | `read` |
+| `GET /v1/skills/bundles/{digest}` | the bundle as `application/x-tar` (`tarball.rs`), `X-Branchyard-Digest` | the turn's skills credential, with `digest ∈ mounted`; or a person's token, with the digest in the **caller's own ready set** (a digest is visible in a shared session's `provisioned` events, so "policy allows the source" is not enough) |
+| `GET /v1/skills/bundles/{digest}/files/{path}` | one file, for a level-3 read | the same |
+| `POST /v1/me/skills`, `DELETE /v1/me/skills/{name}` | publish a bundle (tar, ≤ 1 MiB) to the caller's library; remove it | `run` |
+| `POST /v1/admin/skills`, `…/{name}@{digest}/approve` | publish to the tenant's registry with `groups`; approve under `require_approval` | `admin` |
 
-Every publish raises the tenant's policy version, so a session admitted before it is rechecked at its next claim, as a policy edit is today.
+A publish does not move the policy version. A policy edit does, as today, and may remove a source (`user:*`, `organisation:*` in the policy's `skills` part).
 
-**Console.** The Tools page ([the console](tools-model.md#5-the-console)) gains a **Source** column and filter on skill rows, an **Install** action for an allowed user or organisation skill, **Pin** on a workspace's row (writes the workspace lockfile), and a search box that calls `GET /v1/skills?q=` so a person sees what a turn would find for the same words. The composer's Tools menu is unchanged: it chooses; the registry decides what is mounted.
+**Console (R4).** The Tools page ([the console](tools-model.md#5-the-console)) gains a **Source** column and filter on skill rows and a search box that calls `GET /v1/skills?q=`, so a person sees what a turn would find for the same words. Install and Pin actions are deferred ([Later](#later)). The composer's Tools menu is unchanged: it chooses; the registry decides what is mounted.
 
-**MCP.** No new tool. The leaf's `tools/list` is at its cap (5,800 bytes) and the spawning branch's near its own; `tools search` in the tree is the surface, and the MCP `INSTRUCTIONS` already say so in one line. A `skills_search` MCP tool is reconsidered only for the manager MCP (`mcp-manager`, 2,000 characters), and only if the eval shows models skipping the shell.
+**MCP.** No new tool. The leaf's `tools/list` is at its cap and the spawning branch's near its own; `tools search` in the tree is the surface, and the MCP `INSTRUCTIONS` already say so in one line.
 
-**SDKs.** `Yard::skills() -> Vec<SkillRecord>`, `Yard::search_skills(words)`, `TaskOptions::skills` (the chosen ids, as now) and `TaskOptions::mount_skills: Mount::{Ready, ChosenOnly}` for a caller that wants today's behaviour; Python `repo.skills()`, `repo.search_skills(words)`, `TaskOptions(skills=..., mount_skills=...)`; the Rust and Python clients get the routes above.
+**SDKs.** `Yard::skills() -> Vec<SkillRecord>`, `Yard::search_skills(words)`, `TaskOptions::skills` (the chosen ids, as now); Python `repo.skills()`, `repo.search_skills(words)`. A `mount_skills` option is deferred with the behavioural decision it would serve ([open decision 4](#open-decisions)).
 
 ## 7. Observability
 
-Three things a turn does with a skill become events on the branch, so the eval, `by skills usage` and the usage signal all read one record:
+Three things a turn does with a skill become events on the branch, so the eval and `by skills usage` read one record:
 
 ```rust
 pub enum SkillActivity {
     /// `tools search` ran: the query's term count and the top results, never the words.
     Searched { terms: u32, results: Vec<String>, kind: Option<String>, plain: bool },
-    /// A skill, reference or operation was shown or read: the level, and whether it was fetched for it.
+    /// A skill, reference or operation was shown or read: the level, and (R5) whether it was fetched for it.
     Opened { id: String, digest: String, source: Source, level: u8, fetched: bool, bytes: u64, fetch_ms: Option<u64> },
-    /// A script of a materialized skill ran (the harness's `tool_started` named a path under it).
+    /// A script of a staged skill ran (the harness's `tool_started` named a path under it).
     Invoked { id: String, path: String },
 }
 ```
 
-`Activity::Skill(SkillActivity)` joins the enum. The guest-side `tools` script cannot write to the branch's log, so it appends one JSON line per action to `~/.branchyard/turn/skills.jsonl` in the home (writable everywhere, 0600), and the engine ingests the file at the turn's end, through the provider's exec before a sandbox is released, the way connector audit lines become `connector_call` events ([connectors, audit](connectors.md#audit)); a line that does not parse is one warning, and the file is removed with the turn. `Invoked` is the engine's own, from `tool_started` paths. The query's words are **not** recorded: a query can hold anything a prompt holds; its term count and the result ids are what the eval needs.
+`Activity::Skill(SkillActivity)` joins the enum (schemas regenerated by `python3 tools/check.py --fix`). The guest-side `tools` script cannot write to the branch's log, so it appends one JSON line per action to `~/.branchyard/turn/skills.jsonl` in the home (0600), and the engine ingests the file at the turn's end, through the provider's exec before a sandbox is released, the way connector audit lines become `connector_call` events ([connectors, audit](connectors.md#audit)); a line that does not parse is one warning, and the file is removed with the turn. `Invoked` is the engine's own, from `tool_started` paths. The query's words are **not** recorded ([open decision 5](#open-decisions)).
 
-Spans and metrics, on the [observability](observability.md) stack: a `skill <id>` span under `turn` from an `Opened` to the branch's next event, with `by.skill`, `by.skill.source`, `by.skill.level`, `by.skill.fetched`; and four families, labels bounded by source, level and placement, never an id:
+**These events are a local measure, not an input to ranking.** The jsonl is guest-writable, so a turn can forge an `Opened`; that is harmless for `by skills usage` and the eval (a forged open is a wrong open), and it is why no ranking factor reads them ([Later](#later) says what would).
+
+Spans and metrics, on the [observability](observability.md) stack: a `skill <id>` span under `turn` from an `Opened` to the branch's next event, with `by.skill`, `by.skill.source`, `by.skill.level`; and three families, labels bounded by source and level, never an id (`docs_facts.py --write` after they land, for `metrics.count`):
 
 | Metric | Type | Labels | What |
 |---|---|---|---|
 | `branchyard_skill_searches_total` | counter | `kind` | Searches turns ran |
-| `branchyard_skill_opens_total` | counter | `source`, `level`, `fetched` | Skills, references and operations opened |
-| `branchyard_skill_fetch_seconds` | histogram | `placement`, `source` | Time a materialization took, from stub to body |
+| `branchyard_skill_opens_total` | counter | `source`, `level` | Skills, references and operations opened |
 | `branchyard_skill_search_unopened_total` | counter | none | Searches followed by no open before the turn ended: the misses the eval looks at |
 
-The server aggregates `Opened` per `(tenant, id)` over 30 days into the entry's `usage` once a day. `by log` shows `skill search (3 terms) → pptx, docx, …`, `skill opened pptx/references/layouts.md (level 3, fetched 41 KB in 120 ms)`.
+`by log` shows `skill search (3 terms) → pptx, docx, …` and `skill opened pptx/references/layouts.md (level 3, 4,120 bytes)`.
 
 ### The eval
 
-The eval that is being built beside this design is the acceptance test for every slice. This page assumes the following of it and names the adapter if it differs: cases in `evals/skills/` as `{query, expect: [ids], k}`, run by `tools/skill_eval.py` over a tool tree (`--tree DIR`), reporting recall@k and mean reciprocal rank, hermetic (no model). The registry gives it two things: `by skills index --out DIR` writes a tree with `index.jsonl` and stubs for a set, so the eval runs over the real registry's entries and not only the shipped files; and the `Searched`/`Opened` chains give a **live** measure for a run that did use a model, which a dated record under `evals/skills/live/` writes as `searched → opened the expected skill` per case, labelled live with the harness and model. Before a slice: the eval's numbers at the commit before it. After: the same numbers at the commit that adds it, both quoted in the slice's status paragraph. A slice that lowers recall@3 does not merge.
+The eval is built ([skill-discovery eval](skill-eval.md)), and its interface is not the one this page's first draft assumed, so this section says what it is and what each slice adds to it.
 
-## 8. Migration and the phased plan
+- **A scenario** is a TOML table in `evals/skills/scenarios/<area>.toml`: a `prompt` that never names the skill, the `skills` chosen for the turn, `expect_skills` (and `expect_operations`, `expect_helpers`), `must_not`, `none` for a distractor, and file checks. Its validator refuses an expected skill that the topic indexes do not list.
+- **`score`** reads `by log --json` of a turn and reports, per scenario, whether it searched, what it opened and whether it found what was expected; aggregated as `discovery_recall`, `discovery_precision`, `searched_rate`, `needless_search_rate`, `tokens_per_success`. These are numbers about **an agent's turn**: they need a run, with a model (`run --harness H --model M --record`, a dated file under `evals/skills/records/`) or with the fake agent scripted to search and open (`--command FAKE --script FILE`, marked SCRIPTED, which tests the pipeline and measures nothing about an agent).
+- **There is no model-free ranking measure yet.** The ranker is what every slice here changes, so R1 adds one: `python3 tools/skill_eval.py rank --tree DIR [--scenarios GLOB] [--plain]` runs `tools.py search` over a tool tree with each scenario's prompt as the query and reports, per scenario, the rank of each expected id, and overall the **top-1 and top-3 rates** (the share of expected ids ranked first, or in the first three) and the mean reciprocal rank. It is hermetic, it runs in `tests/test_skill_eval.py` over the shipped skills, and it is what the slices below mean by "top-3 rate". It is a proxy: a prompt is a longer query than a model writes, and the live `discovery_recall` is the number that counts once a record exists.
+- **The tree the ranker sees** is what `by run` mounts (`REPO/.branchyard/capabilities/*/.branchyard/tools`); R2 adds `by skills index --out DIR`, which writes that tree for the caller's mounted set without running a turn, so `rank --tree` and `sizes --tree` measure a real mounted set and not only the shipped files.
+- **What each slice adds to the scenarios:** R1 lets `expect_skills` name `ID/references/X.md` and adds `references.toml`; M1 lets a scenario seed a skill under `.agents/skills/` through `files` (the runner trusts the set before `by run`) or under the private home's `~/.config/branchyard/skills/` through a new `home_files` key, and adds `memory.toml`; R2 lets `skills` be empty with `mounted = "ready"`, meaning only `find-tools` is chosen and everything else mounted, and the runner's meta records `skills_chosen_applied` once `by run` can choose built-ins.
 
-Each slice ships alone, behind nothing: a tree an older `by` wrote still searches, and a newer `by` on a tree without `index.jsonl` reads frontmatter as today. Sizes are engineer-days for one person who knows the code; a test is hermetic unless it says live.
+Before a slice: `rank` at the commit before it, over the frozen scenario set. After: the same at the commit that adds it, both quoted in the slice's status paragraph. A slice that lowers the top-3 rate on any existing scenario does not merge. A live record, when one is made, is quoted as live with its harness, model and date, and never stands in for the hermetic number or the other way round.
 
-| Slice | What ships | Size | Hermetic tests | The eval must show |
+## 8. Build plan
+
+The order is the review's: what the eval can measure first, what gives memory a home without a server, then what makes every ready skill findable where linking is free. The server, the credential and the fetch come after, each on a need the earlier slices show. Sizes are engineer-days for one person who knows the code; a test is hermetic unless it says live. Each slice ships alone, behind nothing: a tree an older `by` wrote still searches.
+
+| Slice | What ships | Days | Hermetic tests | The eval must show |
 |---|---|---|---|---|
-| **1. Entries and summaries** | The entry format; `tools/artifact_assets.py` writes `<name>@<digest>.index.json` for each built-in; `keywords` and `summary` in the ranker; references as documents; `tools show ID/references/X`; `--plain`; `index.jsonl` written by `tooltree::mount` | 3 | `tests/test_find_tools.py`: an entry per built-in validated against a JSON Schema; a query that hits a reference and not its skill; a tree without `index.jsonl` ranking as before; `cargo test -p branchyard --lib tooltree`: the file written and `INDEX.md` byte-identical | Before: recall@3 of today's ranker on the eval set. After: no case worse, and the reference cases (new to the set) found |
-| **2. Sources and the lockfile** | `Source` replacing `Layer` (serialized name kept); `.branchyard/skills/` and `.claude/skills/` as repository folders with precedence; `~/.config/branchyard/skills/` as the user source locally; the lockfile read from the base commit; `by skills list \| show \| pin \| update \| rollback \| verify`; `skills.lock.json` in `provisioned.skills` | 5 | `crates/branchyard/tests/skills.rs`: two folders naming one skill, precedence and the `shadows` note; a lockfile pinning a digest the commit does not hold, withheld by name; `rollback --previous`; `verify` on a tampered store entry; `crates/branchyard-cli/tests/skills.rs` for each command | Unchanged numbers (no ranking change); the eval's tree generator accepts the new sources |
-| **3. Mounted, not chosen** | `mounted` in the manifest; stubs for mounted-but-unchosen skills; `INDEX.md`'s "N more" line; `link_native` linking stubs; `SkillActivity::{Searched, Opened}` and the ingest of `skills.jsonl`; the four metrics; `by skills usage` | 5 | `tooltree`: a stub's exact content and size; the chosen set materialized, the rest stubs; the manifest refusing a digest not in `mounted`; `crates/branchyard/tests/native.rs`: a turn through the fake agent that runs `tools search` and `show`, and the events the ingest writes; `branchyard-server/src/observe.rs`: the metrics from the events | Before: recall@3 with the built-in set. After: the same cases over a tree where only `find-tools` is chosen and everything else is mounted: recall@3 within 0.02 of before (the ranker sees the same entries) |
-| **4. The shim and the route** | `GET /v1/skills/bundles/{digest}`, `…/files/{path}`; `tools show` fetching through `BRANCHYARD_SKILLS_URL` (set by the engine to the proxy's address); the credential proxy forwarding it; digest verification and the atomic swap; the engine's pre-turn fetch for a chosen skill the store lacks; `fetch_ms` in `Opened` | 6 | `branchyard-server/tests/skills.rs`: a turn token fetching a mounted digest, refused for an unmounted one, for another tenant's and for a wrong manifest; `tests/test_find_tools.py` with a loopback server: a stub replaced, a digest mismatch leaving the stub and exiting 3, a reference fetched alone; `connectors/sandbox_proxy/tests.rs`: the second upstream; `providers/tests.rs` with `FakeProvider`: a container turn materializing through the host's proxy | Unchanged recall; the live record (when one is made) shows `Opened.fetched` with `fetch_ms` under 500 ms on a loopback server |
-| **5. The server registry** | `SkillRecord` and `Provenance` in the store (SQLite and PostgreSQL, one conformance case); `POST /v1/me/skills`, `/v1/admin/skills`, approval under `require_approval`; the policy's `skills` part taking `source:` globs (`user:*`, `organisation:*`); publish raising the policy version; `GET /v1/skills`; the Tools page's Source column, Install and Pin; the workspace lockfile route | 8 | `branchyard-server/tests/skills.rs`: a user skill reaching only its owner's sessions (a second principal's start does not mount it); an organisation skill under `require_approval` not mounted until approved; a publish moving the version and a claim rechecking; the console in headless Chromium at 1440 and 390 pixels | Unchanged recall on the built-in set; a second eval set of organisation skills (fixtures) found at recall@3 ≥ 0.9 |
-| **6. Marketplaces and usage** | `skills.marketplaces` (OCI references through `oras`, or an HTTPS index with digests); `by skills add oci://…@DIGEST`; `yanked`; the daily usage aggregation into `usage`; the recency and usage factors; D's narrow prefetch | 5 | `toolstore/tests.rs` with the fake `oras`: a pull checked against the lockfile's digest, a mismatch refused by path; `tests/test_find_tools.py`: the factors bounded (a zero-BM25 document never ranks above a non-zero one), `--plain` off; the aggregation from fixture events | With factors on, recall@3 and MRR no worse than `--plain`; if worse, the factor is dropped before merge |
-| **7. Embeddings, conditional** | Only if slice 1's eval shows recall@3 < 0.90 with paraphrase misses: a publisher-side embedder, vectors in entries, reciprocal-rank fusion | 5 | A tree with and without vectors ranking the same when vectors are absent; fusion tests on fixtures | recall@3 ≥ 0.90 where BM25 alone did not reach it |
+| **R1. References are searchable** (with the delegate split) | `tools.py`: each `references/*.md` a document (title from its first heading, summary from its first paragraph), frontmatter `keywords`, the field weights, `tools show ID/references/X.md`, `--plain`, the id grammar; no sidecars, no `index.jsonl`, computed at search time. The delegate split as [progressive disclosure](#progressive-disclosure) lists it: `projection` installs `references/*`, the core cites them by plugin path, `operations.rs` scans them, `STATED_LIMITS` rows move, `references:delegate` in `groups()`, `spawning-branch` lowered with `--write`. `skill_eval.py rank` | 3 | `tests/test_find_tools.py`: a query that hits a reference and not its skill; a reference's id shown by `tools show`; `--plain` and the chosen factor; `cargo test -p branchyard --lib tooltree`: `INDEX.md` byte-identical; `cargo test -p branchyard projection`: the plugin directory holds `skills/delegate/references/*` with the embedded bytes; `cargo test -p branchyard-cli --bin by operations` over the references; `check_model_surface.py` green with the new group; `tests/test_skill_eval.py`: `rank` over the shipped tree, and the validator accepting `ID/references/X.md` | `rank` on the frozen set: no scenario's expected id ranks lower than at the parent commit; the new `references.toml` scenarios reach a top-3 rate ≥ 0.9 |
+| **M1. Memory as a reviewed skill** | On the [memory page](memory.md#9-build-plan): `by memory add \| list \| export`; team memory as `.agents/skills/memory-<topic>/` in a commit, reviewed as a pull request, reaching turns after `by skills trust`; personal memory in `~/.config/branchyard/skills/` as the local `user` source. On this page: `Source` replacing `Layer` (serialized name and declaration order kept), the local `user` source read into the set with its precedence, `by skills add \| remove` for it, `user:` ids in `provisioned.skills` | 4 | `crates/branchyard/tests/skills.rs`: a user skill and a repository skill naming one name, precedence and the `shadows` note; `user:find-tools` refused; a user folder with a bad bundle withheld by name; `crates/branchyard-cli/tests/skills.rs`: `add` and `remove`, `add` refused on a branch | Unchanged numbers on the existing scenarios; `memory.toml` as the memory page says |
+| **R2. Mounted, not chosen, where linking is free** | Where the provider links the store (local, Microsandbox, GKE), the tree links every ready skill: allowed built-ins, trusted repository skills, local user skills; `INDEX.md` lists the chosen skills and the extended overflow line; `link_native` links chosen skills only; the manifest's `skills: {chosen, mounted}` and `bundle_mismatch` over it; container, Substrate and recipe sandboxes stay chosen-only; `SkillActivity::{Searched, Opened, Invoked}` and the ingest of `skills.jsonl`, as a local measure; the three metrics; `by skills list \| search \| show \| usage \| index` | 4 | `tooltree`: the chosen set staged and the rest linked, `INDEX.md` ≤ 4,096 bytes with the overflow count, the native directory holding only chosen skills (a model-surface test, since that directory is context); the manifest refusing a digest not in `mounted`; a `FakeProvider` that copies the home staying chosen-only; `crates/branchyard/tests/native.rs`: a fake-agent turn that runs `tools search` and `tools show`, and the events the ingest writes; `branchyard-server/src/observe.rs`: the metrics from the events | `rank` over a tree written by `by skills index` with only `find-tools` chosen and everything else mounted: top-3 rate within 0.02 of the all-chosen tree (the ranker sees the same documents; the chosen factor is what could move it) |
+| **R3. Observations and deterministic consolidation** | On the [memory page](memory.md#9-build-plan): M2 and M3, with the tenant key, the author rule, value scrubbing and the at-least-once fixes the review asked for; `branchyard::rank`, the Rust port of the ranker, with its golden fixture | 11 | As the memory page lists them; `tests/test_find_tools.py`: the golden fixture ranked identically by `tools.py` and the port | Unchanged numbers |
+| **R4. The server registry** | `SkillRecord` and `Provenance` in the server store (tenant-keyed, SQLite and PostgreSQL, one conformance case); the per-tenant cache; `POST /v1/me/skills`, `/v1/admin/skills`, approval under `require_approval`; the policy's `skills` part taking `user:*` and `organisation:*`; `GET /v1/skills`; the **per-turn skills credential** and the bundle routes; `by skills pull` against the caller's ready set; the Tools page's Source column and search box; memory publication through the registry (M4) | 8 | `branchyard-server/tests/skills.rs`: a user skill reaching only its owner's sessions (a second principal's start does not mount it, and its `GET /v1/skills/bundles/{digest}` is refused); an organisation skill under `require_approval` not mounted until approved; a bundle fetched with the skills credential for a mounted digest, refused for an unmounted one, for another tenant's digest, for a wrong manifest, and for a gateway token; a publish leaving the policy version where it was; nothing of a tenant's cache under the shared store root; the console in headless Chromium at 1440 and 390 pixels | Unchanged numbers on the built-in set; a second scenario file of organisation skills (fixtures) at a top-3 rate ≥ 0.9 |
+| **R5. The fetch in `tools show`** | Stubs for mounted-but-unstaged skills in a copied home; `tools show` fetching through `BRANCHYARD_SKILLS_URL` (the proxy's address, set by the engine); the proxy forwarding the second upstream with the skills credential; digest verification over the unpacked files with `skillset::digest` and the atomic swap; `fetch_ms` in `Opened`; a `branchyard_skill_fetch_seconds` histogram | 6 | `tests/test_find_tools.py` with a loopback server: a stub replaced, a mismatch leaving the stub and exiting 3 with the digest pair, a reference fetched alone; `connectors/sandbox_proxy/tests.rs`: the second upstream and the credential; `providers/tests.rs` with `FakeProvider`: a container turn fetching through the host's proxy; a Substrate configuration carrying the upstream | Unchanged numbers; the live record, when one is made, shows `Opened.fetched` with `fetch_ms` under 500 ms on a loopback server |
 
-Migration of what exists: slice 1 changes no behaviour; slice 2 renames `Layer` in code only; slice 3 changes the default a turn sees (every ready skill mounted) and is the one slice with a behavioural default to decide ([open decision 1](#open-decisions)); `by tools publish` and `pull` keep working throughout and gain sidecars in slice 1. Documentation moves with each slice: `knowledge-skills.md`, `tools-model.md`, `surfaces.md`, `server.md`, the delegate skill, `leaf.md` and the MCP instructions for any new command a model may run, and `check_model_surface.py`'s budgets for the stub and the "N more" line.
+Documentation moves with each slice: `knowledge-skills.md`, `tools-model.md`, `surfaces.md`, `server.md`, `skill-eval.md`, the delegate skill, `leaf.md` and the MCP instructions for any new command a model may run, `check_model_surface.py`'s budgets for the overflow line, and `docs_facts.py --write` for the metrics.
+
+## Later
+
+Cut from the first plan, kept here so the reasons are not lost. None of these is needed for the goals above; each returns on a measured need.
+
+- **A lockfile, versions, `update`, `rollback`, `yank`.** Repository skills are pinned by the base commit and the trusted digest, built-ins by the `by` version, and the manifest records every mounted digest. A lockfile pays off only with a marketplace, which is also deferred. When it comes: `.branchyard/skills.lock.json` read from the base commit, `previous` per name for an offline rollback, a workspace lockfile route guarded by `revision`.
+- **Marketplaces (OCI or an HTTPS index) and signatures.** A marketplace is a place to fetch a digest from, never a source of truth; the `oras` path `by tools pull` has today is the start. Signatures (Ed25519 over the digest by a publisher key the tenant lists) make a marketplace entry verifiable offline and add key management; the field goes in with the marketplace, verification required only under `skills.require_signatures`.
+- **Sidecars (`<name>@<digest>.index.json`) and `index.jsonl`.** An optimisation for a tree with hundreds of skills: computed once at publish by `toolstore::publish_skill`, concatenated per turn. R1 computes at search time; measure before adding the files.
+- **Recency and usage factors.** Bounded multipliers (at most ×1.1 and ×1.3). Usage must be counted from **server-side fetches only** (the guest's `skills.jsonl` is forgeable), stored per tenant and injected into the turn's index at mount, never into anything shared across tenants. Each factor stays only if the eval shows the top-3 rate and MRR no worse than `--plain`.
+- **Embeddings.** Only if the eval shows a top-3 rate below 0.90 on the scenario set after R1, and the misses are paraphrase misses (the prompt says "slideshow", the skill says "deck") rather than missing summaries. Then a publisher-side embedder, vectors in the documents, reciprocal-rank fusion; nothing calls a model service during a turn, and a tree without vectors still searches. A test that runs an embedder edges toward "never call a model in a test"; its fixture is the vectors, not the model.
+- **Prefetch (option D).** Only after a live record shows fetch latency matters.
+- **Console Install and Pin, SDK `mount_skills`.** With the server sources and the decision on the default.
+- **A `skills_search` MCP tool.** Only for the manager MCP, and only if a live record shows models skipping the shell.
+- **`.branchyard/skills/` and `.claude/skills/` as repository folders.** Claude Code already loads `.claude/skills/` from the worktree natively, so adding it changes nothing for that harness; it would matter for the others and for the trust gate over the staged copy.
 
 ## Open decisions
 
-1. **Mount every ready skill by default, or keep today's chosen-only default?** This page says mount: index entries cost about 100 bytes each in `index.jsonl` and nothing in `INDEX.md` past one line. The alternative, `mount_skills = "chosen"` as the default with `ready` opt-in, keeps today's behaviour and makes slice 3 opt-in. Recommendation: mount by default, since the eval can measure the cost (an unchosen skill ranking above a chosen one) and the factor for `chosen` is there to correct it.
-2. **Shadowing built-in names.** Reserved today. This page proposes allowing a repository, user or organisation skill to shadow a built-in (except `find-tools`) with the index saying so. Keep the reservation and the error instead?
-3. **Repository folders.** Add `.branchyard/skills/` and `.claude/skills/` beside `.agents/skills/`, in that precedence? Reading `.claude/skills/` means Branchyard stages what Claude Code also loads natively from the worktree, which the trust gate then covers for the staged copy only.
-4. **Signatures.** Digest pinning plus the publisher record and TLS to the registry, or Ed25519 signatures over the digest by a publisher key the tenant lists (`skills.publishers`)? The second is small to build (the signing code exists for gateway tokens) and makes a marketplace entry verifiable offline; it also adds key management. Recommendation: build the field and verification, require it only when `skills.require_signatures` is set.
-5. **Approval by default for organisation skills.** The 29 October decision was no approval by default. This page keeps it; the memory design asks the opposite for memory-derived skills (approved by construction). Confirm.
-6. **Prefetch (option D).** Build the narrow form in slice 6, or leave fetching to the open and drop D entirely until a live record shows fetch latency matters?
-7. **The query's words in `Searched`.** Not recorded here, for privacy. The eval would learn more from them. Record a BLAKE3 of the normalized query so repeated queries can be counted without keeping the text?
+1. **Precedence between sources.** The 29 October decision is workspace, then repository, then personal, then team, with workspace skills owner-only. This page's first draft put repository first and merged workspace into an administrator-owned organisation source. Which stands? Until R4 only `repository`, `user` (local) and `built_in` exist, in that order; the decision is needed before R4 adds the server sources.
+2. **Shadowing built-in names.** Reserved today. This page proposes allowing a repository or user skill to shadow a built-in (except `find-tools`) with the index saying so. Keep the reservation and the error instead?
+3. **Delegate in the searchable index.** It stays out in R1. Should it join, so a leaf or a spawning branch can search for one reference of it instead of carrying the core? Joining means staging it into the tree (`capabilities.json`), a `skill:delegate` row, and a leaf receiving a skill it may not act on.
+4. **Mount every ready skill by default (R2), or keep chosen-only with `ready` opt-in?** This page says mount: an entry costs nothing in `INDEX.md` past the overflow line, and the eval measures the cost (an unchosen skill ranking above a chosen one) that the chosen factor exists to correct.
+5. **The query's words in `Searched`.** Not recorded here, for privacy. The eval would learn more from them. Record a BLAKE3 of the normalized query so repeated queries can be counted without keeping the text?
+6. **Approval by default for organisation skills (R4).** The 29 October decision was no approval by default. This page keeps it; memory published through the registry is approved by construction, since a person approved each memory. Confirm.
