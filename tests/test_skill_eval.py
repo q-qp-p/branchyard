@@ -71,9 +71,9 @@ def asked(command=None, at_ms=0, tool="Bash", **inp):
 
 
 class Scenarios(unittest.TestCase):
-    def test_there_are_thirty_to_sixty_across_every_area(self):
+    def test_there_are_thirty_to_eighty_across_every_area(self):
         self.assertGreaterEqual(len(SCENARIOS), 30)
-        self.assertLessEqual(len(SCENARIOS), 60)
+        self.assertLessEqual(len(SCENARIOS), 80)
         areas = {s.area for s in SCENARIOS.values()}
         for area in (
             "documents",
@@ -191,7 +191,7 @@ class Scenarios(unittest.TestCase):
             {s.id for s in skill_eval.load_scenarios("helper-*")},
             {s.id for s in SCENARIOS.values() if s.area == "helpers"},
         )
-        self.assertEqual(len(skill_eval.load_scenarios("distractors")), 4)
+        self.assertEqual(len(skill_eval.load_scenarios("distractors")), 7)
         self.assertEqual(
             {s.id for s in skill_eval.load_scenarios("pdf-fill-form,none-arithmetic")},
             {"pdf-fill-form", "none-arithmetic"},
@@ -454,9 +454,9 @@ class Fixtures(unittest.TestCase):
             self.assertEqual(first, second, name)
             self.assertGreater(len(first), 200, name)
 
-    def test_fourteen_scenarios_get_their_inputs(self):
-        # The thirteen that named binary inputs, and reference-pdf-render-review.
-        self.assertEqual(sum(1 for s in SCENARIOS.values() if s.fixtures), 14)
+    def test_sixteen_scenarios_get_their_inputs(self):
+        # The thirteen that named binary inputs, reference-pdf-render-review, and two workflow distractors.
+        self.assertEqual(sum(1 for s in SCENARIOS.values() if s.fixtures), 16)
 
     def test_the_files_open_with_the_libraries_that_made_them(self):
         import io

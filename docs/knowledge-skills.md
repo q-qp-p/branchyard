@@ -287,6 +287,40 @@ and generates indexes and embeds; it performs no network request. Refresh an
 upstream reference deliberately and review its new license and behavior before
 updating the record.
 
+## Workflow skills for a session that runs Branchyard
+
+Four built-in skills, in the `workflows` topic beside `parallel-deck`, teach a
+session that runs Branchyard as the person or meta-harness (`BRANCHYARD_BRANCH`
+unset) the loops where Branchyard is unique. They are not for a spawned leaf:
+`by pr` refuses inside a harness. Each `SKILL.md` is a short numbered loop; the
+detail is in `references/`, which `tools search` ranks as documents of their
+own.
+
+| Skill | The loop | References |
+|---|---|---|
+| `fan-judge` | choose harnesses with `by fleet advise`, fix a check or result schema, `by fan` with per-attempt budgets, `by compare`, `by judge`, pick and merge | `fan-setup.md`, `judge-pick.md` |
+| `pr-feedback-loop` | candidate, `by review`, `by pr`, `by pr --watch` (CI and reviews flow back), stacks with `--base`, merge readiness, `gh pr merge` | `pr-watch.md`, `stacks.md` |
+| `budgeted-explore` | `--budget-usd`, `--max-turns`, `--max-minutes`, `--permissions read-only`, `by map --total-usd`, stop rules, reading cost, usage and telemetry | `limits.md`, `reading-cost.md` |
+| `issue-pr` | `by issue` preview, `by run --issue`, tracker credentials, the closing or referencing line in the pull request | `trackers.md` |
+
+Their ids avoid function words (`to`, `a`, `on`, `and`): the ranker does not
+drop stop words from an id, so `issue-to-pr` ranked above `docx` for any prompt
+containing "to". The catalog entries carry `keywords`, which the generator now
+writes into the `SKILL.md` frontmatter (single words only; the generator refuses
+anything else), and which the search weights three times. Keywords are
+distinctive words (`fan`, `judge`, `ci`, `jira`), not generic ones (`check`,
+`fix`, `branch`): the first draft's generic keywords moved eleven existing
+scenarios down.
+
+`crates/branchyard-cli/src/operations.rs` scans the four `SKILL.md` files and
+every reference for `by` commands and flags that do not exist
+(`the_skill_names_only_commands_and_flags_that_exist`), and
+`tools/check_model_surface.py` caps each `SKILL.md` (`skill:NAME`). The
+[skill-discovery eval](skill-eval.md) measures that the skills are found:
+`evals/skills/scenarios/workflows.toml` holds seventeen scenarios (realistic
+asks that do not name the skill, three reference scenarios and two close
+distractors) and `distractors.toml` three asks that need no skill.
+
 ## Friction found during implementation
 
 The dated [verification record](evidence/knowledge-skills-2026-10-29/verification.json)

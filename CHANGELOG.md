@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+Four workflow skills for a session that runs Branchyard as the person or
+meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
+(when to fan out, harness choice, a result contract, `by fan`, `by compare`,
+`by judge`, picking and merging, per-attempt budgets), `pr-feedback-loop`
+(candidate, `by review`, `by pr`, `by pr --watch`, stacks with `--base`, merge
+readiness), `budgeted-explore` (budget, turn and time limits, read-only
+access, `by map --total-usd`, stop rules, reading cost, usage and telemetry) and
+`issue-pr` (`by issue`, `by run --issue`, tracker credentials, the link in the
+pull request). Each `SKILL.md` is a short loop with the detail in `references/`.
+`capabilities.json` entries may carry `keywords`, which `tools/artifact_assets.py`
+writes into the `SKILL.md` frontmatter (single words, refused otherwise) and the
+search weights three times. The `by` commands and flags the skills and their
+references name are scanned by `cargo test -p branchyard-cli --bin by
+operations`; each `SKILL.md` has a `skill:NAME` cap in the model-surface budget
+(no existing cap changed). `evals/skills/scenarios/workflows.toml` adds 17
+scenarios and `distractors.toml` three. Hermetic result, 7 November 2026
+(`tools/skill_eval.py rank`, no model): top-3 100% (65 of 65 expected ids) and MRR
+0.833, against 98% (47 of 48) and 0.800 at the parent; the 17 new scenarios are
+17 of 17 in the top three; no existing scenario ranks lower, with `claim-verify`
+given two keywords so that its miss (`claim-verify-numbers`) is rank 1 and not 12.
+Not done: a live run.
+
 A skill's references are searchable. In a turn's tool tree, `bin/tools search`
 ranks each `references/*.md` of a staged skill as a document of its own
 (`SKILL/references/FILE.md`: the skill's and the file's name, the first heading

@@ -150,6 +150,24 @@ class ArtifactAssetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "byte budget"):
             self.module.synchronize(self.root, write=False)
 
+    def test_catalog_keywords_become_frontmatter_the_search_reads_and_must_be_words(self) -> None:
+        value = json.loads(self.catalog.read_text())
+        value["skills"][0]["keywords"] = ["fan", "fan-out", "pr"]
+        self.catalog.write_text(json.dumps(value))
+        self.module.synchronize(self.root, write=True)
+        text = (self.skill / "SKILL.md").read_text()
+        self.assertIn('description: "Run tools."\nkeywords: [fan, fan-out, pr]\n---\n', text)
+        self.assertIn("Keep this body.", text)
+        self.assertEqual(self.module.synchronize(self.root, write=False), [])
+        del value["skills"][0]["keywords"]
+        self.catalog.write_text(json.dumps(value))
+        self.module.synchronize(self.root, write=True)
+        self.assertNotIn("keywords", (self.skill / "SKILL.md").read_text())
+        value["skills"][0]["keywords"] = ["two words"]
+        self.catalog.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, "single words"):
+            self.module.synchronize(self.root, write=False)
+
     def test_stale_topic_indexes_are_removed_without_removing_unrelated_files(self) -> None:
         self.module.synchronize(self.root, write=True)
         stale = self.plugin / "skills/topics/retired/INDEX.md"
