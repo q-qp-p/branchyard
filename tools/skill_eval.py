@@ -811,8 +811,9 @@ def seed(repo: Path, scenario: Scenario) -> None:
         target.write_text(content, encoding="utf-8")
 
 
-def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> None:
+    """Run git in `repo`, with `env` (the scenario's private HOME and identity) when given."""
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env)
 
 
 def sandbox_env(base: Path) -> dict[str, str]:
@@ -868,15 +869,15 @@ def run_scenario(scenario: Scenario, options: RunOptions, out: Path, base: Path)
     repo = work / "repo"
     repo.mkdir(parents=True)
     env = sandbox_env(work)
-    git(repo, "init", "-q", "-b", "main")
+    git(repo, "init", "-q", "-b", "main", env=env)
     (repo / "README.md").write_text("# scratch\n", encoding="utf-8")
     seed(repo, scenario)
     if scenario.connectors and options.bundles and options.anvil:
         (repo / "branchyard.toml").write_text(
             f'[connectors]\nbundles = "{options.bundles}"\nanvil = "{options.anvil}"\n', encoding="utf-8"
         )
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "scratch")
+    git(repo, "add", "-A", env=env)
+    git(repo, "commit", "-q", "-m", "scratch", env=env)
     started = datetime.now(UTC)
     clock = os.times().elapsed
     if scenario.connectors:
