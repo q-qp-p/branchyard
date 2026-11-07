@@ -727,7 +727,8 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             reference,
             prompt,
             json,
-        } => pr::show_issue(target, &reference, &prompt, json),
+            no_url_site,
+        } => pr::show_issue(target, &reference, &prompt, json, no_url_site),
         Command::Open {
             branch,
             editor,

@@ -1172,6 +1172,7 @@ by issue [OPTIONS] <REFERENCE> [PROMPT]
 | `<REFERENCE>` | The issue: a GitHub URL, #N or N, linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL |
 | `<PROMPT>` | Instructions to add to the prompt, as by run --issue REF "..." would |
 | `--json` | Print JSON |
+| `--no-url-site` | Take a Jira, GitLab or Linear site only from JIRA_URL, GITLAB_URL or LINEAR_API_URL, and refuse a URL that names another |
 
 ## `by review`
 

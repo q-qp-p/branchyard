@@ -392,6 +392,122 @@ fn a_child_is_opened_against_its_parent_then_rebased_and_retargeted_when_it_merg
     );
 }
 
+impl Repo {
+    /// Move the remote's `refs/heads/<name>` to `commit`, as someone else's
+    /// push would.
+    fn move_remote_ref(&self, name: &str, commit: &str) {
+        let out = self
+            .command("git")
+            .arg("--git-dir")
+            .arg(&self.remote)
+            .args(["update-ref", &format!("refs/heads/{name}"), commit])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    }
+}
+
+#[test]
+fn a_restack_that_moved_git_but_not_the_record_is_finished_by_running_it_again() {
+    let repo = Repo::new();
+    parent_and_child(&repo, "WRITE b.txt=child");
+    repo.ok(repo.by(&["pr", "child"]));
+    let old_base = repo.show("child")["base"].as_str().unwrap().to_owned();
+    let main = repo.squash_into_main(&[("a.txt", "parent, squashed\n")]);
+    repo.answer("view-7.json", &view("MERGED", "main"));
+    // The state a failure between the rebase and the record leaves: the
+    // worktree's branch and its recorded base moved, the record did not.
+    let info = repo.show("child");
+    let worktree = PathBuf::from(info["worktree"].as_str().unwrap());
+    let in_worktree = |args: &[&str]| {
+        let out = repo
+            .command("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    in_worktree(&["fetch", "-q", "origin", "main"]);
+    in_worktree(&[
+        "-c",
+        "user.name=a",
+        "-c",
+        "user.email=a@example.com",
+        "rebase",
+        "--onto",
+        &main,
+        &old_base,
+    ]);
+    in_worktree(&["config", "branch.by/child.branchyardBase", &main]);
+    // Running it again recovers: the record follows git, the branch is
+    // still Ready, and the pull request is updated.
+    let text = repo.ok(repo.by(&["pr", "child"]));
+    assert!(text.contains("updated pull request #8"), "{text}");
+    let info = repo.show("child");
+    assert_eq!(info["base"], main.as_str());
+    assert_eq!(info["status"]["state"], "ready");
+    assert_eq!(repo.remote_ref("by/child"), repo.candidate("child"));
+}
+
+#[test]
+fn a_restacked_branch_does_not_replace_a_remote_head_that_moved() {
+    let repo = Repo::new();
+    parent_and_child(&repo, "WRITE b.txt=child");
+    repo.ok(repo.by(&["pr", "child"]));
+    let main = repo.squash_into_main(&[("a.txt", "parent, squashed\n")]);
+    repo.answer("view-7.json", &view("MERGED", "main"));
+    // Someone pushes to the child's head after `by pr` left it there.
+    repo.move_remote_ref("by/child", &main);
+    let out = repo.by(&["pr", "child"]);
+    assert!(
+        !out.status.success(),
+        "the moved remote head was replaced: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(repo.remote_ref("by/child"), main);
+}
+
+#[test]
+fn a_branch_rewritten_without_a_restack_needs_force_to_replace_its_remote_head() {
+    let repo = Repo::new();
+    parent_and_child(&repo, "WRITE b.txt=child");
+    repo.ok(repo.by(&["pr", "child"]));
+    let pushed = repo.remote_ref("by/child");
+    // The branch's own history is rewritten (an amend), then a turn makes a
+    // candidate from it.
+    let worktree = PathBuf::from(repo.show("child")["worktree"].as_str().unwrap());
+    let out = repo
+        .command("git")
+        .arg("-C")
+        .arg(&worktree)
+        .args([
+            "-c",
+            "user.name=a",
+            "-c",
+            "user.email=a@example.com",
+            "commit",
+            "-q",
+            "--amend",
+            "--allow-empty",
+            "-m",
+            "rewritten",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    repo.ok(repo.by_agent(&["send", "child", "WRITE c.txt=more"]));
+    let rewritten = repo.candidate("child");
+    assert_ne!(rewritten, pushed);
+    let out = repo.by(&["pr", "child"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(repo.remote_ref("by/child"), pushed);
+    // With --force it is replaced, as it always was.
+    repo.ok(repo.by(&["pr", "child", "--force"]));
+    assert_eq!(repo.remote_ref("by/child"), rewritten);
+}
+
 #[test]
 fn a_conflicting_rebase_is_reported_and_changes_nothing() {
     let repo = Repo::new();

@@ -488,6 +488,14 @@ pub enum Command {
         /// Print JSON
         #[arg(long)]
         json: bool,
+        /// Take a Jira, GitLab or Linear site only from JIRA_URL, GITLAB_URL or LINEAR_API_URL,
+        /// and refuse a URL that names another
+        ///
+        /// For a reference that someone else chose: tracker credentials go only to a site the
+        /// operator set, never to the host in the URL or in the repository's branchyard.toml.
+        /// The server passes it.
+        #[arg(long)]
+        no_url_site: bool,
     },
     /// List branches
     #[command(display_order = 200)]

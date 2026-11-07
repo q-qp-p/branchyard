@@ -132,7 +132,14 @@ pub fn plan(branch: &Branch, gh: &Gh, args: &PrArgs) -> Result<Option<String>, F
     }
     let root = yard.root();
     Git::new(root)
-        .args(["fetch", "--quiet", "--no-tags", &args.git_remote, &onto])
+        .args([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--",
+            &args.git_remote,
+            &onto,
+        ])
         .run()
         .map_err(|e| {
             Report::new(
@@ -201,19 +208,6 @@ impl PrArgs {
     fn git_remote_ref(&self, branch: &str) -> String {
         format!("{}/{branch}", self.git_remote)
     }
-}
-
-/// Whether the remote branch `head` is still where `by pr` last put it
-/// (`pushed`), so a rewritten history may replace it: a lease, checked with
-/// `ls-remote`.
-pub fn may_replace(root: &std::path::Path, remote: &str, head: &str, last: Option<&str>) -> bool {
-    let Some(last) = last else { return false };
-    Git::new(root)
-        .args(["ls-remote", "--", remote])
-        .arg(format!("refs/heads/{head}"))
-        .run()
-        .map(|out| out.split_whitespace().next() == Some(last))
-        .unwrap_or(false)
 }
 
 /// The pull-request state of every branch stacked directly on `name`.
@@ -318,15 +312,4 @@ pub fn show(yard: &Yard, info: &BranchInfo, st: &PrState) -> Option<(Value, Stri
         "restacked": st.restacked,
     });
     Some((value, parts.join("; ")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_remote_branch_may_be_replaced_only_where_it_was_left() {
-        // No record of a push: never.
-        assert!(!may_replace(std::path::Path::new("."), "origin", "x", None));
-    }
 }

@@ -271,6 +271,9 @@ impl Branch {
             crate::BranchStatus::Merged { target, .. } => {
                 return Err(Error::Denied(format!("{name} was merged into {target}")))
             }
+            crate::BranchStatus::Discarded { .. } => {
+                return Err(Error::Denied(format!("{name} was discarded")))
+            }
             _ => {}
         }
         let worktree = record.info.worktree.clone();
@@ -333,16 +336,22 @@ impl Branch {
             }
         };
         record.info.base = onto_commit.0.clone();
-        record.info.status = match candidate {
-            Some(_) => crate::BranchStatus::Ready,
-            None => crate::BranchStatus::NoChanges,
-        };
+        record.info.status = restacked_status(&record.info.status, candidate.is_some());
         record.info.candidate = candidate.clone();
         let event = candidate.map(|c| crate::RecordedEvent {
             at_ms: branchyard_support::time::now_ms(),
             activity: Activity::Snapshot(c),
         });
-        lease.finish(Some(&record), event.as_ref())?;
+        // Git has moved already (the branch and its recorded base). If the
+        // record cannot follow, say so: running the restack again finds the
+        // branch on `onto` and finishes the record.
+        lease.finish(Some(&record), event.as_ref()).map_err(|e| {
+            Error::State(format!(
+                "{name} was rebased onto {} but its record could not be updated ({e}); \
+                     run the same restack again to finish it",
+                onto_commit.0
+            ))
+        })?;
         Ok(Restacked::Done { from, to })
     }
 
@@ -391,6 +400,38 @@ impl Branch {
         }))
     }
 
+    /// [`Branch::push_candidate`] replacing the remote branch only where it
+    /// still is `expected`, git's `--force-with-lease`; see
+    /// [`branchyard_workspace::Repository::push_leased`]. Records nothing.
+    pub fn push_candidate_leased(
+        &self,
+        remote: &str,
+        remote_branch: &str,
+        expected: &str,
+    ) -> Result<Pushed, Error> {
+        let record = self.yard().store().read(&self.info().name)?;
+        let candidate = record
+            .info
+            .candidate
+            .ok_or_else(|| Error::NoCandidate(self.info().name.clone()))?;
+        let commit = branchyard_workspace::Commit(candidate.commit.clone());
+        self.yard()
+            .repo
+            .push_leased(
+                remote,
+                &commit,
+                remote_branch,
+                &branchyard_workspace::Commit(expected.to_owned()),
+            )
+            .map_err(git::error)?;
+        Ok(Pushed {
+            remote: remote.to_owned(),
+            remote_branch: remote_branch.to_owned(),
+            commit: candidate.commit,
+            forced: true,
+        })
+    }
+
     /// Push the branch's current candidate commit to `remote` as
     /// `refs/heads/<remote_branch>`; see
     /// [`branchyard_workspace::Repository::push`]. Records nothing.
@@ -419,9 +460,50 @@ impl Branch {
     }
 }
 
+/// The status a branch has after a restack: only a branch that settled with
+/// a result (`Ready`, `NoChanges`) takes the new one; a failed, interrupted
+/// or over-budget branch keeps saying so.
+fn restacked_status(current: &crate::BranchStatus, has_candidate: bool) -> crate::BranchStatus {
+    match current {
+        crate::BranchStatus::Ready | crate::BranchStatus::NoChanges => match has_candidate {
+            true => crate::BranchStatus::Ready,
+            false => crate::BranchStatus::NoChanges,
+        },
+        other => other.clone(),
+    }
+}
+
 /// A branch name made from free text, as `by run` names a branch after its
 /// prompt: lowercase `[a-z0-9-]`, at most 40 characters, `task` if nothing
 /// is left.
 pub fn slug(text: &str) -> String {
     crate::names::slug(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BranchStatus;
+
+    #[test]
+    fn a_restack_changes_only_the_status_of_a_branch_with_a_result() {
+        assert_eq!(
+            restacked_status(&BranchStatus::Ready, false),
+            BranchStatus::NoChanges
+        );
+        assert_eq!(
+            restacked_status(&BranchStatus::NoChanges, true),
+            BranchStatus::Ready
+        );
+        for kept in [
+            BranchStatus::Failed { reason: "x".into() },
+            BranchStatus::Interrupted,
+            BranchStatus::BudgetExceeded { limit: "x".into() },
+            BranchStatus::AwaitingPlanApproval,
+            BranchStatus::WaitingOnChildren,
+        ] {
+            assert_eq!(restacked_status(&kept, true), kept);
+            assert_eq!(restacked_status(&kept, false), kept);
+        }
+    }
 }

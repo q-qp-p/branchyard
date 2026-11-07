@@ -15,14 +15,14 @@ use branchyard_client::api::{OperationState, TaskRequest};
 use branchyard_client::new_key;
 use common::{await_operation, Fixture, Server};
 
-/// `by issue --json -- REF EXTRA`: logs its arguments, answers for `#12`,
+/// `by issue --json --no-url-site -- REF EXTRA`: logs its arguments, answers for `#12`,
 /// and fails like `by` does for a Linear key without credentials.
 const FAKE_BY: &str = r##"#!/bin/sh
 printf '%s\n' "$*" >> "$(dirname "$0")/by.log"
 [ "$1" = issue ] || { echo "fake by: unexpected: $*" >&2; exit 2; }
-case "$4" in
+case "$5" in
 "#12")
-  extra="$5"
+  extra="$6"
   printf '{"issue": {"number": 12, "url": "https://github.com/acme/widgets/issues/12", "title": "Parser crash"}, "branch": "issue-12-parser-crash", "prompt": "Resolve GitHub issue #12: Parser crash\\nhttps://github.com/acme/widgets/issues/12\\n\\nWRITE issue.txt=fixed\\n\\nAdditional instructions:\\n%s\\n"}' "$extra" ;;
 linear:*)
   echo "by: fetching" >&2
@@ -92,7 +92,7 @@ fn a_task_starts_from_an_issue_the_server_resolved() {
     let log = fs::read_to_string(f.dir.join("by.log")).unwrap();
     assert!(
         log.lines()
-            .any(|l| l == "issue --json -- #12 Keep it small."),
+            .any(|l| l == "issue --json --no-url-site -- #12 Keep it small."),
         "{log}"
     );
 
@@ -139,4 +139,35 @@ fn an_issue_the_server_cannot_fetch_is_refused_with_a_kind_and_a_next_step() {
     };
     let error = repo.submit_task(&empty, &new_key()).unwrap_err();
     assert_eq!(error.code(), Some("invalid_request"), "{error}");
+}
+
+#[test]
+fn a_url_naming_a_host_the_operator_did_not_set_never_reaches_by() {
+    let f = Fixture::new();
+    let server = server(&f);
+    let client = server.client();
+    let repo = client.repo("app");
+    for url in [
+        "http://attacker.example/browse/ENG-1",
+        "https://attacker.example/g/p/-/issues/1",
+        "https://github.com/someone/private/issues/1",
+    ] {
+        let error = repo.issue(url).unwrap_err();
+        assert_eq!(error.code(), Some("issue_unavailable"), "{url}: {error}");
+        assert!(error.to_string().contains("next:"), "{url}: {error}");
+        let request = TaskRequest {
+            issue: Some(url.into()),
+            harness: Some("gemini-cli".into()),
+            ..TaskRequest::default()
+        };
+        let error = repo.submit_task(&request, &new_key()).unwrap_err();
+        assert_eq!(error.code(), Some("issue_unavailable"), "{url}: {error}");
+    }
+    // `by` was never run for any of them.
+    assert!(
+        !f.dir.join("by.log").exists(),
+        "{:?}",
+        fs::read_to_string(f.dir.join("by.log"))
+    );
+    assert!(repo.branches().unwrap().is_empty());
 }

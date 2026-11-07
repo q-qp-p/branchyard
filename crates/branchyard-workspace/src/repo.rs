@@ -268,6 +268,36 @@ impl Repository {
         remote_branch: &str,
         force: bool,
     ) -> Result<(), GitError> {
+        let mode = match force {
+            true => Replace::Any,
+            false => Replace::Never,
+        };
+        self.push_replacing(remote, commit, remote_branch, mode)
+    }
+
+    /// [`Repository::push`] that replaces a remote branch that is not an
+    /// ancestor of `commit` only where it still is `expected`: git's
+    /// `--force-with-lease=refs/heads/<branch>:<expected>`, checked by the
+    /// remote in the same exchange as the update, so a push that landed
+    /// since `expected` was read is not overwritten.
+    pub fn push_leased(
+        &self,
+        remote: &str,
+        commit: &Commit,
+        remote_branch: &str,
+        expected: &Commit,
+    ) -> Result<(), GitError> {
+        let expected = self.resolve(expected.as_str())?;
+        self.push_replacing(remote, commit, remote_branch, Replace::Lease(expected.0))
+    }
+
+    fn push_replacing(
+        &self,
+        remote: &str,
+        commit: &Commit,
+        remote_branch: &str,
+        replace: Replace,
+    ) -> Result<(), GitError> {
         if remote.is_empty() || remote.starts_with('-') {
             return Err(GitError::InvalidRef(remote.to_owned()));
         }
@@ -281,10 +311,20 @@ impl Repository {
             return Err(GitError::InvalidRef(remote_branch.to_owned()));
         }
         let commit = self.resolve(commit.as_str())?;
-        let plus = if force { "+" } else { "" };
-        Git::new(&self.root)
+        let (lease, plus) = match &replace {
+            Replace::Never => (None, ""),
+            Replace::Any => (None, "+"),
+            Replace::Lease(expected) => {
+                (Some(format!("--force-with-lease={target}:{expected}")), "")
+            }
+        };
+        let mut push = Git::new(&self.root)
             .no_hooks()
-            .args(["push", "--quiet", "--porcelain", "--", remote])
+            .args(["push", "--quiet", "--porcelain"]);
+        if let Some(lease) = lease {
+            push = push.arg(lease);
+        }
+        push.args(["--", remote])
             .arg(format!("{plus}{commit}:{target}"))
             .run()?;
         Ok(())
@@ -460,9 +500,13 @@ impl Workspace {
                 .lines()
                 .map(str::to_owned)
                 .collect();
-            Git::new(&self.path)
-                .args(["rebase", "--abort"])
-                .succeeds()?;
+            let (aborted, abort_args) =
+                Git::new(&self.path).args(["rebase", "--abort"]).output()?;
+            if !aborted.status.success() {
+                // The worktree may still be mid-rebase: say so, not
+                // "conflict".
+                return Err(git::failed(abort_args, &aborted));
+            }
             if files.is_empty() {
                 return Err(git::failed(args, &out));
             }
@@ -659,6 +703,16 @@ impl Workspace {
             .trim()
             .to_owned())
     }
+}
+
+/// What a push may replace on the remote.
+enum Replace {
+    /// Only a fast-forward.
+    Never,
+    /// Whatever is there.
+    Any,
+    /// What is there only if it is this commit.
+    Lease(String),
 }
 
 struct RemoveOnDrop<'a>(&'a Path);

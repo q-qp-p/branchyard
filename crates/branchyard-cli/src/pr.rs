@@ -259,6 +259,7 @@ pub fn issue_branch_name(issue: &Issue) -> String {
 fn fetch_tracked(
     reference: &crate::trackers::IssueRef,
     yard: Option<&Yard>,
+    env_sites_only: bool,
 ) -> Result<Issue, Failure> {
     let cwd = std::env::current_dir()?;
     let env = |name: &str| std::env::var(name).ok();
@@ -284,6 +285,7 @@ fn fetch_tracked(
     let sources = crate::trackers::Sources {
         env: &env,
         config: &config.trackers,
+        env_sites_only,
         gateway: gateway
             .is_some()
             .then_some(&call as &dyn Fn(&str, Value) -> Result<Value, String>),
@@ -303,6 +305,17 @@ pub fn issue_task(
     task: &TaskArgs,
     yard: Option<&Yard>,
 ) -> Result<(String, TaskArgs, Option<Link>), Failure> {
+    issue_task_at(prompt, task, yard, false)
+}
+
+/// [`issue_task`], with `env_sites_only` for a server's caller-chosen
+/// reference: see `by issue --no-url-site`.
+fn issue_task_at(
+    prompt: &str,
+    task: &TaskArgs,
+    yard: Option<&Yard>,
+    env_sites_only: bool,
+) -> Result<(String, TaskArgs, Option<Link>), Failure> {
     if let Some(number) = task.pr {
         return pr_task(prompt, task, number, yard);
     }
@@ -310,7 +323,7 @@ pub fn issue_task(
         return Ok((prompt.to_owned(), task.clone(), None));
     };
     let issue = match crate::trackers::parse(given).map_err(crate::errors::Report::usage)? {
-        Some(tracked) => fetch_tracked(&tracked, yard)?,
+        Some(tracked) => fetch_tracked(&tracked, yard, env_sites_only)?,
         None => {
             let reference = issue_ref(given)?;
             let dir = std::env::current_dir()?;
@@ -345,7 +358,13 @@ pub fn issue_task(
 /// `by issue`: fetch the issue as `--issue` would and print what a run
 /// would start from. Starts nothing; the server runs it to resolve an
 /// issue for a task or session.
-pub fn show_issue(target: &Target, given: &str, extra: &str, as_json: bool) -> Outcome {
+pub fn show_issue(
+    target: &Target,
+    given: &str,
+    extra: &str,
+    as_json: bool,
+    env_sites_only: bool,
+) -> Outcome {
     if let Target::Remote(_) = target {
         return Err(crate::errors::Report::new(
             "unsupported",
@@ -360,7 +379,7 @@ pub fn show_issue(target: &Target, given: &str, extra: &str, as_json: bool) -> O
         issue: Some(given.to_owned()),
         ..TaskArgs::default()
     };
-    let (prompt, task, link) = issue_task(extra, &task, yard.as_ref())?;
+    let (prompt, task, link) = issue_task_at(extra, &task, yard.as_ref(), env_sites_only)?;
     let Some(Link::Issue(issue)) = link else {
         return Err(crate::errors::Report::usage("by issue takes an issue").into());
     };
@@ -1162,25 +1181,26 @@ pub fn publish(branch: &Branch, gh: &Gh, args: &PrArgs) -> Result<Published, Pub
         .clone()
         .or_else(|| before.pull_request.as_ref().map(|pr| pr.head.clone()))
         .unwrap_or_else(|| info.git_branch.clone());
-    // A rebase rewrote the history that was pushed before; the remote head
-    // may be replaced if it is still where this branch left it.
-    let rewritten = before.pushed.as_ref().is_some_and(|p| {
-        p.remote_branch == head
-            && p.commit != candidate.commit
-            && !Git::new(branch.yard().root())
-                .args(["merge-base", "--is-ancestor", &p.commit, &candidate.commit])
-                .succeeds()
-                .unwrap_or(true)
-    });
-    let force = args.force
-        || (rewritten
-            && crate::stack::may_replace(
-                branch.yard().root(),
-                &args.git_remote,
-                &head,
-                before.pushed.as_ref().map(|p| p.commit.as_str()),
-            ));
-    let pushed = branch.push_candidate(&args.git_remote, &head, force)?;
+    // A restack rewrote the history that was pushed before, so a plain push
+    // would be refused. Only then, and only with a lease on what this
+    // branch left there, is the remote head replaced without `--force`:
+    // anyone's push since then is not overwritten. A branch rewritten any
+    // other way (a rewind, a reset) still needs `--force`, as before.
+    let restack_rewrote = before.restacked.is_some()
+        && before.pushed.as_ref().is_some_and(|p| {
+            p.remote_branch == head
+                && p.commit != candidate.commit
+                && !Git::new(branch.yard().root())
+                    .args(["merge-base", "--is-ancestor", &p.commit, &candidate.commit])
+                    .succeeds()
+                    .unwrap_or(true)
+        });
+    let pushed = match (&before.pushed, args.force, restack_rewrote) {
+        (Some(last), false, true) => {
+            branch.push_candidate_leased(&args.git_remote, &head, &last.commit)?
+        }
+        _ => branch.push_candidate(&args.git_remote, &head, args.force)?,
+    };
     branch.record_pull_request(PullRequestActivity::Pushed(pushed.clone()))?;
 
     let existing: Value = gh.json(
