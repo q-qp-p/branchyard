@@ -13,6 +13,7 @@
 Run: `python3 tests/test_skill_eval.py`.
 """
 
+import dataclasses
 import importlib.util
 import json
 import os
@@ -533,6 +534,34 @@ class Fixtures(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["part1.pdf", "part2.pdf"])
             skill_eval.seed(Path(tmp), SCENARIOS["docx-status-report"])
             self.assertTrue((Path(tmp) / "status.txt").is_file())
+
+    def test_seeding_refuses_paths_that_leave_the_scratch_directories(self):
+        base = SCENARIOS["docx-status-report"]
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        cases = [
+            ("files", {"../escape.txt": "x"}),
+            ("files", {"a/../../escape.txt": "x"}),
+            ("files", {str(outside / "abs.txt"): "x"}),
+            ("home_files", {"../escape.txt": "x"}),
+            ("home_files", {str(outside / "abs.txt"): "x"}),
+        ]
+        for attr, files in cases:
+            with self.subTest(attr=attr, files=files), tempfile.TemporaryDirectory() as tmp:
+                repo, home = Path(tmp) / "repo", Path(tmp) / "home"
+                repo.mkdir()
+                home.mkdir()
+                scenario = dataclasses.replace(base, **{attr: files})
+                with self.assertRaisesRegex(ValueError, "escapes"):
+                    skill_eval.seed(repo, scenario, home)
+                self.assertFalse((Path(tmp) / "escape.txt").exists())
+                self.assertFalse((outside / "abs.txt").exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, home = Path(tmp) / "repo", Path(tmp) / "home"
+            repo.mkdir()
+            home.mkdir()
+            skill_eval.seed(repo, dataclasses.replace(base, files={"a/b.txt": "ok"}), home)
+            self.assertEqual((repo / "a/b.txt").read_text(), "ok")
 
     def test_an_archive_check_reads_the_text_inside_an_office_file(self):
         with tempfile.TemporaryDirectory() as tmp:

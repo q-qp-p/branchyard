@@ -565,3 +565,33 @@ fn a_personal_memory_is_staged_for_the_branches_the_person_starts() {
     let out = repo.in_harness("mine", &["skills", "ls", "--json"]);
     assert!(out.status.success(), "{}", stderr(&out));
 }
+
+#[cfg(unix)]
+#[test]
+fn add_refuses_a_symlinked_bundle_directory_and_touches_nothing_outside_it() {
+    let repo = Repo::new();
+    fs::create_dir_all(repo.root.join(".agents/skills")).unwrap();
+    std::os::unix::fs::symlink("../..", repo.root.join(".agents/skills/memory-general")).unwrap();
+    let body = repo.write("body.md", "A body.\n");
+    let out = repo.by(&[
+        "memory",
+        "add",
+        "--title",
+        "T",
+        "--body-file",
+        body.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let error = envelope(&out);
+    assert_eq!(error["kind"], "invalid_memory");
+    assert!(
+        error["message"].as_str().unwrap().contains("symbolic link"),
+        "{error}"
+    );
+    assert!(error["next"][0].as_str().is_some(), "{error}");
+    assert!(repo.root.join(".git/HEAD").is_file());
+    assert!(repo.root.join("a.txt").is_file());
+    assert!(!repo.root.join("SKILL.md").exists());
+    assert!(!repo.root.join("memory.json").exists());
+}

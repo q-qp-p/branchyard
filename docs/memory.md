@@ -65,6 +65,8 @@ by memory export [--out DIR]         # the bundles as the writer would produce t
 
 `by memory` refuses to add, edit or remove with `BRANCHYARD_BRANCH` set, the rule `by knowledge` follows: a harness proposes nothing. Locally the refusal is **advisory** (the variable can be unset, and a local harness can write the folder directly); on a server it is enforced, because a turn holds no `run` token and the repository's files reach a turn only through a commit someone else reviews. A new refusal is a `Report` with a kind and a `next:`.
 
+**Symbolic links are never followed.** `.agents/skills/` is repository content, so a bundle directory, the skills folder, `references/` or any file in a bundle that is a symbolic link is refused (`invalid_memory`, with a `next:`) before anything is written, removed or exported, and the stale-file cleanup removes only regular files inside a verified real directory. Reading skips a linked bundle directory, and a `memory.json` id that is not a slug (it becomes a path) is refused.
+
 **What `knowledge` hands over.** `by knowledge distill` proposes entries of at most 600 characters. A proposal that a distiller writes longer than that, or that names a procedure, is today cut or dropped; with M1 the deterministic extractor's proposals longer than 600 characters become **memory drafts** under `.branchyard/memory-drafts/<slug>.md` in the worktree, for the person to read, edit and `by memory add --from DRAFT`. A draft is a file in a worktree, never a bundle: nothing a turn can find until a person adds it.
 
 ## 2. What is captured

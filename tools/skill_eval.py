@@ -1116,20 +1116,34 @@ FIXTURE_BUILDERS: dict[str, Any] = {
 }
 
 
+def seeded_path(root: Path, rel: str) -> Path:
+    """`root / rel`, refused when `rel` is absolute or resolves outside `root` (a `..` component or a link)."""
+    target = root / rel
+    if Path(rel).is_absolute() or not target.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"scenario path {rel!r} escapes {root}; a scenario seeds only inside its scratch directory")
+    return target
+
+
 def seed(repo: Path, scenario: Scenario, home: Path | None = None) -> None:
     """Write the scenario's text files and generate its binary inputs; with `home`, its `home_files` into the
-    run's private HOME (the person's skills folder, `~/.config/branchyard/skills/NAME/`)."""
+    run's private HOME (the person's skills folder, `~/.config/branchyard/skills/NAME/`). A path that is absolute
+    or leaves the scratch repository or home is refused before anything is written."""
+    for rel in [*scenario.files, *scenario.fixtures]:
+        seeded_path(repo, rel)
+    if home is not None:
+        for rel in scenario.home_files:
+            seeded_path(home, rel)
     for rel, content in scenario.files.items():
-        target = repo / rel
+        target = seeded_path(repo, rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     for rel in scenario.fixtures:
-        target = repo / rel
+        target = seeded_path(repo, rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(FIXTURE_BUILDERS[rel]())
     if home is not None:
         for rel, content in scenario.home_files.items():
-            target = home / rel
+            target = seeded_path(home, rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 

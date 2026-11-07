@@ -597,3 +597,25 @@ fn add_and_remove_keep_the_persons_own_skills_folder() {
     }
     assert!(!folder.join("tone").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn add_refuses_a_symlink_in_the_source_bundle_and_keeps_the_installed_skill() {
+    let repo = Repo::without_skills();
+    let folder = repo.dir.join("user/skills");
+    let tone = skill_dir(&repo, "tone", TONE);
+    repo.ok(&["skills", "add", tone.to_str().unwrap()]);
+    let before = fs::read_to_string(folder.join("tone/SKILL.md")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", tone.join("references/link.md")).unwrap();
+    let out = repo.by(&["skills", "add", tone.to_str().unwrap(), "--json"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(envelope(&out)["message"]
+        .as_str()
+        .unwrap()
+        .contains("symbolic link"));
+    assert_eq!(
+        fs::read_to_string(folder.join("tone/SKILL.md")).unwrap(),
+        before
+    );
+    assert!(!folder.join("tone/references/link.md").exists());
+}

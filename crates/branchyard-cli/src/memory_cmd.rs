@@ -33,6 +33,20 @@ use crate::workspace_cmd::in_harness;
 
 /// `by memory ACTION`.
 pub fn main(target: &Target, action: &MemoryAction, json: bool) -> Outcome {
+    run(target, action, json).map_err(|failure| match failure {
+        // A symbolic link in a bundle is refused by the engine; say what to do.
+        Failure::Sdk(branchyard::Error::InvalidMemory(message))
+            if message.contains("is a symbolic link") =>
+        {
+            Report::new("invalid_memory", message)
+                .next("remove the symbolic link from the bundle, then run by memory again")
+                .into()
+        }
+        other => other,
+    })
+}
+
+fn run(target: &Target, action: &MemoryAction, json: bool) -> Outcome {
     if let Target::Remote(_) = target {
         return Err(Report::usage(
             "by memory writes files in a worktree or in your own skills folder; a server has \
