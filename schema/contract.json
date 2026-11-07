@@ -39384,6 +39384,17 @@
                 "name": {
                   "type": "string"
                 },
+                "target": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ToolTarget"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "What the call acted on (a path, a command, an MCP tool), bounded\nand scrubbed as [`target`] documents; absent when the harness\ndoes not report the call's input. Logs written before the field\nexisted read as absent."
+                },
                 "type": {
                   "type": "string",
                   "const": "tool_started"
@@ -39760,6 +39771,49 @@
         },
         "NativeSession": {
           "type": "string"
+        },
+        "ToolTarget": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TargetKind",
+              "description": "What `value` names."
+            },
+            "value": {
+              "type": "string",
+              "description": "The path, command or tool name, bounded and scrubbed as the module\ndocuments."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "description": "What a tool call acted on."
+        },
+        "TargetKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "file",
+              "description": "A file the tool read or changed."
+            },
+            {
+              "type": "string",
+              "const": "command",
+              "description": "A shell command."
+            },
+            {
+              "type": "string",
+              "const": "mcp",
+              "description": "An MCP or dynamic tool, as `server.tool` (or the tool alone)."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A skill the harness's own skill tool opened."
+            }
+          ],
+          "description": "What kind of thing a [`ToolTarget`] names."
         },
         "PermissionRequest": {
           "type": "object",
@@ -45225,6 +45279,17 @@
                 "name": {
                   "type": "string"
                 },
+                "target": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ToolTarget"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "What the call acted on (a path, a command, an MCP tool), bounded\nand scrubbed as [`target`] documents; absent when the harness\ndoes not report the call's input. Logs written before the field\nexisted read as absent."
+                },
                 "type": {
                   "type": "string",
                   "const": "tool_started"
@@ -45601,6 +45666,49 @@
         },
         "NativeSession": {
           "type": "string"
+        },
+        "ToolTarget": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TargetKind",
+              "description": "What `value` names."
+            },
+            "value": {
+              "type": "string",
+              "description": "The path, command or tool name, bounded and scrubbed as the module\ndocuments."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "description": "What a tool call acted on."
+        },
+        "TargetKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "file",
+              "description": "A file the tool read or changed."
+            },
+            {
+              "type": "string",
+              "const": "command",
+              "description": "A shell command."
+            },
+            {
+              "type": "string",
+              "const": "mcp",
+              "description": "An MCP or dynamic tool, as `server.tool` (or the tool alone)."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A skill the harness's own skill tool opened."
+            }
+          ],
+          "description": "What kind of thing a [`ToolTarget`] names."
         },
         "PermissionRequest": {
           "type": "object",
@@ -57264,6 +57372,17 @@
                 "name": {
                   "type": "string"
                 },
+                "target": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/ToolTarget"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "What the call acted on (a path, a command, an MCP tool), bounded\nand scrubbed as [`target`] documents; absent when the harness\ndoes not report the call's input. Logs written before the field\nexisted read as absent."
+                },
                 "type": {
                   "type": "string",
                   "const": "tool_started"
@@ -57640,6 +57759,49 @@
         },
         "NativeSession": {
           "type": "string"
+        },
+        "ToolTarget": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/TargetKind",
+              "description": "What `value` names."
+            },
+            "value": {
+              "type": "string",
+              "description": "The path, command or tool name, bounded and scrubbed as the module\ndocuments."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "description": "What a tool call acted on."
+        },
+        "TargetKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "const": "file",
+              "description": "A file the tool read or changed."
+            },
+            {
+              "type": "string",
+              "const": "command",
+              "description": "A shell command."
+            },
+            {
+              "type": "string",
+              "const": "mcp",
+              "description": "An MCP or dynamic tool, as `server.tool` (or the tool alone)."
+            },
+            {
+              "type": "string",
+              "const": "skill",
+              "description": "A skill the harness's own skill tool opened."
+            }
+          ],
+          "description": "What kind of thing a [`ToolTarget`] names."
         },
         "PermissionRequest": {
           "type": "object",

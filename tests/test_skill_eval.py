@@ -55,6 +55,16 @@ def event(kind, at_ms=0, **fields):
     return {"activity": "harness", "event": {"type": kind, **fields}, "at_ms": at_ms}
 
 
+def started(name, target=None, at_ms=0):
+    """A `tool_started` event as `by log --json` writes it; `target` is {"kind", "value"} or absent."""
+    fields = {"target": target} if target else {}
+    return event("tool_started", at_ms, turn=1, call_id="c", name=name, **fields)
+
+
+def done(at_ms=9):
+    return event("turn_ended", at_ms, turn=1, outcome={"kind": "completed"})
+
+
 def asked(command=None, at_ms=0, tool="Bash", **inp):
     inp = {"command": command, **inp} if command else inp
     return event("permission_requested", at_ms, turn=1, key="k", tool=tool, input=inp)
@@ -280,8 +290,50 @@ class Scoring(unittest.TestCase):
         events = skill_eval.load_events(LOGS / "blind-docx.log.json")
         row = skill_eval.score_scenario(SCENARIOS["docx-status-report"], events, {}, UNIVERSE)
         self.assertTrue(row["blind"])
-        self.assertEqual(row["evidence"], {"tool_calls": 3, "visible_inputs": 0, "narrated": 0})
+        self.assertEqual(row["evidence"], {"tool_calls": 3, "visible_inputs": 0, "narrated": 0, "targets": 0})
         self.assertEqual(row["missed"], ["skill:docx"])
+
+    def test_targets_on_tool_events_show_what_a_call_acted_on(self):
+        events = [
+            started("Bash", {"kind": "command", "value": "/t/bin/tools search word document | head -3"}),
+            started("Read", {"kind": "file", "value": "tools/skills/docx/SKILL.md"}),
+            done(),
+        ]
+        row = skill_eval.score_scenario(SCENARIOS["docx-status-report"], events, {"checks": {}}, UNIVERSE)
+        self.assertTrue(row["searched_command"])
+        self.assertEqual(row["found"], ["skill:docx"])
+        self.assertFalse(row["blind"])
+        self.assertEqual(row["evidence"], {"tool_calls": 2, "visible_inputs": 0, "narrated": 0, "targets": 2})
+
+    def test_a_skill_tool_target_opens_the_skill_and_an_edit_target_opens_nothing(self):
+        events = [
+            started("Skill", {"kind": "skill", "value": "docx"}),
+            started("Edit", {"kind": "file", "value": "tools/skills/pdf/SKILL.md"}),
+            started("mcp__github__list_issues", {"kind": "mcp", "value": "github.list_issues"}),
+            done(),
+        ]
+        acts, seen = skill_eval.actions(events)
+        self.assertEqual([(a.kind, a.text) for a in acts], [("skill", "docx"), ("tool", "github.list_issues")])
+        self.assertEqual(seen["targets"], 3)
+        self.assertEqual(skill_eval.collect(acts, UNIVERSE).skills, {"docx"})
+
+    def test_a_tool_call_without_a_target_is_still_blind_and_one_with_a_target_is_not(self):
+        blind = skill_eval.actions([started("Bash"), started("Read"), done()])[1]
+        self.assertEqual((blind["tool_calls"], blind["targets"]), (2, 0))
+        mixed = skill_eval.actions([started("WebSearch"), started("Bash", {"kind": "command", "value": "ls"}), done()])[
+            1
+        ]
+        self.assertEqual((mixed["tool_calls"], mixed["targets"]), (2, 1))
+
+    def test_a_refused_call_loses_its_target_too(self):
+        events = [
+            started("Read", {"kind": "file", "value": "tools/skills/docx/SKILL.md"}),
+            asked(None, file_path="tools/skills/docx/SKILL.md", tool="Read"),
+            {"activity": "decision", "allowed": False, "at_ms": 2},
+            done(),
+        ]
+        acts, _ = skill_eval.actions(events)
+        self.assertEqual(acts, [])
 
     def test_narrated_commands_count_and_are_marked(self):
         text = "sh: 0\n$ /t/bin/tools search word\nresult\n$ cat /t/skills/docx/SKILL.md\n"
@@ -356,6 +408,116 @@ class Scoring(unittest.TestCase):
         self.assertFalse(skill_eval.score_scenario(scenario, events[:1] + events[2:], {}, UNIVERSE)["success"])
 
 
+def have(*modules):
+    try:
+        for m in modules:
+            __import__(m)
+    except ImportError:
+        return False
+    return True
+
+
+TOOLKIT = have("docx", "openpyxl", "pptx", "reportlab", "pypdf")
+
+
+@unittest.skipUnless(TOOLKIT, "the artifact toolkit's libraries are not installed")
+class Fixtures(unittest.TestCase):
+    """The binary input files the scenarios name are generated, reproducibly, with the toolkit's libraries."""
+
+    def test_every_named_input_has_a_generator_that_is_reproducible(self):
+        names = sorted({n for s in SCENARIOS.values() for n in s.fixtures})
+        self.assertEqual(len(names), 14)
+        for name in names:
+            first, second = skill_eval.FIXTURE_BUILDERS[name](), skill_eval.FIXTURE_BUILDERS[name]()
+            self.assertEqual(first, second, name)
+            self.assertGreater(len(first), 200, name)
+
+    def test_thirteen_scenarios_get_their_inputs(self):
+        self.assertEqual(sum(1 for s in SCENARIOS.values() if s.fixtures), 13)
+
+    def test_the_files_open_with_the_libraries_that_made_them(self):
+        import io
+
+        import docx
+        import openpyxl
+        import pptx
+        import pypdf
+
+        build = lambda name: skill_eval.FIXTURE_BUILDERS[name]()  # noqa: E731
+        text = "\n".join(p.text for p in docx.Document(io.BytesIO(build("contract.docx"))).paragraphs)
+        self.assertEqual(text.count("Acme Ltd"), 3)
+        self.assertEqual(len(docx.Document(io.BytesIO(build("spec.docx"))).tables), 3)
+        sheet = openpyxl.load_workbook(io.BytesIO(build("sales.xlsx")))["Sales"]
+        self.assertEqual([c.value for c in sheet[1]], ["region", "product", "amount"])
+        self.assertEqual(sheet.max_row, 7)
+        formulas = [
+            c.value for row in openpyxl.load_workbook(io.BytesIO(build("forecast.xlsx")))["Forecast"] for c in row
+        ]
+        self.assertIn("=SUM(B2:C2)", formulas, "the totals still cover the old range")
+        self.assertEqual(len(pptx.Presentation(io.BytesIO(build("pitch.pptx"))).slides), 5)
+        self.assertEqual(len(pypdf.PdfReader(io.BytesIO(build("report.pdf"))).pages), 3)
+        self.assertEqual(len(pypdf.PdfReader(io.BytesIO(build("part1.pdf"))).pages), 2)
+        self.assertEqual(set(pypdf.PdfReader(io.BytesIO(build("application.pdf"))).get_fields()), {"name", "date"})
+
+    def test_seeding_writes_the_binary_inputs_next_to_the_text_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_eval.seed(Path(tmp), SCENARIOS["pdf-merge-stamp"])
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["part1.pdf", "part2.pdf"])
+            skill_eval.seed(Path(tmp), SCENARIOS["docx-status-report"])
+            self.assertTrue((Path(tmp) / "status.txt").is_file())
+
+    def test_an_archive_check_reads_the_text_inside_an_office_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_eval.seed(Path(tmp), SCENARIOS["docx-redline-edit"])
+            found = skill_eval.evaluate_checks(SCENARIOS["docx-redline-edit"], Path(tmp))
+            self.assertEqual(found["archive"], {"contract.docx": False}, "'Acme Holdings Ltd' is not there yet")
+            self.assertEqual(found["files"], {"contract.orig.docx": False})
+            self.assertTrue(skill_eval.archive_matches(Path(tmp) / "contract.docx", "Acme Ltd"))
+            self.assertTrue(skill_eval.archive_matches(Path(tmp) / "contract.docx", r"word/document\.xml"))
+            self.assertFalse(skill_eval.archive_matches(Path(tmp) / "missing.docx", "x"))
+            (Path(tmp) / "plain.docx").write_text("not a zip")
+            self.assertFalse(skill_eval.archive_matches(Path(tmp) / "plain.docx", "x"))
+
+    def test_the_formula_check_wants_the_range_fixed(self):
+        scenario = SCENARIOS["xlsx-fix-formulas"]
+        with tempfile.TemporaryDirectory() as tmp:
+            skill_eval.seed(Path(tmp), scenario)
+            self.assertFalse(skill_eval.evaluate_checks(scenario, Path(tmp))["archive"]["forecast.xlsx"])
+            import openpyxl
+
+            book = openpyxl.load_workbook(Path(tmp) / "forecast.xlsx")
+            book.active["E2"] = "=SUM(B2:D2)"
+            book.save(Path(tmp) / "forecast.xlsx")
+            self.assertTrue(skill_eval.evaluate_checks(scenario, Path(tmp))["archive"]["forecast.xlsx"])
+
+
+class FixtureRules(unittest.TestCase):
+    def test_a_prompt_may_not_name_a_file_nobody_provides(self):
+        broken = skill_eval.Scenario(**{**SCENARIOS["pdf-merge-stamp"].__dict__, "fixtures": ["part1.pdf"]})
+        why = skill_eval.problems([broken])
+        self.assertTrue(any("part2.pdf" in w and "neither seeded" in w for w in why), why)
+
+    def test_a_fixture_needs_a_generator_and_an_office_name(self):
+        base = SCENARIOS["pdf-merge-stamp"].__dict__
+        odd = skill_eval.Scenario(**{**base, "fixtures": ["part1.pdf", "part2.pdf", "other.pdf", "x.txt"]})
+        why = " ".join(skill_eval.problems([odd]))
+        self.assertIn("no generator", why)
+        self.assertIn("must be a docx, xlsx, pptx, pdf or csv name", why)
+
+    def test_a_scenario_is_skipped_when_the_toolkit_is_missing(self):
+        real = skill_eval.need
+
+        def missing(module):
+            raise RuntimeError(f"{module} is needed to generate input files")
+
+        skill_eval.need = missing
+        try:
+            why = skill_eval.runnable(SCENARIOS["pdf-extract-text"], skill_eval.RunOptions(harness="claude-code"))
+        finally:
+            skill_eval.need = real
+        self.assertIn("needed to generate input files", why)
+
+
 class Aggregation(unittest.TestCase):
     def setUp(self):
         self.report = skill_eval.score_dir(LOGS, skill_eval.load_scenarios("*"))
@@ -428,13 +590,30 @@ class Runner(unittest.TestCase):
                 "10",
                 "--model",
                 "opus",
+                "--skill",
+                "docx",
+                "--skill",
+                "pdf",
+                "--skill",
+                "xlsx",
+                "--skill",
+                "pptx",
+                "--skill",
+                "visual-design",
+                "--skill",
+                "artifact-tools",
             ],
         )
 
     def test_helpers_connectors_and_a_fake_command(self):
         argv = skill_eval.run_argv(SCENARIOS["helper-which-available"], self.options(command="/x/fake"), Path("/r"))
         self.assertIn("--delegate=1", argv)
+        self.assertNotIn("--helpers", argv, "the default envelope already allows the harness's own profile")
         self.assertEqual(argv[argv.index("--command") + 1], "/x/fake")
+        argv = skill_eval.run_argv(SCENARIOS["helper-codex-review"], self.options(), Path("/r"))
+        self.assertEqual(
+            argv[argv.index("--helpers") + 1], "claude-code,codex", "own harness first, then the scenario's"
+        )
         argv = skill_eval.run_argv(SCENARIOS["github-open-issue"], self.options(anvil="a", bundles="b"), Path("/r"))
         self.assertEqual(
             [argv[i + 1] for i, a in enumerate(argv) if a == "--connector"], ["github:write", "linear:read"]
@@ -454,15 +633,14 @@ class Runner(unittest.TestCase):
         options = self.options()
         self.assertIn("gateway", skill_eval.runnable(SCENARIOS["github-open-issue"], options))
         self.assertIsNone(skill_eval.runnable(SCENARIOS["github-open-issue"], self.options(anvil="a", bundles="b")))
-        self.assertIn("envelope", skill_eval.runnable(SCENARIOS["helper-codex-review"], options))
-        self.assertIsNone(skill_eval.runnable(SCENARIOS["helper-codex-review"], self.options(assume_envelope=True)))
+        self.assertIsNone(skill_eval.runnable(SCENARIOS["helper-codex-review"], options))
         self.assertIsNone(skill_eval.runnable(SCENARIOS["docx-status-report"], options))
 
     def test_the_file_checks_look_in_the_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "hello.txt").write_text("hello from the eval\n")
             found = skill_eval.evaluate_checks(SCENARIOS["none-write-text-file"], Path(tmp))
-            self.assertEqual(found, {"files": {}, "matches": {"hello.txt": True}})
+            self.assertEqual(found, {"files": {}, "matches": {"hello.txt": True}, "archive": {}})
             (Path(tmp) / "hello.txt").write_text("nope\n")
             self.assertEqual(
                 skill_eval.evaluate_checks(SCENARIOS["none-write-text-file"], Path(tmp))["matches"],
@@ -544,6 +722,21 @@ class FakeAgentEndToEnd(unittest.TestCase):
             self.assertEqual(docx["wrong_opens"], [])
             self.assertEqual(docx["checks"], {"file:status.docx": True})
             self.assertTrue(docx["success"])
+            # The agent's calls were read from the log's targets, not from narrated lines.
+            self.assertEqual(docx["evidence"]["narrated"], 0)
+            self.assertGreaterEqual(docx["evidence"]["targets"], 3)
+            self.assertFalse(docx["blind"])
+            events = skill_eval.load_events(out / "docx-status-report.log.json")
+            targets = [e["event"]["target"] for e in events if e.get("event", {}).get("type") == "tool_started"]
+            self.assertIn({"kind": "command", "value": "echo x > status.docx"}, targets)
+            self.assertTrue(
+                any(t["value"].startswith("tools/bin/tools search word document") for t in targets), targets
+            )
+            self.assertTrue(
+                any(t["kind"] == "file" and t["value"].endswith("skills/docx/SKILL.md") for t in targets), targets
+            )
+            meta = json.loads((out / "docx-status-report.meta.json").read_text())
+            self.assertTrue(meta["skills_chosen_applied"])
 
             xlsx = rows["xlsx-pivot"]
             self.assertTrue(xlsx["searched"])

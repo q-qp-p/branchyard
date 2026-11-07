@@ -226,14 +226,14 @@ pub use access::{AccessActivity, Ceiling, DelegationScope, NetworkScope};
 pub use adopt::{AdoptSpec, Adoption};
 pub use branchyard_harness::{
     Event, HarnessTask, NativeSession, PermissionDecision, PermissionKey, PermissionRequest,
-    TurnOutcome, Usage,
+    TargetKind, ToolTarget, TurnOutcome, Usage,
 };
 pub use branchyard_provision::network::{
     narrow as network_narrow, Enforce as NetworkEnforce, HostRule as NetworkRule, Network,
 };
 pub use branchyard_provision::{
-    logins, Delivery, Effort, McpServerSpec, Provisioning, RemoteMcpSpec, RemoteMcpTransport,
-    SecretFrom, SecretSource, SessionPatch, Telemetry, Via,
+    built_in, logins, Delivery, Effort, McpServerSpec, Provisioning, RemoteMcpSpec,
+    RemoteMcpTransport, SecretFrom, SecretSource, SessionPatch, Telemetry, Via,
 };
 use branchyard_workspace::Repository;
 pub use bundle::BundleEntry;

@@ -12,7 +12,9 @@ no test does. `score` and `list` read files only.
 
 A LOGDIR holds, per scenario ID, `ID.log.json` (the output of `by log BRANCH --json`: a JSON array, or one
 object per line) and optionally `ID.meta.json` (`harness`, `model`, `wall_s`, `checks`), which `run` writes.
-Stdlib only, Python 3.11+.
+Python 3.11+, standard library only; `run` also needs the artifact toolkit's libraries (python-docx, openpyxl,
+python-pptx, reportlab; plugins/branchyard/skills/artifact-tools/scripts/requirements.lock) to generate the
+binary input files some scenarios name, and skips a scenario whose input it cannot generate.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import io
 import json
 import os
 import re
@@ -29,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import zipfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -61,6 +65,8 @@ KEYS = {
     "check_files",
     "check_matches",
     "check_commands",
+    "fixtures",
+    "check_archive",
 }
 #: The discovery skill itself: reading it is how a turn learns to search, never a wrong open.
 NEUTRAL_SKILLS = {"find-tools"}
@@ -94,6 +100,8 @@ class Scenario:
     check_files: list[str] = field(default_factory=list)
     check_matches: dict[str, str] = field(default_factory=dict)
     check_commands: list[str] = field(default_factory=list)
+    fixtures: list[str] = field(default_factory=list)
+    check_archive: dict[str, str] = field(default_factory=dict)
     source: str = ""
 
     @property
@@ -102,7 +110,7 @@ class Scenario:
 
     @property
     def has_checks(self) -> bool:
-        return bool(self.check_files or self.check_matches)
+        return bool(self.check_files or self.check_matches or self.check_archive)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -211,10 +219,21 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
             bad("a `none` scenario expects nothing")
         if not s.none and not s.expected:
             bad("expects nothing: set an expectation or `none = true`")
-        for rel in (*s.files, *s.check_files, *s.check_matches):
+        for rel in (*s.files, *s.fixtures, *s.check_files, *s.check_matches, *s.check_archive):
             if rel.startswith("/") or ".." in Path(rel).parts:
                 bad(f"path {rel!r} must stay inside the working tree")
-        for rx in (*s.check_matches.values(), *s.check_commands):
+        for rel in s.fixtures:
+            if Path(rel).suffix.lower() not in FIXTURE_SUFFIXES or rel in s.files:
+                bad(f"fixture {rel!r} must be a docx, xlsx, pptx, pdf or csv name that `files` does not seed")
+            elif rel not in FIXTURE_BUILDERS:
+                bad(f"fixture {rel!r} has no generator in tools/skill_eval.py (FIXTURE_BUILDERS)")
+        named = set(re.findall(r"[A-Za-z0-9_.-]+\.(?:docx|xlsx|pptx|pdf|csv)\b", s.prompt))
+        for rel in sorted(named - {*s.files, *s.fixtures, *s.check_files}):
+            bad(f"the prompt names {rel!r}, which is neither seeded, generated nor an expected output")
+        for rel in s.check_archive:
+            if rel not in (*s.fixtures, *s.files, *s.check_files):
+                bad(f"check_archive file {rel!r} is neither an input nor an expected output")
+        for rx in (*s.check_matches.values(), *s.check_archive.values(), *s.check_commands):
             try:
                 re.compile(rx)
             except re.error as error:
@@ -246,7 +265,7 @@ class Action:
 
     kind: str  # command | read | skill | connector_call | delegation
     text: str
-    source: str  # tool (the harness asked permission, input visible) | narrated | engine
+    source: str  # target (tool_started carries what it acted on) | tool (permission input) | narrated | engine
     at_ms: int = 0
 
 
@@ -274,7 +293,7 @@ def flatten(value: Any) -> Iterator[str]:
 def actions(events: list[dict[str, Any]]) -> tuple[list[Action], dict[str, int]]:
     """The agent's actions in log order, and how much of its work the log can show at all."""
     out: list[Action] = []
-    seen = {"tool_calls": 0, "visible_inputs": 0, "narrated": 0}
+    seen = {"tool_calls": 0, "visible_inputs": 0, "narrated": 0, "targets": 0}
     pending: list[Action] | None = None  # the permission request a following decision may refuse
     text: list[str] = []
     text_at = 0
@@ -299,9 +318,12 @@ def actions(events: list[dict[str, Any]]) -> tuple[list[Action], dict[str, int]]
             if not text:
                 text_at = at
             text.append(str(inner.get("text", "")))
-        elif kind == "tool_started":
+        elif kind == "tool_started" and isinstance(inner, dict):
             seen["tool_calls"] += 1
             pending = None
+            found = target_actions(inner, at)
+            seen["targets"] += 1 if isinstance(inner.get("target"), dict) else 0
+            out.extend(found)
         elif kind == "permission_requested" and isinstance(inner, dict):
             pending = permission_actions(inner, at)
             seen["visible_inputs"] += 1 if pending else 0
@@ -310,6 +332,10 @@ def actions(events: list[dict[str, Any]]) -> tuple[list[Action], dict[str, int]]
             if pending and event.get("allowed") is False:
                 for action in pending:
                     out.remove(action)
+                    # The same call's target, recorded when the tool started.
+                    twin = [a for a in out if a.source == "target" and (a.kind, a.text) == (action.kind, action.text)]
+                    if twin:
+                        out.remove(twin[-1])
             pending = None
         elif activity == "connector_call":
             call = event.get("connector_call") or {}
@@ -319,6 +345,25 @@ def actions(events: list[dict[str, Any]]) -> tuple[list[Action], dict[str, int]]
             out.append(Action("delegation", f"{event.get('tool', '')} {event.get('branch', '')}".strip(), "engine", at))
     flush()
     return out, seen
+
+
+def target_actions(inner: dict[str, Any], at: int) -> list[Action]:
+    """What a `tool_started` event's `target` says the call acted on: `{kind, value}` with kind file, command,
+    mcp or skill, bounded and scrubbed by the engine. A file target is a read unless the tool's name says it
+    writes. No target: nothing is known of the call's input."""
+    target = inner.get("target")
+    if not isinstance(target, dict) or not isinstance(target.get("value"), str) or not target["value"]:
+        return []
+    kind, value = target.get("kind"), target["value"]
+    if kind == "command":
+        return [Action("command", value, "target", at)]
+    if kind == "skill":
+        return [Action("skill", value, "target", at)]
+    if kind == "file":
+        if any(w in str(inner.get("name", "")).lower() for w in WRITE_TOOLS):
+            return []
+        return [Action("read", value, "target", at)]
+    return [Action("tool", value, "target", at)]
 
 
 def permission_actions(inner: dict[str, Any], at: int) -> list[Action]:
@@ -409,7 +454,7 @@ def collect(acts: list[Action], universe: dict[str, Any]) -> Evidence:
         elif normal.endswith("helpers/INDEX.md"):
             ev.read_helpers_index = True
             ev.read_index = True
-        elif normal.endswith("/SKILL.md") or normal == "SKILL.md":
+        elif normal.endswith("/SKILL.md"):
             ev.skills.add(Path(normal).parent.name)
         elif normal.endswith("INDEX.md"):
             ev.read_index = True
@@ -560,7 +605,9 @@ def score_scenario(
     wrong = sorted(f"{kind}:{ident}" for kind, ident in all_opens - wanted)
     forbidden = sorted(m for m in scenario.must_not if any(ident == m for _, ident in all_opens))
     searched = ev.searched_cmd or ev.read_index
-    blind = seen["tool_calls"] > 0 and seen["visible_inputs"] == 0 and seen["narrated"] == 0
+    # Targets on the tool events (docs/skill-eval.md) show inputs wherever the harness reports them; only a
+    # log with tool calls and no target, no permission input and no narrated command is blind.
+    blind = seen["tool_calls"] > 0 and seen["targets"] == 0 and seen["visible_inputs"] == 0 and seen["narrated"] == 0
 
     checks, checks_ok = check_results(scenario, meta, ev)
     completed = turn_completed(events)
@@ -615,6 +662,12 @@ def check_results(scenario: Scenario, meta: dict[str, Any], ev: Evidence) -> tup
             unresolved = True
         else:
             results[f"match:{rel}"] = bool(value)
+    for rel in scenario.check_archive:
+        value = (recorded.get("archive") or {}).get(rel)
+        if value is None:
+            unresolved = True
+        else:
+            results[f"archive:{rel}"] = bool(value)
     for rx in scenario.check_commands:
         results[f"command:{rx}"] = any(re.search(rx, c) for c in ev.commands)
     if unresolved:
@@ -732,7 +785,7 @@ def score_dir(logdir: Path, scenarios: list[Scenario]) -> dict[str, Any]:
             notes.append(f"skipped {sid}: {why}")
     if any(r["blind"] for r in rows):
         notes.append(
-            "blind scenarios: the log shows tool names but no tool inputs, so searched and found are lower bounds"
+            "blind scenarios: tool calls with no target and no input in the log, so searched and found are lower bounds"
         )
     if (logdir / "run.json").is_file():
         info = json.loads((logdir / "run.json").read_text(encoding="utf-8"))
@@ -758,7 +811,6 @@ class RunOptions:
     max_minutes: str = "10"
     anvil: str | None = None
     bundles: str | None = None
-    assume_envelope: bool = False
     script: dict[str, str] = field(default_factory=dict)
 
 
@@ -783,8 +835,14 @@ def run_argv(scenario: Scenario, options: RunOptions, repo: Path) -> list[str]:
         argv += ["--model", options.model]
     if options.command:
         argv += ["--command", options.command]
+    for skill in scenario.skills:
+        argv += ["--skill", skill]
     if scenario.helpers:
         argv += ["--delegate=1"]
+        if scenario.envelope:
+            # The envelope allows the run's own harness and the ones the scenario needs.
+            helpers = [options.harness, *(h for h in scenario.envelope if h not in {"own", options.harness})]
+            argv += ["--helpers", ",".join(helpers)]
     for grant in scenario.connectors:
         argv += ["--connector", grant]
     if scenario.connectors:
@@ -794,21 +852,208 @@ def run_argv(scenario: Scenario, options: RunOptions, repo: Path) -> list[str]:
 
 def runnable(scenario: Scenario, options: RunOptions) -> str | None:
     """Why this scenario cannot run with these options, or None."""
-    if scenario.envelope and not options.assume_envelope:
-        return (
-            f"needs an envelope that allows {', '.join(scenario.envelope)}; `by run` has no flag for it "
-            "(pass --assume-envelope once it is configured)"
-        )
+    for name in scenario.fixtures:
+        try:
+            FIXTURE_BUILDERS[name]()
+        except RuntimeError as error:
+            return str(error)
     if scenario.connectors and not (options.anvil and options.bundles):
         return "needs a connector gateway: pass --anvil and --bundles (the Anvil mock cannot serve one)"
     return None
 
 
+# ---------------------------------------------------------------------------------------------------------
+# Input files
+
+
+#: The one timestamp every generated file carries, so the same name always gives the same bytes.
+FIXED_TIME = datetime(2026, 11, 7, 9, 0, 0)
+FIXTURE_SUFFIXES = {".docx", ".xlsx", ".pptx", ".pdf", ".csv"}
+
+
+def stable_zip(data: bytes) -> bytes:
+    """`data`, an OOXML zip, rewritten with one timestamp and its members in order, so it is reproducible."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
+        for info in source.infolist():
+            member = zipfile.ZipInfo(info.filename, FIXED_TIME.timetuple()[:6])
+            member.compress_type = zipfile.ZIP_DEFLATED
+            member.external_attr = 0o644 << 16
+            target.writestr(member, source.read(info.filename))
+    return out.getvalue()
+
+
+def need(module: str) -> Any:
+    """Import one of the artifact toolkit's libraries, or say which requirements file lists it."""
+    try:
+        return __import__(module, fromlist=["_"])
+    except ImportError as error:
+        raise RuntimeError(
+            f"{module} is needed to generate input files: pip install -r "
+            "plugins/branchyard/skills/artifact-tools/scripts/requirements.lock"
+        ) from error
+
+
+def docx_bytes(
+    title: str, paragraphs: list[str], tables: list[list[list[str]]] | None = None, page_breaks: bool = False
+) -> bytes:
+    docx = need("docx")
+    doc = docx.Document()
+    doc.core_properties.created = doc.core_properties.modified = FIXED_TIME
+    doc.core_properties.author = doc.core_properties.last_modified_by = "Skill Eval"
+    doc.add_heading(title, level=1)
+    for text in paragraphs:
+        run = doc.add_paragraph().add_run(text)
+        run.bold = text.endswith(":")
+        if page_breaks:
+            doc.add_page_break()
+    for rows in tables or []:
+        table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+        table.style = "Table Grid"
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                table.cell(r, c).text = value
+        doc.add_paragraph()
+    out = io.BytesIO()
+    doc.save(out)
+    return stable_zip(out.getvalue())
+
+
+def xlsx_bytes(sheet: str, rows: list[list[Any]]) -> bytes:
+    openpyxl = need("openpyxl")
+    book = openpyxl.Workbook()
+    book.properties.created = book.properties.modified = FIXED_TIME
+    book.properties.creator = "Skill Eval"
+    page = book.active
+    page.title = sheet
+    for row in rows:
+        page.append(row)
+    out = io.BytesIO()
+    book.save(out)
+    return stable_zip(out.getvalue())
+
+
+def pptx_bytes(slides: list[tuple[str, str]]) -> bytes:
+    pptx = need("pptx")
+    deck = pptx.Presentation()
+    deck.core_properties.created = deck.core_properties.modified = FIXED_TIME
+    deck.core_properties.author = deck.core_properties.last_modified_by = "Skill Eval"
+    for title, body in slides:
+        slide = deck.slides.add_slide(deck.slide_layouts[1])
+        slide.shapes.title.text = title
+        slide.placeholders[1].text = body
+    out = io.BytesIO()
+    deck.save(out)
+    return stable_zip(out.getvalue())
+
+
+def pdf_bytes(pages: list[list[str]], form: list[str] | None = None) -> bytes:
+    """A PDF with one page per list of lines, and a text field per name in `form` on its first page."""
+    canvas = need("reportlab.pdfgen.canvas")
+    out = io.BytesIO()
+    page = canvas.Canvas(out, invariant=1, pageCompression=0)
+    page.setTitle("Skill Eval fixture")
+    for number, lines in enumerate(pages):
+        y = 760
+        for line in lines:
+            page.drawString(72, y, line)
+            y -= 18
+        if number == 0:
+            for name in form or []:
+                page.acroForm.textfield(name=name, x=200, y=y, width=200, height=18, borderStyle="inset")
+                y -= 30
+        page.showPage()
+    page.save()
+    return out.getvalue()
+
+
+def csv_bytes(rows: list[list[Any]]) -> bytes:
+    return "".join(",".join(str(v) for v in row) + "\n" for row in rows).encode("utf-8")
+
+
+def forecast_rows() -> list[list[Any]]:
+    """Quarterly figures in B to D with the totals still summing B and C only, as after an inserted column."""
+    rows: list[list[Any]] = [["Item", "Q1", "Q2", "Q3", "Total"]]
+    for n, item in enumerate(["Licences", "Support", "Training"], start=2):
+        rows.append([item, 100 * n, 110 * n, 120 * n, f"=SUM(B{n}:C{n})"])
+    rows.append(["All", "=SUM(B2:B4)", "=SUM(C2:C4)", "=SUM(D2:D4)", "=SUM(E2:E4)"])
+    return rows
+
+
+def sales_rows() -> list[list[Any]]:
+    regions, products = ["North", "South", "East"], ["Pens", "Ink"]
+    rows: list[list[Any]] = [["region", "product", "amount"]]
+    for i, region in enumerate(regions):
+        for j, product in enumerate(products):
+            rows.append([region, product, 10 * (i + 1) + j])
+    return rows
+
+
+#: The input file names a scenario may list in `fixtures`, each with a deterministic generator.
+FIXTURE_BUILDERS: dict[str, Any] = {
+    "contract.docx": lambda: docx_bytes(
+        "Services Agreement",
+        [
+            "This agreement is between Acme Ltd and the Customer.",
+            "Acme Ltd shall deliver the services described in Schedule A.",
+            "Payment terms:",
+            "Invoices are payable to Acme Ltd within thirty days.",
+        ],
+        [[["Party", "Role"], ["Acme Ltd", "Supplier"]]],
+    ),
+    "flyer.docx": lambda: docx_bytes(
+        "Spring Open Day",
+        ["Join us on Saturday, 14 March, from 10:00 to 16:00.", "Free entry. Tours every hour.", "Bring a friend."],
+    ),
+    "handbook.docx": lambda: docx_bytes(
+        "Team Handbook",
+        ["Welcome to the team.", "Working hours and holidays.", "Expenses and travel."],
+        page_breaks=True,
+    ),
+    "spec.docx": lambda: docx_bytes(
+        "Interface Specification",
+        ["Three tables follow."],
+        [
+            [["Field", "Type"], ["id", "integer"], ["name", "text"]],
+            [["Code", "Meaning"], ["200", "ok"], ["404", "missing"]],
+            [["Limit", "Value"], ["rate", "10 per second"], ["size", "1 MB"]],
+        ],
+    ),
+    "sales.xlsx": lambda: xlsx_bytes("Sales", sales_rows()),
+    "forecast.xlsx": lambda: xlsx_bytes("Forecast", forecast_rows()),
+    "pitch.pptx": lambda: pptx_bytes(
+        [
+            ("Pitch", "Our company"),
+            ("Why Contoso", "Contoso needs faster reports"),
+            ("Product", "What we built"),
+            ("Pricing", "Per seat"),
+            ("Next steps", "Contoso pilot in March"),
+        ]
+    ),
+    "keynote.pptx": lambda: pptx_bytes(
+        [("Opening", "Welcome and agenda"), ("Results", "Revenue grew"), ("Close", "Questions")]
+    ),
+    "part1.pdf": lambda: pdf_bytes([["Part one, page one"], ["Part one, page two"]]),
+    "part2.pdf": lambda: pdf_bytes([["Part two, page one"]]),
+    "report.pdf": lambda: pdf_bytes([[f"Quarterly report, page {n}", "Revenue and costs."] for n in (1, 2, 3)]),
+    "application.pdf": lambda: pdf_bytes([["Application form", "Name:", "Date:"]], form=["name", "date"]),
+    "filing.pdf": lambda: pdf_bytes([["Annual filing", "Registered office: 1 High Street."]]),
+    "vendor.pdf": lambda: pdf_bytes(
+        [["Pricing", "Item | Unit | Price", "Pen | each | 1.20"], ["Pricing (continued)", "Ink | bottle | 4.50"]]
+    ),
+}
+
+
 def seed(repo: Path, scenario: Scenario) -> None:
+    """Write the scenario's text files and generate its binary inputs."""
     for rel, content in scenario.files.items():
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+    for rel in scenario.fixtures:
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(FIXTURE_BUILDERS[rel]())
 
 
 def git(repo: Path, *args: str) -> None:
@@ -845,7 +1090,20 @@ def evaluate_checks(scenario: Scenario, tree: Path) -> dict[str, dict[str, bool]
     for rel, rx in scenario.check_matches.items():
         path = tree / rel
         matches[rel] = path.is_file() and re.search(rx, path.read_text(encoding="utf-8", errors="replace")) is not None
-    return {"files": files, "matches": matches}
+    archive = {rel: archive_matches(tree / rel, rx) for rel, rx in scenario.check_archive.items()}
+    return {"files": files, "matches": matches, "archive": archive}
+
+
+def archive_matches(path: Path, pattern: str) -> bool:
+    """Whether `pattern` matches a member name or the text of a member of the zip (docx, xlsx, pptx) at `path`."""
+    try:
+        with zipfile.ZipFile(path) as bundle:
+            for name in bundle.namelist():
+                if re.search(pattern, name) or re.search(pattern, bundle.read(name).decode("utf-8", "replace")):
+                    return True
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return False
 
 
 def worktree_of(by: str, name: str, env: dict[str, str], repo: Path) -> Path | None:
@@ -898,7 +1156,7 @@ def run_scenario(scenario: Scenario, options: RunOptions, out: Path, base: Path)
         "wall_s": wall,
         "exit_status": done.returncode,
         "scripted": scenario.id in options.script,
-        "skills_chosen_applied": False,
+        "skills_chosen_applied": bool(scenario.skills),
         "checks": evaluate_checks(scenario, tree) if tree else {},
         "stderr_tail": done.stderr[-2000:],
     }
@@ -984,9 +1242,6 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     runner.add_argument("--max-minutes", default="10")
     runner.add_argument("--anvil", help="Anvil command that can serve a gateway (connector scenarios)")
     runner.add_argument("--bundles", help="bundle root for --anvil")
-    runner.add_argument(
-        "--assume-envelope", action="store_true", help="run helper scenarios that need a wider envelope"
-    )
     runner.add_argument("--record", action="store_true", help="also write evals/skills/records/DATE-HARNESS.json")
     size = sub.add_parser("sizes", help="print the static text sizes a turn pays for")
     size.add_argument("--tree", type=Path, help="a mounted tool tree (.branchyard/tools) to measure too")
@@ -1032,7 +1287,6 @@ def main(argv: list[str] | None = None) -> int:
         max_minutes=args.max_minutes,
         anvil=args.anvil,
         bundles=args.bundles,
-        assume_envelope=args.assume_envelope,
         script=script,
     )
     out = args.out or Path("skill-eval-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))

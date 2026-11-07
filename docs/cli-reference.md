@@ -84,6 +84,7 @@ by run [OPTIONS] [PROMPT]
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -95,6 +96,7 @@ by run [OPTIONS] [PROMPT]
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -182,6 +184,7 @@ by fan [OPTIONS] [PROMPT]
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -193,6 +196,7 @@ by fan [OPTIONS] [PROMPT]
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -296,6 +300,7 @@ by map [OPTIONS] <PROMPT>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -376,6 +381,7 @@ by send [OPTIONS] <BRANCH> [PROMPT]
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -387,6 +393,7 @@ by send [OPTIONS] <BRANCH> [PROMPT]
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -474,6 +481,7 @@ by fork [OPTIONS] <BRANCH> <PROMPT>
 | `--require-label <LABEL>` | With --remote: only a worker carrying this label runs it (repeatable) |
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -485,6 +493,7 @@ by fork [OPTIONS] <BRANCH> <PROMPT>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -549,6 +558,7 @@ by reincarnate [OPTIONS] <BRANCH>
 | `--require-label <LABEL>` | With --remote: only a worker carrying this label runs it (repeatable) |
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -560,6 +570,7 @@ by reincarnate [OPTIONS] <BRANCH>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -694,6 +705,7 @@ by task new [OPTIONS] <PROMPT>
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -705,6 +717,7 @@ by task new [OPTIONS] <PROMPT>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -833,6 +846,7 @@ by task fork [OPTIONS] <TASK> <PROMPT>
 | `--require-label <LABEL>` | With --remote: only a worker carrying this label runs it (repeatable) |
 | `--priority <N>` | With --remote: the operation's priority, -10 to 10 (default 0, or a spawned child's parent's); higher runs first |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -844,6 +858,7 @@ by task fork [OPTIONS] <TASK> <PROMPT>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -1173,6 +1188,7 @@ by review [OPTIONS] <BRANCH>
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -1184,6 +1200,7 @@ by review [OPTIONS] <BRANCH>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -1254,6 +1271,7 @@ by plan approve [OPTIONS] <BRANCH>
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -1265,6 +1283,7 @@ by plan approve [OPTIONS] <BRANCH>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |
@@ -1299,6 +1318,7 @@ by plan reject [OPTIONS] <BRANCH>
 | `--command <CMD>` | Launch this instead of the profile's executable, for development and testing |
 | `--no-preflight` | Skip the check, before any branch is created, that the harness is installed and not verified logged out (it is not made for --command or a routed run) |
 | `--delegate <DEPTH>` | Let the harness create child branches through Branchyard's MCP tools, DEPTH levels deep (default 1) |
+| `--helpers <ID,ID,...>` | The harnesses or profiles the delegating harness may start as children, such as codex,gemini-cli; without it, only its own. Needs --delegate |
 | `--allow-delegation` | Allow the harness's own by commands that act as its branch (spawn, inspect, send, wait, discard, artifact, ask, ...; see docs/delegation.md) without asking; nothing else |
 | `--no-wake` | Do not start the harness's next turn on its own when its turn ends while its children run and they then settle |
 | `--secret <NAME[=VAR|=@FILE]>` | A credential for the harness, such as ANTHROPIC_API_KEY, from the variable of that name, VAR, or FILE; written only into its private home (--isolated or a sandbox). Repeatable |
@@ -1310,6 +1330,7 @@ by plan reject [OPTIONS] <BRANCH>
 | `--effort <LEVEL>` | Reasoning effort: low, medium, high, xhigh, or 0-100 |
 | `--telemetry <URL|off>` | Send the harness's OpenTelemetry to this OTLP/gRPC collector, or turn it off |
 | `--connector <GRANT>` | A connector the harness may call through the gateway (docs/connectors.md): CONNECTOR[@ACCOUNT][:read\|write\|write+confirm[:OP,OP...]], such as github:read or 'github:write:issues.*'; only into its private home (--isolated or a sandbox). Repeatable |
+| `--skill <NAME>` | A built-in skill to stage, with the skills it needs; the others are left out of the tool tree and the skill index (docs/knowledge-skills.md). Repeatable; unset, every built-in skill is staged |
 | `--network <open|none|HOSTS>` | The hosts the harness may reach (docs/egress.md): open, none, or rules '[METHOD\|METHOD ]HOST[:PORT][/PATH]' separated by commas, such as 'github.com,*.npmjs.org:443' or 'GET\|HEAD api.github.com/repos/*' (a rule naming a method or path is held to inside the connection) |
 | `--network-enforce <MODE>` | Refuse to run where the network policy cannot be enforced (required), or run with the proxy's variables only and say so (best-effort, the default) |
 | `--model-gateway <MODELS>` | Call the harness's models through Branchyard's model gateway (docs/model-gateway.md), which holds the provider's key, meters every call and holds the budgets; =MODELS limits it to these models, globs separated by commas, such as 'claude-sonnet-*' |

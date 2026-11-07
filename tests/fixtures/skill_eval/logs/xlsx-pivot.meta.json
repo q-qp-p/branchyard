@@ -1,3 +1,4 @@
 {
-  "harness": "codex"
+  "harness": "codex",
+  "checks": {"archive": {"sales.xlsx": false}}
 }

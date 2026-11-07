@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+A tool call in a branch's event log now says what it acted on. `tool_started` carries an optional `target`: the file a call read or changed (relative to the worktree, `tools/...` for the mounted tool tree, and only the last component of any other absolute path), the first 120 characters of a shell command with secrets replaced by `[redacted]`, the server and tool of an MCP call, or the skill a harness's own skill tool opened. Never a file's content or a call's full arguments. Claude Code, Codex, ACP agents (Gemini CLI, Qwen Code, OpenCode, Antigravity over ACP and the others, where the call's input or location names it), Amp and Pi report it; a harness that reports no input leaves it out, as do older logs, and the timeline stays content-free. `by log` prints it after the tool name, and `by log --json` and `schema/contract.json` carry it. See [tool call targets](docs/harness-integration.md#tool-call-targets).
+
+`by run`, `fan`, `map`, `send`, `fork` and `reincarnate` take `--skill NAME` (repeatable) to stage only the chosen built-in skills and the skills they need; an unknown name is refused with the built-in skills listed. `by run --delegate` takes `--helpers ID,ID` for the harnesses its children may run, where before only the harness's own profile could be allowed to a branch you started.
+
+The skill-discovery eval (`tools/skill_eval.py`) uses all of it: it reads targets, passes each scenario's skills and helpers, and generates the binary input files 13 scenarios name (docx, xlsx, pptx, pdf, deterministic, with the artifact toolkit's libraries) so 8 of them have file checks. The fake ACP agent reports `SH` lines as tool calls and has a `READ` directive. See [skill-eval](docs/skill-eval.md).
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard

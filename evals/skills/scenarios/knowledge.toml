@@ -4,6 +4,7 @@
 id = "source-capture-snapshot"
 area = "knowledge"
 prompt = "I downloaded interview.txt and filing.pdf for a research note. Record exactly where each came from and a fingerprint of each, so a reviewer can later prove I cited the right files."
+fixtures = ["filing.pdf"]
 files = { "interview.txt" = "Q: How big is the market?\nA: About 4 billion.\n" }
 skills = ["source-capture", "claim-verify", "table-extract", "pdf"]
 expect_skills = ["source-capture"]
@@ -20,6 +21,7 @@ expect_skills = ["source-capture"]
 id = "table-extract-pdf"
 area = "knowledge"
 prompt = "Get the pricing table out of vendor.pdf as rows I can review, and keep a note of which page each row was on."
+fixtures = ["vendor.pdf"]
 skills = ["table-extract", "pdf", "xlsx", "data-clean"]
 expect_skills = ["table-extract"]
 must_not = ["xlsx"]
@@ -28,6 +30,7 @@ must_not = ["xlsx"]
 id = "table-extract-docx"
 area = "knowledge"
 prompt = "There are three tables in spec.docx. List their contents as records, and say which table each came from."
+fixtures = ["spec.docx"]
 skills = ["table-extract", "docx", "data-clean"]
 expect_skills = ["table-extract"]
 
@@ -83,6 +86,7 @@ expect_skills = ["claim-verify"]
 id = "inspect-layout-preview"
 area = "knowledge"
 prompt = "Render each page of handbook.docx to images so I can look at the layout, and be clear that you only rendered them, you haven't judged the design."
+fixtures = ["handbook.docx"]
 skills = ["inspect-layout", "docx", "visual-design", "pdf"]
 expect_skills = ["inspect-layout"]
 
