@@ -164,7 +164,7 @@ Your own skills are the directories of your skills folder,
 configuration file, so `XDG_CONFIG_HOME` and `BRANCHYARD_USER_CONFIG` move
 it): the local `user` source of the [skill registry](skill-registry.md#1-sources).
 `by skills add PATH [--name NAME]` copies a skill directory there (replacing
-one of the same name; with `--name`, the frontmatter's `name` follows), `by
+one of the same name, atomically: the copy is written to a sibling directory and moved into place, so a failure leaves the old skill as it was; a symbolic link in the source is refused; with `--name`, the frontmatter's `name` follows), `by
 skills remove NAME` deletes one, `by memory add --mine` writes a memory bundle
 there ([memory](memory.md)), and `by skills ls` lists the folder, with any
 directory it holds that is not staged and why. The same rules as a

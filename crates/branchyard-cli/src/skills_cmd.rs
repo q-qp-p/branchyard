@@ -234,16 +234,7 @@ fn add(path: &Path, name: Option<&str>, json: bool) -> Outcome {
         Report::new("io", format!("could not {what} {}: {e}", target.display()))
             .next("check the folder's permissions")
     };
-    if replaced {
-        std::fs::remove_dir_all(&target).map_err(|e| fail("replace", e))?;
-    }
-    for (file, content) in &skill.files {
-        let file = target.join(file);
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| fail("create", e))?;
-        }
-        std::fs::write(&file, content).map_err(|e| fail("write", e))?;
-    }
+    install(&dir, &skill.name, &skill.files).map_err(|(what, e)| fail(what, e))?;
     let entry = skill.entry(Source::User);
     if json {
         return print(&to_json(&json!({
@@ -264,6 +255,57 @@ fn add(path: &Path, name: Option<&str>, json: bool) -> Outcome {
         target.display(),
         skill.description
     ))
+}
+
+/// Put `files` in `dir/name`, replacing a skill of that name. The new
+/// skill is written whole to a sibling directory first and moved into
+/// place; the old one is removed only once that worked, so a failure
+/// leaves the old skill as it was. The error says which step failed.
+fn install(
+    dir: &Path,
+    name: &str,
+    files: &[(String, String)],
+) -> Result<(), (&'static str, std::io::Error)> {
+    let target = dir.join(name);
+    let staging = dir.join(format!(".{name}.new"));
+    let old = dir.join(format!(".{name}.old"));
+    let clear = |path: &Path| match std::fs::remove_dir_all(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(("replace", e)),
+        _ => Ok(()),
+    };
+    clear(&staging)?;
+    clear(&old)?;
+    let written = (|| {
+        for (file, content) in files {
+            let file = staging.join(file);
+            if let Some(parent) = file.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| ("create", e))?;
+            }
+            std::fs::write(&file, content).map_err(|e| ("write", e))?;
+        }
+        Ok(())
+    })();
+    if let Err(failure) = written {
+        branchyard_support::best_effort(
+            "remove the staging directory",
+            std::fs::remove_dir_all(&staging),
+        );
+        return Err(failure);
+    }
+    let had_old = std::fs::symlink_metadata(&target).is_ok();
+    if had_old {
+        std::fs::rename(&target, &old).map_err(|e| ("replace", e))?;
+    }
+    if let Err(e) = std::fs::rename(&staging, &target) {
+        if had_old {
+            branchyard_support::best_effort(
+                "restore the old skill",
+                std::fs::rename(&old, &target),
+            );
+        }
+        return Err(("replace", e));
+    }
+    clear(&old)
 }
 
 /// `text`, a `SKILL.md`, with its frontmatter `name: from` line naming `to`.
@@ -622,5 +664,41 @@ fn untrust(json: bool) -> Outcome {
             "{}'s repository skills were not trusted\n",
             root.display()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(name: &str, text: &str) -> (String, String) {
+        (name.to_owned(), text.to_owned())
+    }
+
+    #[test]
+    fn a_failure_midway_leaves_the_old_skill_intact_and_no_staging() {
+        let scratch = branchyard_testkit::Scratch::new("skills-install");
+        let dir = scratch.path();
+        install(dir, "s", &[file("SKILL.md", "old\n")]).unwrap();
+        // `x` is a file, then a directory: the second write cannot be made.
+        let broken = [file("SKILL.md", "new\n"), file("x", "1"), file("x/y", "2")];
+        assert!(install(dir, "s", &broken).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("s/SKILL.md")).unwrap(),
+            "old\n"
+        );
+        assert!(!dir.join(".s.new").exists() && !dir.join(".s.old").exists());
+        install(
+            dir,
+            "s",
+            &[file("SKILL.md", "new\n"), file("references/a.md", "a")],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("s/SKILL.md")).unwrap(),
+            "new\n"
+        );
+        assert!(dir.join("s/references/a.md").is_file());
+        assert!(!dir.join(".s.new").exists() && !dir.join(".s.old").exists());
     }
 }
