@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+Memory as a reviewed skill (`docs/memory.md`, slice M1). `by memory add --title
+T --body-file F [--kind rule|procedure|fact|pitfall] [--path GLOB]... [--topic T]`
+writes one memory as `references/<slug>.md` in the bundle `memory-<topic>/`
+under `.agents/skills/` of the checkout, with a `SKILL.md` (one line per
+memory, grouped by kind, under 4,096 characters) and a `memory.json` the writer
+rewrites deterministically: the same approved set gives the same bytes and the
+same digest, and a topic over the skill limits is split into `memory-<topic>-2`
+and on, the first bundle saying so. Commit the bundle and open the pull
+request; turns find it, as any repository skill, after `by skills trust`. With
+`--mine` the memory goes to your own skills folder, approved by you at once.
+`by memory list | show | edit | remove | export` read and rewrite the same
+files; `add`, `edit` and `remove` are refused inside a harness (`denied`;
+advisory locally), and `--remote` is refused. `by knowledge distill` now
+writes each correction longer than an entry's 600 characters, whole, as a
+draft under `.branchyard/memory-drafts/<slug>.md` (`Distilled::drafts`,
+`draft_files`), and `by memory add --from DRAFT` adds it. New engine errors
+`unknown_memory` and `invalid_memory` (exit 2). `Yard::memories`,
+`Yard::add_memory`, `branchyard::memory`.
+
+Your own skills: the local `user` source of the skill registry
+(`docs/skill-registry.md`). `by skills add PATH [--name N]` copies a skill
+directory into `~/.config/branchyard/skills/`, `by skills remove NAME` deletes
+one, and `by skills ls` lists the folder with any directory withheld by name.
+A branch `by run`, `fan`, `map` or `rig run` creates outside any branch reads
+the folder again each turn (`TaskOptions::user_skills`, inherited by forks,
+reincarnations and children), stages it under `user/<name>/` beside the
+repository's skills, lists it in the Custom topic as `user:<name>` and records
+each digest in `provisioned.skills`, with `user_withheld` naming what the
+folder holds and the turn did not stage. A staged repository skill shadows a
+user skill of its name; a built-in's name stays reserved. The skill record's
+`Layer` is now `Source` (`repository`, `built_in`, `user`); the field still
+serializes as `layer`, and recorded set digests are unchanged. The eval gains
+`evals/skills/scenarios/memory.toml` (five scenarios), `home_files`, the
+runner's trust step and `rank --mount own|all`; hermetic result, 7 November
+2026: the memory scenarios in the top three 5 of 5 times over the trees their
+repositories would mount, and no existing scenario moved. See
+[memory](docs/memory.md), [your own skills](docs/knowledge-skills.md#your-own-skills)
+and [skill-eval](docs/skill-eval.md#ranking-without-a-model).
+
 A skill's references are searchable. In a turn's tool tree, `bin/tools search`
 ranks each `references/*.md` of a staged skill as a document of its own
 (`SKILL/references/FILE.md`: the skill's and the file's name, the first heading

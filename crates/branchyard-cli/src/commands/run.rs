@@ -106,6 +106,7 @@ pub(crate) fn run_admitted(
     let mut options = TaskOptions {
         workspace,
         repository_skills,
+        user_skills: crate::skills_cmd::user_skills_for_new_branch(),
         ..live.options(task)?
     };
     if let Some(id) = join {

@@ -53,6 +53,10 @@ TOOLS_SCRIPT = SKILLS / "find-tools/scripts/tools.py"
 ANVIL_MOCK = ROOT / "tests/fixtures/anvil/anvil"
 #: What separates a skill from one of its references in an id: `pptx/references/layouts.md`.
 REFERENCE = "/references/"
+#: Where `files` may seed a repository skill (`repository:NAME`) that the runner trusts before `by run`.
+REPOSITORY_SKILLS = ".agents/skills/"
+#: Where `home_files` may seed a person's own skill (`user:NAME`) in the run's private HOME.
+USER_SKILLS = ".config/branchyard/skills/"
 
 #: The keys a scenario may have; anything else is a typo and is refused.
 KEYS = {
@@ -60,6 +64,7 @@ KEYS = {
     "area",
     "prompt",
     "files",
+    "home_files",
     "skills",
     "connectors",
     "helpers",
@@ -95,6 +100,7 @@ class Scenario:
     area: str
     prompt: str
     files: dict[str, str] = field(default_factory=dict)
+    home_files: dict[str, str] = field(default_factory=dict)
     skills: list[str] = field(default_factory=list)
     connectors: list[str] = field(default_factory=list)
     helpers: bool = False
@@ -118,6 +124,28 @@ class Scenario:
     @property
     def has_checks(self) -> bool:
         return bool(self.check_files or self.check_matches or self.check_archive)
+
+    @property
+    def seeded_skills(self) -> dict[str, Path]:
+        """The skills the scenario seeds, by id: `repository:NAME` for `.agents/skills/NAME/SKILL.md` in `files`,
+        `user:NAME` for `.config/branchyard/skills/NAME/SKILL.md` in `home_files`; each with its directory."""
+        out: dict[str, Path] = {}
+        for rel in self.files:
+            if rel.startswith(REPOSITORY_SKILLS) and rel.endswith("/SKILL.md"):
+                name = rel[len(REPOSITORY_SKILLS) : -len("/SKILL.md")]
+                if "/" not in name:
+                    out[f"repository:{name}"] = Path(rel).parent
+        for rel in self.home_files:
+            if rel.startswith(USER_SKILLS) and rel.endswith("/SKILL.md"):
+                name = rel[len(USER_SKILLS) : -len("/SKILL.md")]
+                if "/" not in name:
+                    out[f"user:{name}"] = Path(rel).parent
+        return out
+
+    @property
+    def seeds_repository_skills(self) -> bool:
+        """Whether the runner must trust the repository's skills before `by run` (the trust step)."""
+        return any(ident.startswith("repository:") for ident in self.seeded_skills)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -185,6 +213,17 @@ def reference_skill(ident: str) -> str:
     return ident.split(REFERENCE, 1)[0]
 
 
+def seeded_reference_problem(scenario: Scenario, ident: str) -> str | None:
+    """Why `ident`, a reference of a skill the scenario seeds, is not a file the scenario seeds."""
+    skill, file = ident.split(REFERENCE, 1)
+    directory = scenario.seeded_skills[skill]
+    rel = f"{directory}/references/{file}"
+    seeded = scenario.home_files if skill.startswith("user:") else scenario.files
+    if rel not in seeded:
+        return f"reference {ident!r}: the scenario does not seed {rel}"
+    return None
+
+
 def reference_problem(ident: str) -> str | None:
     """Why a reference id (`SKILL/references/FILE.md`) names no shipped reference, or None when it does."""
     skill, _, file = ident.partition(REFERENCE)
@@ -213,8 +252,12 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
         seen.add(s.id)
         if not s.prompt.strip():
             bad("empty prompt")
+        seeded = s.seeded_skills
         for name in (*s.expect_skills, *s.skills):
-            if reference_skill(name) not in skills:
+            if reference_skill(name) in seeded:
+                if REFERENCE in name and (why := seeded_reference_problem(s, name)):
+                    bad(why)
+            elif reference_skill(name) not in skills:
                 bad(f"skill {reference_skill(name)!r} is not one a turn's tool tree lists (the topic indexes)")
             elif REFERENCE in name and (why := reference_problem(name)):
                 bad(why)
@@ -234,7 +277,7 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
             if not any(grant_connector(g) == op.split(".", 1)[0] for g in s.connectors):
                 bad(f"operation {op!r} needs its connector in `connectors`")
         for name in s.expect_skills:
-            if s.skills and reference_skill(name) not in s.skills:
+            if s.skills and reference_skill(name) not in s.skills and reference_skill(name) not in seeded:
                 bad(f"expected skill {reference_skill(name)!r} is not among the skills chosen for the turn")
         for helper in s.expect_helpers:
             if not s.helpers:
@@ -246,6 +289,11 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
         for rel in (*s.files, *s.fixtures, *s.check_files, *s.check_matches, *s.check_archive):
             if rel.startswith("/") or ".." in Path(rel).parts:
                 bad(f"path {rel!r} must stay inside the working tree")
+        for rel in s.home_files:
+            if rel.startswith("/") or ".." in Path(rel).parts:
+                bad(f"home path {rel!r} must stay inside the private HOME")
+            elif not rel.startswith(USER_SKILLS):
+                bad(f"home path {rel!r} must be under {USER_SKILLS}, the person's skills folder")
         for rel in s.fixtures:
             if Path(rel).suffix.lower() not in FIXTURE_SUFFIXES or rel in s.files:
                 bad(f"fixture {rel!r} must be a docx, xlsx, pptx, pdf or csv name that `files` does not seed")
@@ -1068,8 +1116,9 @@ FIXTURE_BUILDERS: dict[str, Any] = {
 }
 
 
-def seed(repo: Path, scenario: Scenario) -> None:
-    """Write the scenario's text files and generate its binary inputs."""
+def seed(repo: Path, scenario: Scenario, home: Path | None = None) -> None:
+    """Write the scenario's text files and generate its binary inputs; with `home`, its `home_files` into the
+    run's private HOME (the person's skills folder, `~/.config/branchyard/skills/NAME/`)."""
     for rel, content in scenario.files.items():
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1078,6 +1127,20 @@ def seed(repo: Path, scenario: Scenario) -> None:
         target = repo / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(FIXTURE_BUILDERS[rel]())
+    if home is not None:
+        for rel, content in scenario.home_files.items():
+            target = home / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
+
+def trust_argv(scenario: Scenario, options: RunOptions) -> list[str] | None:
+    """The trust step: `by skills trust`, run after the scratch commit and before `by run`, when the scenario
+    seeds a repository skill under .agents/skills/. A set a person did not trust is withheld, so without it the
+    seeded skill would never reach the tree. None when nothing is seeded there."""
+    if not scenario.seeds_repository_skills:
+        return None
+    return [options.by, "skills", "trust"]
 
 
 def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> None:
@@ -1153,13 +1216,18 @@ def run_scenario(scenario: Scenario, options: RunOptions, out: Path, base: Path)
     env = sandbox_env(work)
     git(repo, "init", "-q", "-b", "main", env=env)
     (repo / "README.md").write_text("# scratch\n", encoding="utf-8")
-    seed(repo, scenario)
+    seed(repo, scenario, Path(env["HOME"]))
     if scenario.connectors and options.bundles and options.anvil:
         (repo / "branchyard.toml").write_text(
             f'[connectors]\nbundles = "{options.bundles}"\nanvil = "{options.anvil}"\n', encoding="utf-8"
         )
     git(repo, "add", "-A", env=env)
     git(repo, "commit", "-q", "-m", "scratch", env=env)
+    trust = trust_argv(scenario, options)
+    trusted = None
+    if trust:
+        done = subprocess.run(trust, cwd=repo, env=env, capture_output=True, text=True, check=False)
+        trusted = done.returncode == 0
     started = datetime.now(UTC)
     clock = os.times().elapsed
     if scenario.connectors:
@@ -1182,6 +1250,8 @@ def run_scenario(scenario: Scenario, options: RunOptions, out: Path, base: Path)
         "exit_status": done.returncode,
         "scripted": scenario.id in options.script,
         "skills_chosen_applied": bool(scenario.skills),
+        "repository_skills_trusted": trusted,
+        "home_files_seeded": sorted(scenario.home_files),
         "checks": evaluate_checks(scenario, tree) if tree else {},
         "stderr_tail": done.stderr[-2000:],
     }
@@ -1258,9 +1328,11 @@ def load_tools(script: Path = TOOLS_SCRIPT) -> Any:
     return module
 
 
-def shipped_tree(base: Path) -> dict[str, Any]:
-    """A tool tree under `base` as `by run` mounts one today: every skill `capabilities.json` lists, chosen, and
-    the Anvil mock's packages as connectors. Returns what it holds; the tree is `base/tools`."""
+def shipped_tree(base: Path, scenarios: Iterable[Scenario] = ()) -> dict[str, Any]:
+    """A tool tree under `base` as `by run` mounts one today: every skill `capabilities.json` lists, chosen, the
+    Anvil mock's packages as connectors, and the skills `scenarios` seed (`repository:NAME` under
+    `skills/repository/NAME/`, `user:NAME` under `skills/user/NAME/`, as a trusted set and a person's folder are
+    staged), chosen too. Returns what it holds; the tree is `base/tools`."""
     tools, capabilities, connectors = base / "tools", base / "capabilities", base / "connectors"
     for directory in (tools, capabilities, connectors):
         directory.mkdir(parents=True, exist_ok=True)
@@ -1269,6 +1341,22 @@ def shipped_tree(base: Path) -> dict[str, Any]:
     for skill in skills:
         (capabilities / skill["id"]).symlink_to(SKILLS / skill["id"])
         lines.append(f"- {skill['id']}: {skill['description']}\n")
+    seeded: list[str] = []
+    for scenario in scenarios:
+        for ident, directory in scenario.seeded_skills.items():
+            source, name = ident.split(":", 1)
+            staged = capabilities / source / name
+            if staged.exists():
+                continue
+            files = scenario.home_files if source == "user" else scenario.files
+            for rel, content in files.items():
+                if Path(rel).parts[: len(directory.parts)] == directory.parts:
+                    target = staged / Path(rel).relative_to(directory)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(content, encoding="utf-8")
+            meta = load_tools().frontmatter((staged / "SKILL.md").read_text(encoding="utf-8"))
+            lines.append(f"- {ident}: {meta.get('description', '')}\n")
+            seeded.append(ident)
     (tools / "skills").symlink_to("../capabilities")
     (tools / "connectors").symlink_to("../connectors")
     packaged: list[str] = []
@@ -1289,7 +1377,7 @@ def shipped_tree(base: Path) -> dict[str, Any]:
         lines.append("\n## Connectors (connectors/ID/SKILL.md)\n")
         lines += [f"- {name}\n" for name in packaged]
     (tools / "INDEX.md").write_text("".join(lines), encoding="utf-8")
-    return {"skills": [s["id"] for s in skills], "connectors": packaged, "notes": notes}
+    return {"skills": [s["id"] for s in skills], "connectors": packaged, "seeded": seeded, "notes": notes}
 
 
 def expected_documents(scenario: Scenario) -> list[tuple[str, str]]:
@@ -1299,49 +1387,86 @@ def expected_documents(scenario: Scenario) -> list[tuple[str, str]]:
     return out + [("helper", helper) for helper in scenario.expect_helpers if helper != "own"]
 
 
+def seed_groups(scenarios: list[Scenario]) -> dict[frozenset[str], list[Scenario]]:
+    """The scenarios by the set of skills they seed: one tree per set, since a turn sees its own repository's
+    skills and the person's folder, not another scenario's."""
+    groups: dict[frozenset[str], list[Scenario]] = {}
+    for scenario in scenarios:
+        groups.setdefault(frozenset(scenario.seeded_skills), []).append(scenario)
+    return groups
+
+
 def rank_scenarios(
-    scenarios: list[Scenario], tree: Path, plain: bool = False, script: Path = TOOLS_SCRIPT
+    scenarios: list[Scenario],
+    tree: Path | None,
+    plain: bool = False,
+    script: Path = TOOLS_SCRIPT,
+    mount: str = "own",
 ) -> dict[str, Any]:
-    """Each scenario's prompt ranked by `tools search` over `tree`: the rank of every expected id, and overall
-    the top-1 and top-3 rates and the mean reciprocal rank. An expected id with no document in the tree is
-    `absent` and not counted; one with a document that scored nothing is unranked and counts as a miss."""
+    """Each scenario's prompt ranked by `tools search`: the rank of every expected id, and overall the top-1 and
+    top-3 rates and the mean reciprocal rank. Over `tree` when given; else over the shipped tree with, per
+    scenario, the skills it seeds (`mount="own"`: what a turn in that scenario's repository and HOME sees), or
+    with every ranked scenario's seeded skills in one tree (`mount="all"`). An expected id with no document in
+    the tree is `absent` and not counted; one with a document that scored nothing is unranked and counts as a
+    miss."""
     tools = load_tools(script)
     refused: list[str] = []
-    docs = tools.documents(tree, refused)
-    present = {(d.kind, d.id) for d in docs}
-    chosen = frozenset() if plain or not hasattr(tools, "chosen_tools") else tools.chosen_tools(tree)
     rows: list[dict[str, Any]] = []
     reciprocals: list[float] = []
     absent = 0
-    for scenario in scenarios:
-        if scenario.none:
-            continue
-        ranked = tools.rank(docs, [scenario.prompt], chosen) if chosen else tools.rank(docs, [scenario.prompt])
-        position = {(d.kind, d.id): at for at, (_, d) in enumerate(ranked, start=1)}
-        expected: list[dict[str, Any]] = []
-        for kind, ident in expected_documents(scenario):
-            if (kind, ident) not in present:
-                absent += 1
-                expected.append({"kind": kind, "id": ident, "rank": None, "absent": True})
-                continue
-            at = position.get((kind, ident))
-            reciprocals.append(1 / at if at else 0.0)
-            expected.append({"kind": kind, "id": ident, "rank": at, "absent": False})
-        rows.append(
-            {
-                "id": scenario.id,
-                "area": scenario.area,
-                "expected": expected,
-                "top": [f"{d.kind}:{d.id}" for _, d in ranked[:3]],
-            }
-        )
+    documents = 0
+    with tempfile.TemporaryDirectory(prefix="skill-eval-rank-") as scratch:
+        if tree is not None:
+            groups: list[tuple[Path, list[Scenario]]] = [(tree, scenarios)]
+            where = str(tree)
+        elif mount == "all":
+            shipped_tree(Path(scratch), scenarios)
+            groups = [(Path(scratch) / "tools", scenarios)]
+            where = "the shipped tree with every scenario's seeded skills mounted"
+        else:
+            groups = []
+            for index, (_, members) in enumerate(seed_groups(scenarios).items()):
+                base = Path(scratch) / str(index)
+                shipped_tree(base, members)
+                groups.append((base / "tools", members))
+            where = "the shipped tree with each scenario's own seeded skills mounted"
+        for group_tree, members in groups:
+            docs = tools.documents(group_tree, refused)
+            documents = max(documents, len(docs))
+            present = {(d.kind, d.id) for d in docs}
+            chosen = frozenset() if plain or not hasattr(tools, "chosen_tools") else tools.chosen_tools(group_tree)
+            for scenario in members:
+                if scenario.none:
+                    continue
+                ranked = tools.rank(docs, [scenario.prompt], chosen) if chosen else tools.rank(docs, [scenario.prompt])
+                position = {(d.kind, d.id): at for at, (_, d) in enumerate(ranked, start=1)}
+                expected: list[dict[str, Any]] = []
+                for kind, ident in expected_documents(scenario):
+                    if (kind, ident) not in present:
+                        absent += 1
+                        expected.append({"kind": kind, "id": ident, "rank": None, "absent": True})
+                        continue
+                    at = position.get((kind, ident))
+                    reciprocals.append(1 / at if at else 0.0)
+                    expected.append({"kind": kind, "id": ident, "rank": at, "absent": False})
+                rows.append(
+                    {
+                        "id": scenario.id,
+                        "area": scenario.area,
+                        "expected": expected,
+                        "top": [f"{d.kind}:{d.id}" for _, d in ranked[:3]],
+                    }
+                )
+    order = {scenario.id: at for at, scenario in enumerate(scenarios)}
+    rows.sort(key=lambda row: order[row["id"]])
     ranks = [e["rank"] for r in rows for e in r["expected"] if not e["absent"]]
     return {
         "schema": "branchyard.skill-eval-rank/v1",
-        "tree": str(tree),
+        "tree": where,
+        "mount": "given" if tree is not None else mount,
         "plain": plain,
         "tools": str(script),
-        "documents": len(docs),
+        "documents": documents,
         "refused": refused,
         "overall": {
             "scenarios": len(rows),
@@ -1364,7 +1489,7 @@ def rank_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Skill-discovery eval: ranking",
         "",
-        f"- tree `{report['tree']}`: {report['documents']} documents; "
+        f"- tree: {report['tree']}; {report['documents']} documents; "
         f"{'BM25 alone (--plain)' if report['plain'] else 'BM25 with the chosen factor'}",
         f"- {a['scenarios']} scenarios, {a['expected']} expected ids ranked"
         + (f", {a['absent']} absent from the tree" if a["absent"] else ""),
@@ -1409,7 +1534,17 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     size = sub.add_parser("sizes", help="print the static text sizes a turn pays for")
     size.add_argument("--tree", type=Path, help="a mounted tool tree (.branchyard/tools) to measure too")
     ranker = sub.add_parser("rank", help="rank each scenario's prompt with bin/tools over a tool tree; no model")
-    ranker.add_argument("--tree", type=Path, help="a mounted tool tree (default: the shipped skills and the mock)")
+    ranker.add_argument(
+        "--tree",
+        type=Path,
+        help="a mounted tool tree (default: the shipped skills and the mock, plus what each scenario seeds)",
+    )
+    ranker.add_argument(
+        "--mount",
+        choices=("own", "all"),
+        default="own",
+        help="without --tree: each scenario's own seeded skills (what its turn sees), or every scenario's in one tree",
+    )
     ranker.add_argument("--scenarios", default="*")
     ranker.add_argument("--plain", action="store_true", help="BM25 alone, without the chosen factor")
     ranker.add_argument("--tools", type=Path, default=TOOLS_SCRIPT, help="the tools script to rank with")
@@ -1448,12 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
         emit(score_dir(args.logdir, scenarios), args.out, args.json)
         return 0
     if args.action == "rank":
-        with tempfile.TemporaryDirectory() as tmp:
-            tree = args.tree
-            if tree is None:
-                shipped_tree(Path(tmp))
-                tree = Path(tmp) / "tools"
-            report = rank_scenarios(scenarios, tree, plain=args.plain, script=args.tools)
+        report = rank_scenarios(scenarios, args.tree, plain=args.plain, script=args.tools, mount=args.mount)
         print(json.dumps(report, indent=2, sort_keys=True) if args.json else rank_markdown(report), end="")
         return 0
     script = json.loads(args.script.read_text(encoding="utf-8")) if args.script else {}

@@ -101,8 +101,8 @@ commit and checks the set's digest; a set that no longer matches is withheld.
 under `.branchyard/capabilities/<blake3 of the branch name>/` when it has
 none, removed with the branch by `by rm`). The root `INDEX.md` gains one
 **Custom** topic, generated at run time from each skill's frontmatter, that
-lists every custom skill under its layer, as `repository:style-guide`, with
-its description and who added it. The indexes keep their budgets: a set whose
+lists every custom skill under its source, as `repository:style-guide` or
+`user:memory-parser`, with its description and who added it. The indexes keep their budgets: a set whose
 Custom topic would pass 8,192 bytes, or whose root index would pass 4,096, is
 refused, naming the three largest entries. A file a set no longer has is
 removed from the staged tree on the next turn.
@@ -141,17 +141,75 @@ its agent's own edits. Which harnesses do has not been checked.
 **Every turn records its skills.** The turn's `provisioned` event has a
 `skills` record on every turn that reaches provisioning, whether or not a file
 changed (a turn that fails before it records none): `entries`, each
-staged skill's `layer` (`built_in` or `repository`), `name` and `digest`;
-`set`, the digest of those entries; and `withheld`, the repository's skills
-found and not staged with the `reason`. `by log` shows it as `skills
-3f2a9c1d0e4b (<n> built-in, repository:style-guide)`, and
-`repository skills withheld: <reason>` when they were not staged. An event
-recorded before this record existed reads with an empty one (no entries, an
-empty `set`).
+staged skill's source (the field is named `layer`, its first name: `built_in`,
+`repository` or `user`), `name` and `digest`; `set`, the digest of those
+entries; `withheld`, the repository's skills found and not staged with the
+`reason`; and `user_withheld`, each of your own skills found and not staged,
+by name with its reason. `by log` shows it as `skills 3f2a9c1d0e4b (<n>
+built-in, repository:style-guide, user:memory-parser)`, `repository skills
+withheld: <reason>` when they were not staged, and `user skill docx withheld:
+<reason>`. An event recorded before this record existed reads with an empty
+one (no entries, an empty `set`).
 
 A skill's digest is BLAKE3 over its files' relative paths and contents, in
-path order; a set's is BLAKE3 over its entries' layer, name and digest, in
-layer and name order. Each field is length-prefixed. Both are lowercase hex.
+path order; a set's is BLAKE3 over its entries' source, name and digest, in
+source and name order (`repository`, then `built_in`, then `user`: a source
+added later sorts after the ones before it, so a recorded digest holds). Each
+field is length-prefixed. Both are lowercase hex.
+
+### Your own skills
+
+Your own skills are the directories of your skills folder,
+`~/.config/branchyard/skills/<name>/` (`skills/` beside the user
+configuration file, so `XDG_CONFIG_HOME` and `BRANCHYARD_USER_CONFIG` move
+it): the local `user` source of the [skill registry](skill-registry.md#1-sources).
+`by skills add PATH [--name NAME]` copies a skill directory there (replacing
+one of the same name; with `--name`, the frontmatter's `name` follows), `by
+skills remove NAME` deletes one, `by memory add --mine` writes a memory bundle
+there ([memory](memory.md)), and `by skills ls` lists the folder, with any
+directory it holds that is not staged and why. The same rules as a
+repository skill's apply to each directory: a `SKILL.md` naming its directory,
+UTF-8 text only, no symbolic link, 200 files and 1 MiB; a directory that
+breaks one is withheld **by name** (the others are staged), a loose file or a
+directory without a `SKILL.md` is skipped. Nobody trusts them but you: they
+are your files, and they reach only the branches you start.
+
+**Read each turn, never fixed.** A branch `by run`, `fan`, `map` or `rig
+run` creates outside any branch remembers your folder
+(`TaskOptions::user_skills`, `Record::user_skills`), and its forks,
+reincarnations and delegated children inherit it; a branch a harness starts
+from inside a branch, a server or the SDK creates has none. Each turn reads
+the folder again, stages what it holds under `user/<name>/` beside
+`repository/<name>/`, lists it in the Custom topic as `user:<name>`, and
+records each skill's digest in `provisioned.skills`, so what a turn saw is
+known from its record even though nothing pins the folder; a skill you
+change reaches the next turn.
+
+**Precedence: repository, then yours, then built-in.** A staged repository
+skill of the same name shadows yours, which is withheld as `shadowed by
+repository:<name>` (a withheld repository set shadows nothing); a built-in's
+name stays reserved, `find-tools` included, so `user:docx` is withheld
+(the registry's [open decision 2](skill-registry.md#open-decisions)).
+
+Hermetic evidence: `crates/branchyard/src/skills.rs` (the folder read,
+withheld by name, precedence against a staged and a withheld set),
+`crates/branchyard/src/capabilities.rs` (staged under `user/`, listed, removed
+when the folder loses it), `crates/branchyard/tests/skills.rs` (a branch
+created with a folder staging and recording `user:` entries, the next turn
+reading a changed folder, a branch without one staging none),
+`crates/branchyard-cli/tests/skills.rs` (`add`, `remove`, `ls`, refused on a
+branch) and `crates/branchyard-cli/tests/memory.rs` (a personal memory staged
+for a `by run`). Not done: a live run; the server's `user` source (R4).
+
+### Memory bundles as skills
+
+A memory bundle, `memory-<topic>/` with a `SKILL.md`, a `memory.json` and one
+`references/<slug>.md` per memory, is a skill like any other: committed under
+`.agents/skills/` it is a repository skill, trusted with `by skills trust`
+and withheld with the reason until then; in your skills folder it is one of
+your own. `by memory add` writes it, `by memory export` reproduces it, and a
+turn finds a memory by searching for its reference, not by reading the
+bundle. See [memory](memory.md).
 
 Hermetic evidence: the digest, frontmatter, limit, path, budget and
 reserved-name checks are unit tests in
@@ -165,9 +223,9 @@ without changes, and the cache removed by `by rm`;
 `crates/branchyard-cli/tests/skills.rs` covers `by skills ls`, `trust` and
 `untrust` and a trusted `by run`; `crates/branchyard-server/tests/skills.rs`
 covers `allow_repository_skills`. Not done: no live run with a real harness
-and model has loaded a repository skill, and the workspace, personal and team
-layers of the [design](superpowers/specs/2026-10-29-skill-delivery-design.md)
-are not built.
+and model has loaded a repository skill; of the workspace, personal and team
+layers of the [design](superpowers/specs/2026-10-29-skill-delivery-design.md),
+only the personal one is built, locally, as [your own skills](#your-own-skills).
 
 ## Prepare the runtime
 

@@ -184,8 +184,10 @@ impl Live {
             join_task: None,
             deny: task.deny.clone(),
             // A command that creates branches from a revision sets the
-            // person's decision (`skills_cmd::gate`); the others inherit.
+            // person's decision (`skills_cmd::gate`) and their skills
+            // folder; the others inherit.
             repository_skills: branchyard::SkillGate::default(),
+            user_skills: None,
         })
     }
 

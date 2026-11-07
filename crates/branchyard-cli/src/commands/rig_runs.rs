@@ -57,6 +57,7 @@ pub fn rig(env: &Env, target: &Target, args: &args::RigArgs) -> Outcome {
         let options = TaskOptions {
             workspace,
             repository_skills,
+            user_skills: crate::skills_cmd::user_skills_for_new_branch(),
             ..live.options(&task)?
         };
         let mut policy = match root.policy.default {

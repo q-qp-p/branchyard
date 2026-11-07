@@ -336,6 +336,12 @@ pub struct Distilled {
     pub by: JudgedBy,
     /// What started it: `merged`, `judged_best`, `ready` or `asked`.
     pub trigger: String,
+    /// The deterministic extractor's corrections that were longer than an
+    /// entry may be ([`TEXT_MAX`]), whole, for a person to add as memory
+    /// (`by memory add --from`); the entry proposed above holds the cut
+    /// text. Nothing is written anywhere for them here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drafts: Vec<crate::memory::MemoryDraft>,
 }
 
 /// Knowledge activity on a branch, recorded as [`Activity::Knowledge`].
@@ -741,6 +747,9 @@ pub(crate) struct Proposal {
     pub turn: Option<u32>,
     pub via: String,
     pub note: Option<String>,
+    /// The whole correction when `text` is it cut to [`TEXT_MAX`]: what a
+    /// memory draft keeps ([`crate::memory::MemoryDraft`]).
+    pub full: Option<String>,
 }
 
 /// Prompts that start with this are Branchyard's own (plan mode, plan
@@ -920,12 +929,14 @@ pub(crate) fn extract(events: &[RecordedEvent]) -> Vec<Proposal> {
     let mut turn = 0u32;
     let mut push = |text: &str, scope: KnowledgeScope, turn: u32, via: &str| {
         if worth_proposing(text) {
+            let full = (text.trim().chars().count() > TEXT_MAX).then(|| text.trim().to_owned());
             proposals.push(Proposal {
                 text: bounded(text),
                 scope,
                 turn: Some(turn),
                 via: via.to_owned(),
                 note: None,
+                full,
             });
         }
     };
@@ -1171,6 +1182,7 @@ pub(crate) fn distill(
                         turn: None,
                         via: via.clone(),
                         note: Some(why),
+                        full: None,
                     })
                     .collect();
             }
@@ -1231,12 +1243,26 @@ pub(crate) fn distill(
     if !quiet {
         Recorder::open(&store, name, None)?.record(Activity::Knowledge(Box::new(activity)))?;
     }
+    let drafts = extracted
+        .iter()
+        .filter_map(|p| {
+            let full = p.full.as_deref()?;
+            Some(crate::memory::MemoryDraft::new(
+                full,
+                p.scope.path.clone(),
+                name,
+                p.turn,
+                &p.via,
+            ))
+        })
+        .collect();
     Ok(Distilled {
         branch: name.to_owned(),
         proposed: stored,
         duplicates,
         by,
         trigger: trigger.to_owned(),
+        drafts,
     })
 }
 

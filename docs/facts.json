@@ -1110,6 +1110,7 @@
         "meaning": "the command line asks for what cannot be: a bad flag or value (clap's own usage errors too), an unknown branch, harness or repository, a name already taken",
         "kinds": [
           "branch_exists",
+          "invalid_memory",
           "invalid_name",
           "invalid_request",
           "invalid_rig",
@@ -1117,6 +1118,7 @@
           "unknown_branch",
           "unknown_harness",
           "unknown_knowledge",
+          "unknown_memory",
           "unknown_message",
           "unknown_operation",
           "unknown_repo",

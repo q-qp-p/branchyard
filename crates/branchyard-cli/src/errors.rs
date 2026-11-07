@@ -115,6 +115,8 @@ pub(crate) const KINDS: &[(&str, Exit)] = &[
     ("unknown_harness", Exit::Usage),
     ("unknown_message", Exit::Usage),
     ("unknown_knowledge", Exit::Usage),
+    ("unknown_memory", Exit::Usage),
+    ("invalid_memory", Exit::Usage),
     ("unknown_repo", Exit::Usage),
     ("unknown_operation", Exit::Usage),
     ("unknown_trigger", Exit::Usage),
@@ -1150,6 +1152,8 @@ mod tests {
             Error::BranchExists("b".into()),
             Error::UnknownMessage(1),
             Error::UnknownKnowledge(1),
+            Error::UnknownMemory("m".into()),
+            Error::InvalidMemory("bad".into()),
             Error::NoPlan("none".into()),
             Error::InvalidName {
                 name: "B".into(),
@@ -1233,6 +1237,8 @@ mod tests {
                 | Error::BranchExists(_)
                 | Error::UnknownMessage(_)
                 | Error::UnknownKnowledge(_)
+                | Error::UnknownMemory(_)
+                | Error::InvalidMemory(_)
                 | Error::NoPlan(_)
                 | Error::InvalidName { .. }
                 | Error::UnknownHarness(_)

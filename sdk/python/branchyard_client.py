@@ -421,6 +421,7 @@ _BY_CODE: dict[str, Callable[..., BranchyardError]] = {
     "unknown_trigger": NotFoundError,
     "unknown_checkpoint": NotFoundError,
     "unknown_knowledge": NotFoundError,
+    "unknown_memory": NotFoundError,
     "unknown_message": NotFoundError,
     "unknown_preview_asset": NotFoundError,
     "denied": DeniedError,

@@ -1,11 +1,15 @@
-//! `by skills ls|trust|untrust`, and the decision every new local branch
-//! takes about its repository's skills. See docs/knowledge-skills.md.
+//! `by skills ls|trust|untrust|add|remove`, and the decisions every new
+//! local branch takes about its repository's skills and your own. See
+//! docs/knowledge-skills.md.
 //!
-//! `ls` shows the built-in skills and the repository's
-//! (`.agents/skills/<name>/SKILL.md`) at HEAD, with whether you trusted
-//! them; with a branch, or inside a harness for its own, the set fixed when
-//! that branch was created, staged or withheld and why. `trust` records the
-//! set digest at HEAD; `untrust` forgets it.
+//! `ls` shows the built-in skills, the repository's
+//! (`.agents/skills/<name>/SKILL.md`) at HEAD with whether you trusted
+//! them, and your own (`~/.config/branchyard/skills/<name>/`, the local
+//! `user` source) with any withheld by name; with a branch, or inside a
+//! harness for its own, the set fixed when that branch was created, staged
+//! or withheld and why. `trust` records the set digest at HEAD; `untrust`
+//! forgets it. `add` copies a skill directory into your folder and `remove`
+//! deletes one; a harness on a branch can do neither.
 //!
 //! Trust is per user, per repository root and per set digest, kept in the
 //! trust file `by workspace trust` uses (`trusted-workspaces.json`, or
@@ -16,10 +20,10 @@
 //! and a server stages them only when its operator allows them
 //! (`allow_repository_skills`), so `--remote` is refused.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use branchyard::skills::{self, Found, RepositorySet, REPOSITORY_SKILLS};
-use branchyard::skills::{Layer, SkillEntry};
+use branchyard::skills::{self, Found, RepositorySet, UserSet, REPOSITORY_SKILLS};
+use branchyard::skills::{SkillEntry, Source};
 use branchyard::{BranchSkills, SkillGate, Yard};
 use branchyard_workspace::Git;
 use serde::Serialize;
@@ -77,7 +81,7 @@ impl Listed {
     fn at_head(set: &RepositorySet) -> Vec<Listed> {
         set.skills
             .iter()
-            .map(|skill| Listed::new(&skill.entry(Layer::Repository), Some(&skill.description)))
+            .map(|skill| Listed::new(&skill.entry(Source::Repository), Some(&skill.description)))
             .collect()
     }
 
@@ -98,6 +102,22 @@ fn key(root: &Path) -> String {
 /// The first 12 characters of a digest or commit.
 fn short(text: &str) -> &str {
     text.get(..12).unwrap_or(text)
+}
+
+/// Your own skills folder: `skills/` beside the user configuration file
+/// (`~/.config/branchyard/skills/`).
+pub(crate) fn user_skills_dir() -> PathBuf {
+    skills::user_dir(&crate::setup_io::user_file())
+}
+
+/// The folder a branch created here reads your own skills from: yours,
+/// outside any branch; none for a harness on a branch, whose children
+/// inherit their parent's.
+pub(crate) fn user_skills_for_new_branch() -> Option<PathBuf> {
+    match in_harness() {
+        Some(_) => None,
+        None => Some(user_skills_dir()),
+    }
 }
 
 fn at_head(root: &Path) -> Result<AtHead, Failure> {
@@ -161,7 +181,196 @@ pub fn main(target: &Target, action: &SkillsAction, json: bool) -> Outcome {
         }
         SkillsAction::Trust => trust(json),
         SkillsAction::Untrust => untrust(json),
+        SkillsAction::Add { path, name } => add(path, name.as_deref(), json),
+        SkillsAction::Remove { name } => remove(name, json),
     }
+}
+
+/// `by skills add PATH [--name NAME]`: copy the skill directory into your
+/// folder, replacing one of the same name.
+fn add(path: &Path, name: Option<&str>, json: bool) -> Outcome {
+    refuse_in_harness("add a skill to your folder")?;
+    let skill_md = path.join("SKILL.md");
+    let text = std::fs::read_to_string(&skill_md).map_err(|e| {
+        Report::usage(format!(
+            "{} is not a skill directory: {}: {e}",
+            path.display(),
+            skill_md.display()
+        ))
+        .next("point at the directory holding SKILL.md")
+    })?;
+    let front = skills::frontmatter(&text).map_err(|why| {
+        Report::usage(format!("{}: SKILL.md {why}", path.display()))
+            .next("give SKILL.md frontmatter with a name and a description")
+    })?;
+    let name = name.unwrap_or(&front.name);
+    if skills::reserved(name) {
+        return Err(Report::usage(format!(
+            "{name} is a built-in skill's name, which is reserved"
+        ))
+        .next("install it under another name with --name")
+        .into());
+    }
+    let skill = match name == front.name {
+        true => skills::read_directory(name, path),
+        // Installed under another name: the frontmatter is rewritten to it.
+        false => skills::read_directory(&front.name, path).and_then(|skill| {
+            let files = skill
+                .files
+                .into_iter()
+                .map(|(file, content)| match file.as_str() {
+                    "SKILL.md" => (file, rename_frontmatter(&content, &front.name, name)),
+                    _ => (file, content),
+                })
+                .collect();
+            skills::Skill::new(name, files)
+        }),
+    }
+    .map_err(|why| Report::usage(why).next("fix the skill, then by skills add again"))?;
+    let dir = user_skills_dir();
+    let target = dir.join(&skill.name);
+    let replaced = target.exists();
+    let fail = |what: &str, e: std::io::Error| {
+        Report::new("io", format!("could not {what} {}: {e}", target.display()))
+            .next("check the folder's permissions")
+    };
+    if replaced {
+        std::fs::remove_dir_all(&target).map_err(|e| fail("replace", e))?;
+    }
+    for (file, content) in &skill.files {
+        let file = target.join(file);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| fail("create", e))?;
+        }
+        std::fs::write(&file, content).map_err(|e| fail("write", e))?;
+    }
+    let entry = skill.entry(Source::User);
+    if json {
+        return print(&to_json(&json!({
+            "name": skill.name,
+            "label": entry.label(),
+            "digest": skill.digest,
+            "description": skill.description,
+            "dir": target,
+            "replaced": replaced,
+        })));
+    }
+    print(&format!(
+        "{} {} ({}) in {}: {}\nnew branches you start here stage it, after the repository's \
+         skills and before the built-in ones\n",
+        if replaced { "replaced" } else { "added" },
+        entry.label(),
+        short(&skill.digest),
+        target.display(),
+        skill.description
+    ))
+}
+
+/// `text`, a `SKILL.md`, with its frontmatter `name: from` line naming `to`.
+fn rename_frontmatter(text: &str, from: &str, to: &str) -> String {
+    let mut out = String::new();
+    let mut in_front = false;
+    let mut renamed = false;
+    for (at, line) in text.split_inclusive('\n').enumerate() {
+        let trimmed = line.trim_end();
+        if at == 0 && trimmed == "---" {
+            in_front = true;
+        } else if in_front && matches!(trimmed, "---" | "...") {
+            in_front = false;
+        } else if in_front && !renamed {
+            let value = line.strip_prefix("name:").map(str::trim);
+            if value.is_some_and(|v| v.trim_matches(['"', '\'']) == from) {
+                out.push_str(&format!("name: {to}\n"));
+                renamed = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// `by skills remove NAME`: delete the skill from your folder.
+fn remove(name: &str, json: bool) -> Outcome {
+    refuse_in_harness("remove a skill from your folder")?;
+    let dir = user_skills_dir();
+    if let Err(why) = skills::Skill::new(name, Vec::new()) {
+        if why.contains("is not a skill name") {
+            return Err(Report::usage(why)
+                .next("by skills ls lists your skills under user")
+                .into());
+        }
+    }
+    let target = dir.join(name);
+    if !target.join("SKILL.md").is_file() {
+        return Err(
+            Report::usage(format!("no skill {name} in {}", dir.display()))
+                .next("by skills ls lists your skills under user")
+                .into(),
+        );
+    }
+    std::fs::remove_dir_all(&target).map_err(|e| {
+        Report::new("io", format!("could not remove {}: {e}", target.display()))
+            .next("check the folder's permissions")
+    })?;
+    if json {
+        return print(&to_json(
+            &json!({ "name": name, "dir": target, "removed": true }),
+        ));
+    }
+    print(&format!(
+        "removed user:{name} from {}; new branches you start here no longer stage it\n",
+        dir.display()
+    ))
+}
+
+/// A harness on a branch decides nothing about what a turn may see.
+fn refuse_in_harness(what: &str) -> Result<(), Failure> {
+    match in_harness() {
+        Some(_) => Err(Report::new(
+            "denied",
+            format!(
+                "a harness running on a branch cannot {what}; what a turn may see is decided by \
+                 people, outside any branch"
+            ),
+        )
+        .next("run the command in your own terminal")
+        .into()),
+        None => Ok(()),
+    }
+}
+
+/// Your own skills as a new branch here would read them, for `ls`.
+fn user_here(json: bool, dir: &Path) -> (Value, String) {
+    let set: UserSet = skills::read_user(dir);
+    let listed: Vec<Listed> = set
+        .skills
+        .iter()
+        .map(|skill| Listed::new(&skill.entry(Source::User), Some(&skill.description)))
+        .collect();
+    let value = match json {
+        true => json!({ "dir": dir, "skills": listed, "withheld": set.withheld }),
+        false => Value::Null,
+    };
+    let mut text = match listed.is_empty() && set.withheld.is_empty() {
+        true => format!(
+            "user        none: no {}/<name>/SKILL.md (by skills add PATH, by memory add --mine)\n",
+            dir.display()
+        ),
+        false => format!(
+            "user        {} in {}\n",
+            plural(listed.len(), "skill"),
+            dir.display()
+        ),
+    };
+    text.push_str(&skill_lines(&listed));
+    for withheld in &set.withheld {
+        text.push_str(&format!(
+            "  withheld {}: {}\n",
+            withheld.name, withheld.reason
+        ));
+    }
+    (value, text)
 }
 
 fn to_json(value: &Value) -> String {
@@ -219,6 +428,8 @@ fn ls_here(yard: &Yard, json: bool) -> Outcome {
     let built_in = skills::built_in()?;
     let head = at_head(&root)?;
     let trust_file = workspace_cmd::trust_file();
+    let user_dir = user_skills_dir();
+    let (user_json, user_text) = user_here(json, &user_dir);
     if json {
         let repository = match &head {
             AtHead::Nothing => json!({ "state": "none", "skills": [] }),
@@ -247,12 +458,14 @@ fn ls_here(yard: &Yard, json: bool) -> Outcome {
             "root": root,
             "built_in": built_in,
             "repository": repository,
+            "user": user_json,
             "uncommitted": uncommitted,
             "trust_file": trust_file,
         })));
     }
     let mut text = format!("root        {}\n", root.display());
     text.push_str(&built_in_line(&built_in));
+    text.push_str(&user_text);
     match &head {
         AtHead::Nothing => text.push_str(&format!(
             "repository  none: no {REPOSITORY_SKILLS}/<name>/SKILL.md at HEAD \

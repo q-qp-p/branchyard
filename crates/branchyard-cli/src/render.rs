@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use branchyard::skills::Layer;
+use branchyard::skills::Source;
 use branchyard::{
     Activity, BranchInfo, BranchStatus, CandidateInfo, Event, HarnessInfo, RecordedEvent, SkillSet,
     TurnOutcome, Usage,
@@ -450,15 +450,16 @@ pub fn workspace_line(report: &branchyard::WorkspaceReport, style: Style) -> Str
 }
 
 /// A turn's skills in its `provisioned:` line: the set's digest, how many
-/// built-in skills and each custom one's label, and the repository skills
-/// withheld and why. Nothing for an empty record.
+/// built-in skills and each custom one's label, the repository skills
+/// withheld and why, and each of the person's own skills withheld and why.
+/// Nothing for an empty record.
 fn skills_parts(skills: &SkillSet) -> Vec<String> {
     let mut parts = Vec::new();
     if !skills.entries.is_empty() {
         let (built_in, custom): (Vec<_>, Vec<_>) = skills
             .entries
             .iter()
-            .partition(|entry| entry.layer == Layer::BuiltIn);
+            .partition(|entry| entry.source == Source::BuiltIn);
         let mut named = vec![format!("{} built-in", built_in.len())];
         named.extend(custom.iter().map(|entry| entry.label()));
         parts.push(format!(
@@ -469,6 +470,12 @@ fn skills_parts(skills: &SkillSet) -> Vec<String> {
     }
     if let Some(withheld) = &skills.withheld {
         parts.push(format!("repository skills withheld: {}", withheld.reason));
+    }
+    for withheld in &skills.user_withheld {
+        parts.push(format!(
+            "user skill {} withheld: {}",
+            withheld.name, withheld.reason
+        ));
     }
     parts
 }
@@ -2435,8 +2442,8 @@ mod tests {
     #[test]
     fn a_turns_skills_name_their_set_and_the_repository_skills_withheld() {
         use branchyard::skills::SkillEntry;
-        let entry = |layer, name: &str| SkillEntry {
-            layer,
+        let entry = |source, name: &str| SkillEntry {
+            source,
             name: name.into(),
             digest: "0".repeat(64),
         };
@@ -2456,20 +2463,39 @@ mod tests {
         let staged = SkillSet {
             set: "3f2a9c1d0e4b5a6978".into(),
             entries: vec![
-                entry(Layer::BuiltIn, "pdf"),
-                entry(Layer::BuiltIn, "docx"),
-                entry(Layer::Repository, "style-guide"),
+                entry(Source::BuiltIn, "pdf"),
+                entry(Source::BuiltIn, "docx"),
+                entry(Source::Repository, "style-guide"),
             ],
             withheld: None,
+            user_withheld: Vec::new(),
         };
         assert_eq!(
             activity_line(&provisioned(staged.clone()), PLAIN).unwrap(),
             "provisioned: set A; skills 3f2a9c1d0e4b (2 built-in, repository:style-guide)"
         );
+        let mine = SkillSet {
+            entries: [
+                staged.entries.clone(),
+                vec![entry(Source::User, "memory-parser")],
+            ]
+            .concat(),
+            user_withheld: vec![branchyard::skills::WithheldSkill {
+                name: "docx".into(),
+                reason: "docx is a built-in skill's name, which is reserved".into(),
+            }],
+            ..staged.clone()
+        };
+        assert_eq!(
+            activity_line(&provisioned(mine), PLAIN).unwrap(),
+            "provisioned: set A; skills 3f2a9c1d0e4b (2 built-in, repository:style-guide, \
+             user:memory-parser); user skill docx withheld: docx is a built-in skill's name, \
+             which is reserved"
+        );
         let withheld = SkillSet {
             entries: staged.entries[..2].to_vec(),
             withheld: Some(branchyard::WithheldSkills {
-                entries: vec![entry(Layer::Repository, "style-guide")],
+                entries: vec![entry(Source::Repository, "style-guide")],
                 reason: "you have not trusted this repository's skills".into(),
             }),
             ..staged

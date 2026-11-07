@@ -315,10 +315,28 @@ Examples:
   by skills ls
   by skills trust
   by skills ls fix-the-flaky-test --json
+  by skills add ./my-skill
+  by skills remove my-skill
 
 A repository's skills are .agents/skills/<name>/SKILL.md, read from the commit
 a new branch starts at. New branches withhold them until you trust the set,
-and again after it changes; see docs/knowledge-skills.md.";
+and again after it changes. Your own skills are ~/.config/branchyard/skills/<name>/,
+staged for the branches you start as user:<name>; see docs/knowledge-skills.md.";
+
+pub(crate) const MEMORY_EXAMPLES: &str = "\
+Examples:
+  by memory add --title 'Run the parser benches with the 1 MB fixture' \\
+      --body-file notes.md --kind procedure --path 'crates/parser/**'
+  by memory add --from .branchyard/memory-drafts/always-run-the-benches.md
+  by memory add --mine --title 'Where the staging credentials live' --body-file creds.md
+  by memory list
+  by memory show run-the-parser-benches-with-the-1-mb-fixture
+  by memory export --out /tmp/bundles
+
+A memory is references/<slug>.md in the bundle .agents/skills/memory-<topic>/,
+beside a SKILL.md and memory.json the writer rewrites; commit it and open the
+pull request, and turns find it after by skills trust. With --mine it goes to
+your own skills folder, approved by you at once. See docs/memory.md.";
 
 pub(crate) const ENV_EXAMPLES: &str = "\
 Examples:

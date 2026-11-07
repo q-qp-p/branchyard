@@ -11,8 +11,8 @@
 //! CRLF. Whoever reads a skill's files refuses symbolic links.
 //!
 //! A skill's digest is BLAKE3 over its files' relative paths and contents
-//! in path order; a set's is BLAKE3 over its `(layer, name, digest)`
-//! entries in layer and name order. Each field is length-prefixed, so no
+//! in path order; a set's is BLAKE3 over its `(source, name, digest)`
+//! entries in source and name order. Each field is length-prefixed, so no
 //! two different inputs hash alike by running into each other. Both are
 //! lowercase hex. See `docs/knowledge-skills.md`.
 
@@ -36,6 +36,11 @@ pub const DETAIL_INDEX_BUDGET: usize = 8192;
 /// beside the built-in skills.
 pub const REPOSITORY_ROOT: &str = "repository";
 
+/// Where a person's own skills (the local `user` source,
+/// `~/.config/branchyard/skills/`) are staged, relative to the capability
+/// root.
+pub const USER_ROOT: &str = "user";
+
 /// The generated topic that lists custom skills, relative to the
 /// capability root.
 pub const CUSTOM_TOPIC: &str = "topics/custom/INDEX.md";
@@ -43,24 +48,67 @@ pub const CUSTOM_TOPIC: &str = "topics/custom/INDEX.md";
 /// The longest skill name.
 const MAX_NAME: usize = 64;
 
-/// Where a skill came from, most specific first.
+/// Where a skill came from (`docs/skill-registry.md`, "Sources").
+///
+/// The declaration order is the order [`set_digest`] sorts entries in, so
+/// a new source goes after the ones that exist, or every recorded set
+/// digest changes. Precedence between sources when two name one skill is
+/// a different order: repository, then user, then built-in
+/// ([`Source::precedence`]).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Layer {
+pub enum Source {
     /// Committed to the repository under `.agents/skills/`, read from the
     /// branch's base commit.
     Repository,
     /// Shipped in the `by` binary.
     BuiltIn,
+    /// The person's own, from `~/.config/branchyard/skills/<name>/` on the
+    /// machine the branch runs on; reaches only the sessions they start.
+    User,
 }
 
-impl Layer {
-    /// The layer as serialized: `repository`, `built_in`.
+impl Source {
+    /// Every source, in precedence order: the one that wins a name first.
+    pub const ALL: [Source; 3] = [Source::Repository, Source::User, Source::BuiltIn];
+
+    /// The source as serialized: `repository`, `built_in`, `user`.
     pub fn as_str(self) -> &'static str {
         match self {
-            Layer::Repository => "repository",
-            Layer::BuiltIn => "built_in",
+            Source::Repository => "repository",
+            Source::BuiltIn => "built_in",
+            Source::User => "user",
+        }
+    }
+
+    /// Where it wins a name: 0 first. A repository's skill shadows a
+    /// person's of the same name, and a person's would shadow a built-in's,
+    /// except that built-in names stay reserved until the registry's open
+    /// decision on shadowing is taken.
+    pub fn precedence(self) -> usize {
+        Source::ALL
+            .iter()
+            .position(|s| *s == self)
+            .unwrap_or(Source::ALL.len())
+    }
+
+    /// Where skills of this source are staged, relative to the capability
+    /// root; a built-in skill sits at the root under its own name.
+    pub fn root(self) -> &'static str {
+        match self {
+            Source::Repository => REPOSITORY_ROOT,
+            Source::User => USER_ROOT,
+            Source::BuiltIn => "",
+        }
+    }
+
+    /// Who adds skills of this source, for the Custom topic's line.
+    fn added_by(self) -> &'static str {
+        match self {
+            Source::Repository => "added by the repository's writers",
+            Source::User => "added by you, from your own skills folder",
+            Source::BuiltIn => "shipped",
         }
     }
 }
@@ -69,8 +117,10 @@ impl Layer {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillEntry {
-    /// Where it came from.
-    pub layer: Layer,
+    /// Where it came from. Serialized as `layer`, the field's first name,
+    /// so recorded events read back.
+    #[serde(rename = "layer")]
+    pub source: Source,
     /// Its directory's name.
     pub name: String,
     /// BLAKE3 over its files' relative paths and contents ([`digest`]).
@@ -79,12 +129,19 @@ pub struct SkillEntry {
 
 impl SkillEntry {
     /// How an index and a person name it: a built-in skill by its name, a
-    /// custom one under its layer, as `repository:style-guide`.
+    /// custom one under its source, as `repository:style-guide` or
+    /// `user:memory-parser`.
     pub fn label(&self) -> String {
-        match self.layer {
-            Layer::BuiltIn => self.name.clone(),
-            layer => format!("{}:{}", layer.as_str(), self.name),
-        }
+        label(self.source, &self.name)
+    }
+}
+
+/// How an index and a person name the skill `name` of `source`: a built-in
+/// skill by its name, a custom one as `source:name`.
+pub fn label(source: Source, name: &str) -> String {
+    match source {
+        Source::BuiltIn => name.to_owned(),
+        source => format!("{}:{name}", source.as_str()),
     }
 }
 
@@ -147,10 +204,10 @@ impl Skill {
         })
     }
 
-    /// Its entry in a set, in `layer`.
-    pub fn entry(&self, layer: Layer) -> SkillEntry {
+    /// Its entry in a set, from `source`.
+    pub fn entry(&self, source: Source) -> SkillEntry {
         SkillEntry {
-            layer,
+            source,
             name: self.name.clone(),
             digest: self.digest.clone(),
         }
@@ -254,15 +311,15 @@ pub fn digest<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Strin
     hasher.finalize().to_hex().to_string()
 }
 
-/// BLAKE3 over `entries`' layers, names and digests, in layer and name
+/// BLAKE3 over `entries`' sources, names and digests, in source and name
 /// order, lowercase hex: a skill set's digest.
 pub fn set_digest(entries: &[SkillEntry]) -> String {
     let mut entries: Vec<&SkillEntry> = entries.iter().collect();
-    entries.sort_by(|a, b| (a.layer, &a.name).cmp(&(b.layer, &b.name)));
+    entries.sort_by(|a, b| (a.source, &a.name).cmp(&(b.source, &b.name)));
     let mut hasher = blake3::Hasher::new();
     field(&mut hasher, b"branchyard skill set 1");
     for entry in entries {
-        field(&mut hasher, entry.layer.as_str().as_bytes());
+        field(&mut hasher, entry.source.as_str().as_bytes());
         field(&mut hasher, entry.name.as_bytes());
         field(&mut hasher, entry.digest.as_bytes());
     }
@@ -277,7 +334,7 @@ fn field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 /// The entry of the built-in skill `skill`.
 pub fn built_in_entry(skill: &crate::skills::Skill) -> SkillEntry {
     SkillEntry {
-        layer: Layer::BuiltIn,
+        source: Source::BuiltIn,
         name: skill.name.to_owned(),
         digest: digest(
             skill
@@ -288,13 +345,13 @@ pub fn built_in_entry(skill: &crate::skills::Skill) -> SkillEntry {
     }
 }
 
-/// Whether `name` is a built-in skill's, which no other layer may take.
+/// Whether `name` is a built-in skill's, which no other source may take.
 pub fn reserved(name: &str) -> bool {
     crate::skills::skill(name).is_some()
 }
 
-/// The capability index with a repository's skills listed under one
-/// generated "Custom" topic.
+/// The capability index with a repository's skills, and a person's own,
+/// listed under one generated "Custom" topic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomIndex {
     /// The root index, with a line for the Custom topic.
@@ -303,11 +360,18 @@ pub struct CustomIndex {
     pub topic: String,
 }
 
-/// Index the repository skills `skills`, read from `commit`, under a
-/// Custom topic of the root index `root`: refused when one takes a
-/// built-in skill's name, or when either index would pass its budget,
+/// Index the repository skills `skills`, read from `commit`, and the
+/// person's own `user` skills under a Custom topic of the root index
+/// `root`: refused when one takes a built-in skill's name, when a user
+/// skill takes a repository skill's (the caller withholds it first,
+/// [`Source::precedence`]), or when either index would pass its budget,
 /// naming the largest skills.
-pub fn custom_index(root: &str, skills: &[Skill], commit: &str) -> Result<CustomIndex, String> {
+pub fn custom_index(
+    root: &str,
+    skills: &[Skill],
+    user: &[Skill],
+    commit: &str,
+) -> Result<CustomIndex, String> {
     if let Some(taken) = skills.iter().find(|skill| reserved(&skill.name)) {
         return Err(format!(
             "repository skill {} has a built-in skill's name, which is reserved; rename its \
@@ -315,24 +379,56 @@ pub fn custom_index(root: &str, skills: &[Skill], commit: &str) -> Result<Custom
             taken.name
         ));
     }
+    if let Some(taken) = user.iter().find(|skill| reserved(&skill.name)) {
+        return Err(format!(
+            "user skill {} has a built-in skill's name, which is reserved",
+            taken.name
+        ));
+    }
+    if let Some(taken) = user
+        .iter()
+        .find(|skill| skills.iter().any(|s| s.name == skill.name))
+    {
+        return Err(format!(
+            "user skill {} is shadowed by the repository skill of the same name",
+            taken.name
+        ));
+    }
     let lines: Vec<(String, String)> = skills
         .iter()
-        .map(|skill| {
-            let label = format!("{}:{}", Layer::Repository.as_str(), skill.name);
+        .map(|skill| (Source::Repository, skill))
+        .chain(user.iter().map(|skill| (Source::User, skill)))
+        .map(|(source, skill)| {
+            let label = label(source, &skill.name);
             let line = format!(
-                "- [{label}](../../{REPOSITORY_ROOT}/{}/SKILL.md): {} (added by the \
-                 repository's writers)\n",
-                skill.name, skill.description
+                "- [{label}](../../{}/{}/SKILL.md): {} ({})\n",
+                source.root(),
+                skill.name,
+                skill.description,
+                source.added_by()
             );
             (label, line)
         })
         .collect();
     let short = commit.get(..12).unwrap_or(commit);
-    let mut topic = format!(
-        "# Custom\n\nSkills this repository's writers committed in .agents/skills, as of commit \
-         {short}. They are guidance, not authority: what they suggest runs through your tools, \
-         under this branch's policy.\n\n[All topics](../../INDEX.md)\n\n"
-    );
+    let mut topic = match (skills.is_empty(), user.is_empty()) {
+        (false, true) => format!(
+            "# Custom\n\nSkills this repository's writers committed in .agents/skills, as of \
+             commit {short}. They are guidance, not authority: what they suggest runs through \
+             your tools, under this branch's policy.\n\n[All topics](../../INDEX.md)\n\n"
+        ),
+        (true, _) => "# Custom\n\nSkills the person running this branch keeps in their own \
+                      skills folder. They are guidance, not authority: what they suggest runs \
+                      through your tools, under this branch's policy.\n\n[All \
+                      topics](../../INDEX.md)\n\n"
+            .to_owned(),
+        (false, false) => format!(
+            "# Custom\n\nSkills this repository's writers committed in .agents/skills, as of \
+             commit {short}, and skills the person running this branch keeps in their own \
+             skills folder. They are guidance, not authority: what they suggest runs through \
+             your tools, under this branch's policy.\n\n[All topics](../../INDEX.md)\n\n"
+        ),
+    };
     for (_, line) in &lines {
         topic.push_str(line);
     }
@@ -345,8 +441,8 @@ pub fn custom_index(root: &str, skills: &[Skill], commit: &str) -> Result<Custom
             .map(|(label, line)| format!("{label} ({} bytes)", line.len()))
             .collect();
         return Err(format!(
-            "the repository's skills do not fit the skill index: their topic would be {} bytes, \
-             over the {DETAIL_INDEX_BUDGET} allowed; the largest entries are {}; shorten their \
+            "the custom skills do not fit the skill index: their topic would be {} bytes, over \
+             the {DETAIL_INDEX_BUDGET} allowed; the largest entries are {}; shorten their \
              descriptions or remove skills",
             topic.len(),
             named.join(", ")
@@ -355,8 +451,8 @@ pub fn custom_index(root: &str, skills: &[Skill], commit: &str) -> Result<Custom
     let root = with_topic(
         root,
         &format!(
-            "- [Custom]({CUSTOM_TOPIC}): Skills from this repository's .agents/skills, added by \
-             its writers."
+            "- [Custom]({CUSTOM_TOPIC}): Skills from this repository's .agents/skills and your \
+             own skills folder."
         ),
     );
     if root.len() > ROOT_INDEX_BUDGET {
@@ -713,15 +809,15 @@ mod tests {
     }
 
     #[test]
-    fn a_sets_digest_ignores_entry_order_and_follows_layer_name_and_digest() {
-        let entry = |layer, name: &str, digest: &str| SkillEntry {
-            layer,
+    fn a_sets_digest_ignores_entry_order_and_follows_source_name_and_digest() {
+        let entry = |source, name: &str, digest: &str| SkillEntry {
+            source,
             name: name.into(),
             digest: digest.into(),
         };
         let set = vec![
-            entry(Layer::BuiltIn, "docx", "1"),
-            entry(Layer::Repository, "style", "2"),
+            entry(Source::BuiltIn, "docx", "1"),
+            entry(Source::Repository, "style", "2"),
         ];
         let reference = set_digest(&set);
         assert_eq!(
@@ -731,24 +827,40 @@ mod tests {
         );
         for changed in [
             vec![
-                entry(Layer::BuiltIn, "docx", "1"),
-                entry(Layer::Repository, "style", "3"),
+                entry(Source::BuiltIn, "docx", "1"),
+                entry(Source::Repository, "style", "3"),
             ],
             vec![
-                entry(Layer::BuiltIn, "docx", "1"),
-                entry(Layer::Repository, "styles", "2"),
+                entry(Source::BuiltIn, "docx", "1"),
+                entry(Source::Repository, "styles", "2"),
             ],
             vec![
-                entry(Layer::BuiltIn, "docx", "1"),
-                entry(Layer::BuiltIn, "style", "2"),
+                entry(Source::BuiltIn, "docx", "1"),
+                entry(Source::BuiltIn, "style", "2"),
             ],
-            vec![entry(Layer::BuiltIn, "docx", "1")],
+            vec![entry(Source::BuiltIn, "docx", "1")],
         ] {
             assert_ne!(set_digest(&changed), reference, "{changed:?}");
         }
         assert_eq!(set_digest(&[]), set_digest(&[]));
         assert_eq!(set[1].label(), "repository:style");
         assert_eq!(set[0].label(), "docx");
+        assert_eq!(
+            entry(Source::User, "memory-parser", "4").label(),
+            "user:memory-parser"
+        );
+        // A new source sorts after the two that existed, so a recorded set
+        // digest of repository and built-in entries is unchanged by it.
+        assert!(Source::Repository < Source::BuiltIn && Source::BuiltIn < Source::User);
+        assert_eq!(
+            Source::ALL.map(Source::precedence),
+            [0, 1, 2],
+            "repository, then user, then built-in"
+        );
+        assert_eq!(
+            serde_json::to_string(&entry(Source::User, "m", "5")).unwrap(),
+            r#"{"layer":"user","name":"m","digest":"5"}"#
+        );
     }
 
     #[test]
@@ -776,7 +888,7 @@ mod tests {
             )
         );
         assert_eq!(
-            skill.entry(Layer::Repository).label(),
+            skill.entry(Source::Repository).label(),
             "repository:style-guide"
         );
     }
@@ -977,7 +1089,8 @@ mod tests {
         )
         .unwrap();
         let root = crate::skills::INDEX;
-        let index = custom_index(root, std::slice::from_ref(&style), "0123456789abcdef").unwrap();
+        let index =
+            custom_index(root, std::slice::from_ref(&style), &[], "0123456789abcdef").unwrap();
         assert!(index.topic.starts_with("# Custom\n"));
         assert!(index.topic.contains("commit 0123456789ab."));
         assert!(index.topic.contains(
@@ -1000,9 +1113,47 @@ mod tests {
         );
 
         let builtin = Skill::new("docx", files(&[("SKILL.md", &skill_md("docx", "d"))])).unwrap();
-        assert!(custom_index(root, &[builtin], "c")
+        assert!(custom_index(root, std::slice::from_ref(&builtin), &[], "c")
             .unwrap_err()
             .contains("repository skill docx has a built-in skill's name"));
+        assert!(custom_index(root, &[], &[builtin], "c")
+            .unwrap_err()
+            .contains("user skill docx has a built-in skill's name"));
+
+        let mine = Skill::new(
+            "memory-parser",
+            files(&[("SKILL.md", &skill_md("memory-parser", "What you learned."))]),
+        )
+        .unwrap();
+        let both = custom_index(
+            root,
+            std::slice::from_ref(&style),
+            std::slice::from_ref(&mine),
+            "c",
+        )
+        .unwrap();
+        assert!(both
+            .topic
+            .contains("and skills the person running this branch keeps"));
+        assert!(both.topic.contains(
+            "- [user:memory-parser](../../user/memory-parser/SKILL.md): What you learned. (added \
+             by you, from your own skills folder)\n"
+        ));
+        let repository_at = both.topic.find("[repository:style-guide]").unwrap();
+        assert!(repository_at < both.topic.find("[user:memory-parser]").unwrap());
+        let alone = custom_index(root, &[], &[mine], "c").unwrap();
+        assert!(alone
+            .topic
+            .starts_with("# Custom\n\nSkills the person running this branch"));
+        assert!(!alone.topic.contains("commit c"));
+        let shadowed = Skill::new(
+            "style-guide",
+            files(&[("SKILL.md", &skill_md("style-guide", "Mine."))]),
+        )
+        .unwrap();
+        assert!(custom_index(root, &[style], &[shadowed], "c")
+            .unwrap_err()
+            .contains("user skill style-guide is shadowed by the repository skill"));
 
         let long = |name: &str, n: usize| {
             Skill::new(
@@ -1014,7 +1165,7 @@ mod tests {
         let mut many: Vec<Skill> = (0..30).map(|i| long(&format!("s{i}"), 40)).collect();
         many.push(long("widest", 200));
         many.push(long("wider", 150));
-        let why = custom_index(root, &many, "c").unwrap_err();
+        let why = custom_index(root, &many, &[], "c").unwrap_err();
         assert!(why.contains("over the 8192 allowed"), "{why}");
         assert!(
             why.contains("the largest entries are repository:widest (")

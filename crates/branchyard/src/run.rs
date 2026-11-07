@@ -115,6 +115,10 @@ pub(crate) struct NewBranch<'a> {
     /// created from a revision, its parent's otherwise; see
     /// `crate::skills`.
     pub skills: Option<crate::skills::BranchSkills>,
+    /// The person's skills folder its turns read their own skills from
+    /// ([`crate::TaskOptions::user_skills`]); inherited by forks,
+    /// reincarnations and children.
+    pub user_skills: Option<PathBuf>,
 }
 
 /// `kept`, then each of `added` not already in it.
@@ -216,6 +220,7 @@ pub(crate) fn new_record(store: &crate::state::Store, new: NewBranch<'_>) -> Res
         lost: None,
         landing: None,
         skills: new.skills,
+        user_skills: new.user_skills,
         manifest: None,
         credential: None,
     })
@@ -494,6 +499,7 @@ pub(crate) fn run(yard: &Yard, prompt: &str, options: &TaskOptions) -> Result<Br
             deny: options.deny.clone(),
             unapproved_tools: options.unapproved_tools,
             skills,
+            user_skills: options.user_skills.clone(),
             provision: options.provision.clone(),
             workspace: options.workspace.clone(),
             seed: None,
@@ -584,6 +590,7 @@ pub(crate) fn run_on(
                 deny: options.deny.clone(),
                 unapproved_tools: options.unapproved_tools,
                 skills: skills.clone(),
+                user_skills: options.user_skills.clone(),
                 provision: options.provision.clone(),
                 workspace: options.workspace.clone(),
                 seed: None,
@@ -745,6 +752,7 @@ pub(crate) fn run_attempts(
                 deny: options.deny.clone(),
                 unapproved_tools: options.unapproved_tools,
                 skills: skills.clone(),
+                user_skills: options.user_skills.clone(),
                 provision: o.provision.clone(),
                 workspace: options.workspace.clone(),
                 seed: None,
@@ -1628,6 +1636,7 @@ pub(crate) fn fork(
             deny: with_denials(&parent.deny, &options.deny),
             unapproved_tools: options.unapproved_tools || parent.unapproved_tools,
             skills: parent.skills.clone(),
+            user_skills: parent.user_skills.clone(),
             provision,
             workspace: options
                 .workspace
@@ -1818,6 +1827,7 @@ pub(crate) fn reincarnate_with(
             deny: with_denials(&parent.deny, &options.deny),
             unapproved_tools: options.unapproved_tools || parent.unapproved_tools,
             skills: parent.skills.clone(),
+            user_skills: parent.user_skills.clone(),
             provision,
             workspace: options
                 .workspace

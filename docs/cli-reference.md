@@ -1566,6 +1566,106 @@ by knowledge export [OPTIONS]
 |---|---|
 | `--out <FILE>` | Write it here instead of stdout |
 
+## `by memory`
+
+Memory as skills: what a team or you learned, found by search
+
+Add, list, show, edit, remove or export the memory bundles under .agents/skills/memory-TOPIC (the team's, through a pull request) or your own skills folder (--mine).
+
+```text
+by memory [OPTIONS] <COMMAND>
+```
+
+### `by memory add`
+
+Add a memory: a reference in its topic's bundle, whose SKILL.md and memory.json are rewritten
+
+Into .agents/skills/memory-TOPIC of this checkout (commit it and open the pull request; new branches stage it after `by skills trust`), or with --mine into your own skills folder, approved by you at once. A harness on a branch is refused.
+
+```text
+by memory add [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--title <TEXT>` | One line, at most 80 characters (default: the draft's) |
+| `--body-file <FILE>` | The body, Markdown of at most 8,000 characters, read from this file |
+| `--from <FILE>` | A draft `by knowledge distill` wrote under .branchyard/memory-drafts/, or any Markdown file: title, kind and paths from its frontmatter or first heading, the rest the body; removed once added |
+| `--kind <KIND>` | rule, procedure, fact or pitfall (default: rule, or the draft's) |
+| `--path <GLOB>` | A path glob it applies to, such as crates/parser/**; repeatable |
+| `--task-kind <KIND>` | A kind of task it applies to; repeatable |
+| `--topic <TOPIC>` | The topic, which names the bundle memory-TOPIC (default: the first path's last plain component, such as parser for crates/parser/**, else general) |
+| `--mine` | Your own memory, in your skills folder, instead of the repository's |
+
+### `by memory list`
+
+Every memory of the repository's bundles and your own, by topic
+
+```text
+by memory list [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Only your own |
+
+### `by memory show`
+
+One memory, whole
+
+```text
+by memory show [OPTIONS] <SLUG>
+```
+
+| Option | What it does |
+|---|---|
+| `<SLUG>` | Its slug, as `by memory list` shows it |
+| `--mine` | Look only in your own skills folder |
+
+### `by memory edit`
+
+Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+
+```text
+by memory edit [OPTIONS] <SLUG>
+```
+
+| Option | What it does |
+|---|---|
+| `<SLUG>` | Its slug |
+| `--title <TEXT>` | A new title |
+| `--body-file <FILE>` | A new body, read from this file |
+| `--kind <KIND>` | A new kind: rule, procedure, fact or pitfall |
+| `--path <GLOB>` | The path globs it applies to, replacing the old ones; "" alone for the whole repository |
+| `--task-kind <KIND>` | The kinds of task it applies to, replacing the old ones |
+| `--mine` | Look only in your own skills folder |
+
+### `by memory remove`
+
+Remove a memory; a topic left empty loses its bundle
+
+```text
+by memory remove [OPTIONS] <SLUG>
+```
+
+| Option | What it does |
+|---|---|
+| `<SLUG>` | Its slug |
+| `--mine` | Look only in your own skills folder |
+
+### `by memory export`
+
+The bundles as the writer produces them from what is stored, for inspection and the eval
+
+```text
+by memory export [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--out <DIR>` | Write them under this directory, one memory-TOPIC each |
+| `--mine` | Your own, instead of the repository's |
+
 ## `by approvals`
 
 Approvals waiting for an answer: list them, allow or deny one
@@ -1731,6 +1831,33 @@ Forget the trust decision for this repository's skills
 ```text
 by skills untrust [OPTIONS]
 ```
+
+### `by skills add`
+
+Copy a skill into your own skills folder, which your new branches stage
+
+The folder is ~/.config/branchyard/skills/NAME (the local `user` source). A skill there is yours alone: it reaches the sessions you start, under the label user:NAME, after the repository's skills and before the built-in ones, whose names stay reserved.
+
+```text
+by skills add [OPTIONS] <PATH>
+```
+
+| Option | What it does |
+|---|---|
+| `<PATH>` | The skill directory: the one holding SKILL.md |
+| `--name <NAME>` | Install it under this name (default: its frontmatter's) |
+
+### `by skills remove`
+
+Remove a skill from your own skills folder
+
+```text
+by skills remove [OPTIONS] <NAME>
+```
+
+| Option | What it does |
+|---|---|
+| `<NAME>` | Its name, as `by skills ls` lists it under user |
 
 ## `by tools`
 
