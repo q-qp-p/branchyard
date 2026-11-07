@@ -11,9 +11,16 @@
 //!   is reduced to its last component, so the log does not carry a host's
 //!   directory layout.
 //! - A command is collapsed to one line, has secrets scrubbed (values of
-//!   `NAME=secret` assignments and of `--token`-style flags, bearer
-//!   tokens, URL credentials and well-known token shapes), and is cut at
-//!   [`COMMAND_MAX`] characters.
+//!   `NAME=secret` assignments and of `--token`-style flags, `-u user:pass`
+//!   and `--user` of curl-like tools, `-pPASS` of mysql-like clients and
+//!   `-p PASS` of registry logins, the value of an `Authorization`,
+//!   `Cookie` or `*-Key`/`*Token`/`*Secret` header, bearer tokens, URL
+//!   userinfo, the values of secret-named URL query parameters, AWS-secret
+//!   shaped words and well-known token shapes), and is cut at
+//!   [`COMMAND_MAX`] characters. A 40 or 64 character hex word in a `git`
+//!   command is a commit id and is kept.
+//! - A URL given as a path (`uri`) goes through the same URL scrubbing, and
+//!   a file path loses a `?query`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -170,8 +177,18 @@ pub fn from_input(tool: &str, input: &Value, cwd: &str) -> Option<ToolTarget> {
 /// tree, otherwise the last component of an absolute path.
 pub fn path(raw: &str, cwd: &str) -> Option<String> {
     let raw = raw.trim();
-    let raw = raw.strip_prefix("file://").unwrap_or(raw);
     if raw.is_empty() || raw.chars().any(char::is_control) {
+        return None;
+    }
+    // A URL that is not a file URL keeps its host and path; userinfo and
+    // secret query values go.
+    if raw.contains("://") && !raw.starts_with("file://") {
+        return Some(cut(&redact_url(raw), NAME_MAX));
+    }
+    let raw = raw.strip_prefix("file://").unwrap_or(raw);
+    // A file has no query string: `a.txt?token=x` is `a.txt`.
+    let raw = raw.split('?').next().unwrap_or(raw);
+    if raw.is_empty() {
         return None;
     }
     let value = if let Some(rest) = after_marker(raw) {
@@ -301,6 +318,9 @@ fn secret_name(name: &str) -> bool {
 }
 
 fn token_shaped(word: &str) -> bool {
+    if aws_secret_shaped(word) {
+        return true;
+    }
     let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
     if TOKEN_PREFIXES
         .iter()
@@ -319,10 +339,32 @@ fn token_shaped(word: &str) -> bool {
         && !word.contains('/')
 }
 
-/// `word` with the password of a URL's credentials removed.
+/// An AWS secret access key: 40 base64 characters, here required to hold a
+/// `/` or `+` (the ones the plain rule skips), both cases and a digit, and
+/// not to look like a path (no leading `/` or `.`, no `.` at all).
+fn aws_secret_shaped(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| matches!(c, '\'' | '"' | ',' | ';' | '(' | ')'));
+    word.len() == 40
+        && word.contains(['/', '+'])
+        && !word.starts_with(['/', '.'])
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '+'))
+        && word.chars().any(|c| c.is_ascii_digit())
+        && word.chars().any(|c| c.is_ascii_uppercase())
+        && word.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// A commit id: 40 or 64 hex characters.
+fn commit_id(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    matches!(word.len(), 40 | 64) && word.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `word` with the userinfo of a URL's credentials removed.
 fn url_credentials(word: &str) -> Option<String> {
     let (scheme, rest) = word.split_once("://")?;
-    let (authority, tail) = match rest.find('/') {
+    let (authority, tail) = match rest.find(['/', '?', '#']) {
         Some(at) => rest.split_at(at),
         None => (rest, ""),
     };
@@ -330,23 +372,188 @@ fn url_credentials(word: &str) -> Option<String> {
     Some(format!("{scheme}://{REDACTED}@{host}{tail}"))
 }
 
+/// Query and fragment parameters whose name is exactly one of these hold a
+/// secret (a name containing a [`SECRET_WORDS`] fragment does too).
+const SECRET_PARAMS: [&str; 6] = ["sig", "signature", "code", "sas", "jwt", "otp"];
+
+fn secret_param(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    SECRET_PARAMS.contains(&lower.as_str())
+        || lower.ends_with("signature")
+        || lower.ends_with("-sig")
+        || lower.ends_with("_sig")
+        || secret_name(&lower)
+}
+
+/// `word` with the values of secret-named `?query` and `#fragment`
+/// parameters replaced.
+fn redact_query(word: &str) -> String {
+    let Some(start) = word.find(['?', '#']) else {
+        return word.to_owned();
+    };
+    let (head, params) = word.split_at(start + 1);
+    let cleaned: Vec<String> = params
+        .split('&')
+        .map(|param| match param.split_once('=') {
+            Some((name, value)) if !value.is_empty() && secret_param(name) => {
+                let tail: String = value
+                    .chars()
+                    .rev()
+                    .take_while(|c| matches!(c, '\'' | '"' | ')' | ';'))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                format!("{name}={REDACTED}{tail}")
+            }
+            _ => param.to_owned(),
+        })
+        .collect();
+    format!("{head}{}", cleaned.join("&"))
+}
+
+/// A URL as the log may keep it: no userinfo, no secret query values.
+fn redact_url(url: &str) -> String {
+    let url = url_credentials(url).unwrap_or_else(|| url.to_owned());
+    redact_query(&url)
+}
+
+/// The program a word names: its last path component.
+fn program_of(word: &str) -> &str {
+    let word = word.trim_matches(|c: char| matches!(c, '\'' | '"' | '(' | '`'));
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// Whether `word` ends a simple command (`|`, `&&`, `;`).
+fn separator(word: &str) -> bool {
+    matches!(word, "|" | "||" | "&&" | "&" | ";") || (word.len() > 1 && word.ends_with(';'))
+}
+
+/// Programs whose `-u`/`--user` (and `-a` for the HTTP clients) carry
+/// `user:password`.
+const USER_PASS_TOOLS: [&str; 6] = ["curl", "wget", "http", "https", "xh", "xhs"];
+/// Programs whose `-pPASSWORD` (attached) is a password.
+const ATTACHED_P_TOOLS: [&str; 4] = ["mysql", "mysqldump", "mysqladmin", "mariadb"];
+/// Programs whose `-p PASSWORD` is a password.
+const SPACED_P_TOOLS: [&str; 6] = ["docker", "podman", "helm", "oras", "skopeo", "crane"];
+
+/// Whether `word` names a header that holds a secret: `Authorization`,
+/// `Cookie`, or a name ending in key, token, secret, password or
+/// signature. A name without a hyphen counts only after `-H`.
+fn secret_header(name: &str, after_header_flag: bool) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if !lower
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        || lower.is_empty()
+    {
+        return false;
+    }
+    if matches!(
+        lower.as_str(),
+        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+    ) {
+        return true;
+    }
+    let ends = ["key", "token", "secret", "password", "signature", "auth"]
+        .iter()
+        .any(|end| lower.ends_with(end));
+    ends && (after_header_flag || lower.contains('-'))
+}
+
 fn scrub_words(words: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
+    let mut program: Option<String> = None;
+    let mut previous = String::new();
+    let mut login = false;
     for word in words {
+        let lower = word.to_ascii_lowercase();
+        if separator(word) {
+            program = None;
+            login = false;
+        } else if program.is_none()
+            && !word.contains('=')
+            && !matches!(program_of(word), "sudo" | "env" | "time" | "exec" | "nohup")
+        {
+            program = Some(program_of(word).to_owned());
+        }
+        let tool = program.as_deref().unwrap_or("");
+        if lower == "login" {
+            login = true;
+        }
+        let after_header_flag = matches!(previous.as_str(), "-H" | "--header");
+        previous.clone_from(word);
         if hide_next {
             hide_next = false;
-            out.push(REDACTED.to_owned());
+            // `Authorization: Bearer TOKEN`: the scheme word stays.
+            if lower == "bearer" || lower == "basic" {
+                hide_next = true;
+                out.push(word.clone());
+            } else {
+                out.push(REDACTED.to_owned());
+            }
             continue;
         }
-        let lower = word.to_ascii_lowercase();
         if lower == "bearer" || lower == "basic" {
             out.push(word.clone());
             hide_next = true;
             continue;
         }
+        // A header, quoted or not: `Name: value`, `"Name: value`, `Name:value`.
+        let core = word.trim_start_matches(['\'', '"']);
+        if let Some((name, value)) = core.split_once(':') {
+            if !core.contains("://") && secret_header(name, after_header_flag) {
+                let lead = &word[..word.len() - core.len()];
+                let value = value.trim_matches(['\'', '"']);
+                if value.is_empty() {
+                    out.push(word.clone());
+                    hide_next = true;
+                } else {
+                    out.push(format!("{lead}{name}:{REDACTED}"));
+                    hide_next = matches!(value.to_ascii_lowercase().as_str(), "bearer" | "basic");
+                }
+                continue;
+            }
+        }
         if let Some(flag) = word.strip_prefix('-') {
             let flag = flag.trim_start_matches('-');
+            let user_pass_tool = USER_PASS_TOOLS.contains(&tool);
+            if user_pass_tool
+                && (matches!(word.as_str(), "-u" | "-U" | "--user" | "--proxy-user")
+                    || (matches!(tool, "http" | "https" | "xh" | "xhs") && word == "-a"))
+            {
+                out.push(word.clone());
+                hide_next = true;
+                continue;
+            }
+            if user_pass_tool {
+                // `-uuser:pass`, `--user=user:pass`.
+                if word.len() > 2 && word.starts_with("-u") && !word.starts_with("--") {
+                    out.push(format!("-u{REDACTED}"));
+                    continue;
+                }
+                if let Some(long) = ["--user=", "--proxy-user="]
+                    .iter()
+                    .find(|long| word.starts_with(**long))
+                {
+                    out.push(format!("{long}{REDACTED}"));
+                    continue;
+                }
+            }
+            if word == "-p" && login && SPACED_P_TOOLS.contains(&tool) {
+                out.push(word.clone());
+                hide_next = true;
+                continue;
+            }
+            if ATTACHED_P_TOOLS.contains(&tool)
+                && word.len() > 2
+                && word.starts_with("-p")
+                && !word.starts_with("--")
+            {
+                out.push(format!("-p{REDACTED}"));
+                continue;
+            }
             if let Some((name, _)) = flag.split_once('=') {
                 if secret_name(name) {
                     out.push(format!(
@@ -371,13 +578,14 @@ fn scrub_words(words: &[String]) -> Vec<String> {
                 continue;
             }
         }
-        if let Some(clean) = url_credentials(word) {
-            out.push(clean);
+        if word.contains("://") {
+            out.push(redact_url(word));
+        } else if tool == "git" && commit_id(word) {
+            out.push(word.clone());
         } else if token_shaped(word) {
             out.push(REDACTED.to_owned());
-        } else if lower.starts_with("authorization:") {
-            out.push(word.clone());
-            hide_next = true;
+        } else if word.contains('?') {
+            out.push(redact_query(word));
         } else {
             out.push(word.clone());
         }
@@ -535,5 +743,141 @@ mod tests {
     fn a_file_content_key_is_never_a_target() {
         let input = json!({"content": "secret body", "text": "more"});
         assert_eq!(from_input("Write", &input, "/workspace"), None);
+    }
+
+    const AWS_SECRET: &str = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn secrets_in_commands_are_scrubbed_in_each_shape_the_review_found() {
+        let cases: Vec<(String, &str)> = vec![
+            (
+                "curl -u admin:hunter2 https://h/x".into(),
+                "curl -u [redacted] https://h/x",
+            ),
+            (
+                "curl --user admin:hunter2 https://h/x".into(),
+                "curl --user [redacted] https://h/x",
+            ),
+            (
+                "curl --user=admin:hunter2 https://h/x".into(),
+                "curl --user=[redacted] https://h/x",
+            ),
+            (
+                "curl -uadmin:hunter2 https://h/x".into(),
+                "curl -u[redacted] https://h/x",
+            ),
+            (
+                "mysql -u root -phunter2 db".into(),
+                "mysql -u root -p[redacted] db",
+            ),
+            (
+                "docker login -u me -p hunter2".into(),
+                "docker login -u me -p [redacted]",
+            ),
+            (
+                r#"curl -H "X-Api-Key: abc123" https://h/x"#.into(),
+                r#"curl -H "X-Api-Key: [redacted] https://h/x"#,
+            ),
+            (
+                "curl -H 'X-Api-Key:abc123' https://h/x".into(),
+                "curl -H 'X-Api-Key:[redacted] https://h/x",
+            ),
+            (
+                r#"curl -H "X-Auth-Token: abc123" https://h"#.into(),
+                r#"curl -H "X-Auth-Token: [redacted] https://h"#,
+            ),
+            (
+                r#"curl -H "X-Client-Secret: abc123" https://h"#.into(),
+                r#"curl -H "X-Client-Secret: [redacted] https://h"#,
+            ),
+            (
+                r#"curl -H "Authorization: Bearer abc.def" https://h"#.into(),
+                r#"curl -H "Authorization: Bearer [redacted] https://h"#,
+            ),
+            (
+                r#"curl -H "Authorization: Basic dTpw" https://h"#.into(),
+                r#"curl -H "Authorization: Basic [redacted] https://h"#,
+            ),
+            (
+                "curl -H 'Cookie: sid=1234' https://h".into(),
+                "curl -H 'Cookie: [redacted] https://h",
+            ),
+            (
+                format!("aws configure set aws_secret_access_key {AWS_SECRET}"),
+                "aws configure set aws_secret_access_key [redacted]",
+            ),
+            (format!("echo {AWS_SECRET}"), "echo [redacted]"),
+            (
+                "git clone https://user:pass@github.com/o/r.git".into(),
+                "git clone https://[redacted]@github.com/o/r.git",
+            ),
+            (
+                "curl 'https://h/x?access_token=abc&page=2'".into(),
+                "curl 'https://h/x?access_token=[redacted]&page=2'",
+            ),
+            (
+                "curl https://h/x?a=1&signature=zzz&token=t".into(),
+                "curl https://h/x?a=1&signature=[redacted]&token=[redacted]",
+            ),
+            (
+                "curl https://h/x#access_token=abc".into(),
+                "curl https://h/x#access_token=[redacted]",
+            ),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(command(&raw, "").as_deref(), Some(want), "{raw}");
+        }
+    }
+
+    #[test]
+    fn ordinary_commands_are_not_scrubbed() {
+        let kept = [
+            "git push -u origin main".to_owned(),
+            format!("git checkout {SHA}"),
+            format!("git log --format=%H {SHA}..HEAD"),
+            "ls -u src".to_owned(),
+            "psql -p 5432 -U app db".to_owned(),
+            "docker run -p 8080:80 image".to_owned(),
+            "docker run --name monkey:latest image".to_owned(),
+            "cat src/components/deeply/nested/Directory2/file.tsx".to_owned(),
+            "curl https://h/search?q=rust&page=2".to_owned(),
+            "curl -H 'Accept: application/json' https://h".to_owned(),
+        ];
+        for raw in kept {
+            assert_eq!(command(&raw, "").as_deref(), Some(raw.as_str()), "{raw}");
+        }
+        // Outside git a commit-id-shaped word is still treated as a token.
+        assert_eq!(
+            command(&format!("echo {SHA}"), "").as_deref(),
+            Some("echo [redacted]")
+        );
+    }
+
+    #[test]
+    fn uri_and_path_targets_lose_credentials_and_query_strings() {
+        assert_eq!(
+            path("https://u:p@h/x?access_token=abc&page=2", "/w").as_deref(),
+            Some("https://[redacted]@h/x?access_token=[redacted]&page=2")
+        );
+        assert_eq!(
+            from_input("Fetch", &json!({"uri": "https://h/x?key=abc"}), "/w"),
+            ToolTarget::file("https://h/x?key=abc", "/w")
+        );
+        assert_eq!(
+            from_input("Fetch", &json!({"uri": "https://h/x?key=abc"}), "/w")
+                .map(|t| t.value)
+                .as_deref(),
+            Some("https://h/x?key=[redacted]")
+        );
+        assert_eq!(
+            path("/workspace/a.txt?token=abc", "/workspace").as_deref(),
+            Some("a.txt")
+        );
+        assert_eq!(
+            path("/srv/export/report.csv?sig=zzz", "/workspace").as_deref(),
+            Some("report.csv")
+        );
+        assert_eq!(path("?token=abc", "/w"), None);
     }
 }
