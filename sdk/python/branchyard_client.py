@@ -1640,9 +1640,14 @@ class Client:
         helpers: Optional[Sequence[str]] = None,
         max_helpers: Optional[int] = None,
         tools: Optional[Sequence[JSON]] = None,
+        issue: Optional[str] = None,
         key: Optional[str] = None,
     ) -> Operation:
         """Queue an isolated writer or reviewer using the existing harness.
+        `issue` starts it from an issue (a GitHub URL, `#N`, `linear:KEY`, ...):
+        the server fetches it with its own `gh` login and tracker credentials
+        and the prompt becomes the issue under a header, with `prompt` added
+        (it may be empty); see `workspace_issue()`.
         `connectors` (grants, beside a preset), `skills` (built-in skill IDs;
         unset stages all) and `helpers` (harness IDs it may delegate to, at
         most `max_helpers` at once) are the choices `session_tools()` offers;
@@ -1680,8 +1685,14 @@ class Client:
             artifacts=artifacts,
             candidate=candidate,
             tools=chosen,
+            issue=issue,
             key=key,
         )
+
+    def workspace_issue(self, workspace: str, ref: str) -> Record:
+        """`GET /v1/workspaces/{workspace}/issue?ref=REF`: the issue a session
+        would start from, without starting anything: `issue` and `branch`."""
+        return Record(self.get(self._workspace(workspace, "/issue"), **{"ref": ref}))
 
     def tools(self, workspace: Optional[str] = None) -> Record:
         """`GET /v1/tools`: every connector, skill and helper as the caller
@@ -1792,6 +1803,7 @@ class Client:
         candidate: Optional[str],
         tools: JSON,
         key: Optional[str],
+        issue: Optional[str] = None,
     ) -> Operation:
         """The body of `start_workspace_session`: the existing fields.
         Omitted policy retains the server's deny default. Sources and review
@@ -1820,6 +1832,7 @@ class Client:
                 "sources": list(sources) if sources is not None else None,
                 "artifacts": list(artifacts) if artifacts is not None else None,
                 "candidate": candidate,
+                "issue": issue,
                 **tools,
             },
             key,
@@ -2679,10 +2692,17 @@ class Repo:
         priority: Optional[int] = None,
         plan: bool = False,
         goal: Optional[JSON] = None,
+        issue: Optional[str] = None,
         key: Optional[str] = None,
         **extra: Any,
     ) -> Operation:
         """`POST .../tasks`: a branch running `prompt` (`docs/server.md#requests`).
+        `issue` starts it from an issue as `by run --issue` does (a GitHub URL,
+        `#N`, `linear:KEY`, a Linear, Jira or GitLab URL): the server fetches
+        it with its own `gh` login and tracker credentials, `prompt` is added
+        to the issue's text (and may be empty), and the branch is named after
+        it. Refused with `issue_unavailable` when it cannot be fetched; see
+        `issue()`.
         `connectors` is the branch's grant, in either form; a grant needs a
         private home, so `isolated` defaults to true when one is given.
         `budget_usd` is `budget.max_usd`. `delegation` is the envelope
@@ -2708,9 +2728,17 @@ class Repo:
             priority=priority,
             plan=plan,
             goal=goal,
+            **({"issue": issue} if issue is not None else {}),
             **extra,
         )
         return self.client._operation(f"{self._base}/tasks", body, key)
+
+    def issue(self, ref: str) -> Record:
+        """`GET .../issue?ref=REF`: the issue `run(issue=REF)` would start
+        from, without starting anything: `issue` (its `number`, `url`,
+        `title`, and for another tracker `tracker` and `key`) and the
+        `branch` name it would get. Raises when the server cannot fetch it."""
+        return Record(self.client.get(f"{self._base}/issue", **{"ref": ref}))
 
     # -- maps and task records ---------------------------------------------
 

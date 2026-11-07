@@ -34,7 +34,7 @@ by run [OPTIONS] [PROMPT]
 | `--issue <REF>` | Take the task from this issue: GitHub's (URL, #N or N, through gh), linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL; a prompt, if given, is added |
 | `--pr <N>` | Start from GitHub pull request N's head (fetched with gh and git); by pr then updates it |
 | `-n, --name <NAME>` | Branch name (default: a slug of the prompt) |
-| `-b, --base <REV>` | Base revision (default: HEAD) |
+| `-b, --base <REV>` | Base revision (default: HEAD), or the name of a branch to stack on: its candidate is the base and by pr opens the pull request against its pull request |
 | `--check <CMD>` | Command that must pass before the branch merges, such as "cargo test": split into words like a shell does, then run directly, not through a shell (use `sh -c "..."` for pipes) |
 | `--budget-usd <DOLLARS>` | Stop once the harness's own cost estimate, or on the model gateway its metered cost, exceeds this many dollars |
 | `--max-turns <N>` | Stop after N turns |
@@ -133,7 +133,7 @@ by fan [OPTIONS] [PROMPT]
 | `--seed <N>` | Seed the router, for a reproducible pick |
 | `--issue <REF>` | Take the task from this issue: GitHub's (URL, #N or N, through gh), linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL; a prompt, if given, is added |
 | `--pr <N>` | Start from GitHub pull request N's head (fetched with gh and git); by pr then updates it |
-| `-b, --base <REV>` | Base revision (default: HEAD) |
+| `-b, --base <REV>` | Base revision (default: HEAD), or the name of a branch to stack on: its candidate is the base and by pr opens the pull request against its pull request |
 | `--check <CMD>` | Command that must pass before the branch merges, such as "cargo test": split into words like a shell does, then run directly, not through a shell (use `sh -c "..."` for pipes) |
 | `--budget-usd <DOLLARS>` | Stop once the harness's own cost estimate, or on the model gateway its metered cost, exceeds this many dollars |
 | `--max-turns <N>` | Stop after N turns |
@@ -644,7 +644,7 @@ by task new [OPTIONS] <PROMPT>
 | `--issue <REF>` | Take the task from this issue: GitHub's (URL, #N or N, through gh), linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL; a prompt, if given, is added |
 | `--pr <N>` | Start from GitHub pull request N's head (fetched with gh and git); by pr then updates it |
 | `-n, --name <NAME>` | Branch name (default: a slug of the prompt) |
-| `-b, --base <REV>` | Base revision (default: HEAD) |
+| `-b, --base <REV>` | Base revision (default: HEAD), or the name of a branch to stack on: its candidate is the base and by pr opens the pull request against its pull request |
 | `--check <CMD>` | Command that must pass before the branch merges, such as "cargo test": split into words like a shell does, then run directly, not through a shell (use `sh -c "..."` for pipes) |
 | `--budget-usd <DOLLARS>` | Stop once the harness's own cost estimate, or on the model gateway its metered cost, exceeds this many dollars |
 | `--max-turns <N>` | Stop after N turns |
@@ -950,7 +950,7 @@ by pr [OPTIONS] <BRANCH>
 | `<BRANCH>` | The branch to open the pull request for |
 | `--git-remote <NAME>` | The git remote to push to (not --remote, which names a Branchyard server) (default `origin`) |
 | `--head <BRANCH>` | The branch to push to on the remote (default: the branch's git branch, by/<name>) |
-| `--base <BRANCH>` | The pull request's base branch (default: the repository's default branch) |
+| `--base <BRANCH>` | The pull request's base branch (default: the repository's default branch; for a stacked branch, its parent's pull request head) |
 | `--title <TITLE>` | The pull request's title (default: the issue's title, or the prompt's first line); on an update, only when given |
 | `--draft` | Open the pull request as a draft (when creating it) |
 | `--gh-repo <OWNER/REPO>` | The GitHub repository, when gh cannot tell it from the git remotes |
@@ -1141,6 +1141,22 @@ Remove every ready slot on this host
 ```text
 by env pool drain [OPTIONS]
 ```
+
+## `by issue`
+
+Show the issue by run --issue would start from, and start nothing
+
+Fetches it as --issue does (gh for GitHub; Linear, Jira and GitLab through their API or the connector gateway) and prints its title, URL, the branch name by run would give it and the prompt it would send. The server runs this to resolve an issue for a task or a session; see docs/pull-requests.md.
+
+```text
+by issue [OPTIONS] <REFERENCE> [PROMPT]
+```
+
+| Option | What it does |
+|---|---|
+| `<REFERENCE>` | The issue: a GitHub URL, #N or N, linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL |
+| `<PROMPT>` | Instructions to add to the prompt, as by run --issue REF "..." would |
+| `--json` | Print JSON |
 
 ## `by review`
 

@@ -343,7 +343,9 @@ GitHub is reached through the user's `gh`, which runs where the repository and i
 
 | Operation | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
-| Start from an issue | no: pass the prompt; `slug` names the branch | `run`, `fan`, `spawn` `--issue URL\|#N\|N` | yes: `gh` runs on the client, the server gets the prompt (the link is its header; no `issue_linked` event) | n/a | n/a | `spawn --issue`, with the harness's own `gh` login; the link is the prompt's header |
+| Start from an issue | no: pass the prompt; `slug` names the branch | `run`, `fan`, `spawn` `--issue URL\|#N\|N`; `issue REF` shows what it would start from | yes: `gh` runs on the client, the server gets the prompt (the link is its header; no `issue_linked` event); or `TaskRequest.issue`, which the server resolves with its own credentials | `POST .../tasks` with `issue`; `GET /v1/repos/{repo}/issue?ref=`; `POST /v1/workspaces/{id}/sessions` with `issue`; `GET /v1/workspaces/{id}/issue?ref=` | `Repo::issue`, `Client::workspace_issue`; Python `task(issue=)`, `issue()`, `start_workspace_session(issue=)`, `workspace_issue()` | `spawn --issue`, with the harness's own `gh` login; the link is the prompt's header |
+| Stack a branch on another's candidate | `run`'s `base` is a revision; `Branch::record_pull_request(Stacked)` records it | `run`, `fan` `--base BRANCH` (a branch name stacks) | no: the server's `base` is a revision | n/a | n/a | no |
+| Rebase a stacked branch after its parent merged | `Branch::restack` (`branchyard-workspace`'s `Workspace::rebase_onto`) | inside `pr` and `pr --watch` | no: `pr` is local only | no | no | no |
 | Check the candidate alone | `Branch::verify_candidate` | inside `pr` | no: `pr` is local only | no | no | no |
 | Push the candidate | `Branch::push_candidate` | inside `pr` | no: the server's repository has its own remote and credentials; not built | no | no | no |
 | Open or update a pull request | no: the CLI's, through `gh` | `pr` | no, `unsupported` | no | no | no: `by pr` refuses inside a harness, since it pushes with the user's credentials |
@@ -354,8 +356,8 @@ GitHub is reached through the user's `gh`, which runs where the repository and i
 
 | Surface | Before | Now |
 |---|---|---|
-| `Activity` | no pull-request steps | `pull_request` (`PullRequestActivity`, tagged by `kind`: `issue_linked`, `checked`, `pushed`, `opened`, `updated`, `observed`, `feedback_delivered`, `feedback_undelivered`, `watch_stopped`); `schema/contract.json` regenerated |
-| `by show --json` | the branch | the branch and `merge_readiness` (`null` without pull-request steps) |
+| `Activity` | no pull-request steps | `pull_request` (`PullRequestActivity`, tagged by `kind`: `issue_linked`, `checked`, `pushed`, `opened`, `updated`, `observed`, `feedback_delivered`, `feedback_undelivered`, `watch_stopped`, and for stacks `stacked`, `restacked`, `restack_blocked`); `schema/contract.json` regenerated |
+| `by show --json` | the branch | the branch and `merge_readiness` (`null` without pull-request steps), and `stack` for a branch in a stack |
 | `by run`, `fan`, `spawn` | a prompt was required | optional with `--issue`; `Usage: by run [OPTIONS] [PROMPT]` |
 | `Repository::verify`, `Repository::push` (`branchyard-workspace`) | none | a check on one commit in a temporary worktree; a push of one commit to a remote branch, without hooks or a terminal prompt |
 

@@ -181,7 +181,15 @@
       "additionalProperties": false,
       "properties": {
         "prompt": {
-          "type": "string"
+          "type": "string",
+          "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+        },
+        "issue": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
         },
         "harness": {
           "type": [
@@ -1919,6 +1927,65 @@
         }
       }
     },
+    "IssuePreview": {
+      "type": "object",
+      "properties": {
+        "issue": {
+          "$ref": "#/$defs/IssueLink",
+          "description": "The issue: number, URL and title, and for another tracker its name\nand key."
+        },
+        "branch": {
+          "type": "string",
+          "description": "The branch name `by run --issue` would give it."
+        }
+      },
+      "required": [
+        "issue",
+        "branch"
+      ],
+      "description": "`GET /v1/repos/{repo}/issue?ref=REF` and\n`GET /v1/workspaces/{id}/issue?ref=REF`: the issue a task or session\nwould start from (`TaskRequest::issue`), fetched with the server's own\n`gh` login and tracker credentials, without starting anything.",
+      "title": "IssuePreview",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$defs": {
+        "IssueLink": {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The issue's number: GitHub's and GitLab's, or the number in a Linear\nor Jira key (`123` of `ENG-123`)."
+            },
+            "url": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "tracker": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The tracker, when not GitHub: `linear`, `jira` or `gitlab`."
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The tracker's own reference when it is not `#number`: `ENG-123`,\n`PROJ-7`, `group/project#12`."
+            }
+          },
+          "required": [
+            "number",
+            "url",
+            "title"
+          ],
+          "description": "An issue a branch works on."
+        }
+      }
+    },
     "GoalRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -2039,7 +2106,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -29983,7 +30058,14 @@
         },
         "prompt": {
           "type": "string",
-          "description": "Initial instruction."
+          "description": "Initial instruction. With `issue`, instructions added to the issue's\ntext, and may be empty (`\"\"`)."
+        },
+        "issue": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Start from this issue (a GitHub URL, `#N`, `linear:KEY`, a Linear,\nJira or GitLab URL, ...): the server fetches it with its own `gh`\nlogin and tracker credentials and the prompt becomes the issue under\na header. Refused with `issue_unavailable` and a `next` step when it\ncannot be fetched. See `GET /v1/workspaces/{id}/issue`."
         },
         "harness": {
           "type": "string",
@@ -41659,6 +41741,65 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string",
+                  "description": "The parent whose pull request merged."
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -41936,6 +42077,64 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before the rebase."
+            },
+            "to": {
+              "type": "string",
+              "description": "Its candidate after the rebase."
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",
@@ -47526,6 +47725,65 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string",
+                  "description": "The parent whose pull request merged."
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -47803,6 +48061,64 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before the rebase."
+            },
+            "to": {
+              "type": "string",
+              "description": "Its candidate after the rebase."
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",
@@ -60246,6 +60562,65 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string",
+                  "description": "The parent whose pull request merged."
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -60523,6 +60898,64 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before the rebase."
+            },
+            "to": {
+              "type": "string",
+              "description": "Its candidate after the rebase."
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",
@@ -64838,7 +65271,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -67064,7 +67505,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -69309,7 +69758,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -71550,7 +72007,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -74133,7 +74598,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -76499,7 +76972,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -78723,7 +79204,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [
@@ -80960,7 +81449,15 @@
           "additionalProperties": false,
           "properties": {
             "prompt": {
-              "type": "string"
+              "type": "string",
+              "description": "The task. With `issue`, instructions added to the issue's text, and\nmay be empty (`\"\"`)."
+            },
+            "issue": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Start from this issue, as `by run --issue` does: a GitHub issue URL,\n`#N` or `N` (in the repository's own GitHub project), `linear:KEY`,\n`jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab\nURL. The server fetches it with its own `gh` login and tracker\ncredentials, names the branch after it unless `name` is given, and\nthe pull request `by pr` opens closes it. Refused with\n`issue_unavailable` (and a `next` step) when it cannot be fetched."
             },
             "harness": {
               "type": [

@@ -1516,3 +1516,6 @@ body.sheet-open { overflow: hidden; }
   .tool-action button { min-height: 44px; }
   .tool-about, .tool-name > .hint, .tool-name > .conn-flow { margin-left: 0; }
 }
+
+/* Start from an issue: the reference grows, the button stays. */
+#sf-issue { flex: 1 1 16rem; min-width: 0; }

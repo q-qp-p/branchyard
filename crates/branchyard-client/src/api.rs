@@ -174,7 +174,18 @@ impl PolicySpec {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRequest {
+    /// The task. With `issue`, instructions added to the issue's text, and
+    /// may be empty (`""`).
     pub prompt: String,
+    /// Start from this issue, as `by run --issue` does: a GitHub issue URL,
+    /// `#N` or `N` (in the repository's own GitHub project), `linear:KEY`,
+    /// `jira:KEY`, `gitlab:GROUP/PROJECT#N`, or a Linear, Jira or GitLab
+    /// URL. The server fetches it with its own `gh` login and tracker
+    /// credentials, names the branch after it unless `name` is given, and
+    /// the pull request `by pr` opens closes it. Refused with
+    /// `issue_unavailable` (and a `next` step) when it cannot be fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1041,6 +1052,20 @@ pub struct OperationView {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationList {
     pub operations: Vec<Operation>,
+}
+
+/// `GET /v1/repos/{repo}/issue?ref=REF` and
+/// `GET /v1/workspaces/{id}/issue?ref=REF`: the issue a task or session
+/// would start from (`TaskRequest::issue`), fetched with the server's own
+/// `gh` login and tracker credentials, without starting anything.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssuePreview {
+    /// The issue: number, URL and title, and for another tracker its name
+    /// and key.
+    pub issue: branchyard::IssueLink,
+    /// The branch name `by run --issue` would give it.
+    pub branch: String,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

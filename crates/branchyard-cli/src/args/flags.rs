@@ -1083,7 +1083,7 @@ pub struct RunFlags {
     /// Branch name (default: a slug of the prompt)
     #[arg(short, long)]
     name: Option<String>,
-    /// Base revision (default: HEAD)
+    /// Base revision (default: HEAD), or the name of a branch to stack on: its candidate is the base and by pr opens the pull request against its pull request
     #[arg(short, long, value_name = "REV")]
     base: Option<String>,
     #[command(flatten)]
@@ -1221,7 +1221,7 @@ pub struct FanFlags {
     /// Start from GitHub pull request N's head (fetched with gh and git); by pr then updates it
     #[arg(long, value_name = "N", conflicts_with_all = ["issue", "base"])]
     pr: Option<u64>,
-    /// Base revision (default: HEAD)
+    /// Base revision (default: HEAD), or the name of a branch to stack on: its candidate is the base and by pr opens the pull request against its pull request
     #[arg(short, long, value_name = "REV")]
     base: Option<String>,
     #[command(flatten)]
@@ -1910,7 +1910,7 @@ pub struct PrFlags {
     /// The branch to push to on the remote (default: the branch's git branch, by/<name>)
     #[arg(long, value_name = "BRANCH", value_parser = non_blank)]
     head: Option<String>,
-    /// The pull request's base branch (default: the repository's default branch)
+    /// The pull request's base branch (default: the repository's default branch; for a stacked branch, its parent's pull request head)
     #[arg(long, value_name = "BRANCH", value_parser = non_blank)]
     base: Option<String>,
     /// The pull request's title (default: the issue's title, or the prompt's first line); on

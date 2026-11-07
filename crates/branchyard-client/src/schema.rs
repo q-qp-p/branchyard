@@ -46,6 +46,7 @@ pub fn contract() -> Value {
     entry::<api::RuleSpec>("RuleSpec", &mut types);
     entry::<api::PolicySpec>("PolicySpec", &mut types);
     entry::<api::TaskRequest>("TaskRequest", &mut types);
+    entry::<api::IssuePreview>("IssuePreview", &mut types);
     entry::<api::GoalRequest>("GoalRequest", &mut types);
     entry::<api::MapRequest>("MapRequest", &mut types);
     entry::<api::MapResumeRequest>("MapResumeRequest", &mut types);
