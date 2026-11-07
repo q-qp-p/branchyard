@@ -669,7 +669,9 @@ impl Trackers {
 pub struct TrackerConfig {
     /// The API's address: Linear's GraphQL endpoint, a Jira site
     /// (`https://acme.atlassian.net`) or a GitLab instance
-    /// (`https://gitlab.example.com`).
+    /// (`https://gitlab.example.com`). Set in a repository's `branchyard.toml` it is
+    /// repository-controlled; a server ignores it and uses `LINEAR_API_URL`,
+    /// `JIRA_URL` and `GITLAB_URL` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Fetch issues through this connector gateway tool (such as

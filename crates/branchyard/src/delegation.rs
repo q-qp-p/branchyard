@@ -3584,6 +3584,7 @@ impl Local {
                 // Its parent's, fixed when the parent was created: never
                 // read from a base its parent's turns may have changed.
                 skills: caller.skills.clone(),
+                user_skills: caller.user_skills.clone(),
                 provision,
                 workspace: caller.workspace.as_ref().map(|w| w.spec.clone()),
                 // Resolved when it starts, from its parent as it is then
@@ -5820,6 +5821,7 @@ Checks on the merged result: \
             removed: Vec::new(),
             metered_from: None,
             skills: None,
+            user_skills: None,
             manifest: None,
             credential: None,
 
@@ -5860,6 +5862,7 @@ Checks on the merged result: \
             turn: 1,
             call_id: "t".into(),
             name: "Bash".into(),
+            target: None,
         }));
         let events = vec![
             at(Activity::Prompt("earlier".into())),

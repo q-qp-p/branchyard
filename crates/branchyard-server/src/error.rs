@@ -87,6 +87,8 @@ pub fn sdk(error: &branchyard::Error) -> ApiError {
         E::UnknownBranch(_) => (S::NOT_FOUND, "unknown_branch"),
         E::UnknownMessage(_) => (S::NOT_FOUND, "unknown_message"),
         E::UnknownKnowledge(_) => (S::NOT_FOUND, "unknown_knowledge"),
+        E::UnknownMemory(_) => (S::NOT_FOUND, "unknown_memory"),
+        E::InvalidMemory(_) => (S::BAD_REQUEST, "invalid_memory"),
         E::NoPlan(_) => (S::CONFLICT, "no_plan"),
         E::BranchExists(_) => (S::CONFLICT, "branch_exists"),
         E::InvalidName { .. } => (S::BAD_REQUEST, "invalid_name"),

@@ -62,6 +62,68 @@ pub enum PullRequestActivity {
     /// its pull request is that one, so `by pr` pushes to its head and
     /// updates it.
     Started(PullRequestRef),
+    /// The branch was started on top of another branch's candidate
+    /// (`by run --base BRANCH`): a stack. Its pull request is opened
+    /// against the parent's pull request head.
+    Stacked(StackLink),
+    /// The parent's pull request merged: the branch was rebased onto the
+    /// branch it merged into, and its pull request retargeted.
+    Restacked(Restack),
+    /// The same rebase conflicted; the branch is unchanged.
+    RestackBlocked {
+        /// The parent whose pull request merged.
+        parent: String,
+        /// The branch it would have been rebased onto.
+        onto: String,
+        /// The paths that conflicted.
+        files: Vec<String>,
+    },
+}
+
+/// The branch this one is stacked on.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackLink {
+    /// The parent branch's name.
+    pub parent: String,
+    /// The parent's candidate commit this branch started from.
+    pub base: String,
+}
+
+/// A stacked branch rebased after its parent's pull request merged.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restack {
+    /// The parent whose pull request merged.
+    pub parent: String,
+    /// The branch it merged into, which this one now sits on and targets.
+    pub onto: String,
+    /// The commit of `onto` it was rebased onto.
+    pub onto_commit: String,
+    /// Its candidate before the rebase.
+    pub from: String,
+    /// Its candidate after the rebase.
+    pub to: String,
+    /// The branch it is stacked on now: the parent's own parent when the
+    /// parent was itself stacked, none when it now targets `onto` directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_parent: Option<String>,
+}
+
+/// What [`Branch::restack`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Restacked {
+    /// Rebased: the candidate before and after.
+    Done {
+        /// The candidate before the rebase.
+        from: String,
+        /// The candidate after it.
+        to: String,
+    },
+    /// A commit did not apply; nothing changed. The conflicting paths.
+    Conflict(Vec<String>),
+    /// The branch already sits on `onto`.
+    UpToDate,
 }
 
 /// One review thread `by pr --watch` answered and resolved, or tried to.
@@ -191,6 +253,108 @@ impl Branch {
             .record(Activity::PullRequest(Box::new(activity)))
     }
 
+    /// Rebase this branch onto `onto` (a revision), as a stack does after
+    /// its parent's pull request merged: the commits after its base are
+    /// replayed on `onto`, its base and candidate move with them, and a
+    /// snapshot is recorded. Refused while a turn runs, and when its worktree
+    /// has uncommitted work. A conflict aborts the rebase and changes
+    /// nothing. Records no pull-request event; the caller does.
+    pub fn restack(&self, onto: &str) -> Result<Restacked, Error> {
+        let name = &self.info().name;
+        let yard = self.yard();
+        let (mut record, lease) = crate::ops::hold(yard, name)?;
+        match &record.info.status {
+            crate::BranchStatus::Running => return Err(Error::Running(name.clone())),
+            crate::BranchStatus::Waiting | crate::BranchStatus::Blocked { .. } => {
+                return Err(Error::Denied(format!("{name} has not started")))
+            }
+            crate::BranchStatus::Merged { target, .. } => {
+                return Err(Error::Denied(format!("{name} was merged into {target}")))
+            }
+            crate::BranchStatus::Discarded { .. } => {
+                return Err(Error::Denied(format!("{name} was discarded")))
+            }
+            _ => {}
+        }
+        let worktree = record.info.worktree.clone();
+        if !worktree.is_dir() {
+            return Err(Error::State(format!(
+                "{name}'s worktree {} is missing",
+                worktree.display()
+            )));
+        }
+        let _lock = git::lock();
+        let dirty = git::status(&worktree)?;
+        if !dirty.trim().is_empty() {
+            return Err(Error::Denied(format!(
+                "{name}'s worktree has uncommitted changes, which a rebase would trip over; \
+                 send a turn so they are checkpointed, or commit them:\n{}",
+                dirty.trim_end()
+            )));
+        }
+        let onto_commit = yard
+            .repo
+            .resolve(onto)
+            .map_err(|_| Error::Git(format!("{onto:?} does not name a commit")))?;
+        let from = record
+            .info
+            .candidate
+            .as_ref()
+            .map(|c| c.commit.clone())
+            .ok_or_else(|| Error::NoCandidate(name.clone()))?;
+        if record.info.base == onto_commit.0 {
+            return Ok(Restacked::UpToDate);
+        }
+        let branch = crate::names::validate(name)?;
+        let workspace = yard
+            .repo
+            .workspace(&branch)
+            .map_err(git::error)?
+            .ok_or_else(|| {
+                Error::State(format!(
+                    "no worktree has {} checked out",
+                    record.info.git_branch
+                ))
+            })?;
+        let to = match workspace.rebase_onto(&onto_commit).map_err(git::error)? {
+            branchyard_workspace::Rebased::Done(head) => head.0,
+            branchyard_workspace::Rebased::Conflict(files) => {
+                return Ok(Restacked::Conflict(files))
+            }
+        };
+        let candidate = match git::same_tree(&yard.root, &onto_commit.0, &to)? {
+            true => None,
+            false => {
+                let (files_changed, insertions, deletions) =
+                    git::numstat(&yard.root, &onto_commit.0, &to)?;
+                Some(crate::CandidateInfo {
+                    commit: to.clone(),
+                    files_changed,
+                    insertions,
+                    deletions,
+                })
+            }
+        };
+        record.info.base = onto_commit.0.clone();
+        record.info.status = restacked_status(&record.info.status, candidate.is_some());
+        record.info.candidate = candidate.clone();
+        let event = candidate.map(|c| crate::RecordedEvent {
+            at_ms: branchyard_support::time::now_ms(),
+            activity: Activity::Snapshot(c),
+        });
+        // Git has moved already (the branch and its recorded base). If the
+        // record cannot follow, say so: running the restack again finds the
+        // branch on `onto` and finishes the record.
+        lease.finish(Some(&record), event.as_ref()).map_err(|e| {
+            Error::State(format!(
+                "{name} was rebased onto {} but its record could not be updated ({e}); \
+                     run the same restack again to finish it",
+                onto_commit.0
+            ))
+        })?;
+        Ok(Restacked::Done { from, to })
+    }
+
     /// The branch's check, as given with `--check` when it was created.
     pub fn check(&self) -> Result<Option<Vec<String>>, Error> {
         Ok(self.yard().store().read(&self.info().name)?.check)
@@ -236,6 +400,38 @@ impl Branch {
         }))
     }
 
+    /// [`Branch::push_candidate`] replacing the remote branch only where it
+    /// still is `expected`, git's `--force-with-lease`; see
+    /// [`branchyard_workspace::Repository::push_leased`]. Records nothing.
+    pub fn push_candidate_leased(
+        &self,
+        remote: &str,
+        remote_branch: &str,
+        expected: &str,
+    ) -> Result<Pushed, Error> {
+        let record = self.yard().store().read(&self.info().name)?;
+        let candidate = record
+            .info
+            .candidate
+            .ok_or_else(|| Error::NoCandidate(self.info().name.clone()))?;
+        let commit = branchyard_workspace::Commit(candidate.commit.clone());
+        self.yard()
+            .repo
+            .push_leased(
+                remote,
+                &commit,
+                remote_branch,
+                &branchyard_workspace::Commit(expected.to_owned()),
+            )
+            .map_err(git::error)?;
+        Ok(Pushed {
+            remote: remote.to_owned(),
+            remote_branch: remote_branch.to_owned(),
+            commit: candidate.commit,
+            forced: true,
+        })
+    }
+
     /// Push the branch's current candidate commit to `remote` as
     /// `refs/heads/<remote_branch>`; see
     /// [`branchyard_workspace::Repository::push`]. Records nothing.
@@ -264,9 +460,50 @@ impl Branch {
     }
 }
 
+/// The status a branch has after a restack: only a branch that settled with
+/// a result (`Ready`, `NoChanges`) takes the new one; a failed, interrupted
+/// or over-budget branch keeps saying so.
+fn restacked_status(current: &crate::BranchStatus, has_candidate: bool) -> crate::BranchStatus {
+    match current {
+        crate::BranchStatus::Ready | crate::BranchStatus::NoChanges => match has_candidate {
+            true => crate::BranchStatus::Ready,
+            false => crate::BranchStatus::NoChanges,
+        },
+        other => other.clone(),
+    }
+}
+
 /// A branch name made from free text, as `by run` names a branch after its
 /// prompt: lowercase `[a-z0-9-]`, at most 40 characters, `task` if nothing
 /// is left.
 pub fn slug(text: &str) -> String {
     crate::names::slug(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BranchStatus;
+
+    #[test]
+    fn a_restack_changes_only_the_status_of_a_branch_with_a_result() {
+        assert_eq!(
+            restacked_status(&BranchStatus::Ready, false),
+            BranchStatus::NoChanges
+        );
+        assert_eq!(
+            restacked_status(&BranchStatus::NoChanges, true),
+            BranchStatus::Ready
+        );
+        for kept in [
+            BranchStatus::Failed { reason: "x".into() },
+            BranchStatus::Interrupted,
+            BranchStatus::BudgetExceeded { limit: "x".into() },
+            BranchStatus::AwaitingPlanApproval,
+            BranchStatus::WaitingOnChildren,
+        ] {
+            assert_eq!(restacked_status(&kept, true), kept);
+            assert_eq!(restacked_status(&kept, false), kept);
+        }
+    }
 }

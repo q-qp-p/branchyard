@@ -229,6 +229,13 @@ pub struct Sources<'a> {
     /// Reads a variable.
     pub env: &'a dyn Fn(&str) -> Option<String>,
     pub config: &'a Trackers,
+    /// Take a tracker's site only from the environment (`JIRA_URL`,
+    /// `GITLAB_URL`, `LINEAR_API_URL`): never from `[trackers]` `url`, which
+    /// a repository's `branchyard.toml` can set, and a URL reference is
+    /// accepted only when it names that same site. What the server uses
+    /// (`by issue --no-url-site`), so a caller cannot choose where its
+    /// tracker credentials go.
+    pub env_sites_only: bool,
     /// Fetch through the gateway: `(tool, arguments)` to the tool's result.
     pub gateway: Option<GatewayCall<'a>>,
 }
@@ -245,6 +252,20 @@ impl Sources<'_> {
             Tracker::GitLab => self.config.gitlab.as_ref(),
         }
     }
+}
+
+/// Whether two sites are the same origin: scheme, host and port.
+fn same_origin(a: &str, b: &str) -> bool {
+    let origin = |text: &str| {
+        url::Url::parse(text.trim()).ok().map(|u| {
+            (
+                u.scheme().to_owned(),
+                u.host_str().unwrap_or_default().to_ascii_lowercase(),
+                u.port_or_known_default(),
+            )
+        })
+    };
+    matches!((origin(a), origin(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// How long one request may take.
@@ -434,7 +455,10 @@ pub fn fetch(reference: &IssueRef, sources: &Sources<'_>) -> Result<Fetched, Str
     let tracker = reference.tracker;
     let settings = sources.settings(tracker);
     let gateway_tool = settings.and_then(|s| s.gateway_tool.as_deref());
-    let configured_url = settings.and_then(|s| s.url.clone());
+    let configured_url = match sources.env_sites_only {
+        true => None,
+        false => settings.and_then(|s| s.url.clone()),
+    };
     let display = reference.display();
     let have_token = match tracker {
         Tracker::Linear => {
@@ -446,11 +470,34 @@ pub fn fetch(reference: &IssueRef, sources: &Sources<'_>) -> Result<Fetched, Str
         Tracker::GitLab => sources.var("GITLAB_TOKEN").is_some(),
     };
     let site = |var: &str, default: Option<&str>| -> Result<String, String> {
+        let configured = configured_url.clone().or_else(|| sources.var(var));
+        if let Some(named) = &reference.site {
+            let agrees = configured
+                .as_deref()
+                .is_some_and(|site| same_origin(site, named));
+            if sources.env_sites_only && !agrees {
+                return Err(format!(
+                    "{} URL names a site that is not the one configured ({var}); a server \
+                     sends its tracker credentials only to a site its operator set",
+                    tracker.name()
+                ));
+            }
+            // Credentials never cross plain HTTP unless that is the site
+            // that was configured.
+            if named.starts_with("http://") && !agrees {
+                return Err(format!(
+                    "the {} URL is http://, and credentials would cross the network in the \
+                     clear; use its https:// URL, or set [trackers.{}] url or {var} to this \
+                     http:// site",
+                    tracker.name(),
+                    tracker.id()
+                ));
+            }
+        }
         reference
             .site
             .clone()
-            .or(configured_url.clone())
-            .or_else(|| sources.var(var))
+            .or(configured)
             .or(default.map(str::to_owned))
             .map(|s| s.trim_end_matches('/').to_owned())
             .ok_or_else(|| {
@@ -847,6 +894,7 @@ mod tests {
         let sources = Sources {
             env: &env,
             config: &config,
+            env_sites_only: false,
             gateway: None,
         };
         let issue = fetch(&linear("ENG-5"), &sources).unwrap();
@@ -889,6 +937,7 @@ mod tests {
         let sources = Sources {
             env: &env,
             config: &config,
+            env_sites_only: false,
             gateway: None,
         };
         let r = linear("ENG-9");
@@ -923,6 +972,7 @@ mod tests {
         let sources = Sources {
             env: &env,
             config: &config,
+            env_sites_only: false,
             gateway: None,
         };
         for _ in 0..3 {
@@ -963,6 +1013,7 @@ mod tests {
         let sources = Sources {
             env: &env,
             config: &config,
+            env_sites_only: false,
             gateway: Some(&call),
         };
         let issue = fetch(&linear("ENG-7"), &sources).unwrap();
@@ -999,5 +1050,104 @@ mod tests {
             error.contains("answered 401 to initialize") && error.contains("by gateway status"),
             "{error}"
         );
+    }
+
+    fn sources_with<'a>(
+        env: &'a dyn Fn(&str) -> Option<String>,
+        config: &'a Trackers,
+        env_sites_only: bool,
+    ) -> Sources<'a> {
+        Sources {
+            env,
+            config,
+            env_sites_only,
+            gateway: None,
+        }
+    }
+
+    #[test]
+    fn a_url_cannot_send_credentials_to_a_site_nobody_configured() {
+        use branchyard_testkit::{MockHttp, Response};
+        let attacker = MockHttp::start(|_| Response::new(200, "{}"));
+        let env = with_env(&[
+            ("JIRA_EMAIL", "a@b.c"),
+            ("JIRA_API_TOKEN", "secret"),
+            ("GITLAB_TOKEN", "glpat"),
+            ("JIRA_URL", "https://jira.example.com"),
+        ]);
+        let config = Trackers::default();
+        let jira = parse(&format!("{}/browse/ENG-1", attacker.url()))
+            .unwrap()
+            .unwrap();
+        let gitlab = parse(&format!("{}/g/p/-/issues/1", attacker.url()))
+            .unwrap()
+            .unwrap();
+        // Locked, as the server runs it: refused for any site but the
+        // environment's, and nothing is sent.
+        for reference in [&jira, &gitlab] {
+            let error = fetch(reference, &sources_with(&env, &config, true)).unwrap_err();
+            assert!(error.contains("not the one configured"), "{error}");
+        }
+        // Unlocked, plain HTTP is refused unless that site was configured.
+        let error = fetch(&jira, &sources_with(&env, &config, false)).unwrap_err();
+        assert!(
+            error.contains("http://") && error.contains("clear"),
+            "{error}"
+        );
+        assert!(
+            attacker.requests().is_empty(),
+            "credentials were sent to the named host"
+        );
+    }
+
+    #[test]
+    fn a_configured_site_works_locked_and_so_does_plain_http_that_was_configured() {
+        use branchyard_testkit::{MockHttp, Response};
+        let site = MockHttp::start(|_| {
+            Response::json(
+                200,
+                &json!({"key": "ENG-1", "fields": {"summary": "S", "labels": []}}),
+            )
+        });
+        let env = with_env(&[
+            ("JIRA_EMAIL", "a@b.c"),
+            ("JIRA_API_TOKEN", "secret"),
+            ("JIRA_URL", &site.url()),
+        ]);
+        let config = Trackers::default();
+        let by_url = parse(&format!("{}/browse/ENG-1", site.url()))
+            .unwrap()
+            .unwrap();
+        for locked in [true, false] {
+            let issue = fetch(&by_url, &sources_with(&env, &config, locked)).unwrap();
+            assert_eq!(issue.key, "ENG-1");
+        }
+        assert_eq!(site.requests().len(), 2);
+    }
+
+    #[test]
+    fn a_locked_fetch_ignores_the_repositorys_tracker_url() {
+        use branchyard_testkit::{MockHttp, Response};
+        let site = MockHttp::start(|_| {
+            Response::json(
+                200,
+                &json!({"key": "ENG-1", "fields": {"summary": "S", "labels": []}}),
+            )
+        });
+        let env = with_env(&[
+            ("JIRA_EMAIL", "a@b.c"),
+            ("JIRA_API_TOKEN", "secret"),
+            ("JIRA_URL", &site.url()),
+        ]);
+        let config = Trackers {
+            jira: Some(TrackerConfig {
+                url: Some("https://evil.example".into()),
+                ..TrackerConfig::default()
+            }),
+            ..Trackers::default()
+        };
+        let by_key = parse("jira:ENG-1").unwrap().unwrap();
+        fetch(&by_key, &sources_with(&env, &config, true)).unwrap();
+        assert_eq!(site.requests().len(), 1, "the environment's site was used");
     }
 }

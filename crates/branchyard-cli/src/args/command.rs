@@ -425,6 +425,19 @@ pub enum Command {
         #[command(subcommand)]
         action: KnowledgeAction,
     },
+    /// Memory as skills: what a team or you learned, found by search
+    ///
+    /// Add, list, show, edit, remove or export the memory bundles under
+    /// .agents/skills/memory-TOPIC (the team's, through a pull request) or your own skills
+    /// folder (--mine).
+    #[command(display_order = 113, subcommand_required = true, after_help = MEMORY_EXAMPLES)]
+    Memory {
+        /// Print JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
     /// The fleet table's routing: statistics and where a prompt goes
     ///
     /// Outcome statistics, or what a prompt would be routed to.
@@ -457,6 +470,32 @@ pub enum Command {
         branch: String,
         #[command(flatten)]
         pr: Checked<PrFlags>,
+    },
+    /// Show the issue by run --issue would start from, and start nothing
+    ///
+    /// Fetches it as --issue does (gh for GitHub; Linear, Jira and GitLab through their API or
+    /// the connector gateway) and prints its title, URL, the branch name by run would give it
+    /// and the prompt it would send. The server runs this to resolve an issue for a task or a
+    /// session; see docs/pull-requests.md.
+    #[command(display_order = 111)]
+    Issue {
+        /// The issue: a GitHub URL, #N or N, linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a
+        /// Linear, Jira or GitLab URL
+        reference: String,
+        /// Instructions to add to the prompt, as by run --issue REF "..." would
+        #[arg(default_value = "", hide_default_value = true)]
+        prompt: String,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+        /// Take a Jira, GitLab or Linear site only from JIRA_URL, GITLAB_URL or LINEAR_API_URL,
+        /// and refuse a URL that names another
+        ///
+        /// For a reference that someone else chose: tracker credentials go only to a site the
+        /// operator set, never to the host in the URL or in the repository's branchyard.toml.
+        /// The server passes it.
+        #[arg(long)]
+        no_url_site: bool,
     },
     /// List branches
     #[command(display_order = 200)]

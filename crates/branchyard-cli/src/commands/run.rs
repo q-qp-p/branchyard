@@ -98,6 +98,7 @@ pub(crate) fn run_admitted(
 ) -> Outcome {
     let yard = yard.clone();
     let (prompt, task, issue) = crate::pr::issue_task(prompt, task, Some(&yard))?;
+    let (task, stack) = crate::stack::stack_task(&task, &yard)?;
     let task = &task;
     let workspace = workspace(env, &yard)?;
     let repository_skills = crate::skills_cmd::gate(yard.root());
@@ -105,6 +106,7 @@ pub(crate) fn run_admitted(
     let mut options = TaskOptions {
         workspace,
         repository_skills,
+        user_skills: crate::skills_cmd::user_skills_for_new_branch(),
         ..live.options(task)?
     };
     if let Some(id) = join {
@@ -129,6 +131,9 @@ pub(crate) fn run_admitted(
     };
     if let (Ok(branch), Some(issue)) = (&result, &issue) {
         crate::pr::link_issue(branch, issue)?;
+    }
+    if let (Ok(branch), Some(stack)) = (&result, &stack) {
+        crate::stack::link_stack(branch, stack)?;
     }
     live.finish_as(env, result, json)
 }
@@ -230,6 +235,7 @@ pub fn fan(
         (open()?, None)
     };
     let (prompt, task, issue) = crate::pr::issue_task(prompt, task, Some(&yard))?;
+    let (task, stack) = crate::stack::stack_task(&task, &yard)?;
     let (prompt, task) = (prompt.as_str(), &task);
     let workspace = workspace(env, &yard)?;
     let repository_skills = crate::skills_cmd::gate(yard.root());
@@ -278,6 +284,11 @@ pub fn fan(
     if let Some(issue) = &issue {
         for branch in &branches {
             crate::pr::link_issue(branch, issue)?;
+        }
+    }
+    if let Some(stack) = &stack {
+        for branch in &branches {
+            crate::stack::link_stack(branch, stack)?;
         }
     }
     let descendants = wait_for_descendants(&branches.iter().collect::<Vec<_>>());

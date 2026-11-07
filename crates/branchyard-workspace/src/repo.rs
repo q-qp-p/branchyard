@@ -268,6 +268,36 @@ impl Repository {
         remote_branch: &str,
         force: bool,
     ) -> Result<(), GitError> {
+        let mode = match force {
+            true => Replace::Any,
+            false => Replace::Never,
+        };
+        self.push_replacing(remote, commit, remote_branch, mode)
+    }
+
+    /// [`Repository::push`] that replaces a remote branch that is not an
+    /// ancestor of `commit` only where it still is `expected`: git's
+    /// `--force-with-lease=refs/heads/<branch>:<expected>`, checked by the
+    /// remote in the same exchange as the update, so a push that landed
+    /// since `expected` was read is not overwritten.
+    pub fn push_leased(
+        &self,
+        remote: &str,
+        commit: &Commit,
+        remote_branch: &str,
+        expected: &Commit,
+    ) -> Result<(), GitError> {
+        let expected = self.resolve(expected.as_str())?;
+        self.push_replacing(remote, commit, remote_branch, Replace::Lease(expected.0))
+    }
+
+    fn push_replacing(
+        &self,
+        remote: &str,
+        commit: &Commit,
+        remote_branch: &str,
+        replace: Replace,
+    ) -> Result<(), GitError> {
         if remote.is_empty() || remote.starts_with('-') {
             return Err(GitError::InvalidRef(remote.to_owned()));
         }
@@ -281,10 +311,20 @@ impl Repository {
             return Err(GitError::InvalidRef(remote_branch.to_owned()));
         }
         let commit = self.resolve(commit.as_str())?;
-        let plus = if force { "+" } else { "" };
-        Git::new(&self.root)
+        let (lease, plus) = match &replace {
+            Replace::Never => (None, ""),
+            Replace::Any => (None, "+"),
+            Replace::Lease(expected) => {
+                (Some(format!("--force-with-lease={target}:{expected}")), "")
+            }
+        };
+        let mut push = Git::new(&self.root)
             .no_hooks()
-            .args(["push", "--quiet", "--porcelain", "--", remote])
+            .args(["push", "--quiet", "--porcelain"]);
+        if let Some(lease) = lease {
+            push = push.arg(lease);
+        }
+        push.args(["--", remote])
             .arg(format!("{plus}{commit}:{target}"))
             .run()?;
         Ok(())
@@ -428,7 +468,57 @@ pub struct Workspace {
     exclude: Vec<String>,
 }
 
+/// What [`Workspace::rebase_onto`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Rebased {
+    /// The branch now sits on the new base; this is its head.
+    Done(Commit),
+    /// A commit did not apply; the rebase was aborted and the branch is
+    /// unchanged. The paths that conflicted.
+    Conflict(Vec<String>),
+}
+
 impl Workspace {
+    /// Replay the commits of the workspace's branch after its base onto
+    /// `onto` (the stacked-branch rebase, `rebase --onto <onto> <base>`),
+    /// without hooks, and record `onto` as the new base. The worktree must
+    /// be clean and on the branch. A conflict aborts the rebase, leaves the
+    /// branch as it was and names the conflicting paths.
+    pub fn rebase_onto(&self, onto: &Commit) -> Result<Rebased, GitError> {
+        let onto = resolve_in(&self.path, onto.as_str())?;
+        let identity = identity_args(&self.path)?;
+        let (out, args) = Git::new(&self.path)
+            .no_hooks()
+            .args(identity)
+            .args(["rebase", "--onto", onto.as_str(), self.base.as_str()])
+            .output()?;
+        if !out.status.success() {
+            let files: Vec<String> = Git::new(&self.path)
+                .args(["diff", "--name-only", "--diff-filter=U"])
+                .run()
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            let (aborted, abort_args) =
+                Git::new(&self.path).args(["rebase", "--abort"]).output()?;
+            if !aborted.status.success() {
+                // The worktree may still be mid-rebase: say so, not
+                // "conflict".
+                return Err(git::failed(abort_args, &aborted));
+            }
+            if files.is_empty() {
+                return Err(git::failed(args, &out));
+            }
+            return Ok(Rebased::Conflict(files));
+        }
+        let head = resolve_in(&self.path, "HEAD")?;
+        Git::new(&self.root)
+            .args(["config", &base_key(&self.name), onto.as_str()])
+            .run()?;
+        Ok(Rebased::Done(head))
+    }
+
     /// This workspace with `paths` (relative to the worktree, taken
     /// literally, not as patterns) left out of every snapshot and diff,
     /// even when no ignore rule covers them: files placed in the worktree
@@ -613,6 +703,16 @@ impl Workspace {
             .trim()
             .to_owned())
     }
+}
+
+/// What a push may replace on the remote.
+enum Replace {
+    /// Only a fast-forward.
+    Never,
+    /// Whatever is there.
+    Any,
+    /// What is there only if it is this commit.
+    Lease(String),
 }
 
 struct RemoveOnDrop<'a>(&'a Path);

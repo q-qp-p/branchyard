@@ -4,7 +4,11 @@
 //! refused inside a harness, without skills and for a set the engine
 //! refuses; `--remote` refused; and new branches staging the repository's
 //! skills only once trusted, as their `Provisioned` records and `by skills
-//! ls BRANCH` say. Hermetic; requires `git` and `sh`.
+//! ls BRANCH` say. `add` copying a skill into the person's own folder
+//! (under its own name or `--name`), replacing one, refusing a built-in's
+//! name, a directory without a `SKILL.md` and a harness on a branch;
+//! `remove` deleting one; `ls` listing the folder. Hermetic; requires
+//! `git` and `sh`.
 
 #![allow(clippy::panic, clippy::unwrap_used)] // tests: a panic is the failure report
 use std::fs;
@@ -427,4 +431,191 @@ fn new_branches_stage_the_repository_skills_only_once_trusted() {
     assert!(out.status.success(), "{}", stderr(&out));
     let own: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(own, shown);
+}
+
+const TONE: &str = "---\nname: tone\ndescription: Keep the tone dry.\n---\n\nNo exclamation \
+                    marks.\n";
+
+/// A skill directory `name` under the test's directory, with `text` as its
+/// SKILL.md and one reference.
+fn skill_dir(repo: &Repo, name: &str, text: &str) -> PathBuf {
+    let dir = repo.dir.join("bundles").join(name);
+    fs::create_dir_all(dir.join("references")).unwrap();
+    fs::write(dir.join("SKILL.md"), text).unwrap();
+    fs::write(dir.join("references/words.md"), "# Words\n\nSay less.\n").unwrap();
+    dir
+}
+
+#[test]
+fn add_and_remove_keep_the_persons_own_skills_folder() {
+    let repo = Repo::without_skills();
+    let folder = repo.dir.join("user/skills");
+    let text = stdout(&repo.ok(&["skills", "ls"]));
+    assert!(
+        text.contains(&format!(
+            "user        none: no {}/<name>/SKILL.md (by skills add PATH, by memory add --mine)\n",
+            folder.display()
+        )),
+        "{text}"
+    );
+    let shown = repo.json(&["skills", "ls", "--json"]);
+    assert_eq!(shown["user"]["skills"], serde_json::json!([]));
+    assert_eq!(shown["user"]["dir"], folder.display().to_string());
+
+    let tone = skill_dir(&repo, "tone", TONE);
+    let added = repo.json(&["skills", "add", tone.to_str().unwrap(), "--json"]);
+    assert_eq!(added["label"], "user:tone", "{added}");
+    assert_eq!(added["name"], "tone");
+    assert_eq!(added["replaced"], false);
+    assert_eq!(added["dir"], folder.join("tone").display().to_string());
+    assert_eq!(added["digest"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        fs::read_to_string(folder.join("tone/references/words.md")).unwrap(),
+        "# Words\n\nSay less.\n"
+    );
+    let text = stdout(&repo.ok(&["skills", "ls"]));
+    assert!(
+        text.contains(&format!(
+            "user        1 skill in {}\n  user:tone  {}  Keep the tone dry.\n",
+            folder.display(),
+            &added["digest"].as_str().unwrap()[..12]
+        )),
+        "{text}"
+    );
+    let shown = repo.json(&["skills", "ls", "--json"]);
+    assert_eq!(shown["user"]["skills"][0]["label"], "user:tone");
+    assert_eq!(
+        shown["user"]["skills"][0]["description"],
+        "Keep the tone dry."
+    );
+    assert_eq!(shown["user"]["withheld"], serde_json::json!([]));
+
+    // Again: replaced. Under another name: the frontmatter follows.
+    let out = repo.ok(&["skills", "add", tone.to_str().unwrap()]);
+    assert!(
+        stdout(&out).starts_with("replaced user:tone ("),
+        "{}",
+        stdout(&out)
+    );
+    let other = repo.json(&[
+        "skills",
+        "add",
+        tone.to_str().unwrap(),
+        "--name",
+        "dry-tone",
+        "--json",
+    ]);
+    assert_eq!(other["label"], "user:dry-tone");
+    assert!(fs::read_to_string(folder.join("dry-tone/SKILL.md"))
+        .unwrap()
+        .starts_with("---\nname: dry-tone\ndescription: Keep the tone dry.\n---\n"));
+    assert_ne!(other["digest"], added["digest"]);
+
+    // A built-in's name, a directory without a SKILL.md, a bad name.
+    let out = repo.by(&["skills", "add", tone.to_str().unwrap(), "--name", "docx"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("docx is a built-in skill's name, which is reserved\n  next: install it under another name with --name"),
+        "{}",
+        stderr(&out)
+    );
+    let out = repo.by(&["skills", "add", repo.dir.to_str().unwrap(), "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let error = envelope(&out);
+    assert_eq!(error["kind"], "usage");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("is not a skill directory"),
+        "{error}"
+    );
+    let out = repo.by(&[
+        "skills",
+        "add",
+        tone.to_str().unwrap(),
+        "--name",
+        "Not Good",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("is not a skill name"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A bad bundle in the folder is listed as withheld, by name.
+    fs::create_dir_all(folder.join("bad")).unwrap();
+    fs::write(
+        folder.join("bad/SKILL.md"),
+        "---\nname: other\ndescription: d\n---\n",
+    )
+    .unwrap();
+    let shown = repo.json(&["skills", "ls", "--json"]);
+    assert_eq!(shown["user"]["withheld"][0]["name"], "bad", "{shown}");
+    let text = stdout(&repo.ok(&["skills", "ls"]));
+    assert!(
+        text.contains("  withheld bad: skill bad: SKILL.md names \"other\""),
+        "{text}"
+    );
+
+    let out = repo.ok(&["skills", "remove", "tone"]);
+    assert_eq!(
+        stdout(&out),
+        format!(
+            "removed user:tone from {}; new branches you start here no longer stage it\n",
+            folder.display()
+        )
+    );
+    assert!(!folder.join("tone").exists());
+    assert!(folder.join("dry-tone").is_dir());
+    let out = repo.by(&["skills", "remove", "tone", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let error = envelope(&out);
+    assert_eq!(error["kind"], "usage");
+    assert_eq!(
+        error["next"],
+        serde_json::json!(["by skills ls lists your skills under user"])
+    );
+    assert_eq!(
+        repo.json(&["skills", "remove", "dry-tone", "--json"])["removed"],
+        true
+    );
+
+    for args in [
+        vec!["skills", "add", tone.to_str().unwrap()],
+        vec!["skills", "remove", "tone"],
+    ] {
+        let out = repo.in_harness("some-branch", &args);
+        assert_eq!(out.status.code(), Some(4), "{args:?}");
+        assert!(
+            stderr(&out).starts_with("by: a harness running on a branch cannot "),
+            "{}",
+            stderr(&out)
+        );
+        assert!(stderr(&out).contains("what a turn may see is decided by people"));
+    }
+    assert!(!folder.join("tone").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn add_refuses_a_symlink_in_the_source_bundle_and_keeps_the_installed_skill() {
+    let repo = Repo::without_skills();
+    let folder = repo.dir.join("user/skills");
+    let tone = skill_dir(&repo, "tone", TONE);
+    repo.ok(&["skills", "add", tone.to_str().unwrap()]);
+    let before = fs::read_to_string(folder.join("tone/SKILL.md")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", tone.join("references/link.md")).unwrap();
+    let out = repo.by(&["skills", "add", tone.to_str().unwrap(), "--json"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(envelope(&out)["message"]
+        .as_str()
+        .unwrap()
+        .contains("symbolic link"));
+    assert_eq!(
+        fs::read_to_string(folder.join("tone/SKILL.md")).unwrap(),
+        before
+    );
+    assert!(!folder.join("tone/references/link.md").exists());
 }

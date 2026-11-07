@@ -9,7 +9,7 @@ mod common;
 
 use std::fs;
 
-use branchyard::skills::Layer;
+use branchyard::skills::Source;
 use branchyard::{Activity, SkillSet};
 use branchyard_client::api::OperationState;
 use branchyard_client::Client;
@@ -53,7 +53,7 @@ fn a_repositorys_skills_are_staged_only_when_the_operator_allows_them() {
     let done = run(&client, &task("WRITE x.txt=1", "plain"));
     assert_eq!(done.state, OperationState::Succeeded, "{done:?}");
     let (skills, files) = provisioned(&client, "plain");
-    assert!(skills.entries.iter().all(|e| e.layer == Layer::BuiltIn));
+    assert!(skills.entries.iter().all(|e| e.source == Source::BuiltIn));
     assert!(!skills.entries.is_empty());
     let withheld = skills.withheld.expect("withheld");
     assert!(

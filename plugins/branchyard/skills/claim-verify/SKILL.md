@@ -1,6 +1,7 @@
 ---
 name: claim-verify
 description: "Check source hashes, reproduced extraction anchors and exact quotations while keeping factual support and semantic review explicit."
+keywords: [numbers, inference]
 ---
 # Verify claim evidence
 

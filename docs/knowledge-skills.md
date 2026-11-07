@@ -22,8 +22,14 @@ generated into the [toolkit reference](artifact-toolkit.md).
 
 ## Choosing built-in skills
 
-A task may stage only some built-in skills: `provision.skills` on a task, or
-`skills` on a console session start (the console's Tools step, "How-tos").
+A task may stage only some built-in skills: `provision.skills` on a task,
+`--skill NAME` (repeatable) on `by run`, `fan`, `send`, `fork`, `map` and
+`reincarnate`, or `skills` on a console session start (the console's Tools step,
+"How-tos"). `by run "..." --skill docx --skill pdf` stages `docx`, `pdf` and
+what they need; a name that is not built in is refused before the branch exists,
+with the built-in skills listed (`skill "docz" is not a built-in skill; the
+built-in skills are ...`). A turn that wants a repository's own skills is
+unaffected: those follow their gate below.
 Each chosen skill brings the skills it needs (`pptx` brings `artifact-tools`),
 the rest are not staged, and a skill an earlier, wider turn left in the home is
 removed. The root and topic indexes are rebuilt from the catalog in the
@@ -49,7 +55,7 @@ Status: built, hermetic only (fakes and unit tests; no harness was run with a mo
   connectors   -> ../connectors       (Anvil's packages, and _compose)
 ```
 
-`tools search` ranks with BM25 over each skill's frontmatter and headings, each connector's description and operations, and helper lines when a `helpers/INDEX.md` exists, which a turn gets when its grant has helpers: the envelope's limits and one line for each harness it may delegate to ([tools-model](tools-model.md)). A package that has a `search.json` (Anvil's operation search index, [contract v2 item 3](anvil-contract-v2.md#3-operation-search-index-and-a-lean-skillmd)) is read from it, strictly: every field is checked, `tools schema` prints the file its `schema` field names, and a malformed index is refused with its file and field named, none of that connector's operations are searched, the rest still answer, and `tools` exits 3. Only a package without one is read tolerantly: from `harness.json` or `compose.json` (an `operations` list or map), its `schemas/*.json` file names and its `reference/*.md` headings and table rows; `tools schema` then prints the schema from `schemas/` or the JSON catalogs, and when a package records none it says so and names the connector's own `--schema`. The strict format was written from the contract and tested against the [Anvil mock](anvil-contract-v2.md#the-mock), and run on 5 November 2026 on a package the built Anvil wrote (`tests/test_anvil_real.py`, skipped where no built Anvil exists); the tolerant one was written from `docs/connectors.md` and was not read from a real Anvil package, which always carries a `search.json`. A connector with no description in its `SKILL.md` takes one from its `## id — title` block in `INDEX.md`. The `find-tools` skill (under 600 characters of instructions) teaches the habit. Descriptions in `INDEX.md` are cut, then dropped, then the list cut, to stay in 4 KB.
+`tools search` ranks with BM25 over each skill's frontmatter (`name`, `description` and, when given, `keywords`) and headings, each of its `references/*.md` as a document of its own (`SKILL/references/FILE.md`: the skill's and the file's name, the first heading, the content words of the body; `tools show` prints one, and a reference never reorders the tools among themselves), each connector's description and operations, and helper lines when a `helpers/INDEX.md` exists, which a turn gets when its grant has helpers: the envelope's limits and one line for each harness it may delegate to ([tools-model](tools-model.md)). A package that has a `search.json` (Anvil's operation search index, [contract v2 item 3](anvil-contract-v2.md#3-operation-search-index-and-a-lean-skillmd)) is read from it, strictly: every field is checked, `tools schema` prints the file its `schema` field names, and a malformed index is refused with its file and field named, none of that connector's operations are searched, the rest still answer, and `tools` exits 3. Only a package without one is read tolerantly: from `harness.json` or `compose.json` (an `operations` list or map), its `schemas/*.json` file names and its `reference/*.md` headings and table rows; `tools schema` then prints the schema from `schemas/` or the JSON catalogs, and when a package records none it says so and names the connector's own `--schema`. The strict format was written from the contract and tested against the [Anvil mock](anvil-contract-v2.md#the-mock), and run on 5 November 2026 on a package the built Anvil wrote (`tests/test_anvil_real.py`, skipped where no built Anvil exists); the tolerant one was written from `docs/connectors.md` and was not read from a real Anvil package, which always carries a `search.json`. A connector with no description in its `SKILL.md` takes one from its `## id — title` block in `INDEX.md`. A tool `INDEX.md` lists (chosen for the turn) scores 1.5 times one it does not, and a reference is scored on its words alone, so a tool of equal match is read first; `tools search --plain` is BM25 alone. The `find-tools` skill (under 600 characters of instructions) teaches the habit. Descriptions in `INDEX.md` are cut, then dropped, then the list cut, to stay in 4 KB. How well the ranking finds what each scenario of the [skill-discovery eval](skill-eval.md#ranking-without-a-model) expects is measured without a model by `python3 tools/skill_eval.py rank`.
 
 The built-in skills are not yet chosen per turn: every turn lists all of them. Choosing is phase 1 of [tools-model.md](tools-model.md). Helpers have no listing yet either.
 
@@ -95,8 +101,8 @@ commit and checks the set's digest; a set that no longer matches is withheld.
 under `.branchyard/capabilities/<blake3 of the branch name>/` when it has
 none, removed with the branch by `by rm`). The root `INDEX.md` gains one
 **Custom** topic, generated at run time from each skill's frontmatter, that
-lists every custom skill under its layer, as `repository:style-guide`, with
-its description and who added it. The indexes keep their budgets: a set whose
+lists every custom skill under its source, as `repository:style-guide` or
+`user:memory-parser`, with its description and who added it. The indexes keep their budgets: a set whose
 Custom topic would pass 8,192 bytes, or whose root index would pass 4,096, is
 refused, naming the three largest entries. A file a set no longer has is
 removed from the staged tree on the next turn.
@@ -135,17 +141,75 @@ its agent's own edits. Which harnesses do has not been checked.
 **Every turn records its skills.** The turn's `provisioned` event has a
 `skills` record on every turn that reaches provisioning, whether or not a file
 changed (a turn that fails before it records none): `entries`, each
-staged skill's `layer` (`built_in` or `repository`), `name` and `digest`;
-`set`, the digest of those entries; and `withheld`, the repository's skills
-found and not staged with the `reason`. `by log` shows it as `skills
-3f2a9c1d0e4b (<n> built-in, repository:style-guide)`, and
-`repository skills withheld: <reason>` when they were not staged. An event
-recorded before this record existed reads with an empty one (no entries, an
-empty `set`).
+staged skill's source (the field is named `layer`, its first name: `built_in`,
+`repository` or `user`), `name` and `digest`; `set`, the digest of those
+entries; `withheld`, the repository's skills found and not staged with the
+`reason`; and `user_withheld`, each of your own skills found and not staged,
+by name with its reason. `by log` shows it as `skills 3f2a9c1d0e4b (<n>
+built-in, repository:style-guide, user:memory-parser)`, `repository skills
+withheld: <reason>` when they were not staged, and `user skill docx withheld:
+<reason>`. An event recorded before this record existed reads with an empty
+one (no entries, an empty `set`).
 
 A skill's digest is BLAKE3 over its files' relative paths and contents, in
-path order; a set's is BLAKE3 over its entries' layer, name and digest, in
-layer and name order. Each field is length-prefixed. Both are lowercase hex.
+path order; a set's is BLAKE3 over its entries' source, name and digest, in
+source and name order (`repository`, then `built_in`, then `user`: a source
+added later sorts after the ones before it, so a recorded digest holds). Each
+field is length-prefixed. Both are lowercase hex.
+
+### Your own skills
+
+Your own skills are the directories of your skills folder,
+`~/.config/branchyard/skills/<name>/` (`skills/` beside the user
+configuration file, so `XDG_CONFIG_HOME` and `BRANCHYARD_USER_CONFIG` move
+it): the local `user` source of the [skill registry](skill-registry.md#1-sources).
+`by skills add PATH [--name NAME]` copies a skill directory there (replacing
+one of the same name, atomically: the copy is written to a sibling directory and moved into place, so a failure leaves the old skill as it was; a symbolic link in the source is refused; with `--name`, the frontmatter's `name` follows), `by
+skills remove NAME` deletes one, `by memory add --mine` writes a memory bundle
+there ([memory](memory.md)), and `by skills ls` lists the folder, with any
+directory it holds that is not staged and why. The same rules as a
+repository skill's apply to each directory: a `SKILL.md` naming its directory,
+UTF-8 text only, no symbolic link, 200 files and 1 MiB; a directory that
+breaks one is withheld **by name** (the others are staged), a loose file or a
+directory without a `SKILL.md` is skipped. Nobody trusts them but you: they
+are your files, and they reach only the branches you start.
+
+**Read each turn, never fixed.** A branch `by run`, `fan`, `map` or `rig
+run` creates outside any branch remembers your folder
+(`TaskOptions::user_skills`, `Record::user_skills`), and its forks,
+reincarnations and delegated children inherit it; a branch a harness starts
+from inside a branch, a server or the SDK creates has none. Each turn reads
+the folder again, stages what it holds under `user/<name>/` beside
+`repository/<name>/`, lists it in the Custom topic as `user:<name>`, and
+records each skill's digest in `provisioned.skills`, so what a turn saw is
+known from its record even though nothing pins the folder; a skill you
+change reaches the next turn.
+
+**Precedence: repository, then yours, then built-in.** A staged repository
+skill of the same name shadows yours, which is withheld as `shadowed by
+repository:<name>` (a withheld repository set shadows nothing); a built-in's
+name stays reserved, `find-tools` included, so `user:docx` is withheld
+(the registry's [open decision 2](skill-registry.md#open-decisions)).
+
+Hermetic evidence: `crates/branchyard/src/skills.rs` (the folder read,
+withheld by name, precedence against a staged and a withheld set),
+`crates/branchyard/src/capabilities.rs` (staged under `user/`, listed, removed
+when the folder loses it), `crates/branchyard/tests/skills.rs` (a branch
+created with a folder staging and recording `user:` entries, the next turn
+reading a changed folder, a branch without one staging none),
+`crates/branchyard-cli/tests/skills.rs` (`add`, `remove`, `ls`, refused on a
+branch) and `crates/branchyard-cli/tests/memory.rs` (a personal memory staged
+for a `by run`). Not done: a live run; the server's `user` source (R4).
+
+### Memory bundles as skills
+
+A memory bundle, `memory-<topic>/` with a `SKILL.md`, a `memory.json` and one
+`references/<slug>.md` per memory, is a skill like any other: committed under
+`.agents/skills/` it is a repository skill, trusted with `by skills trust`
+and withheld with the reason until then; in your skills folder it is one of
+your own. `by memory add` writes it, `by memory export` reproduces it, and a
+turn finds a memory by searching for its reference, not by reading the
+bundle. See [memory](memory.md).
 
 Hermetic evidence: the digest, frontmatter, limit, path, budget and
 reserved-name checks are unit tests in
@@ -159,9 +223,9 @@ without changes, and the cache removed by `by rm`;
 `crates/branchyard-cli/tests/skills.rs` covers `by skills ls`, `trust` and
 `untrust` and a trusted `by run`; `crates/branchyard-server/tests/skills.rs`
 covers `allow_repository_skills`. Not done: no live run with a real harness
-and model has loaded a repository skill, and the workspace, personal and team
-layers of the [design](superpowers/specs/2026-10-29-skill-delivery-design.md)
-are not built.
+and model has loaded a repository skill; of the workspace, personal and team
+layers of the [design](superpowers/specs/2026-10-29-skill-delivery-design.md),
+only the personal one is built, locally, as [your own skills](#your-own-skills).
 
 ## Prepare the runtime
 
@@ -280,6 +344,40 @@ their applicable licenses. `tools/artifact_assets.py` verifies installed bytes
 and generates indexes and embeds; it performs no network request. Refresh an
 upstream reference deliberately and review its new license and behavior before
 updating the record.
+
+## Workflow skills for a session that runs Branchyard
+
+Four built-in skills, in the `workflows` topic beside `parallel-deck`, teach a
+session that runs Branchyard as the person or meta-harness (`BRANCHYARD_BRANCH`
+unset) the loops where Branchyard is unique. They are not for a spawned leaf:
+`by pr` refuses inside a harness. Each `SKILL.md` is a short numbered loop; the
+detail is in `references/`, which `tools search` ranks as documents of their
+own.
+
+| Skill | The loop | References |
+|---|---|---|
+| `fan-judge` | choose harnesses with `by fleet advise`, fix a check or result schema, `by fan` with per-attempt budgets, `by compare`, `by judge`, pick and merge | `fan-setup.md`, `judge-pick.md` |
+| `pr-feedback-loop` | candidate, `by review`, `by pr`, `by pr --watch` (CI and reviews flow back), stacks with `--base`, merge readiness, `gh pr merge` | `pr-watch.md`, `stacks.md` |
+| `budgeted-explore` | `--budget-usd`, `--max-turns`, `--max-minutes`, `--permissions read-only`, `by map --total-usd`, stop rules, reading cost, usage and telemetry | `limits.md`, `reading-cost.md` |
+| `issue-pr` | `by issue` preview, `by run --issue`, tracker credentials, the closing or referencing line in the pull request | `trackers.md` |
+
+Their ids avoid function words (`to`, `a`, `on`, `and`): the ranker does not
+drop stop words from an id, so `issue-to-pr` ranked above `docx` for any prompt
+containing "to". The catalog entries carry `keywords`, which the generator now
+writes into the `SKILL.md` frontmatter (single words only; the generator refuses
+anything else), and which the search weights three times. Keywords are
+distinctive words (`fan`, `judge`, `ci`, `jira`), not generic ones (`check`,
+`fix`, `branch`): the first draft's generic keywords moved eleven existing
+scenarios down.
+
+`crates/branchyard-cli/src/operations.rs` scans the four `SKILL.md` files and
+every reference for `by` commands and flags that do not exist
+(`the_skill_names_only_commands_and_flags_that_exist`), and
+`tools/check_model_surface.py` caps each `SKILL.md` (`skill:NAME`). The
+[skill-discovery eval](skill-eval.md) measures that the skills are found:
+`evals/skills/scenarios/workflows.toml` holds seventeen scenarios (realistic
+asks that do not name the skill, three reference scenarios and two close
+distractors) and `distractors.toml` three asks that need no skill.
 
 ## Friction found during implementation
 

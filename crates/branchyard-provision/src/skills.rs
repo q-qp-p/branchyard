@@ -66,6 +66,12 @@ pub const SKILLS: &[Skill] = &[
         ("scripts/requirements.lock", include_str!("../../../plugins/branchyard/skills/artifact-tools/scripts/requirements.lock")),
         ("scripts/run.py", include_str!("../../../plugins/branchyard/skills/artifact-tools/scripts/run.py")),
     ] },
+    Skill { name: "budgeted-explore", files: &[
+        ("INDEX.md", include_str!("../../../plugins/branchyard/skills/budgeted-explore/INDEX.md")),
+        ("SKILL.md", include_str!("../../../plugins/branchyard/skills/budgeted-explore/SKILL.md")),
+        ("references/limits.md", include_str!("../../../plugins/branchyard/skills/budgeted-explore/references/limits.md")),
+        ("references/reading-cost.md", include_str!("../../../plugins/branchyard/skills/budgeted-explore/references/reading-cost.md")),
+    ] },
     Skill { name: "calculate", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/calculate/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/calculate/SKILL.md")),
@@ -94,6 +100,20 @@ pub const SKILLS: &[Skill] = &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/delegate/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/delegate/SKILL.md")),
         ("agents/openai.yaml", include_str!("../../../plugins/branchyard/skills/delegate/agents/openai.yaml")),
+        ("references/choosing-a-harness.md", include_str!("../../../plugins/branchyard/skills/delegate/references/choosing-a-harness.md")),
+        ("references/commands-and-finishing.md", include_str!("../../../plugins/branchyard/skills/delegate/references/commands-and-finishing.md")),
+        ("references/delegate-and-land.md", include_str!("../../../plugins/branchyard/skills/delegate/references/delegate-and-land.md")),
+        ("references/existing-lead-and-manager.md", include_str!("../../../plugins/branchyard/skills/delegate/references/existing-lead-and-manager.md")),
+        ("references/graph-issues-rigs.md", include_str!("../../../plugins/branchyard/skills/delegate/references/graph-issues-rigs.md")),
+        ("references/handoffs.md", include_str!("../../../plugins/branchyard/skills/delegate/references/handoffs.md")),
+        ("references/integrate-and-cleanup.md", include_str!("../../../plugins/branchyard/skills/delegate/references/integrate-and-cleanup.md")),
+        ("references/messaging-and-artifacts.md", include_str!("../../../plugins/branchyard/skills/delegate/references/messaging-and-artifacts.md")),
+        ("references/operator-setup.md", include_str!("../../../plugins/branchyard/skills/delegate/references/operator-setup.md")),
+        ("references/python-and-mcp.md", include_str!("../../../plugins/branchyard/skills/delegate/references/python-and-mcp.md")),
+        ("references/result-contracts.md", include_str!("../../../plugins/branchyard/skills/delegate/references/result-contracts.md")),
+        ("references/spawn-wait-steer.md", include_str!("../../../plugins/branchyard/skills/delegate/references/spawn-wait-steer.md")),
+        ("references/statuses-plans-budget.md", include_str!("../../../plugins/branchyard/skills/delegate/references/statuses-plans-budget.md")),
+        ("references/writing-prompts.md", include_str!("../../../plugins/branchyard/skills/delegate/references/writing-prompts.md")),
     ] },
     Skill { name: "diagram-design", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/diagram-design/INDEX.md")),
@@ -103,6 +123,12 @@ pub const SKILLS: &[Skill] = &[
     Skill { name: "docx", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/docx/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/docx/SKILL.md")),
+    ] },
+    Skill { name: "fan-judge", files: &[
+        ("INDEX.md", include_str!("../../../plugins/branchyard/skills/fan-judge/INDEX.md")),
+        ("SKILL.md", include_str!("../../../plugins/branchyard/skills/fan-judge/SKILL.md")),
+        ("references/fan-setup.md", include_str!("../../../plugins/branchyard/skills/fan-judge/references/fan-setup.md")),
+        ("references/judge-pick.md", include_str!("../../../plugins/branchyard/skills/fan-judge/references/judge-pick.md")),
     ] },
     Skill { name: "find-tools", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/find-tools/INDEX.md")),
@@ -127,6 +153,11 @@ pub const SKILLS: &[Skill] = &[
         ("references/LICENSE.upstream.txt", include_str!("../../../plugins/branchyard/skills/inspect-layout/references/LICENSE.upstream.txt")),
         ("references/upstream-pdf.md", include_str!("../../../plugins/branchyard/skills/inspect-layout/references/upstream-pdf.md")),
     ] },
+    Skill { name: "issue-pr", files: &[
+        ("INDEX.md", include_str!("../../../plugins/branchyard/skills/issue-pr/INDEX.md")),
+        ("SKILL.md", include_str!("../../../plugins/branchyard/skills/issue-pr/SKILL.md")),
+        ("references/trackers.md", include_str!("../../../plugins/branchyard/skills/issue-pr/references/trackers.md")),
+    ] },
     Skill { name: "parallel-deck", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/parallel-deck/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/parallel-deck/SKILL.md")),
@@ -138,6 +169,12 @@ pub const SKILLS: &[Skill] = &[
     Skill { name: "pptx", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/pptx/INDEX.md")),
         ("SKILL.md", include_str!("../../../plugins/branchyard/skills/pptx/SKILL.md")),
+    ] },
+    Skill { name: "pr-feedback-loop", files: &[
+        ("INDEX.md", include_str!("../../../plugins/branchyard/skills/pr-feedback-loop/INDEX.md")),
+        ("SKILL.md", include_str!("../../../plugins/branchyard/skills/pr-feedback-loop/SKILL.md")),
+        ("references/pr-watch.md", include_str!("../../../plugins/branchyard/skills/pr-feedback-loop/references/pr-watch.md")),
+        ("references/stacks.md", include_str!("../../../plugins/branchyard/skills/pr-feedback-loop/references/stacks.md")),
     ] },
     Skill { name: "setup", files: &[
         ("INDEX.md", include_str!("../../../plugins/branchyard/skills/setup/INDEX.md")),

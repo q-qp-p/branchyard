@@ -366,6 +366,14 @@ mod tests {
         std::fs::read_to_string(root.join(path)).unwrap()
     }
 
+    /// The built-in workflow skills for a session that runs Branchyard as the person.
+    const WORKFLOW_SKILLS: [&str; 4] = [
+        "fan-judge",
+        "pr-feedback-loop",
+        "budgeted-explore",
+        "issue-pr",
+    ];
+
     /// The skills, the leaf's note, the slash commands, the generic
     /// instructions file and the repository's AGENTS.md are what a harness
     /// reads to use `by`: a command or flag they name that does not exist is
@@ -395,6 +403,37 @@ mod tests {
         slash.sort();
         assert!(slash.len() >= 3, "{slash:?}");
         paths.extend(slash);
+        // The delegate skill's reference files are read by the same agents.
+        let references = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/branchyard/skills/delegate/references");
+        let mut files: Vec<String> = std::fs::read_dir(references)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".md"))
+            .map(|name| format!("plugins/branchyard/skills/delegate/references/{name}"))
+            .collect();
+        files.sort();
+        assert!(files.len() >= 10, "{files:?}");
+        paths.extend(files);
+        // The workflow skills teach a person's or meta-harness's session the pull request,
+        // fan, budget and issue commands: each skill and its references are scanned too.
+        for skill in WORKFLOW_SKILLS {
+            let directory = format!("plugins/branchyard/skills/{skill}");
+            paths.push(format!("{directory}/SKILL.md"));
+            let references = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../")
+                .join(&directory)
+                .join("references");
+            let mut found: Vec<String> = std::fs::read_dir(references)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(".md"))
+                .map(|name| format!("{directory}/references/{name}"))
+                .collect();
+            found.sort();
+            assert!(!found.is_empty(), "{skill} has no references");
+            paths.extend(found);
+        }
         let mut problems = Vec::new();
         for path in &paths {
             problems.extend(check_commands(path, &read(path)));

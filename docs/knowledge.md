@@ -105,11 +105,26 @@ Checked strictly like the rest of `branchyard.toml` (an unknown trigger or harne
 | Add | `Yard::add_knowledge` (`NewKnowledge`) | `knowledge add` | yes, as the token's name | `POST …/knowledge` (`KnowledgeAddRequest`) | `add_knowledge` |
 | Adopt, reject | `adopt_knowledge`, `reject_knowledge` | `knowledge adopt`, `reject`, `review` | yes | `POST …/knowledge/{id}/adopt`, `…/reject` | `adopt_knowledge`, `reject_knowledge` |
 | Edit, remove | `edit_knowledge` (`KnowledgeEdit`), `remove_knowledge` | `knowledge edit`, `rm` | yes | `POST …/knowledge/{id}/edit`, `DELETE …/knowledge/{id}` | `edit_knowledge`, `remove_knowledge` |
-| Distill | `Yard::distill` (any `Judge`) | `knowledge distill` | the extractor only | `POST …/branches/{branch}/distill` | `distill` |
+| Distill | `Yard::distill` (any `Judge`); `Distilled::drafts` (`MemoryDraft`) | `knowledge distill`, which also writes each draft to `.branchyard/memory-drafts/<slug>.md` and names it (`draft_files` in `--json`) | the extractor only; drafts are returned, not written | `POST …/branches/{branch}/distill` | `distill` |
 | Export | `export_knowledge` | `knowledge export` | yes | `GET …/knowledge/export` | `export_knowledge` |
 | Settings | `Yard::use_knowledge` (`KnowledgeSettings`) | `[knowledge]` | the server's defaults | n/a | n/a |
 
 Reading needs the `read` scope; everything else `run`. Delegation has no knowledge operations: a harness cannot adopt what it is told.
+
+## What is handed to memory
+
+An entry is at most 600 characters. A correction the deterministic extractor
+reads that is longer than that is still proposed, cut at a word with `...`,
+and the whole of it becomes a **memory draft**: `by knowledge distill` writes
+it to `.branchyard/memory-drafts/<slug>.md` in the checkout (frontmatter with
+the title, `kind: rule`, the path when the correction named one and the
+branch, turn and way it arrived; then the text), prints the `by memory add
+--from` line for it, and writes the same draft once more rather than a second
+file. A draft is a file in a worktree, never a bundle: nothing a turn can
+find until a person reads it, edits it and adds it ([memory](memory.md)). A
+harness distiller's proposals are already within the limit and make no draft.
+Hermetic: `crates/branchyard-cli/tests/memory.rs`
+(`a_long_correction_becomes_a_draft_that_add_takes_from`).
 
 ## Code and tests
 

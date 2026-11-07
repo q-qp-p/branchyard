@@ -58,6 +58,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "syn
 tempfile = { workspace = true }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tower = { version = "0.5", features = ["limit", "util"] }
+url = { workspace = true }
 # The command line, also `by serve` and `by worker`.
 clap = { workspace = true }
 tracing = { workspace = true }

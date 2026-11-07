@@ -66,6 +66,7 @@ mod json;
 mod knowledge_cmd;
 mod live_catalog;
 mod map_cmd;
+mod memory_cmd;
 mod models_cmd;
 mod models_list;
 mod notify;
@@ -90,6 +91,7 @@ mod setup_cmd;
 mod setup_io;
 mod skills_cmd;
 mod ssh_remote;
+mod stack;
 mod startup_cmd;
 mod stats_cmd;
 mod substrate_cmd;
@@ -480,6 +482,7 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         ),
         Command::Plan { json, action } => plan_cmd::main(env, target, &action, json),
         Command::Knowledge { json, action } => knowledge_cmd::main(env, target, &action, json),
+        Command::Memory { json, action } => memory_cmd::main(target, &action, json),
         Command::Fleet { json, action } => match action {
             args::FleetAction::Stats { kind } => fleet_cmd::stats(env, target, kind, json),
             args::FleetAction::Advise { prompt, kind, seed } => fleet_cmd::advise(
@@ -720,6 +723,12 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             action.as_ref(),
         ),
         Command::Pr { branch, pr } => pr::main(env, target, &branch, &pr),
+        Command::Issue {
+            reference,
+            prompt,
+            json,
+            no_url_site,
+        } => pr::show_issue(target, &reference, &prompt, json, no_url_site),
         Command::Open {
             branch,
             editor,

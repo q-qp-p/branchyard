@@ -224,6 +224,13 @@ pub(crate) struct Record {
     /// its base commit had none. See `crate::skills`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<crate::skills::BranchSkills>,
+    /// The person's skills folder (`~/.config/branchyard/skills/`) its
+    /// turns read their own skills from, set when it was created by `by`
+    /// outside any branch and inherited by its forks, reincarnations and
+    /// children; `None` for a branch a server or the SDK created. See
+    /// `crate::skills`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_skills: Option<PathBuf>,
     /// What the session was admitted with, resolved when it started and
     /// again only when its tools change; every turn uses it. See
     /// `crate::manifest`.

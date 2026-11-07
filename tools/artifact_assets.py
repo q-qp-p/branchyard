@@ -236,9 +236,13 @@ def synchronize(root: Path, *, write: bool) -> list[str]:
         if not text.startswith("---\n") or not marker:
             raise ValueError(f"skill lacks frontmatter: {path}")
         del front
-        header = (
-            "---\nname: " + name + "\ndescription: " + json.dumps(skill["description"], ensure_ascii=False) + "\n---\n"
-        )
+        header = "---\nname: " + name + "\ndescription: " + json.dumps(skill["description"], ensure_ascii=False) + "\n"
+        keywords = skill.get("keywords", [])
+        if keywords:
+            if not all(isinstance(word, str) and re.fullmatch(r"[A-Za-z0-9_-]+", word) for word in keywords):
+                raise ValueError(f"skill keywords must be single words: {name!r}")
+            header += "keywords: [" + ", ".join(keywords) + "]\n"
+        header += "---\n"
         emit(path, (header + body).encode())
     for skill in catalog["skills"]:
         for dependency in skill.get("requires", []):

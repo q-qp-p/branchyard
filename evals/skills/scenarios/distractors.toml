@@ -1,0 +1,56 @@
+# Cases where the right answer is "no skill, connector or helper needed". `none = true`: success is a
+# completed turn that opened none of them; a search is recorded as needless, not as a failure.
+
+[[scenario]]
+id = "none-arithmetic"
+area = "distractors"
+prompt = "What is 17 times 23? Just the number."
+skills = ["calculate", "xlsx", "find-tools"]
+none = true
+
+[[scenario]]
+id = "none-write-text-file"
+area = "distractors"
+prompt = "Create a file called hello.txt containing the single line: hello from the eval."
+skills = ["docx", "pdf", "find-tools"]
+none = true
+check_matches = { "hello.txt" = "hello from the eval" }
+
+[[scenario]]
+id = "none-rename-variable"
+area = "distractors"
+prompt = "In script.py rename the variable `tmp` to `total` everywhere."
+files = { "script.py" = "tmp = 0\nfor i in range(3):\n    tmp += i\nprint(tmp)\n" }
+skills = ["claim-verify", "find-tools"]
+none = true
+check_matches = { "script.py" = "total" }
+
+[[scenario]]
+id = "none-explain-rebase"
+area = "distractors"
+prompt = "In two sentences, what does a rebase do compared with a merge?"
+skills = ["calculate", "find-tools"]
+none = true
+
+# Close to the workflow skills' vocabulary (pull requests, budgets, issues), but a plain answer is right.
+
+[[scenario]]
+id = "distractor-squash-merge"
+area = "distractors"
+prompt = "In two sentences, what does a squash merge do to a pull request's commits compared with a rebase merge?"
+skills = ["pr-feedback-loop", "issue-pr", "fan-judge", "find-tools"]
+none = true
+
+[[scenario]]
+id = "distractor-token-budget"
+area = "distractors"
+prompt = "In two sentences, what is a context window budget for a language model, and why does it matter for long prompts?"
+skills = ["budgeted-explore", "fan-judge", "find-tools"]
+none = true
+
+[[scenario]]
+id = "distractor-issue-template"
+area = "distractors"
+prompt = "Write me a short bug report template with sections for steps to reproduce, expected behavior and actual behavior."
+skills = ["issue-pr", "docx", "find-tools"]
+none = true

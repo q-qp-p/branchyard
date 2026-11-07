@@ -160,8 +160,8 @@ impl Live {
             command: task.command.clone(),
             provider: provider(task)?,
             delegation: task.delegate.map(|depth| match task.no_wake {
-                true => Envelope::depth(depth).no_wake(),
-                false => Envelope::depth(depth),
+                true => task.envelope(depth).no_wake(),
+                false => task.envelope(depth),
             }),
             delegation_cli: exe,
             delegation_server: None,
@@ -184,8 +184,10 @@ impl Live {
             join_task: None,
             deny: task.deny.clone(),
             // A command that creates branches from a revision sets the
-            // person's decision (`skills_cmd::gate`); the others inherit.
+            // person's decision (`skills_cmd::gate`) and their skills
+            // folder; the others inherit.
             repository_skills: branchyard::SkillGate::default(),
+            user_skills: None,
         })
     }
 

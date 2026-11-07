@@ -4,8 +4,13 @@
 //! it; what the agent edits and commits during its turn is not a skill for
 //! its next turn or its child; reserved names and sets that would not fit
 //! the index are withheld with the reason; every turn records its skills,
-//! changed or not; and removing a branch removes its skill cache.
-//! Hermetic; no real harness runs.
+//! changed or not; and removing a branch removes its skill cache. A
+//! person's own skills (the local `user` source) are staged from the folder
+//! a branch was created with, read again each turn, recorded as `user:`
+//! entries, and withheld by name when a bundle is bad, a built-in's name
+//! is taken or a repository skill of the same name comes first; a memory
+//! bundle in `.agents/skills/` is a repository skill like any other, and is
+//! withheld with its reason until trusted. Hermetic; no real harness runs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // tests: a panic is the failure report
 mod common;
@@ -13,8 +18,10 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use branchyard::skills::Layer;
-use branchyard::{Activity, Envelope, Policy, SkillGate, SkillSet, Spawn, TaskOptions};
+use branchyard::skills::Source;
+use branchyard::{
+    Activity, Envelope, MemoryKind, NewMemory, Policy, SkillGate, SkillSet, Spawn, TaskOptions,
+};
 use common::{fake_agent, Fixture};
 
 const ORIGINAL: &str = "---\nname: style-guide\ndescription: House style.\n---\nWrite plainly.\n";
@@ -76,7 +83,7 @@ fn repository_skills_are_staged_from_the_base_commit_only_when_allowed() {
         "the branch's creator did not allow repository skills"
     );
     assert_eq!(withheld.entries[0].label(), "repository:style-guide");
-    assert!(skills.entries.iter().all(|e| e.layer == Layer::BuiltIn));
+    assert!(skills.entries.iter().all(|e| e.source == Source::BuiltIn));
     assert!(!staged(&f, "withheld").join("repository").exists());
     assert!(!files.iter().any(|p| p.contains("/repository/")));
     let index = fs::read_to_string(staged(&f, "withheld").join("INDEX.md")).unwrap();
@@ -93,7 +100,7 @@ fn repository_skills_are_staged_from_the_base_commit_only_when_allowed() {
     let custom: Vec<String> = skills
         .entries
         .iter()
-        .filter(|e| e.layer == Layer::Repository)
+        .filter(|e| e.source == Source::Repository)
         .map(|e| e.label())
         .collect();
     assert_eq!(custom, ["repository:style-guide"]);
@@ -254,7 +261,7 @@ fn every_turn_records_its_skills_whether_or_not_anything_changed() {
     assert_eq!(first.withheld, None);
     let names: Vec<&str> = first.entries.iter().map(|e| e.name.as_str()).collect();
     assert!(names.contains(&"docx") && names.contains(&"artifact-tools"));
-    assert!(first.entries.iter().all(|e| e.layer == Layer::BuiltIn));
+    assert!(first.entries.iter().all(|e| e.source == Source::BuiltIn));
     assert_eq!(f.yard.branch_skills("plain").unwrap(), None);
 }
 
@@ -269,4 +276,195 @@ fn removing_a_branch_removes_its_skill_cache() {
     f.yard.remove("cached").unwrap();
     assert!(!cache.parent().unwrap().parent().unwrap().exists());
     assert!(kept.is_dir(), "another branch's cache stays");
+}
+
+/// Write a skill `name` into the person's folder `dir`.
+fn user_skill(dir: &std::path::Path, name: &str, description: &str) {
+    let path = dir.join(name).join("SKILL.md");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!("---\nname: {name}\ndescription: {description}\n---\nMine.\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_persons_skills_are_staged_from_their_folder_after_the_repositorys_and_recorded() {
+    let f = Fixture::new();
+    commit_skill(&f, "style-guide", ORIGINAL);
+    let folder = f.dir.join("home/.config/branchyard/skills");
+    user_skill(
+        &folder,
+        "memory-parser",
+        "What you learned about the parser.",
+    );
+    user_skill(&folder, "style-guide", "Shadowed by the repository's.");
+    user_skill(&folder, "docx", "A built-in's name.");
+    user_skill(&folder, "find-tools", "The search skill's name.");
+    fs::create_dir_all(folder.join("bad")).unwrap();
+    fs::write(
+        folder.join("bad/SKILL.md"),
+        "---\nname: other\ndescription: d\n---\n",
+    )
+    .unwrap();
+    let options = TaskOptions {
+        user_skills: Some(folder.clone()),
+        ..allowed(&f)
+    };
+    f.yard
+        .task("WRITE a.txt=1")
+        .options(options.clone())
+        .name("mine")
+        .run()
+        .unwrap();
+    let (skills, files) = turns(&f, "mine").remove(0);
+    let custom: Vec<String> = skills
+        .entries
+        .iter()
+        .filter(|e| e.source != Source::BuiltIn)
+        .map(|e| e.label())
+        .collect();
+    assert_eq!(custom, ["repository:style-guide", "user:memory-parser"]);
+    assert_eq!(
+        skills.set,
+        branchyard_provision::skillset::set_digest(&skills.entries)
+    );
+    let withheld: Vec<(&str, &str)> = skills
+        .user_withheld
+        .iter()
+        .map(|w| (w.name.as_str(), w.reason.as_str()))
+        .collect();
+    assert_eq!(withheld.len(), 4, "{withheld:?}");
+    assert_eq!(withheld[0].0, "bad");
+    assert!(withheld[0].1.contains("the name must be its directory's"));
+    assert_eq!(withheld[1].0, "docx");
+    assert!(withheld[1]
+        .1
+        .contains("built-in skill's name, which is reserved"));
+    assert_eq!(withheld[2].0, "find-tools");
+    assert_eq!(
+        withheld[3],
+        (
+            "style-guide",
+            "shadowed by repository:style-guide: a repository's skill comes before yours"
+        )
+    );
+    let root = staged(&f, "mine");
+    assert!(root.join("user/memory-parser/SKILL.md").is_file());
+    assert!(!root.join("user/style-guide").exists());
+    assert!(!root.join("user/docx").exists());
+    assert!(files.contains(&".branchyard/capabilities/user/memory-parser/SKILL.md".into()));
+    let topic = fs::read_to_string(root.join("topics/custom/INDEX.md")).unwrap();
+    assert!(topic.contains("[repository:style-guide]"));
+    assert!(topic.contains(
+        "- [user:memory-parser](../../user/memory-parser/SKILL.md): What you learned about the \
+         parser. (added by you, from your own skills folder)"
+    ));
+    let index = fs::read_to_string(root.join("INDEX.md")).unwrap();
+    assert!(index.contains("[Custom](topics/custom/INDEX.md)"));
+    let record = f.yard.branch("mine").unwrap().events().unwrap();
+    let provisioned = record
+        .iter()
+        .find(|e| matches!(e.activity, Activity::Provisioned { .. }))
+        .unwrap();
+    let json = serde_json::to_value(&provisioned.activity).unwrap();
+    let skills_json = &json["provisioned"]["skills"];
+    assert_eq!(
+        skills_json["entries"].as_array().unwrap().last().unwrap()["layer"],
+        "user",
+        "{skills_json}"
+    );
+    assert_eq!(skills_json["user_withheld"][0]["name"], "bad");
+
+    // Pinned by nothing: the next turn reads the folder again, and the
+    // record carries the new digest.
+    user_skill(&folder, "memory-parser", "Changed since the first turn.");
+    fs::remove_dir_all(folder.join("bad")).unwrap();
+    f.yard
+        .branch("mine")
+        .unwrap()
+        .send("WRITE b.txt=2", options.clone())
+        .unwrap();
+    let records = turns(&f, "mine");
+    assert_eq!(records.len(), 2);
+    let digest_of = |set: &SkillSet| {
+        set.entries
+            .iter()
+            .find(|e| e.name == "memory-parser")
+            .unwrap()
+            .digest
+            .clone()
+    };
+    assert_ne!(digest_of(&records[0].0), digest_of(&records[1].0));
+    assert_eq!(records[1].0.user_withheld.len(), 3);
+    assert!(fs::read_to_string(root.join("user/memory-parser/SKILL.md"))
+        .unwrap()
+        .contains("Changed since"));
+
+    // A branch created without a folder stages none, and says nothing.
+    f.yard
+        .task("WRITE a.txt=1")
+        .options(allowed(&f))
+        .name("without")
+        .run()
+        .unwrap();
+    let (skills, _) = turns(&f, "without").remove(0);
+    assert!(skills.entries.iter().all(|e| e.source != Source::User));
+    assert!(skills.user_withheld.is_empty());
+    assert!(!staged(&f, "without").join("user").exists());
+}
+
+#[test]
+fn an_untrusted_memory_bundle_is_withheld_with_its_reason_until_trusted() {
+    let f = Fixture::new();
+    f.yard
+        .add_memory(NewMemory {
+            title: "Run the parser benches with the 1 MB fixture".into(),
+            body: "The small fixture fits the cache and says nothing.".into(),
+            kind: MemoryKind::Procedure,
+            paths: vec!["crates/parser/**".into()],
+            task_kinds: Vec::new(),
+            topic: None,
+            by: "ann".into(),
+            now_ms: 1_762_500_000_000,
+            evidence: Vec::new(),
+        })
+        .unwrap();
+    f.git(&["add", "-A"]);
+    f.git(&["commit", "-q", "-m", "team memory"]);
+    f.task("WRITE a.txt=1").name("untrusted").run().unwrap();
+    let (skills, _) = turns(&f, "untrusted").remove(0);
+    let withheld = skills.withheld.expect("withheld by default");
+    assert_eq!(
+        withheld.reason,
+        "the branch's creator did not allow repository skills"
+    );
+    assert_eq!(withheld.entries[0].label(), "repository:memory-parser");
+    assert!(!staged(&f, "untrusted").join("repository").exists());
+
+    let set = match branchyard::skills::read(&f.root, "HEAD").unwrap() {
+        branchyard::skills::Found::Skills(set) => set,
+        other => panic!("{other:?}"),
+    };
+    f.yard
+        .task("WRITE a.txt=1")
+        .options(TaskOptions {
+            repository_skills: SkillGate::Trusted(set.digest),
+            ..f.options()
+        })
+        .name("trusted")
+        .run()
+        .unwrap();
+    let (skills, _) = turns(&f, "trusted").remove(0);
+    assert_eq!(skills.withheld, None);
+    let reference = staged(&f, "trusted").join(
+        "repository/memory-parser/references/run-the-parser-benches-with-the-1-mb-fixture.md",
+    );
+    assert!(reference.is_file(), "{}", reference.display());
+    let topic = fs::read_to_string(staged(&f, "trusted").join("topics/custom/INDEX.md")).unwrap();
+    assert!(topic.contains(
+        "- [repository:memory-parser](../../repository/memory-parser/SKILL.md): What this team \
+         learned about parser: 1 procedure; found by search, approved by people."
+    ));
 }

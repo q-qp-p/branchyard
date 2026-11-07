@@ -128,7 +128,7 @@ Every refusal is a `BranchyardError` subclass carrying the server's stable `code
 | Exception | Codes |
 |---|---|
 | `UnauthorizedError` | `unauthorized` |
-| `NotFoundError` | `unknown_repo`, `unknown_branch`, `unknown_operation`, `unknown_trigger`, `unknown_checkpoint`, `unknown_knowledge`, `unknown_message`, `not_found` |
+| `NotFoundError` | `unknown_repo`, `unknown_branch`, `unknown_operation`, `unknown_trigger`, `unknown_checkpoint`, `unknown_knowledge`, `unknown_memory`, `unknown_message`, `not_found` |
 | `DeniedError` | `denied` (the envelope or a branch's authority refused), `scope_required`, `repo_not_allowed` |
 | `NotAllowedError` | what the server's operator did not allow: `connectors_not_configured`, `delegation_not_allowed`, `command_not_allowed`, `provider_not_allowed`, `secret_not_allowed`, `unapproved_tools_not_allowed`, ... |
 | `InvalidRequestError` | `invalid_request`, `invalid_name`, `unknown_harness`, `cursor_out_of_range`, `body_too_large`, `invalid_source_title`, ... |

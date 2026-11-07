@@ -102,6 +102,7 @@ mod bundle;
 pub mod bundles;
 mod capabilities;
 mod capacity;
+mod changes;
 mod checkpoint;
 mod compare;
 pub mod configure;
@@ -140,6 +141,7 @@ mod lock;
 pub mod manifest;
 mod map;
 mod map_input;
+pub mod memory;
 pub mod messaging;
 pub mod models;
 mod names;
@@ -226,18 +228,24 @@ pub use access::{AccessActivity, Ceiling, DelegationScope, NetworkScope};
 pub use adopt::{AdoptSpec, Adoption};
 pub use branchyard_harness::{
     Event, HarnessTask, NativeSession, PermissionDecision, PermissionKey, PermissionRequest,
-    TurnOutcome, Usage,
+    TargetKind, ToolTarget, TurnOutcome, Usage,
 };
 pub use branchyard_provision::network::{
     narrow as network_narrow, Enforce as NetworkEnforce, HostRule as NetworkRule, Network,
 };
 pub use branchyard_provision::{
-    logins, Delivery, Effort, McpServerSpec, Provisioning, RemoteMcpSpec, RemoteMcpTransport,
-    SecretFrom, SecretSource, SessionPatch, Telemetry, Via,
+    built_in, logins, Delivery, Effort, McpServerSpec, Provisioning, RemoteMcpSpec,
+    RemoteMcpTransport, SecretFrom, SecretSource, SessionPatch, Telemetry, Via,
 };
 use branchyard_workspace::Repository;
 pub use bundle::BundleEntry;
 pub use capacity::AUTO as AUTO_HARNESS;
+pub use changes::{
+    check_review, review_prompt, ChangedFile, Changes, DiffLine, DiffSide, FileStatus, Hunk,
+    LineKind, Review, ReviewComment, Reviews, SentComment, MAX_ADDRESSED_REVIEWS, MAX_DIFF_BYTES,
+    MAX_FILES, MAX_FILE_LINES, MAX_LINE_CHARS, MAX_REVIEW_COMMENTS, MAX_REVIEW_TEXT,
+    MAX_TOTAL_LINES,
+};
 pub use checkpoint::{
     entries as checkpoint_entries, recorded as recorded_checkpoints, CheckpointEntry, Checkpoints,
     Rewound,
@@ -306,6 +314,10 @@ pub use map_input::{
     parse_items as parse_map_items, render as render_map_prompt, ItemFormat, MapItem,
     TemplateContext,
 };
+pub use memory::{
+    Memory, MemoryDraft, MemoryEdit, MemoryKind, NewMemory, BODY_MAX as MEMORY_BODY_MAX,
+    TITLE_MAX as MEMORY_TITLE_MAX,
+};
 pub use obligations::{Obligation, ObligationKind};
 pub use plan::{
     approved_prompt, from_events as plan_from_events, parse_tasks as parse_plan_tasks,
@@ -322,7 +334,7 @@ pub use pool::{
 pub use projection::{ENV_BRANCH, ENV_BY, ENV_ROOT, ENV_TOKEN};
 pub use pull_request::{
     slug, CheckRun, CiSummary, IssueLink, PullRequestActivity, PullRequestObservation,
-    PullRequestRef, Pushed, ResolvedThread,
+    PullRequestRef, Pushed, ResolvedThread, Restack, Restacked, StackLink,
 };
 pub use reported::{Reported, ReportedState, StatusReport};
 pub use review::ReviewSpec;
@@ -1349,6 +1361,22 @@ impl Yard {
         knowledge::add(self, new, by)
     }
 
+    /// The team's memories: every memory of the `memory-<topic>` bundles
+    /// under `.agents/skills/` of the repository's checkout, by topic. A
+    /// person's own are a [`memory::Library`] over their skills folder.
+    /// See `docs/memory.md`.
+    pub fn memories(&self) -> Result<Vec<Memory>, Error> {
+        memory::Library::team(&self.root).read()
+    }
+
+    /// Add a team memory to `.agents/skills/memory-<topic>/` of the
+    /// checkout, rewriting the topic's bundle: the files to commit and
+    /// review as a pull request, which reach turns after `by skills
+    /// trust`. Nothing a turn can find until then.
+    pub fn add_memory(&self, new: NewMemory) -> Result<Memory, Error> {
+        Ok(memory::Library::team(&self.root).add(new)?.memory)
+    }
+
     /// Adopt entry `id` as `by`: from now on, matching branches are given
     /// it.
     pub fn adopt_knowledge(&self, id: u64, by: &str) -> Result<KnowledgeEntry, Error> {
@@ -1828,6 +1856,14 @@ pub struct TaskOptions {
     /// operator allows (`allow_repository_skills`). See
     /// `docs/knowledge-skills.md`.
     pub repository_skills: SkillGate,
+    /// The person's skills folder (`~/.config/branchyard/skills/`, the
+    /// local `user` source of `docs/skill-registry.md`) whose skills a new
+    /// branch's turns stage beside the built-in and repository skills,
+    /// read again each turn; `None` stages none. `by` sets it outside any
+    /// branch; a server and the SDK leave it. Read only when a branch is
+    /// created by `run`, a fan or `run_attempts`; a fork, reincarnation or
+    /// delegated child inherits its parent's. See `docs/knowledge-skills.md`.
+    pub user_skills: Option<PathBuf>,
 }
 
 /// The variable a turn's harness gets [`TaskOptions::trace_parent`] in.
@@ -3746,6 +3782,12 @@ pub enum Error {
     UnknownMessage(u64),
     /// No knowledge entry with this id.
     UnknownKnowledge(u64),
+    /// No memory has this slug.
+    UnknownMemory(String),
+    /// A memory or memory bundle that cannot be written or read: a title
+    /// or body over its limit, a slug or topic that is not one, a bundle
+    /// file that does not parse.
+    InvalidMemory(String),
     /// The branch has no plan, or none awaiting approval.
     NoPlan(String),
     /// Not a usable branch name: lowercase `[a-z0-9._-]`, starting with a
@@ -3921,6 +3963,8 @@ impl fmt::Display for Error {
             ),
             Error::UnknownMessage(id) => write!(f, "no message #{id} in this inbox"),
             Error::UnknownKnowledge(id) => write!(f, "no knowledge entry #{id}"),
+            Error::UnknownMemory(id) => write!(f, "no memory {id}"),
+            Error::InvalidMemory(why) => write!(f, "{why}"),
             Error::NoPlan(why) => write!(f, "no plan: {why}"),
             Error::InvalidName { name, reason } => {
                 write!(f, "{name:?} is not a usable branch name: {reason}")
@@ -4082,6 +4126,8 @@ impl Error {
             Error::BranchExists(_) => "branch_exists",
             Error::UnknownMessage(_) => "unknown_message",
             Error::UnknownKnowledge(_) => "unknown_knowledge",
+            Error::UnknownMemory(_) => "unknown_memory",
+            Error::InvalidMemory(_) => "invalid_memory",
             Error::NoPlan(_) => "no_plan",
             Error::InvalidName { .. } => "invalid_name",
             Error::UnknownHarness(_) => "unknown_harness",

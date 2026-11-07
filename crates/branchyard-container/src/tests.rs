@@ -444,7 +444,12 @@ fn dropping_an_exec_tears_down_its_remote_process_group() -> Result<(), Box<dyn 
     let mut pid = String::new();
     BufReader::new(process.take_stdout().ok_or("no stdout")?).read_line(&mut pid)?;
     let pid: u32 = pid.trim().parse()?;
-    assert!(processes_in(fixture.scratch.path()).contains(&pid));
+    // The shell prints the pid as it forks `tail`; reading the child's cwd
+    // from /proc can fail for a moment while it execs, so wait to see it.
+    wait::until(
+        "the exec descendant to run in the scratch directory",
+        || processes_in(fixture.scratch.path()).contains(&pid),
+    );
     drop(process);
     wait::until("the exec descendant to stop", || {
         !processes_in(fixture.scratch.path()).contains(&pid)

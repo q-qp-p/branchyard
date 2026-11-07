@@ -2,6 +2,122 @@
 
 ## Unreleased
 
+Four workflow skills for a session that runs Branchyard as the person or
+meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
+(when to fan out, harness choice, a result contract, `by fan`, `by compare`,
+`by judge`, picking and merging, per-attempt budgets), `pr-feedback-loop`
+(candidate, `by review`, `by pr`, `by pr --watch`, stacks with `--base`, merge
+readiness), `budgeted-explore` (budget, turn and time limits, read-only
+access, `by map --total-usd`, stop rules, reading cost, usage and telemetry) and
+`issue-pr` (`by issue`, `by run --issue`, tracker credentials, the link in the
+pull request). Each `SKILL.md` is a short loop with the detail in `references/`.
+`capabilities.json` entries may carry `keywords`, which `tools/artifact_assets.py`
+writes into the `SKILL.md` frontmatter (single words, refused otherwise) and the
+search weights three times. The `by` commands and flags the skills and their
+references name are scanned by `cargo test -p branchyard-cli --bin by
+operations`; each `SKILL.md` has a `skill:NAME` cap in the model-surface budget
+(no existing cap changed). `evals/skills/scenarios/workflows.toml` adds 17
+scenarios and `distractors.toml` three. Hermetic result, 7 November 2026
+(`tools/skill_eval.py rank`, no model): top-3 100% (65 of 65 expected ids) and MRR
+0.833, against 98% (47 of 48) and 0.800 at the parent; the 17 new scenarios are
+17 of 17 in the top three; no existing scenario ranks lower, with `claim-verify`
+given two keywords so that its miss (`claim-verify-numbers`) is rank 1 and not 12.
+Not done: a live run.
+
+Memory as a reviewed skill (`docs/memory.md`, slice M1). `by memory add --title
+T --body-file F [--kind rule|procedure|fact|pitfall] [--path GLOB]... [--topic T]`
+writes one memory as `references/<slug>.md` in the bundle `memory-<topic>/`
+under `.agents/skills/` of the checkout, with a `SKILL.md` (one line per
+memory, grouped by kind, under 4,096 characters) and a `memory.json` the writer
+rewrites deterministically: the same approved set gives the same bytes and the
+same digest, and a topic over the skill limits is split into `memory-<topic>-2`
+and on, the first bundle saying so. Commit the bundle and open the pull
+request; turns find it, as any repository skill, after `by skills trust`. With
+`--mine` the memory goes to your own skills folder, approved by you at once.
+`by memory list | show | edit | remove | export` read and rewrite the same
+files; `add`, `edit` and `remove` are refused inside a harness (`denied`;
+advisory locally), and `--remote` is refused. `by knowledge distill` now
+writes each correction longer than an entry's 600 characters, whole, as a
+draft under `.branchyard/memory-drafts/<slug>.md` (`Distilled::drafts`,
+`draft_files`), and `by memory add --from DRAFT` adds it. New engine errors
+`unknown_memory` and `invalid_memory` (exit 2). `Yard::memories`,
+`Yard::add_memory`, `branchyard::memory`.
+
+Your own skills: the local `user` source of the skill registry
+(`docs/skill-registry.md`). `by skills add PATH [--name N]` copies a skill
+directory into `~/.config/branchyard/skills/`, `by skills remove NAME` deletes
+one, and `by skills ls` lists the folder with any directory withheld by name.
+A branch `by run`, `fan`, `map` or `rig run` creates outside any branch reads
+the folder again each turn (`TaskOptions::user_skills`, inherited by forks,
+reincarnations and children), stages it under `user/<name>/` beside the
+repository's skills, lists it in the Custom topic as `user:<name>` and records
+each digest in `provisioned.skills`, with `user_withheld` naming what the
+folder holds and the turn did not stage. A staged repository skill shadows a
+user skill of its name; a built-in's name stays reserved. The skill record's
+`Layer` is now `Source` (`repository`, `built_in`, `user`); the field still
+serializes as `layer`, and recorded set digests are unchanged. The eval gains
+`evals/skills/scenarios/memory.toml` (five scenarios), `home_files`, the
+runner's trust step and `rank --mount own|all`; hermetic result, 7 November
+2026: the memory scenarios in the top three 5 of 5 times over the trees their
+repositories would mount, and no existing scenario moved. See
+[memory](docs/memory.md), [your own skills](docs/knowledge-skills.md#your-own-skills)
+and [skill-eval](docs/skill-eval.md#ranking-without-a-model).
+
+A skill's references are searchable. In a turn's tool tree, `bin/tools search`
+ranks each `references/*.md` of a staged skill as a document of its own
+(`SKILL/references/FILE.md`: the skill's and the file's name, the first heading
+and the content words of the body), so a search lands on one paragraph of a
+skill without the model reading the skill, and `bin/tools show
+pptx/references/layouts.md` prints that file alone. A reference adds nothing to
+the corpus statistics, so the tools keep their order among themselves. A tool
+`INDEX.md` lists (chosen for the turn) scores 1.5 times one it does not, and a
+reference is scored on its words alone; `--plain` ranks by BM25 alone and
+`--kind reference` narrows to references. Frontmatter `keywords` are indexed.
+Ids are `[kind:][source:]name[/references/FILE.md]`. `python3
+tools/skill_eval.py rank` ranks every eval scenario's prompt through the script
+over a tool tree without a model (top-1, top-3, mean reciprocal rank), and
+`expect_skills` may name a reference; seven reference scenarios were added.
+Hermetic result, 7 November 2026: top-3 98% and MRR 0.800 over 48 expected
+ids, against 98% and 0.779 over 41 at the commit before; the references rank
+in the top three 7 of 7 times.
+
+The delegate skill is now a small core plus reference files. `SKILL.md` fell
+from 38,969 to about 7,500 bytes, and a spawning branch's instructions from
+42,875 to 11,682 characters (`spawning-branch` cap 44,500 to 12,500). The rest of
+the guidance moved word for word into 14 files under
+`plugins/branchyard/skills/delegate/references/`, each opening with a
+`Read when:` line, and a table in the core names the file for each need. They
+are installed beside the skill (plugin directory, `by init plugin`, the
+standalone zip), and a turn with helpers finds them in its tool tree at
+`helpers/delegate/references/`.
+
+The console reviews a branch's diff. A **Changes** page (`#/changes/<repo>/<branch>`,
+linked from the board row, the branch page and the Trajectory page) shows the
+candidate against its base file by file, with a path filter, line numbers on
+both sides, viewed boxes, and `j`/`k` for files, `n`/`p` for hunks and `c` to
+comment. Select lines (click, drag, Shift-click or the arrow keys), write a
+multiline comment, collect comments in a tray and send them as one review,
+as the next turn or steered into the running turn: the branch receives one
+prompt in `by review`'s format that names each file and line and quotes the
+code, and the comments are recorded on its log like `by review`'s. Sent
+comments show inline and are marked addressed when a later candidate changes
+their lines. New routes `GET …/branches/{b}/changes`, `GET …/branches/{b}/reviews`
+and `POST …/branches/{b}/reviews` (read, read and run scope; `409
+stale_candidate` when the branch moved), `Branch::changes` and `Branch::reviews`
+in the SDK, `Repo::changes`, `reviews` and `review` in the Rust client and
+`Repo.changes`, `reviews` and `review` in the Python one. See
+[Changes and review](docs/companion.md#changes-and-review).
+
+Stacked pull requests. `by run --base BRANCH` (and `by fan --base BRANCH`) with the name of a branch starts the new branch on that branch's candidate and records the stack. `by pr` on it opens its pull request against the parent's pull request head and lists the stack in the body; once the parent's pull request has merged, `by pr` and `by pr --watch` rebase the child onto the branch it merged into (only its own commits are replayed, so a squash merge works), push it over its old head if the remote branch is still where `by pr` left it, and retarget its pull request with `gh pr edit --base`. A conflict is recorded (`restack_blocked`) and reported, never forced. `by show` shows the stack. New events `stacked`, `restacked` and `restack_blocked`; see [stacked pull requests](docs/pull-requests.md#stacked-pull-requests). Tested with a fake `gh` and real repositories; not run against GitHub.
+
+Starting from an issue on a server. `by issue REF` shows what `by run --issue REF` would start from. `TaskRequest.issue` and `StartSessionRequest.issue` take the same references; the server resolves them by running `by issue --json` with its own `gh` login and tracker credentials, and refuses an unreachable one with `issue_unavailable` and a `next:` step. `GET /v1/repos/{repo}/issue` and `GET /v1/workspaces/{id}/issue` preview it, the console's new-session form gets "Start from an issue" (look up, see the title, start), and the Rust and Python clients gain `issue` calls. See [starting from an issue on a server](docs/pull-requests.md#by-issue-and-starting-from-an-issue-on-a-server).
+
+A tool call in a branch's event log now says what it acted on. `tool_started` carries an optional `target`: the file a call read or changed (relative to the worktree, `tools/...` for the mounted tool tree, and only the last component of any other absolute path), the first 120 characters of a shell command with secrets replaced by `[redacted]`, the server and tool of an MCP call, or the skill a harness's own skill tool opened. Never a file's content or a call's full arguments. Claude Code, Codex, ACP agents (Gemini CLI, Qwen Code, OpenCode, Antigravity over ACP and the others, where the call's input or location names it), Amp and Pi report it; a harness that reports no input leaves it out, as do older logs, and the timeline stays content-free. `by log` prints it after the tool name, and `by log --json` and `schema/contract.json` carry it. See [tool call targets](docs/harness-integration.md#tool-call-targets).
+
+`by run`, `fan`, `map`, `send`, `fork` and `reincarnate` take `--skill NAME` (repeatable) to stage only the chosen built-in skills and the skills they need; an unknown name is refused with the built-in skills listed. `by run --delegate` takes `--helpers ID,ID` for the harnesses its children may run, where before only the harness's own profile could be allowed to a branch you started.
+
+The skill-discovery eval (`tools/skill_eval.py`) uses all of it: it reads targets, passes each scenario's skills and helpers, and generates the binary input files 13 scenarios name (docx, xlsx, pptx, pdf, deterministic, with the artifact toolkit's libraries) so 8 of them have file checks. The fake ACP agent reports `SH` lines as tool calls and has a `READ` directive. See [skill-eval](docs/skill-eval.md).
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard

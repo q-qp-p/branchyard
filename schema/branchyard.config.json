@@ -1634,7 +1634,7 @@
             "string",
             "null"
           ],
-          "description": "The API's address: Linear's GraphQL endpoint, a Jira site\n(`https://acme.atlassian.net`) or a GitLab instance\n(`https://gitlab.example.com`)."
+          "description": "The API's address: Linear's GraphQL endpoint, a Jira site\n(`https://acme.atlassian.net`) or a GitLab instance\n(`https://gitlab.example.com`). Set in a repository's `branchyard.toml` it is\nrepository-controlled; a server ignores it and uses `LINEAR_API_URL`,\n`JIRA_URL` and `GITLAB_URL` only."
         },
         "gateway_tool": {
           "type": [
