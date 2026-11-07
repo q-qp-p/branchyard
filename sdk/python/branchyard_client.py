@@ -460,6 +460,7 @@ _BY_CODE: dict[str, Callable[..., BranchyardError]] = {
     "no_plan": ConflictError,
     "stale_revision": StaleRevisionError,
     "checkpoint_unavailable": ConflictError,
+    "stale_candidate": ConflictError,
     "service_held": ConflictError,
     "invalid_candidate": ConflictError,
     "check_failed": CheckFailedError,
@@ -3017,6 +3018,39 @@ class Repo:
     def diff(self, name: str) -> str:
         """The unified diff of `name`'s candidate against its base, as text; empty for a branch with no changes."""
         return str(self.client.get(self._branch(name, "/diff")).get("diff", ""))
+
+    def changes(self, name: str) -> Record:
+        """`Changes`: `name`'s candidate against its base, file by file: `base`, `commit` (none while it has no
+        candidate), `files` (each `path`, `status`, `additions`, `deletions`, `binary`, `truncated` and `hunks` of
+        numbered `lines`), the totals `additions` and `deletions`, and `omitted_files` and `truncated` when the answer
+        was bounded (`docs/server.md`, "Reviewing a branch's diff")."""
+        return Record(self.client.get(self._branch(name, "/changes")))
+
+    def reviews(self, name: str) -> Record:
+        """`Reviews`: the reviews sent to `name` by `by review` and the console, oldest first (`reviews`, each with
+        `id`, `at_ms`, `commit`, `note` and `comments`), and its `candidate` now. A comment carries `addressed_in`, the
+        candidate commit that changed its lines since it was sent, once one did."""
+        return Record(self.client.get(self._branch(name, "/reviews")))
+
+    def review(
+        self,
+        name: str,
+        comments: Sequence[JSON],
+        *,
+        note: Optional[str] = None,
+        commit: Optional[str] = None,
+        delivery: str = "next_turn",
+        key: Optional[str] = None,
+    ) -> Record:
+        """`POST .../reviews`: comments written on `name`'s diff, sent as one prompt that names each file, line and
+        the code quoted, as `by review` does. Each comment is `{"path", "line", "start_line"?, "side"?: "new"|"old",
+        "body"}` on lines the diff shows; `note` is an overall note; `commit` is the candidate the lines were read from
+        (`Repo.changes(...)["commit"]`), and a different candidate is refused (`stale_candidate`, a `ConflictError`).
+        `delivery` is `"next_turn"` (a send; the result's `operation` is its ID) or `"steer"` (into the running turn;
+        `not_running` when none runs). A repeat with the same `key` sends once. The result has `delivery`, `comments`,
+        `prompt` and `operation` or `steer`."""
+        body: JSON = {"comments": list(comments), "note": note, "commit": commit, "delivery": delivery}
+        return Record(self.client.post(self._branch(name, "/reviews"), _drop_none(body), key=key or new_key()))
 
     def inspect(self, branch: str) -> Inspection:
         """`branch` as a delegating parent sees it, grant included."""

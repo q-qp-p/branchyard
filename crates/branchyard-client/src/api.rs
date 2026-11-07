@@ -1049,6 +1049,63 @@ pub struct Diff {
     pub diff: String,
 }
 
+/// How a review reaches the branch. Serialized in snake case.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDelivery {
+    /// As the branch's next turn: a send, which waits for a running turn
+    /// to end.
+    #[default]
+    NextTurn,
+    /// Into the running turn without interrupting it, as a steer; refused
+    /// (`409 not_running`) when no turn runs.
+    Steer,
+}
+
+/// `POST /v1/repos/{repo}/branches/{branch}/reviews`: comments written on
+/// the branch's diff, delivered as one prompt like `by review`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRequest {
+    /// The comments, each on lines the diff shows; at most
+    /// [`branchyard::MAX_REVIEW_COMMENTS`].
+    #[serde(default)]
+    pub comments: Vec<branchyard::ReviewComment>,
+    /// An overall note, sent with the comments or alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The candidate commit the line numbers were read from
+    /// (`Changes::commit`). When it is not the branch's candidate any more
+    /// the review is refused with `409 stale_candidate`, so a comment
+    /// never lands on other code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Next turn (the default) or steer a running turn.
+    #[serde(default)]
+    pub delivery: ReviewDelivery,
+}
+
+/// What `POST .../reviews` did: the prompt it wrote and how it went.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReviewSent {
+    /// How it was delivered.
+    pub delivery: ReviewDelivery,
+    /// How many comments it carried.
+    pub comments: u32,
+    /// The prompt the branch received.
+    pub prompt: String,
+    /// The ID of the send operation, for `next_turn`
+    /// (`GET /v1/operations/{id}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    /// The steer, for `steer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<branchyard::Steer>,
+}
+
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Removed {

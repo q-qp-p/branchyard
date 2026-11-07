@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 145,
+    "route_count": 147,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -119,6 +119,7 @@
       "/v1/repos/{repo}/branches/{branch}/artifacts/{id}/share",
       "/v1/repos/{repo}/branches/{branch}/ask",
       "/v1/repos/{repo}/branches/{branch}/cancel",
+      "/v1/repos/{repo}/branches/{branch}/changes",
       "/v1/repos/{repo}/branches/{branch}/check",
       "/v1/repos/{repo}/branches/{branch}/children",
       "/v1/repos/{repo}/branches/{branch}/diff",
@@ -141,6 +142,7 @@
       "/v1/repos/{repo}/branches/{branch}/reincarnate",
       "/v1/repos/{repo}/branches/{branch}/report",
       "/v1/repos/{repo}/branches/{branch}/report-status",
+      "/v1/repos/{repo}/branches/{branch}/reviews",
       "/v1/repos/{repo}/branches/{branch}/rewind",
       "/v1/repos/{repo}/branches/{branch}/scratch",
       "/v1/repos/{repo}/branches/{branch}/scratch/{name}/lock",
