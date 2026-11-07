@@ -66,6 +66,7 @@ KEYS = {
     "files",
     "home_files",
     "skills",
+    "mounted",
     "connectors",
     "helpers",
     "envelope",
@@ -82,6 +83,8 @@ KEYS = {
 }
 #: The discovery skill itself: reading it is how a turn learns to search, never a wrong open.
 NEUTRAL_SKILLS = {"find-tools"}
+#: `mounted = "ready"`: the turn chooses `find-tools` alone, and every other ready skill is mounted (R2).
+MOUNTED_READY = "ready"
 #: Programs whose arguments are not a read of the file they name.
 NOT_A_READ = {"ls", "find", "tree", "echo", "printf", "mkdir", "rm", "touch", "cp", "mv", "chmod", "test", "[", "stat"}
 NOT_A_READ |= {"wc", "du", "git", "cd", "by"}
@@ -102,6 +105,9 @@ class Scenario:
     files: dict[str, str] = field(default_factory=dict)
     home_files: dict[str, str] = field(default_factory=dict)
     skills: list[str] = field(default_factory=list)
+    #: `"ready"`: only `find-tools` is chosen and every other ready skill is mounted, not chosen (R2); `skills`
+    #: is then empty. Empty: the turn chooses `skills`, or every built-in skill without one.
+    mounted: str = ""
     connectors: list[str] = field(default_factory=list)
     helpers: bool = False
     envelope: list[str] = field(default_factory=list)
@@ -279,6 +285,10 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
         for name in s.expect_skills:
             if s.skills and reference_skill(name) not in s.skills and reference_skill(name) not in seeded:
                 bad(f"expected skill {reference_skill(name)!r} is not among the skills chosen for the turn")
+        if s.mounted not in ("", MOUNTED_READY):
+            bad(f"mounted must be {MOUNTED_READY!r} or absent, not {s.mounted!r}")
+        elif s.mounted and s.skills:
+            bad(f"mounted = {MOUNTED_READY!r} chooses find-tools alone: `skills` must be empty")
         for helper in s.expect_helpers:
             if not s.helpers:
                 bad(f"expected helper {helper!r} needs `helpers = true`")
@@ -909,6 +919,9 @@ def run_argv(scenario: Scenario, options: RunOptions, repo: Path) -> list[str]:
         argv += ["--command", options.command]
     for skill in scenario.skills:
         argv += ["--skill", skill]
+    if scenario.mounted == MOUNTED_READY:
+        # Only the search skill is chosen; the engine mounts the rest where linking is free (R2).
+        argv += ["--skill", "find-tools"]
     if scenario.helpers:
         argv += ["--delegate=1"]
         if scenario.envelope:
@@ -1263,7 +1276,7 @@ def run_scenario(scenario: Scenario, options: RunOptions, out: Path, base: Path)
         "wall_s": wall,
         "exit_status": done.returncode,
         "scripted": scenario.id in options.script,
-        "skills_chosen_applied": bool(scenario.skills),
+        "skills_chosen_applied": bool(scenario.skills) or scenario.mounted == MOUNTED_READY,
         "repository_skills_trusted": trusted,
         "home_files_seeded": sorted(scenario.home_files),
         "checks": evaluate_checks(scenario, tree) if tree else {},
@@ -1342,19 +1355,31 @@ def load_tools(script: Path = TOOLS_SCRIPT) -> Any:
     return module
 
 
-def shipped_tree(base: Path, scenarios: Iterable[Scenario] = ()) -> dict[str, Any]:
-    """A tool tree under `base` as `by run` mounts one today: every skill `capabilities.json` lists, chosen, the
-    Anvil mock's packages as connectors, and the skills `scenarios` seed (`repository:NAME` under
-    `skills/repository/NAME/`, `user:NAME` under `skills/user/NAME/`, as a trusted set and a person's folder are
-    staged), chosen too. Returns what it holds; the tree is `base/tools`."""
+def shipped_tree(base: Path, scenarios: Iterable[Scenario] = (), chosen: Iterable[str] | None = None) -> dict[str, Any]:
+    """A tool tree under `base` as `by run` mounts one where linking is free (R2): every skill
+    `capabilities.json` lists, the Anvil mock's packages as connectors, and the skills `scenarios` seed
+    (`repository:NAME` under `skills/repository/NAME/`, `user:NAME` under `skills/user/NAME/`, as a trusted set
+    and a person's folder are staged). `INDEX.md` names the chosen built-in skills (`chosen`; every one without
+    it, as a turn with no choice) and counts the rest in its overflow line: a seeded skill is mounted, never
+    chosen. Returns what it holds; the tree is `base/tools`."""
     tools, capabilities, connectors = base / "tools", base / "capabilities", base / "connectors"
     for directory in (tools, capabilities, connectors):
         directory.mkdir(parents=True, exist_ok=True)
     skills = json.loads(CAPABILITIES.read_text(encoding="utf-8"))["skills"]
+    picked = None if chosen is None else set(chosen)
+    unknown = sorted(picked - {s["id"] for s in skills}) if picked is not None else []
+    if unknown:
+        raise ValueError(f"not built-in skills: {', '.join(unknown)}")
     lines = ["# Your tools\n", "\n## Skills (skills/NAME/SKILL.md)\n"]
+    listed: list[str] = []
+    counted: list[str] = []
     for skill in skills:
         (capabilities / skill["id"]).symlink_to(SKILLS / skill["id"])
-        lines.append(f"- {skill['id']}: {skill['description']}\n")
+        if picked is None or skill["id"] in picked:
+            lines.append(f"- {skill['id']}: {skill['description']}\n")
+            listed.append(skill["id"])
+        else:
+            counted.append(skill["id"])
     seeded: list[str] = []
     for scenario in scenarios:
         for ident, directory in scenario.seeded_skills.items():
@@ -1368,9 +1393,10 @@ def shipped_tree(base: Path, scenarios: Iterable[Scenario] = ()) -> dict[str, An
                     target = staged / Path(rel).relative_to(directory)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(content, encoding="utf-8")
-            meta = load_tools().frontmatter((staged / "SKILL.md").read_text(encoding="utf-8"))
-            lines.append(f"- {ident}: {meta.get('description', '')}\n")
             seeded.append(ident)
+            counted.append(ident)
+    if counted:
+        lines.append(f"- ...{len(counted)} more: `bin/tools search WORDS`\n")
     (tools / "skills").symlink_to("../capabilities")
     (tools / "connectors").symlink_to("../connectors")
     packaged: list[str] = []
@@ -1391,7 +1417,14 @@ def shipped_tree(base: Path, scenarios: Iterable[Scenario] = ()) -> dict[str, An
         lines.append("\n## Connectors (connectors/ID/SKILL.md)\n")
         lines += [f"- {name}\n" for name in packaged]
     (tools / "INDEX.md").write_text("".join(lines), encoding="utf-8")
-    return {"skills": [s["id"] for s in skills], "connectors": packaged, "seeded": seeded, "notes": notes}
+    return {
+        "skills": [s["id"] for s in skills],
+        "chosen": listed,
+        "mounted": counted,
+        "connectors": packaged,
+        "seeded": seeded,
+        "notes": notes,
+    }
 
 
 def expected_documents(scenario: Scenario) -> list[tuple[str, str]]:
@@ -1416,11 +1449,13 @@ def rank_scenarios(
     plain: bool = False,
     script: Path = TOOLS_SCRIPT,
     mount: str = "own",
+    chosen: list[str] | None = None,
 ) -> dict[str, Any]:
     """Each scenario's prompt ranked by `tools search`: the rank of every expected id, and overall the top-1 and
     top-3 rates and the mean reciprocal rank. Over `tree` when given; else over the shipped tree with, per
     scenario, the skills it seeds (`mount="own"`: what a turn in that scenario's repository and HOME sees), or
-    with every ranked scenario's seeded skills in one tree (`mount="all"`). An expected id with no document in
+    with every ranked scenario's seeded skills in one tree (`mount="all"`), naming the built-in skills `chosen`
+    in its `INDEX.md` (every one without it) and counting the rest as mounted. An expected id with no document in
     the tree is `absent` and not counted; one with a document that scored nothing is unranked and counts as a
     miss."""
     tools = load_tools(script)
@@ -1434,25 +1469,28 @@ def rank_scenarios(
             groups: list[tuple[Path, list[Scenario]]] = [(tree, scenarios)]
             where = str(tree)
         elif mount == "all":
-            shipped_tree(Path(scratch), scenarios)
+            shipped_tree(Path(scratch), scenarios, chosen)
             groups = [(Path(scratch) / "tools", scenarios)]
             where = "the shipped tree with every scenario's seeded skills mounted"
         else:
             groups = []
             for index, (_, members) in enumerate(seed_groups(scenarios).items()):
                 base = Path(scratch) / str(index)
-                shipped_tree(base, members)
+                shipped_tree(base, members, chosen)
                 groups.append((base / "tools", members))
             where = "the shipped tree with each scenario's own seeded skills mounted"
+        if tree is None and chosen is not None:
+            where += f"; chosen: {', '.join(chosen)}"
         for group_tree, members in groups:
             docs = tools.documents(group_tree, refused)
             documents = max(documents, len(docs))
             present = {(d.kind, d.id) for d in docs}
-            chosen = frozenset() if plain or not hasattr(tools, "chosen_tools") else tools.chosen_tools(group_tree)
+            # None is `--plain` to the shipped script; an older copy (`--tools`) reads an empty set the same way.
+            picked = None if plain or not hasattr(tools, "chosen_tools") else tools.chosen_tools(group_tree)
             for scenario in members:
                 if scenario.none:
                     continue
-                ranked = tools.rank(docs, [scenario.prompt], chosen) if chosen else tools.rank(docs, [scenario.prompt])
+                ranked = tools.rank(docs, [scenario.prompt], picked)
                 position = {(d.kind, d.id): at for at, (_, d) in enumerate(ranked, start=1)}
                 expected: list[dict[str, Any]] = []
                 for kind, ident in expected_documents(scenario):
@@ -1478,6 +1516,7 @@ def rank_scenarios(
         "schema": "branchyard.skill-eval-rank/v1",
         "tree": where,
         "mount": "given" if tree is not None else mount,
+        "chosen": "all" if chosen is None else sorted(chosen),
         "plain": plain,
         "tools": str(script),
         "documents": documents,
@@ -1559,6 +1598,10 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         default="own",
         help="without --tree: each scenario's own seeded skills (what its turn sees), or every scenario's in one tree",
     )
+    ranker.add_argument(
+        "--chosen",
+        help="without --tree: the built-in skills INDEX.md names (comma-separated); the rest are counted as mounted",
+    )
     ranker.add_argument("--scenarios", default="*")
     ranker.add_argument("--plain", action="store_true", help="BM25 alone, without the chosen factor")
     ranker.add_argument("--tools", type=Path, default=TOOLS_SCRIPT, help="the tools script to rank with")
@@ -1597,7 +1640,10 @@ def main(argv: list[str] | None = None) -> int:
         emit(score_dir(args.logdir, scenarios), args.out, args.json)
         return 0
     if args.action == "rank":
-        report = rank_scenarios(scenarios, args.tree, plain=args.plain, script=args.tools, mount=args.mount)
+        chosen = [name for name in args.chosen.split(",") if name] if args.chosen else None
+        report = rank_scenarios(
+            scenarios, args.tree, plain=args.plain, script=args.tools, mount=args.mount, chosen=chosen
+        )
         print(json.dumps(report, indent=2, sort_keys=True) if args.json else rank_markdown(report), end="")
         return 0
     script = json.loads(args.script.read_text(encoding="utf-8")) if args.script else {}

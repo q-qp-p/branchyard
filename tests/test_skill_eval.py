@@ -203,10 +203,24 @@ class Scenarios(unittest.TestCase):
                 "skills": ["docx"],
                 "expect_skills": ["calculate/references/units.md"],
             },
+            "mounted with a value other than ready": {"mounted": "all", "skills": []},
+            "mounted = ready beside chosen skills": {"mounted": "ready"},
         }
         for why, change in cases.items():
             bad = skill_eval.Scenario(**{**good.__dict__, **change})
             self.assertTrue(skill_eval.problems([bad]), why)
+
+    def test_mounted_ready_chooses_find_tools_alone(self):
+        """R2: `mounted = "ready"` with no `skills` runs the turn with only find-tools chosen, so every other
+        ready skill is mounted and found by search; the runner says the choice was applied."""
+        good = SCENARIOS["docx-status-report"]
+        scenario = skill_eval.Scenario(**{**good.__dict__, "mounted": "ready", "skills": []})
+        self.assertEqual(skill_eval.problems([scenario]), [])
+        argv = skill_eval.run_argv(scenario, skill_eval.RunOptions(harness="claude-code"), Path("/r"))
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--skill"], ["find-tools"])
+        plain = skill_eval.Scenario(**{**good.__dict__, "skills": []})
+        argv = skill_eval.run_argv(plain, skill_eval.RunOptions(harness="claude-code"), Path("/r"))
+        self.assertNotIn("--skill", argv)
 
     def test_a_reference_id_is_an_expected_skill(self):
         good = SCENARIOS["docx-status-report"]
@@ -887,10 +901,14 @@ class Rank(unittest.TestCase):
             self.assertTrue((tree / "skills/repository/memory-parser/SKILL.md").is_file())
             self.assertTrue((tree / "skills/repository/memory-parser/references").is_dir())
             self.assertTrue((tree / "skills/user/memory-reviews/memory.json").is_file())
+            # R2: a seeded skill is mounted, never chosen: the index counts it and does not name it.
             index = (tree / "INDEX.md").read_text(encoding="utf-8")
-            self.assertIn("- repository:memory-parser: What this team learned about parser:", index)
-            self.assertIn("- user:memory-reviews: What you learned about reviews:", index)
+            self.assertNotIn("memory-parser", index)
+            self.assertIn("- ...3 more: `bin/tools search WORDS`\n", index)
+            self.assertEqual(contents["mounted"], contents["seeded"])
+            self.assertEqual(contents["chosen"], contents["skills"])
             tools = skill_eval.load_tools()
+            self.assertEqual(tools.chosen_tools(tree), frozenset(contents["skills"] + contents["connectors"]))
             ids = {(d.kind, d.id) for d in tools.documents(tree)}
             self.assertIn(("skill", "repository:memory-parser"), ids)
             self.assertIn(
@@ -915,10 +933,33 @@ class Rank(unittest.TestCase):
         three, and what the extra reference documents do to the existing scenarios is reported, not hidden."""
         together = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, mount="all")
         self.assertEqual(together["mount"], "all")
+        self.assertEqual(together["chosen"], "all")
         self.assertGreater(together["documents"], self.report["documents"])
         ranks = [e["rank"] for r in together["scenarios"] if r["area"] == "memory" for e in r["expected"]]
         self.assertGreaterEqual(sum(1 for at in ranks if at <= 3) / len(ranks), 0.8, ranks)
-        self.assertLessEqual(together["overall"]["top3_rate"], self.report["overall"]["top3_rate"])
+        # R2: with every bundle mounted the set stays within 0.02 top-3 of each scenario's own tree, which
+        # the R1 rule (a reference's body against the tools' statistics) did not give (docs/skill-eval.md).
+        self.assertGreaterEqual(together["overall"]["top3_rate"], self.report["overall"]["top3_rate"] - 0.02)
+
+    def test_only_find_tools_chosen_ranks_within_two_hundredths_of_all_chosen(self):
+        """R2's acceptance (docs/skill-registry.md, section 8): a tree with only find-tools chosen and every
+        other skill mounted ranks within 0.02 top-3 of the all-chosen tree. The ranker sees the same
+        documents; the chosen factor is what could move it."""
+        everything = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, mount="all")
+        only = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, mount="all", chosen=["find-tools"])
+        self.assertEqual(only["chosen"], ["find-tools"])
+        self.assertEqual(only["documents"], everything["documents"])
+        self.assertGreaterEqual(only["overall"]["top3_rate"], everything["overall"]["top3_rate"] - 0.02)
+        with tempfile.TemporaryDirectory() as tmp:
+            contents = skill_eval.shipped_tree(Path(tmp), [], ["find-tools"])
+            index = (Path(tmp) / "tools/INDEX.md").read_text(encoding="utf-8")
+            self.assertEqual(contents["chosen"], ["find-tools"])
+            self.assertEqual(len(contents["mounted"]), len(contents["skills"]) - 1)
+            self.assertIn("- find-tools:", index)
+            self.assertNotIn("- docx:", index)
+            self.assertIn(f"- ...{len(contents['mounted'])} more:", index)
+            with self.assertRaisesRegex(ValueError, "not built-in"):
+                skill_eval.shipped_tree(Path(tmp) / "other", [], ["docz"])
 
     def test_plain_turns_the_chosen_factor_off(self):
         plain = skill_eval.rank_scenarios(list(SCENARIOS.values()), None, plain=True)
@@ -942,6 +983,24 @@ class Rank(unittest.TestCase):
         report = json.loads(done.stdout)
         self.assertEqual(report["schema"], "branchyard.skill-eval-rank/v1")
         self.assertEqual(report["overall"]["scenarios"], 7)
+        self.assertEqual(report["chosen"], "all")
+        done = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools/skill_eval.py"),
+                "rank",
+                "--scenarios",
+                "references",
+                "--chosen",
+                "find-tools,docx",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["chosen"], ["docx", "find-tools"])
 
     def test_another_commits_tools_script_ranks_the_same_tree(self):
         """`--tools` ranks with another copy of the script, so a before and after can be measured at one tree."""

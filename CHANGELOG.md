@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+The ranker in a turn's tool tree (`bin/tools search`) indexes a reference by
+what it says: the words of its name without English function words (the slug
+`cut-a-release-with-the-release-script-then-tag` no longer matches a prompt's
+`a`, `with`, `the` and `then` four times each), and its provenance lines
+(`Source:`, `License:`, a memory's `Approved by` and `Evidence:`) are not
+indexed. The 1.5 factor is now on every tool over a reference of equal match
+(`TOOL`), with the factor on a chosen tool over a mounted one (`CHOSEN`) at
+1.0 as measured; a tool the index's overflow line only counts is mounted, not
+chosen. Hermetic result, 7 November 2026 (`tools/skill_eval.py rank`, no
+model): every scenario ranks exactly as before over its own tree; with every
+memory bundle in one tree, top-3 95.7% to 98.6% and MRR 0.798 to 0.825, five of
+the six scenarios M1 found lower are back where they were; with only
+`find-tools` chosen and everything else mounted the ranks are the all-chosen
+tree's. `rank --chosen NAME,NAME` and a scenario's `mounted = "ready"` measure
+that tree. See [ranking without a model](docs/skill-eval.md#ranking-without-a-model).
+
 Four workflow skills for a session that runs Branchyard as the person or
 meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
 (when to fan out, harness choice, a result contract, `by fan`, `by compare`,

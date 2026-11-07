@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -256,22 +257,70 @@ class References(Tree):
         plain = [d.kind for _, d in find_tools.rank(same, ["duplex"])]
         weighted = [d.kind for _, d in find_tools.rank(same, ["duplex"], frozenset({"a"}))]
         self.assertEqual(weighted[0], "skill")
+        # Mounted and not chosen, the skill is still read before its reference: the tool factor.
+        mounted = [d.kind for _, d in find_tools.rank(same, ["duplex"], frozenset())]
+        self.assertEqual(mounted[0], "skill")
         scores = {d.kind: s for s, d in find_tools.rank(same, ["duplex"], frozenset({"a"}))}
+        unchosen = {d.kind: s for s, d in find_tools.rank(same, ["duplex"], frozenset())}
         plain_scores = {d.kind: s for s, d in find_tools.rank(same, ["duplex"])}
-        self.assertAlmostEqual(scores["skill"], plain_scores["skill"] * find_tools.CHOSEN)
+        self.assertAlmostEqual(unchosen["skill"], plain_scores["skill"] * find_tools.TOOL)
+        self.assertAlmostEqual(scores["skill"], plain_scores["skill"] * find_tools.TOOL * find_tools.CHOSEN)
         self.assertEqual(scores["reference"], plain_scores["reference"])
+        self.assertEqual(unchosen["reference"], plain_scores["reference"])
         self.assertEqual(len(plain), 2)
+        self.assertGreaterEqual(find_tools.CHOSEN, 1.0)
+        self.assertGreater(find_tools.TOOL, 1.0)
         code, _, _ = run(self.tools, "search", "duplex", "--plain")
         self.assertEqual(code, 0)
 
-    def test_an_overflow_line_means_every_tool_is_chosen(self):
+    def test_an_overflow_line_counts_mounted_tools_which_are_not_chosen(self):
+        """R2: the index names the chosen tools and counts the rest, which are in the tree but not chosen."""
         write(
             self.tools / "INDEX.md",
             "# Your tools\n\n## Skills (skills/NAME/SKILL.md)\n- docx\n- ...3 more: `bin/tools search WORDS`\n",
         )
-        self.assertEqual(find_tools.chosen_tools(self.tools), frozenset({"*"}))
+        chosen = find_tools.chosen_tools(self.tools)
+        self.assertEqual(chosen, frozenset({"docx"}))
+        docs = find_tools.documents(self.tools)
+        self.assertTrue(find_tools.is_chosen(next(d for d in docs if d.id == "docx"), chosen))
+        self.assertFalse(find_tools.is_chosen(next(d for d in docs if d.id == "calculate"), chosen))
+        self.assertTrue(find_tools.is_chosen(next(d for d in docs if d.kind == "helper"), chosen))
+        # The counted skill is still found, below the chosen one on an equal match.
+        code, out, _ = run(self.tools, "search", "arithmetic")
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("skill      calculate"), out)
         write(self.tools / "INDEX.md", "# Your tools\n")
         self.assertEqual(find_tools.chosen_tools(self.tools), frozenset())
+
+    def test_a_references_name_is_indexed_without_its_function_words(self):
+        """A slug such as `cut-a-release-with-the-release-script-then-tag` names nothing by `a`, `with`, `the`
+        or `then`, which are rare among the tools and weighed four times as part of the id (R2)."""
+        write(
+            self.base / "capabilities/calculate/references/cut-a-release-with-the-script-then-tag.md",
+            "# Cut a release with the script, then tag\n\nRun the release script.\n",
+        )
+        docs = find_tools.documents(self.tools)
+        reference = next(d for d in docs if d.id.endswith("then-tag.md"))
+        fields = dict(reference.fields)
+        self.assertEqual(fields["id"], "calculate cut release script tag")
+        self.assertEqual(find_tools.plain_words("the-a-with"), "")
+        # Its title stays whole: the first heading is prose, weighed once.
+        self.assertEqual(fields["title"], "Cut a release with the script, then tag")
+        self.assertNotIn("then", fields["body"].split())
+
+    def test_a_provenance_line_is_not_indexed(self):
+        """`Approved by` and `Evidence:` lines, which every memory reference ends with, cite where the text
+        came from, as `Source:` does; their dates and names are not what the reference says."""
+        write(
+            self.base / "capabilities/calculate/references/bench.md",
+            "# Bench\n\nRun the large fixture.\n\nApproved by quokka on 2026-11-07.\n"
+            "Evidence: branch wallaby turn 3.\n",
+        )
+        words = find_tools.content_words((self.base / "capabilities/calculate/references/bench.md").read_text())
+        self.assertIn("fixture", words.split())
+        for absent in ("quokka", "2026", "wallaby", "approved", "evidence"):
+            self.assertNotIn(absent, words.split(), absent)
+        self.assertEqual(find_tools.PROVENANCE, ("Source:", "License:", "Approved by ", "Evidence:"))
 
     def test_references_never_reorder_the_tools_among_themselves(self):
         docs = find_tools.documents(self.tools)
@@ -281,6 +330,59 @@ class References(Tree):
             with_references = [d.id for _, d in find_tools.rank(docs, words) if d.kind != "reference"]
             without = [d.id for _, d in find_tools.rank(tools_only, words)]
             self.assertEqual(with_references, without, words)
+
+
+class SkillLog(unittest.TestCase):
+    """Each search and show is noted in `.branchyard/turn/skills.jsonl` for the engine (R2), never the words."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.tools = fixture(self.home / ".branchyard")
+        self.log = self.home / ".branchyard/turn/skills.jsonl"
+
+    def lines(self) -> list[dict]:
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_search_and_a_show_are_noted_beside_the_tree(self):
+        self.assertEqual(run(self.tools, "search", "word", "document", "word")[0], 0)
+        self.assertEqual(run(self.tools, "show", "docx")[0], 0)
+        self.assertEqual(run(self.tools, "show", "docx/references/layouts.md")[0], 0)
+        self.assertEqual(run(self.tools, "show", "github")[0], 0)
+        self.assertEqual(run(self.tools, "search", "no-such-thing-anywhere")[0], 1)
+        self.assertEqual(oct(self.log.stat().st_mode & 0o777), "0o600")
+        noted = self.lines()
+        self.assertEqual([n["action"] for n in noted], ["searched", "opened", "opened", "opened", "searched"])
+        searched = noted[0]
+        self.assertEqual(searched["terms"], 2)
+        self.assertEqual(searched["results"][0], "skill:docx")
+        self.assertEqual((searched["kind"], searched["plain"]), (None, False))
+        self.assertNotIn("word", json.dumps(searched))
+        self.assertIsInstance(searched["at_ms"], int)
+        self.assertEqual((noted[1]["id"], noted[1]["kind"], noted[1]["level"]), ("docx", "skill", 2))
+        self.assertGreater(noted[1]["bytes"], 0)
+        self.assertEqual((noted[2]["id"], noted[2]["level"]), ("docx/references/layouts.md", 3))
+        self.assertEqual((noted[3]["kind"], noted[3]["level"], noted[3]["bytes"]), ("connector", 1, 0))
+        self.assertEqual(noted[4]["results"], [])
+
+    def test_a_tree_outside_a_home_notes_nothing_and_a_sandbox_notes_under_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = fixture(Path(tmp))
+            self.assertIsNone(find_tools.log_path(plain))
+            self.assertEqual(run(plain, "search", "word")[0], 0)
+            self.assertFalse((Path(tmp) / ".branchyard").exists())
+            with unittest.mock.patch.dict(os.environ, {"BRANCHYARD_TOOLS": "/tools", "HOME": tmp}):
+                self.assertEqual(find_tools.log_path(Path("/tools")), Path(tmp) / ".branchyard/turn/skills.jsonl")
+                self.assertEqual(run(plain, "show", "calculate")[0], 0)
+            noted = json.loads((Path(tmp) / ".branchyard/turn/skills.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual(noted["id"], "calculate")
+
+    def test_an_unwritable_log_does_not_fail_the_command(self):
+        write(self.home / ".branchyard/turn", "a file where the directory goes")
+        code, out, _ = run(self.tools, "search", "word", "document")
+        self.assertEqual(code, 0)
+        self.assertIn("docx", out)
 
 
 class Show(Tree):
