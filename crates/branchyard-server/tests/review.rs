@@ -192,6 +192,17 @@ fn a_review_is_one_prompt_with_the_lines_it_is_about_and_marks_what_a_later_turn
     let comments = &reviews.reviews[0].comments;
     assert_eq!(comments[0].addressed_in.as_deref(), Some(now.as_str()));
     assert_eq!(comments[1].addressed_in, None);
+    // A retry of the accepted review with its key, after the agent made a
+    // new candidate, is answered from the accepted result: the same
+    // operation and prompt, and no second prompt delivered.
+    let retried = repo.review("rev", &request, &key).unwrap();
+    assert_eq!(retried.operation, sent.operation);
+    assert_eq!(retried.prompt, sent.prompt);
+    let delivered = prompts(&repo.events("rev", 0).unwrap().events)
+        .into_iter()
+        .filter(|p| p.contains("Review comments on this branch's changes"))
+        .count();
+    assert_eq!(delivered, 1, "the retry delivers nothing");
     // The old candidate's numbers no longer place a comment.
     let late = send(&ReviewRequest {
         comments: vec![comment(None, 2, "x")],

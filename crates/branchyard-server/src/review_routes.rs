@@ -28,7 +28,7 @@ use crate::api::{
     admit_send, blocking, existing, idempotency, incoming_trace, Caller, JsonBody, SendTo, Shared,
 };
 use crate::error::{self, ApiError};
-use crate::store::Lane;
+use crate::store::{Idempotency, Lane};
 
 /// How long a steered review waits to leave `pending`, as a steer does.
 const STEER_WAIT: Duration = Duration::from_secs(10);
@@ -103,6 +103,19 @@ fn feedback(request: &ReviewRequest, commit: Option<String>) -> Feedback {
     }
 }
 
+/// Keep the answer to a review under its idempotency key, if it has one.
+fn remember(app: &Shared, idem: &Option<Idempotency>, sent: &ReviewSent) {
+    if let (Some(idem), Ok(value)) = (idem, serde_json::to_value(sent)) {
+        app.storage_idem.put_value(
+            &idem.caller,
+            &idem.key,
+            &idem.fingerprint,
+            StatusCode::OK,
+            value,
+        );
+    }
+}
+
 /// Send a review to the branch.
 async fn post_review(
     State(app): State<Shared>,
@@ -114,9 +127,11 @@ async fn post_review(
     let repo = app.authorized_repo(&caller, &repo, "run")?.clone();
     let route = format!("POST /v1/repos/{}/branches/{branch}/reviews", repo.name);
     let idem = idempotency(&headers, &caller, &route, &canonical)?;
-    // A steer makes no operation, so its answer is kept here: a retry with
-    // the same key gets it back and steers nothing.
-    if let (ReviewDelivery::Steer, Some(idem)) = (request.delivery, &idem) {
+    // The answer of a review already accepted under this key is kept (a
+    // steer makes no operation to find it by), and a retry gets it back
+    // before the diff is read: the turn the review started may have made a
+    // new candidate, which must not turn the retry into `stale_candidate`.
+    if let Some(idem) = &idem {
         if let Some((status, value)) =
             app.storage_idem
                 .get(&idem.caller, &idem.key, &idem.fingerprint)?
@@ -154,6 +169,7 @@ async fn post_review(
         })
         .await??
     };
+    let idem_kept = idem.clone();
     let record = feedback(&request, commit);
     let comments = u32::try_from(request.comments.len()).unwrap_or(u32::MAX);
     match request.delivery {
@@ -182,14 +198,15 @@ async fn post_review(
                     .await?
                     .map_err(|e| error::sdk(&e))?;
             }
-            Ok(Json(ReviewSent {
+            let sent = ReviewSent {
                 delivery: ReviewDelivery::NextTurn,
                 comments,
                 prompt,
                 operation: Some(op.id),
                 steer: None,
-            })
-            .into_response())
+            };
+            remember(&app, &idem_kept, &sent);
+            Ok(Json(sent).into_response())
         }
         ReviewDelivery::Steer => {
             let yard = repo.yard.clone();
@@ -219,15 +236,7 @@ async fn post_review(
                 operation: None,
                 steer: Some(steer),
             };
-            if let (Some(idem), Ok(value)) = (&idem, serde_json::to_value(&sent)) {
-                app.storage_idem.put_value(
-                    &idem.caller,
-                    &idem.key,
-                    &idem.fingerprint,
-                    StatusCode::OK,
-                    value,
-                );
-            }
+            remember(&app, &idem_kept, &sent);
             Ok(Json(sent).into_response())
         }
     }
