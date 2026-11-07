@@ -2263,7 +2263,7 @@ fn a_tool_use_block_logs_a_target_and_never_its_content() {
             ToolTarget::mcp(Some("branchyard"), "spawn"),
             ToolTarget::file("out/report.md", "/workspace"),
             ToolTarget::command(
-                "curl -H 'Authorization: Bearer [redacted] https://[redacted]@host/x"
+                "curl -H 'Authorization: Bearer [redacted]' https://[redacted]@host/x"
             ),
             None,
         ]

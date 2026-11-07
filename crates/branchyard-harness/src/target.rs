@@ -228,10 +228,7 @@ fn after_marker(raw: &str) -> Option<&str> {
 /// each word that is an absolute path reduced as [`path`] reduces it.
 pub fn command(raw: &str, cwd: &str) -> Option<String> {
     let unwrapped = unwrap_shell(raw.trim());
-    let words: Vec<String> = unwrapped
-        .split_whitespace()
-        .map(|word| word.chars().filter(|c| !c.is_control()).collect())
-        .collect();
+    let words = command_words(unwrapped);
     if words.is_empty() {
         return None;
     }
@@ -239,11 +236,52 @@ pub fn command(raw: &str, cwd: &str) -> Option<String> {
         .iter()
         .map(|word| reduce_path_word(word, cwd))
         .collect();
-    Some(cut(&reduced.join(" "), COMMAND_MAX))
+    let rendered: Vec<String> = reduced.iter().map(|word| render_word(word)).collect();
+    Some(cut(&rendered.join(" "), COMMAND_MAX))
 }
 
-/// `word` with its path, when it is one (`/a/b`, `'/a/b'`), reduced.
+/// `text` split into words as a shell would (`shlex`): quotes and
+/// backslash escapes are resolved, so `--password 'first second'` is two
+/// words, the second one `first second`. An unterminated quote is closed;
+/// text the splitter still refuses is split at whitespace. Whitespace inside
+/// a word is one space and other control characters are dropped.
+fn command_words(text: &str) -> Vec<String> {
+    let words = shlex::split(text)
+        .or_else(|| shlex::split(&format!("{text}'")))
+        .or_else(|| shlex::split(&format!("{text}\"")))
+        .unwrap_or_else(|| text.split_whitespace().map(str::to_owned).collect());
+    words
+        .into_iter()
+        .map(|word| {
+            word.chars()
+                .filter(|c| c.is_whitespace() || !c.is_control())
+                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                .collect()
+        })
+        .collect()
+}
+
+/// `word` as a shell word again: quoted when it holds a space, a quote, a
+/// backslash or nothing, as it was typed otherwise.
+fn render_word(word: &str) -> String {
+    let plain = !word.is_empty() && !word.contains([' ', '\'', '"', '\\']);
+    match plain {
+        true => word.to_owned(),
+        false => shlex::try_quote(word)
+            .map_or_else(|_| word.to_owned(), |quoted| quoted.into_owned()),
+    }
+}
+
+/// `word` with its path, when it is one (`/a/b`, `'/a/b'`), reduced; a word
+/// that holds spaces (a quoted argument) is reduced piece by piece.
 fn reduce_path_word(word: &str, cwd: &str) -> String {
+    if word.contains(' ') {
+        return word
+            .split(' ')
+            .map(|piece| reduce_path_word(piece, cwd))
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
     let quotes = |c: char| matches!(c, '\'' | '"' | ';' | '(' | ')');
     let core = word.trim_matches(quotes);
     if !core.starts_with('/') || core.len() < 2 {
@@ -461,13 +499,44 @@ fn secret_header(name: &str, after_header_flag: bool) -> bool {
     ends && (after_header_flag || lower.contains('-'))
 }
 
+/// `-H'Name: value'` and `--header='Name: value'` as the flag and its
+/// value, so the header is judged as one after `-H`.
+fn detach_headers(words: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(words.len());
+    for word in words {
+        let rest = match word.strip_prefix("--header=") {
+            Some(rest) => Some(("--header", rest)),
+            None => word
+                .strip_prefix("-H")
+                .filter(|_| !word.starts_with("--"))
+                .map(|rest| ("-H", rest)),
+        };
+        match rest {
+            Some((flag, rest)) if rest.contains(':') => {
+                out.push(flag.to_owned());
+                out.push(rest.to_owned());
+            }
+            _ => out.push(word.clone()),
+        }
+    }
+    out
+}
+
+/// A word that holds spaces (a quoted argument, decoded), scrubbed piece by
+/// piece: `echo "a token=abc"` keeps its shape and loses the value.
+fn scrub_spaced(word: &str) -> String {
+    let pieces: Vec<String> = word.split_whitespace().map(str::to_owned).collect();
+    scrub_words(&pieces).join(" ")
+}
+
 fn scrub_words(words: &[String]) -> Vec<String> {
+    let words = detach_headers(words);
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
     let mut program: Option<String> = None;
     let mut previous = String::new();
     let mut login = false;
-    for word in words {
+    for word in &words {
         let lower = word.to_ascii_lowercase();
         if separator(word) {
             program = None;
@@ -500,18 +569,32 @@ fn scrub_words(words: &[String]) -> Vec<String> {
             hide_next = true;
             continue;
         }
-        // A header, quoted or not: `Name: value`, `"Name: value`, `Name:value`.
+        // A header, quoted or not: `Name: value`, `"Name: value"`,
+        // `"Name: value`, `Name:value`.
         let core = word.trim_start_matches(['\'', '"']);
         if let Some((name, value)) = core.split_once(':') {
             if !core.contains("://") && secret_header(name, after_header_flag) {
                 let lead = &word[..word.len() - core.len()];
-                let value = value.trim_matches(['\'', '"']);
+                let close = lead
+                    .chars()
+                    .last()
+                    .filter(|q| core.len() > 1 && word.ends_with(*q))
+                    .map(String::from)
+                    .unwrap_or_default();
+                let space = if value.starts_with(' ') { " " } else { "" };
+                let value = value.trim().trim_matches(['\'', '"']);
+                let (first, rest) = value.split_once(' ').unwrap_or((value, ""));
+                let scheme = matches!(first.to_ascii_lowercase().as_str(), "bearer" | "basic");
                 if value.is_empty() {
                     out.push(word.clone());
                     hide_next = true;
-                } else {
+                } else if scheme && rest.is_empty() {
                     out.push(format!("{lead}{name}:{REDACTED}"));
-                    hide_next = matches!(value.to_ascii_lowercase().as_str(), "bearer" | "basic");
+                    hide_next = true;
+                } else if scheme {
+                    out.push(format!("{lead}{name}:{space}{first} {REDACTED}{close}"));
+                } else {
+                    out.push(format!("{lead}{name}:{space}{REDACTED}{close}"));
                 }
                 continue;
             }
@@ -578,7 +661,9 @@ fn scrub_words(words: &[String]) -> Vec<String> {
                 continue;
             }
         }
-        if word.contains("://") {
+        if word.contains(' ') {
+            out.push(scrub_spaced(word));
+        } else if word.contains("://") {
             out.push(redact_url(word));
         } else if tool == "git" && commit_id(word) {
             out.push(word.clone());
@@ -653,7 +738,7 @@ mod tests {
     fn a_command_is_one_line_scrubbed_and_bounded() {
         assert_eq!(
             command("API_TOKEN=abc123 curl -H 'Authorization: Bearer abc.def' https://u:pw@host/x --password hunter2", "").as_deref(),
-            Some("API_TOKEN=[redacted] curl -H 'Authorization: Bearer [redacted] https://[redacted]@host/x --password [redacted]")
+            Some("API_TOKEN=[redacted] curl -H 'Authorization: Bearer [redacted]' https://[redacted]@host/x --password [redacted]")
         );
         assert_eq!(
             command("git push\n  --token=zzz origin ghp_abcdefghijklmnop", "").as_deref(),
@@ -684,7 +769,7 @@ mod tests {
                 "/workspace"
             )
             .as_deref(),
-            Some("python3 scripts/run.py --out 'out.txt'")
+            Some("python3 scripts/run.py --out out.txt")
         );
         assert_eq!(
             command("cat /tools/skills/docx/SKILL.md;", "/workspace").as_deref(),
@@ -777,31 +862,31 @@ mod tests {
             ),
             (
                 r#"curl -H "X-Api-Key: abc123" https://h/x"#.into(),
-                r#"curl -H "X-Api-Key: [redacted] https://h/x"#,
+                r#"curl -H 'X-Api-Key: [redacted]' https://h/x"#,
             ),
             (
                 "curl -H 'X-Api-Key:abc123' https://h/x".into(),
-                "curl -H 'X-Api-Key:[redacted] https://h/x",
+                "curl -H X-Api-Key:[redacted] https://h/x",
             ),
             (
                 r#"curl -H "X-Auth-Token: abc123" https://h"#.into(),
-                r#"curl -H "X-Auth-Token: [redacted] https://h"#,
+                r#"curl -H 'X-Auth-Token: [redacted]' https://h"#,
             ),
             (
                 r#"curl -H "X-Client-Secret: abc123" https://h"#.into(),
-                r#"curl -H "X-Client-Secret: [redacted] https://h"#,
+                r#"curl -H 'X-Client-Secret: [redacted]' https://h"#,
             ),
             (
                 r#"curl -H "Authorization: Bearer abc.def" https://h"#.into(),
-                r#"curl -H "Authorization: Bearer [redacted] https://h"#,
+                r#"curl -H 'Authorization: Bearer [redacted]' https://h"#,
             ),
             (
                 r#"curl -H "Authorization: Basic dTpw" https://h"#.into(),
-                r#"curl -H "Authorization: Basic [redacted] https://h"#,
+                r#"curl -H 'Authorization: Basic [redacted]' https://h"#,
             ),
             (
                 "curl -H 'Cookie: sid=1234' https://h".into(),
-                "curl -H 'Cookie: [redacted] https://h",
+                "curl -H 'Cookie: [redacted]' https://h",
             ),
             (
                 format!("aws configure set aws_secret_access_key {AWS_SECRET}"),
@@ -814,7 +899,7 @@ mod tests {
             ),
             (
                 "curl 'https://h/x?access_token=abc&page=2'".into(),
-                "curl 'https://h/x?access_token=[redacted]&page=2'",
+                "curl https://h/x?access_token=[redacted]&page=2",
             ),
             (
                 "curl https://h/x?a=1&signature=zzz&token=t".into(),
@@ -828,6 +913,99 @@ mod tests {
         for (raw, want) in cases {
             assert_eq!(command(&raw, "").as_deref(), Some(want), "{raw}");
         }
+    }
+
+    #[test]
+    fn quoted_secrets_with_spaces_are_redacted_whole() {
+        // (command, what the logged command must be). No part of the secret
+        // may remain, whatever the quoting.
+        let cases: [(&str, &str); 14] = [
+            (
+                "client --password 'first second'",
+                "client --password [redacted]",
+            ),
+            (
+                r#"client --password "first second" next"#,
+                "client --password [redacted] next",
+            ),
+            (
+                r#"client --password "say \"hi\" there" next"#,
+                "client --password [redacted] next",
+            ),
+            (
+                "client --password='first second' next",
+                "client --password=[redacted] next",
+            ),
+            (
+                r#"client --token="first second" next"#,
+                "client --token=[redacted] next",
+            ),
+            (
+                "client --password first\\ second next",
+                "client --password [redacted] next",
+            ),
+            (
+                r#"curl -H "X-Api-Key: a b" https://h"#,
+                r#"curl -H 'X-Api-Key: [redacted]' https://h"#,
+            ),
+            (
+                "curl -H 'X-Api-Key:a b c' https://h",
+                "curl -H X-Api-Key:[redacted] https://h",
+            ),
+            (
+                "curl -H'X-Api-Key: a b' https://h",
+                "curl -H 'X-Api-Key: [redacted]' https://h",
+            ),
+            (
+                "curl --header='Cookie: sid=a b' https://h",
+                "curl --header 'Cookie: [redacted]' https://h",
+            ),
+            (
+                r#"curl -H "Authorization: Bearer a b" https://h"#,
+                r#"curl -H 'Authorization: Bearer [redacted]' https://h"#,
+            ),
+            (
+                "curl -u 'user:pa ss' https://h",
+                "curl -u [redacted] https://h",
+            ),
+            (
+                "curl -u'user:pa ss' https://h",
+                "curl -u[redacted] https://h",
+            ),
+            (
+                r#"curl --user="user:pa ss" https://h"#,
+                "curl --user=[redacted] https://h",
+            ),
+        ];
+        for (raw, want) in cases {
+            let got = command(raw, "").unwrap_or_default();
+            assert_eq!(got, want, "{raw}");
+            for part in ["first", "second", "pa ss", "pa", "ss'", "a b", "hi"] {
+                if raw.contains(part) && !want.contains(part) {
+                    assert!(!got.contains(part), "{raw} -> {got} keeps {part}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_words_with_spaces_are_scrubbed_inside_and_stay_bounded() {
+        assert_eq!(
+            command(r#"echo "hello token=abc world" done"#, "").as_deref(),
+            Some("echo 'hello token=[redacted] world' done")
+        );
+        assert_eq!(
+            command("echo 'see https://u:pw@h/x now'", "").as_deref(),
+            Some("echo 'see https://[redacted]@h/x now'")
+        );
+        assert_eq!(
+            command("grep 'two words' src/lib.rs", "").as_deref(),
+            Some("grep 'two words' src/lib.rs")
+        );
+        let long = format!("client --password 'a b' {}", "word ".repeat(60));
+        let cut = command(&long, "").unwrap_or_default();
+        assert!(cut.starts_with("client --password [redacted] word"));
+        assert!(cut.chars().count() <= COMMAND_MAX + 3);
     }
 
     #[test]
