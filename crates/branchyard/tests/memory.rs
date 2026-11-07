@@ -375,7 +375,9 @@ fn topics_parser_and_parser_2_coexist_through_add_edit_and_remove() {
         "the other topic's bundle is untouched"
     );
     let remaining = library.read().unwrap();
-    assert!(remaining.iter().any(|m| m.id == other && m.topic == "parser-2"));
+    assert!(remaining
+        .iter()
+        .any(|m| m.id == other && m.topic == "parser-2"));
     // Emptying `parser` removes only its own directory.
     for memory in remaining.iter().filter(|m| m.topic == "parser") {
         library.remove(&memory.id).unwrap();

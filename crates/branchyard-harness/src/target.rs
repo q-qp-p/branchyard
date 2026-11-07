@@ -267,8 +267,9 @@ fn render_word(word: &str) -> String {
     let plain = !word.is_empty() && !word.contains([' ', '\'', '"', '\\']);
     match plain {
         true => word.to_owned(),
-        false => shlex::try_quote(word)
-            .map_or_else(|_| word.to_owned(), |quoted| quoted.into_owned()),
+        false => {
+            shlex::try_quote(word).map_or_else(|_| word.to_owned(), |quoted| quoted.into_owned())
+        }
     }
 }
 
