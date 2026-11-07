@@ -41581,6 +41581,64 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string"
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -41858,6 +41916,63 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before and after."
+            },
+            "to": {
+              "type": "string"
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",
@@ -47422,6 +47537,64 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string"
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -47699,6 +47872,63 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before and after."
+            },
+            "to": {
+              "type": "string"
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",
@@ -59461,6 +59691,64 @@
                 "kind"
               ],
               "description": "The branch started from this pull request's head (`by run --pr`);\nits pull request is that one, so `by pr` pushes to its head and\nupdates it."
+            },
+            {
+              "$ref": "#/$defs/StackLink",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "stacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The branch was started on top of another branch's candidate\n(`by run --base BRANCH`): a stack. Its pull request is opened\nagainst the parent's pull request head."
+            },
+            {
+              "$ref": "#/$defs/Restack",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "restacked"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "The parent's pull request merged: the branch was rebased onto the\nbranch it merged into, and its pull request retargeted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "parent": {
+                  "type": "string"
+                },
+                "onto": {
+                  "type": "string",
+                  "description": "The branch it would have been rebased onto."
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The paths that conflicted."
+                },
+                "kind": {
+                  "type": "string",
+                  "const": "restack_blocked"
+                }
+              },
+              "required": [
+                "kind",
+                "parent",
+                "onto",
+                "files"
+              ],
+              "description": "The same rebase conflicted; the branch is unchanged."
             }
           ],
           "description": "One step on the way from a branch to a merged pull request. Serialized\nas an object tagged by `kind`, such as\n`{\"kind\": \"opened\", \"number\": 7, \"url\": \"...\", ...}`."
@@ -59738,6 +60026,63 @@
             "resolved"
           ],
           "description": "One review thread `by pr --watch` answered and resolved, or tried to."
+        },
+        "StackLink": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent branch's name."
+            },
+            "base": {
+              "type": "string",
+              "description": "The parent's candidate commit this branch started from."
+            }
+          },
+          "required": [
+            "parent",
+            "base"
+          ],
+          "description": "The branch this one is stacked on."
+        },
+        "Restack": {
+          "type": "object",
+          "properties": {
+            "parent": {
+              "type": "string",
+              "description": "The parent whose pull request merged."
+            },
+            "onto": {
+              "type": "string",
+              "description": "The branch it merged into, which this one now sits on and targets."
+            },
+            "onto_commit": {
+              "type": "string",
+              "description": "The commit of `onto` it was rebased onto."
+            },
+            "from": {
+              "type": "string",
+              "description": "Its candidate before and after."
+            },
+            "to": {
+              "type": "string"
+            },
+            "new_parent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The branch it is stacked on now: the parent's own parent when the\nparent was itself stacked, none when it now targets `onto` directly."
+            }
+          },
+          "required": [
+            "parent",
+            "onto",
+            "onto_commit",
+            "from",
+            "to"
+          ],
+          "description": "A stacked branch rebased after its parent's pull request merged."
         },
         "Feedback": {
           "type": "object",

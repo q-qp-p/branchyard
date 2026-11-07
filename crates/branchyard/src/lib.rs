@@ -322,7 +322,7 @@ pub use pool::{
 pub use projection::{ENV_BRANCH, ENV_BY, ENV_ROOT, ENV_TOKEN};
 pub use pull_request::{
     slug, CheckRun, CiSummary, IssueLink, PullRequestActivity, PullRequestObservation,
-    PullRequestRef, Pushed, ResolvedThread,
+    PullRequestRef, Pushed, ResolvedThread, Restack, Restacked, StackLink,
 };
 pub use reported::{Reported, ReportedState, StatusReport};
 pub use review::ReviewSpec;

@@ -90,6 +90,7 @@ mod setup_cmd;
 mod setup_io;
 mod skills_cmd;
 mod ssh_remote;
+mod stack;
 mod startup_cmd;
 mod stats_cmd;
 mod substrate_cmd;

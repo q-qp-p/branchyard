@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Stacked pull requests. `by run --base BRANCH` (and `by fan --base BRANCH`) with the name of a branch starts the new branch on that branch's candidate and records the stack. `by pr` on it opens its pull request against the parent's pull request head and lists the stack in the body; once the parent's pull request has merged, `by pr` and `by pr --watch` rebase the child onto the branch it merged into (only its own commits are replayed, so a squash merge works), push it over its old head if the remote branch is still where `by pr` left it, and retarget its pull request with `gh pr edit --base`. A conflict is recorded (`restack_blocked`) and reported, never forced. `by show` shows the stack. New events `stacked`, `restacked` and `restack_blocked`; see [stacked pull requests](docs/pull-requests.md#stacked-pull-requests). Tested with a fake `gh` and real repositories; not run against GitHub.
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard
