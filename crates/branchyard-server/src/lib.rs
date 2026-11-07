@@ -82,6 +82,7 @@ pub mod error;
 pub mod federated;
 pub mod feed;
 pub mod gcp;
+mod issues;
 pub mod kms;
 pub mod knowledge_routes;
 pub mod logging;

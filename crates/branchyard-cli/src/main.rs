@@ -721,6 +721,11 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             action.as_ref(),
         ),
         Command::Pr { branch, pr } => pr::main(env, target, &branch, &pr),
+        Command::Issue {
+            reference,
+            prompt,
+            json,
+        } => pr::show_issue(target, &reference, &prompt, json),
         Command::Open {
             branch,
             editor,

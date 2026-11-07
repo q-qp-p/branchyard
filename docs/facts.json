@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 145,
+    "route_count": 147,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -159,6 +159,7 @@
       "/v1/repos/{repo}/events/stream",
       "/v1/repos/{repo}/ground",
       "/v1/repos/{repo}/inbox",
+      "/v1/repos/{repo}/issue",
       "/v1/repos/{repo}/knowledge",
       "/v1/repos/{repo}/knowledge/export",
       "/v1/repos/{repo}/knowledge/{id}",
@@ -199,6 +200,7 @@
       "/v1/workspaces/{workspace}/artifacts/{artifact}/preview/assets/{asset}",
       "/v1/workspaces/{workspace}/comments",
       "/v1/workspaces/{workspace}/finalize",
+      "/v1/workspaces/{workspace}/issue",
       "/v1/workspaces/{workspace}/members",
       "/v1/workspaces/{workspace}/members/{subject}",
       "/v1/workspaces/{workspace}/presence",

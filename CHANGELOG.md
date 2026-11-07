@@ -4,6 +4,8 @@
 
 Stacked pull requests. `by run --base BRANCH` (and `by fan --base BRANCH`) with the name of a branch starts the new branch on that branch's candidate and records the stack. `by pr` on it opens its pull request against the parent's pull request head and lists the stack in the body; once the parent's pull request has merged, `by pr` and `by pr --watch` rebase the child onto the branch it merged into (only its own commits are replayed, so a squash merge works), push it over its old head if the remote branch is still where `by pr` left it, and retarget its pull request with `gh pr edit --base`. A conflict is recorded (`restack_blocked`) and reported, never forced. `by show` shows the stack. New events `stacked`, `restacked` and `restack_blocked`; see [stacked pull requests](docs/pull-requests.md#stacked-pull-requests). Tested with a fake `gh` and real repositories; not run against GitHub.
 
+Starting from an issue on a server. `by issue REF` shows what `by run --issue REF` would start from. `TaskRequest.issue` and `StartSessionRequest.issue` take the same references; the server resolves them by running `by issue --json` with its own `gh` login and tracker credentials, and refuses an unreachable one with `issue_unavailable` and a `next:` step. `GET /v1/repos/{repo}/issue` and `GET /v1/workspaces/{id}/issue` preview it, the console's new-session form gets "Start from an issue" (look up, see the title, start), and the Rust and Python clients gain `issue` calls. See [starting from an issue on a server](docs/pull-requests.md#by-issue-and-starting-from-an-issue-on-a-server).
+
 ## 0.5.0 - 2026-11-07
 
 A harness's own permissions and Branchyard's policy now compose: a Branchyard

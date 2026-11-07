@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->145<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->147<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -343,7 +343,7 @@ GitHub is reached through the user's `gh`, which runs where the repository and i
 
 | Operation | SDK | by | by --remote | HTTP | client | delegation |
 |---|---|---|---|---|---|---|
-| Start from an issue | no: pass the prompt; `slug` names the branch | `run`, `fan`, `spawn` `--issue URL\|#N\|N` | yes: `gh` runs on the client, the server gets the prompt (the link is its header; no `issue_linked` event) | n/a | n/a | `spawn --issue`, with the harness's own `gh` login; the link is the prompt's header |
+| Start from an issue | no: pass the prompt; `slug` names the branch | `run`, `fan`, `spawn` `--issue URL\|#N\|N`; `issue REF` shows what it would start from | yes: `gh` runs on the client, the server gets the prompt (the link is its header; no `issue_linked` event); or `TaskRequest.issue`, which the server resolves with its own credentials | `POST .../tasks` with `issue`; `GET /v1/repos/{repo}/issue?ref=`; `POST /v1/workspaces/{id}/sessions` with `issue`; `GET /v1/workspaces/{id}/issue?ref=` | `Repo::issue`, `Client::workspace_issue`; Python `task(issue=)`, `issue()`, `start_workspace_session(issue=)`, `workspace_issue()` | `spawn --issue`, with the harness's own `gh` login; the link is the prompt's header |
 | Stack a branch on another's candidate | `run`'s `base` is a revision; `Branch::record_pull_request(Stacked)` records it | `run`, `fan` `--base BRANCH` (a branch name stacks) | no: the server's `base` is a revision | n/a | n/a | no |
 | Rebase a stacked branch after its parent merged | `Branch::restack` (`branchyard-workspace`'s `Workspace::rebase_onto`) | inside `pr` and `pr --watch` | no: `pr` is local only | no | no | no |
 | Check the candidate alone | `Branch::verify_candidate` | inside `pr` | no: `pr` is local only | no | no | no |

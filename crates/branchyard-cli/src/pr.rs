@@ -342,6 +342,45 @@ pub fn issue_task(
     ))
 }
 
+/// `by issue`: fetch the issue as `--issue` would and print what a run
+/// would start from. Starts nothing; the server runs it to resolve an
+/// issue for a task or session.
+pub fn show_issue(target: &Target, given: &str, extra: &str, as_json: bool) -> Outcome {
+    if let Target::Remote(_) = target {
+        return Err(crate::errors::Report::new(
+            "unsupported",
+            "by issue fetches the issue on this machine, with its gh login and tracker \
+             credentials",
+        )
+        .next("run it without --remote")
+        .into());
+    }
+    let yard = commands::open().ok();
+    let task = TaskArgs {
+        issue: Some(given.to_owned()),
+        ..TaskArgs::default()
+    };
+    let (prompt, task, link) = issue_task(extra, &task, yard.as_ref())?;
+    let Some(Link::Issue(issue)) = link else {
+        return Err(crate::errors::Report::usage("by issue takes an issue").into());
+    };
+    let branch = task.name.unwrap_or_default();
+    if as_json {
+        return print(&json::text(&json!({
+            "issue": issue,
+            "branch": branch,
+            "prompt": prompt,
+        })));
+    }
+    print(&format!(
+        "{} {}: {}\n{}\nbranch  {branch}\n\n{prompt}",
+        issue.tracker.as_deref().unwrap_or("github"),
+        link_reference(&issue),
+        issue.title,
+        issue.url
+    ))
+}
+
 /// `--pr N`: start from pull request N's head commit, fetched from
 /// `origin` when it is not here yet. The prompt names the pull request;
 /// when its head is a branch of this repository (not a fork), `by pr`

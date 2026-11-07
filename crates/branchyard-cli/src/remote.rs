@@ -918,6 +918,7 @@ fn run_request(
     let provider = provider(task)?;
     let request = TaskRequest {
         prompt: prompt.to_owned(),
+        issue: None,
         harness: task.harness.clone(),
         harnesses: Vec::new(),
         name: task.name.clone(),
@@ -1104,6 +1105,7 @@ fn fan_request(
     let provider = provider(task)?;
     let request = TaskRequest {
         prompt: prompt.to_owned(),
+        issue: None,
         harness: None,
         harnesses: harnesses.to_vec(),
         name: task.name.clone(),
@@ -1155,6 +1157,7 @@ pub fn map(env: &Env, remote: &Remote, args: &crate::args::MapArgs, json: bool) 
         retry_failed: args.retry_failed,
         task: TaskRequest {
             prompt: prompt.clone(),
+            issue: None,
             harness: task.harness.clone(),
             harnesses: Vec::new(),
             name: None,
@@ -1675,6 +1678,7 @@ pub fn rig(env: &Env, remote: &Remote, plan: &RigPlan, prompt: &str, args: &RigA
         .collect();
     let request = TaskRequest {
         prompt: prompt.to_owned(),
+        issue: None,
         harness: Some(root.harness.clone()),
         harnesses: Vec::new(),
         name: Some(args.name.clone().unwrap_or_else(|| root.name.clone())),

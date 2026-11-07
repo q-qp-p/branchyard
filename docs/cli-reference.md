@@ -1142,6 +1142,22 @@ Remove every ready slot on this host
 by env pool drain [OPTIONS]
 ```
 
+## `by issue`
+
+Show the issue by run --issue would start from, and start nothing
+
+Fetches it as --issue does (gh for GitHub; Linear, Jira and GitLab through their API or the connector gateway) and prints its title, URL, the branch name by run would give it and the prompt it would send. The server runs this to resolve an issue for a task or a session; see docs/pull-requests.md.
+
+```text
+by issue [OPTIONS] <REFERENCE> [PROMPT]
+```
+
+| Option | What it does |
+|---|---|
+| `<REFERENCE>` | The issue: a GitHub URL, #N or N, linear:KEY, jira:KEY, gitlab:GROUP/PROJECT#N, or a Linear, Jira or GitLab URL |
+| `<PROMPT>` | Instructions to add to the prompt, as by run --issue REF "..." would |
+| `--json` | Print JSON |
+
 ## `by review`
 
 Comment on a branch's diff in your editor and send the comments

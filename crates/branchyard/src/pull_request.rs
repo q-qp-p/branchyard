@@ -71,6 +71,7 @@ pub enum PullRequestActivity {
     Restacked(Restack),
     /// The same rebase conflicted; the branch is unchanged.
     RestackBlocked {
+        /// The parent whose pull request merged.
         parent: String,
         /// The branch it would have been rebased onto.
         onto: String,
@@ -99,8 +100,9 @@ pub struct Restack {
     pub onto: String,
     /// The commit of `onto` it was rebased onto.
     pub onto_commit: String,
-    /// Its candidate before and after.
+    /// Its candidate before the rebase.
     pub from: String,
+    /// Its candidate after the rebase.
     pub to: String,
     /// The branch it is stacked on now: the parent's own parent when the
     /// parent was itself stacked, none when it now targets `onto` directly.
@@ -112,7 +114,12 @@ pub struct Restack {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Restacked {
     /// Rebased: the candidate before and after.
-    Done { from: String, to: String },
+    Done {
+        /// The candidate before the rebase.
+        from: String,
+        /// The candidate after it.
+        to: String,
+    },
     /// A commit did not apply; nothing changed. The conflicting paths.
     Conflict(Vec<String>),
     /// The branch already sits on `onto`.

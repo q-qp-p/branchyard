@@ -601,6 +601,16 @@ impl Repo {
         self.path(&format!("/branches/{}{rest}", encode(branch)))
     }
 
+    /// The issue `reference` names (a GitHub URL, `#N`, `linear:KEY`, ...)
+    /// as a task with `TaskRequest::issue` would start from it, fetched with
+    /// the server's own `gh` login and tracker credentials. Starts nothing.
+    /// Refused with `issue_unavailable` when it cannot be fetched.
+    pub fn issue(&self, reference: &str) -> Result<crate::api::IssuePreview, Error> {
+        let mut query = String::new();
+        push_query(&mut query, "ref", reference);
+        self.client.get(&self.path(&format!("/issue{query}")))
+    }
+
     /// Start a task. Returns once the server has durably accepted it.
     pub fn submit_task(&self, request: &TaskRequest, key: &str) -> Result<Operation, Error> {
         self.client.post(&self.path("/tasks"), request, key)
