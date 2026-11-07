@@ -31,3 +31,26 @@ area = "distractors"
 prompt = "In two sentences, what does a rebase do compared with a merge?"
 skills = ["calculate", "find-tools"]
 none = true
+
+# Close to the workflow skills' vocabulary (pull requests, budgets, issues), but a plain answer is right.
+
+[[scenario]]
+id = "distractor-squash-merge"
+area = "distractors"
+prompt = "In two sentences, what does a squash merge do to a pull request's commits compared with a rebase merge?"
+skills = ["pr-feedback-loop", "issue-pr", "fan-judge", "find-tools"]
+none = true
+
+[[scenario]]
+id = "distractor-token-budget"
+area = "distractors"
+prompt = "In two sentences, what is a context window budget for a language model, and why does it matter for long prompts?"
+skills = ["budgeted-explore", "fan-judge", "find-tools"]
+none = true
+
+[[scenario]]
+id = "distractor-issue-template"
+area = "distractors"
+prompt = "Write me a short bug report template with sections for steps to reproduce, expected behavior and actual behavior."
+skills = ["issue-pr", "docx", "find-tools"]
+none = true

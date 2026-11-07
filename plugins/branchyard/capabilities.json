@@ -78,6 +78,55 @@
       "topic": "workflows"
     },
     {
+      "id": "fan-judge",
+      "description": "Fan one task across several harnesses, then compare, judge and pick the best attempt within per-attempt budgets.",
+      "requires": [],
+      "topic": "workflows",
+      "keywords": [
+        "fan",
+        "attempts",
+        "judge",
+        "winner"
+      ]
+    },
+    {
+      "id": "pr-feedback-loop",
+      "description": "Open a GitHub pull request for a ready branch and loop CI and review feedback back into it, stacking large changes, until merge.",
+      "requires": [],
+      "topic": "workflows",
+      "keywords": [
+        "pr",
+        "ci",
+        "stacked",
+        "gh"
+      ]
+    },
+    {
+      "id": "budgeted-explore",
+      "description": "Run cost-bounded investigation with spending, turn and time limits, read-only access and stop rules.",
+      "requires": [],
+      "topic": "workflows",
+      "keywords": [
+        "explore",
+        "budget",
+        "dollars",
+        "spike"
+      ]
+    },
+    {
+      "id": "issue-pr",
+      "description": "Turn tracker issues (GitHub, Linear, Jira, GitLab) into branches and linked pull requests.",
+      "requires": [],
+      "topic": "workflows",
+      "keywords": [
+        "issue",
+        "ticket",
+        "linear",
+        "jira",
+        "gitlab"
+      ]
+    },
+    {
       "id": "source-capture",
       "description": "Snapshot retrieved local sources with origin metadata, exact hashes and page, paragraph or cell anchors for later evidence checks.",
       "requires": [
@@ -139,6 +188,10 @@
           "path": "../artifact-tools/scripts/branchyard_artifacts/examples/claim-verify.json",
           "description": "claim-verify request example"
         }
+      ],
+      "keywords": [
+        "numbers",
+        "inference"
       ]
     },
     {

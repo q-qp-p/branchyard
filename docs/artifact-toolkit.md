@@ -25,6 +25,10 @@ integrity and visual review, with progressively loaded design guidance.
 | `google-sheets` | Create, inspect and update native Google Sheets, including ranges, calculations and pivots supported by the granted connector. | `artifact-tools` |
 | `google-slides` | Create, inspect and update native Google Slides through a granted connector while preserving presentation identity, layouts and permissions. | `artifact-tools` |
 | `parallel-deck` | Split a large presentation into independently owned section specifications and assemble checked editable slides with one renderer. | `pptx` |
+| `fan-judge` | Fan one task across several harnesses, then compare, judge and pick the best attempt within per-attempt budgets. | none |
+| `pr-feedback-loop` | Open a GitHub pull request for a ready branch and loop CI and review feedback back into it, stacking large changes, until merge. | none |
+| `budgeted-explore` | Run cost-bounded investigation with spending, turn and time limits, read-only access and stop rules. | none |
+| `issue-pr` | Turn tracker issues (GitHub, Linear, Jira, GitLab) into branches and linked pull requests. | none |
 | `source-capture` | Snapshot retrieved local sources with origin metadata, exact hashes and page, paragraph or cell anchors for later evidence checks. | `artifact-tools` |
 | `table-extract` | Extract local PDF, DOCX and XLSX tables into reviewable records with source hashes and page, table or sheet locations. | `artifact-tools` |
 | `data-clean` | Normalize local CSV data with explicit trim, null, type and duplicate policies while preserving identifiers and recording changes. | `artifact-tools` |

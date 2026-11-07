@@ -1,0 +1,134 @@
+# Branchyard workflow skills: fan-judge, pr-feedback-loop, budgeted-explore, issue-pr.
+# They are for a session that runs Branchyard as the person or meta-harness. A prompt never names a skill.
+# The `must_not` rows at the end are distractors: asks that sound close and must not open them. The asks
+# that need no skill at all are in distractors.toml.
+
+[[scenario]]
+id = "fan-three-approaches"
+area = "workflows"
+prompt = "I am not sure whether the rate limiter should use a token bucket or a sliding window. Get a few different harnesses to each try it on their own, then tell me which attempt is best and why."
+skills = ["fan-judge", "pr-feedback-loop", "budgeted-explore", "issue-pr", "find-tools"]
+expect_skills = ["fan-judge"]
+
+[[scenario]]
+id = "fan-pick-winner"
+area = "workflows"
+prompt = "Codex and Claude each made an attempt at the flaky scheduler test and I have both branches. Compare the attempts, judge which is stronger, and merge the winner."
+skills = ["fan-judge", "pr-feedback-loop", "issue-pr", "find-tools"]
+expect_skills = ["fan-judge"]
+must_not = ["pr-feedback-loop"]
+
+[[scenario]]
+id = "fan-contract-research"
+area = "workflows"
+prompt = "I want three independent attempts at auditing our retry logic, each returning the same JSON shape with findings and evidence, so the results can be compared and the weakest thrown out."
+skills = ["fan-judge", "budgeted-explore", "pr-feedback-loop", "find-tools"]
+expect_skills = ["fan-judge"]
+
+[[scenario]]
+id = "pr-watch-ci-reviews"
+area = "workflows"
+prompt = "The branch is done and its check passes. Open the pull request, then keep an eye on it: when CI fails or a reviewer leaves comments, get the fixes made on the branch and pushed without me relaying anything."
+skills = ["pr-feedback-loop", "issue-pr", "fan-judge", "find-tools"]
+expect_skills = ["pr-feedback-loop"]
+must_not = ["issue-pr"]
+
+[[scenario]]
+id = "pr-stack-large-change"
+area = "workflows"
+prompt = "This refactor is too big for one pull request. Split it into a chain of small reviewable ones where each builds on the previous, and make sure the later ones follow when an earlier one merges."
+skills = ["pr-feedback-loop", "fan-judge", "issue-pr", "parallel-deck", "find-tools"]
+expect_skills = ["pr-feedback-loop"]
+
+[[scenario]]
+id = "pr-review-before-push"
+area = "workflows"
+prompt = "Before anything goes to GitHub I want to read the agent's diff myself, leave inline comments on a few lines, and have it fix those before the pull request exists. Then tell me if it is ready to merge."
+skills = ["pr-feedback-loop", "issue-pr", "fan-judge", "find-tools"]
+expect_skills = ["pr-feedback-loop"]
+
+[[scenario]]
+id = "budget-bounded-audit"
+area = "workflows"
+prompt = "Investigate why our nightly import is slow, but I do not want to spend more than a dollar or twenty minutes on it. Keep it read-only, stop when you have an answer with evidence, and tell me what it cost."
+skills = ["budgeted-explore", "fan-judge", "find-tools"]
+expect_skills = ["budgeted-explore"]
+
+[[scenario]]
+id = "budget-many-items"
+area = "workflows"
+prompt = "Check each of the 200 vendors in vendors.csv against our policy and summarize the risk. Start cheap, cap the whole thing at five dollars, and only dig deeper on the ones that look bad."
+files = { "vendors.csv" = "vendor,country\nAcme,US\nGlobex,DE\n" }
+skills = ["budgeted-explore", "fan-judge", "data-clean", "find-tools"]
+expect_skills = ["budgeted-explore"]
+
+[[scenario]]
+id = "budget-read-spend"
+area = "workflows"
+prompt = "My exploratory run has been going for a while. How much has it spent so far, how much budget is left, which login is close to its usage limit, and should I cut it off?"
+skills = ["budgeted-explore", "fan-judge", "find-tools"]
+expect_skills = ["budgeted-explore"]
+
+[[scenario]]
+id = "issue-linear-ticket"
+area = "workflows"
+prompt = "Take Linear ticket ENG-412 about the parser crash and turn it into a pull request that closes it: show me what the task would be first, then start it with the repo's tests as the check."
+skills = ["issue-pr", "pr-feedback-loop", "fan-judge", "find-tools"]
+expect_skills = ["issue-pr"]
+
+[[scenario]]
+id = "issue-github-fix"
+area = "workflows"
+prompt = "Resolve issue 87 on its own branch, taking the issue text as the task and the repo tests as the check, and have the pull request close the issue."
+skills = ["issue-pr", "pr-feedback-loop", "fan-judge", "find-tools"]
+expect_skills = ["issue-pr"]
+
+[[scenario]]
+id = "issue-jira-branch"
+area = "workflows"
+prompt = "We track bugs in Jira. Start work from PROJ-7, name the branch after the ticket, and have the pull request reference it even though Jira cannot be closed from GitHub."
+skills = ["issue-pr", "pr-feedback-loop", "find-tools"]
+expect_skills = ["issue-pr"]
+
+# Distractors: close in vocabulary, but another skill or no skill is right.
+
+[[scenario]]
+id = "workbook-compare-not-fan"
+area = "workflows"
+prompt = "In sales.xlsx, compare the Sales sheet's totals by region and tell me which region is the best performer."
+fixtures = ["sales.xlsx"]
+skills = ["xlsx", "fan-judge", "budgeted-explore", "calculate"]
+expect_skills = ["xlsx"]
+must_not = ["fan-judge", "budgeted-explore"]
+
+[[scenario]]
+id = "contract-review-not-pr"
+area = "workflows"
+prompt = "Read contract.docx and review the termination clause: is the notice period consistent with the payment terms? Summarize any conflict."
+fixtures = ["contract.docx"]
+skills = ["docx", "claim-verify", "pr-feedback-loop", "find-tools"]
+expect_skills = ["docx"]
+must_not = ["pr-feedback-loop"]
+
+# References of the workflow skills: the prompt asks for what one reference says.
+
+[[scenario]]
+id = "reference-restack-conflict"
+area = "workflows"
+prompt = "The parent PR of my stacked branch was squash merged and now the child will not restack onto main because of a conflict. What does Branchyard do automatically and how do I resolve it by hand?"
+skills = ["pr-feedback-loop", "issue-pr", "fan-judge", "find-tools"]
+expect_skills = ["pr-feedback-loop/references/stacks.md"]
+
+[[scenario]]
+id = "reference-judge-scoring"
+area = "workflows"
+prompt = "How is each attempt scored when attempts are judged: how much do the check, diff size, cost and time count, and what happens when the model judge's verdict is missing?"
+skills = ["fan-judge", "budgeted-explore", "find-tools"]
+expect_skills = ["fan-judge/references/judge-pick.md"]
+
+[[scenario]]
+id = "reference-cost-reading"
+area = "workflows"
+prompt = "Where do I see the per-turn cost of a branch, the budget it has left, and each login's weekly usage and reset time before I start something wide?"
+skills = ["budgeted-explore", "fan-judge", "find-tools"]
+expect_skills = ["budgeted-explore/references/reading-cost.md"]
