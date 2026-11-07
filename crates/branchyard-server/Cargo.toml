@@ -84,6 +84,7 @@ branchyard-bridge = { path = "../branchyard-bridge" }
 branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
 branchyard-runtime = { path = "../branchyard-runtime" }
 branchyard-sandbox = { path = "../branchyard-sandbox" }
+branchyard-workspace = { path = "../branchyard-workspace" }
 branchyard-testkit = { path = "../branchyard-testkit" }
 # In-memory span capture for the tests of the span tree.
 branchyard-telemetry = { path = "../branchyard-telemetry", features = ["testing"] }

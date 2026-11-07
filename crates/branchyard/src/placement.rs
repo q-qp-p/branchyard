@@ -593,7 +593,8 @@ impl Placement {
         plan: &SandboxPlan,
     ) -> Result<Placement, String> {
         let (spec, env) = microsandbox::spec(yard, record, options)?;
-        let provider = microsandbox::microsandbox(yard, options)?;
+        let provider =
+            branchyard_sandbox::traced("microsandbox", microsandbox::microsandbox(yard, options)?);
         let key = options.key();
         let journal =
             |name: &str| journal_sandbox(yard, fence, name, json!({ "provider": "microsandbox" }));
@@ -725,7 +726,7 @@ impl Placement {
             plan,
             Copied {
                 remote: Remote::Exec {
-                    provider: recipe_provider(yard, options),
+                    provider: branchyard_sandbox::traced("recipe", recipe_provider(yard, options)),
                     kind: ExecKind::Recipe,
                 },
                 spec: SandboxSpec::new(sandbox_name(&record.info.name)?),

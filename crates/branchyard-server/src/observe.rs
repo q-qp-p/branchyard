@@ -39,14 +39,32 @@ impl Observability {
     /// installed, when `init` ran), so `GET /metrics` and an OTLP push read
     /// the same instruments.
     pub fn from_env() -> Observability {
-        Observability {
+        let observability = Observability {
             metrics: Arc::new(Metrics::new(
                 branchyard_telemetry::Meters::process_or_isolated(),
             )),
             branches: Arc::new(BranchTraces::default()),
-        }
+        };
+        observability.take_durations();
+        observability
+    }
+
+    /// Make this the registry the sandbox and `git` timers report to
+    /// ([`branchyard_support::trace::Timer`]); the first one in a process
+    /// keeps it.
+    pub fn take_durations(&self) {
+        // A second registry in one process is a test's own.
+        let _first = DURATIONS.set(self.metrics.clone()).is_ok();
+        branchyard_support::trace::set_duration_sink(|family, pairs, seconds| {
+            if let Some(metrics) = DURATIONS.get() {
+                metrics.observe(family, pairs, seconds);
+            }
+        });
     }
 }
+
+/// The registry durations from timers below the server are recorded in.
+static DURATIONS: std::sync::OnceLock<Arc<Metrics>> = std::sync::OnceLock::new();
 
 /// A turn in progress in the events being read.
 struct Turn {
@@ -54,6 +72,9 @@ struct Turn {
     start_ms: u64,
     saw_event: bool,
     tool: Option<Tool>,
+    /// The engine traced this turn while it ran (see
+    /// `branchyard::live_trace`): its spans are not written again here.
+    live: bool,
     /// Spans inside the turn, written with the turn's span as their parent
     /// once it is known.
     children: Vec<Finished>,
@@ -149,7 +170,7 @@ pub fn record_events(
             &[("harness", harness), ("tool", tool_label(&tool.name))],
             at.saturating_sub(tool.start_ms) as f64 / 1000.0,
         );
-        if traced.is_some() {
+        if traced.is_some() && !turn.live {
             turn.children.push(Finished {
                 name: format!("tool {}", tool.name),
                 parent: None,
@@ -167,6 +188,9 @@ pub fn record_events(
     };
     let write_turn = |turn: Turn, branch: &str, harness: &str, at: u64, outcome: &str| {
         let Some(parent) = traced else { return };
+        if turn.live {
+            return;
+        }
         let mut attributes = vec![
             KeyValue::new("by.branch", branch.to_owned()),
             KeyValue::new("by.harness", harness.to_owned()),
@@ -245,6 +269,7 @@ pub fn record_events(
                         start_ms: at,
                         saw_event: false,
                         tool: None,
+                        live: branchyard::live_trace::was_live(branch, at),
                         children: Vec::new(),
                     },
                 );
@@ -392,6 +417,7 @@ pub fn record_events(
                             .then(|| call.reason.clone().unwrap_or(call.decision.clone())),
                     };
                     match turns.get_mut(branch) {
+                        Some(turn) if turn.live => {}
                         Some(turn) => turn.children.push(span),
                         None => {
                             let mut span = span;
@@ -1063,5 +1089,50 @@ mod tests {
             counter(&metrics, metrics::TURN_STALLS, &[("harness", "pi")]),
             0.0
         );
+    }
+
+    #[test]
+    fn sandbox_and_hot_git_durations_reach_the_registry_under_the_declared_names() {
+        // The crates that time the work name the families themselves; the
+        // server declares them. They are one string.
+        assert_eq!(metrics::SANDBOX_ACTION, branchyard_sandbox::ACTION_FAMILY);
+        assert_eq!(
+            metrics::GIT_OPERATION,
+            branchyard_workspace::git::OPERATION_FAMILY
+        );
+        let observability = Observability::default();
+        observability.take_durations();
+        // The first registry in the process keeps the sink; another test
+        // in this binary may have taken it, so read that one.
+        let registry = DURATIONS.get().unwrap();
+        branchyard_support::trace::Timer::start(
+            branchyard_sandbox::ACTION_FAMILY,
+            vec![
+                ("provider", "microsandbox".to_owned()),
+                ("action", "ensure".to_owned()),
+            ],
+        )
+        .finish(true);
+        let sandbox = [
+            ("provider", "microsandbox"),
+            ("action", "ensure"),
+            ("result", "ok"),
+        ];
+        assert!(registry.distribution(metrics::SANDBOX_ACTION, &sandbox).0 >= 1);
+        // A hot operation that fails (no path given) is observed with its
+        // result; one that is not hot is not observed at all.
+        let here = std::path::Path::new(".");
+        branchyard_workspace::Git::new(here)
+            .args(["worktree", "add"])
+            .output()
+            .unwrap();
+        branchyard_workspace::Git::new(here)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .output()
+            .unwrap();
+        let hot = [("operation", "worktree_add"), ("result", "error")];
+        assert!(registry.distribution(metrics::GIT_OPERATION, &hot).0 >= 1);
+        let rendered = registry.render().unwrap();
+        assert!(!rendered.contains("rev_parse"), "{rendered}");
     }
 }

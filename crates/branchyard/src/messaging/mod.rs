@@ -641,6 +641,19 @@ impl Stage for Observe {
         let Some(observer) = &cx.observer else {
             return Ok(());
         };
+        // The stage is a span of the sender's trace when the message
+        // carries one (the sender's turn), else of the span in scope.
+        let span = branchyard_support::trace_span!(
+            "message observe",
+            "by.message" = i64::try_from(message.id).unwrap_or(i64::MAX),
+            "by.message.kind" = message.kind_name(),
+            "by.from" = message.from.as_str(),
+            "by.to" = message.to.as_str(),
+        );
+        if let Some(trace) = message.meta.as_ref().and_then(|m| m.trace.as_deref()) {
+            branchyard_support::trace::adopt(&span, trace);
+        }
+        let _in = span.enter();
         // `authorize` refused `to == from`, so these are two distinct logs.
         for branch in [&message.from, &message.to]
             .into_iter()

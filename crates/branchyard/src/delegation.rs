@@ -2312,6 +2312,11 @@ pub(crate) fn wait_subtree(yard: &Yard, name: &str) -> Result<Vec<BranchInfo>, E
     }
 }
 
+/// Whether `span` is a `delegation` span of the trace.
+fn is_delegation_span(span: &tracing::Span) -> bool {
+    span.metadata().is_some_and(|m| m.name() == "delegation")
+}
+
 /// Run a turn on a thread of this process, joined by a wait for its
 /// subtree.
 pub(crate) fn start_turn(
@@ -2854,6 +2859,9 @@ impl Local {
             Ok(value) => (done(value), false),
             Err(error) => (error.to_string(), true),
         };
+        if branchyard_support::trace::enabled() {
+            self.trace_delegation(tool, branch, refused.then_some(outcome.as_str()));
+        }
         branchyard_support::best_effort(
             "record the activity",
             recorder.record(Activity::Delegation {
@@ -2865,7 +2873,39 @@ impl Local {
         );
     }
 
+    /// Put a delegation operation's outcome on its span: the one in scope
+    /// when the operation opened it, else a span of its own, instant.
+    fn trace_delegation(&self, tool: &str, child: &str, refused: Option<&str>) {
+        let current = tracing::Span::current();
+        let error = refused.map(|why| why.chars().take(200).collect::<String>());
+        if is_delegation_span(&current) {
+            current.record("by.child", child);
+            current.record("by.refused", refused.is_some());
+            if let Some(why) = &error {
+                current.record("otel.status_description", why.as_str());
+            }
+            return;
+        }
+        let now = branchyard_support::time::now_ms();
+        branchyard_support::trace::record(&branchyard_support::trace::Finished {
+            name: format!("delegation {tool}"),
+            parent: self.delegation_parent(),
+            kind: "internal",
+            start_ms: now,
+            end_ms: now,
+            attributes: vec![
+                ("by.branch", self.branch.as_str().into()),
+                ("by.tool", tool.into()),
+                ("by.child", child.into()),
+                ("by.refused", refused.is_some().into()),
+            ],
+            error,
+        });
+    }
+
     fn spawn(&self, request: &Spawn) -> Result<Spawned, Error> {
+        let span = self.delegating("spawn");
+        let _in = span.enter();
         let result = self
             .try_apply_graph(&[Edit::Spawn(Box::new(request.clone()))], None, None)
             .and_then(|applied| {
@@ -2884,6 +2924,8 @@ impl Local {
     }
 
     fn apply_graph(&self, edits: &[GraphEdit], expected: u64) -> Result<GraphApplied, Error> {
+        let span = self.delegating("apply_graph");
+        let _in = span.enter();
         let result = edits
             .iter()
             .map(Edit::from_graph)
@@ -2904,6 +2946,8 @@ impl Local {
     }
 
     fn delegate(&self, plan: &DelegationPlan) -> Result<Delegated, Error> {
+        let span = self.delegating("delegate");
+        let _in = span.enter();
         let result = (|| {
             if plan.tasks.is_empty() {
                 return Err(Error::Denied(
@@ -3838,7 +3882,44 @@ impl Local {
     /// The options a child's turn runs with: the parent's policy, observer
     /// and tools. Its budget and denials come from its own record.
     fn child_options(&self) -> TaskOptions {
-        graph::child_options(&self.options)
+        let mut options = graph::child_options(&self.options);
+        // A child's turn joins the delegation that started it, else its
+        // parent's live turn, so the trace reads parent turn, delegation,
+        // child turn. With spans off a child has no trace, as before.
+        let current = tracing::Span::current();
+        options.trace_parent = if is_delegation_span(&current) {
+            branchyard_support::trace::traceparent(&current)
+        } else {
+            None
+        }
+        .or_else(|| crate::live_trace::turn_traceparent(&self.branch));
+        options
+    }
+
+    /// The `delegation <tool>` span of an operation this branch's harness
+    /// asked for: a child of the branch's live turn (else of the
+    /// operation that runs it). Enter it around the operation; the child
+    /// turns it starts join it ([`Self::child_options`]) and
+    /// [`Self::note`] records its outcome.
+    fn delegating(&self, tool: &'static str) -> tracing::Span {
+        let span = branchyard_support::trace_span!(
+            "delegation",
+            "otel.name" = format!("delegation {tool}"),
+            "by.branch" = self.branch.as_str(),
+            "by.tool" = tool,
+            "by.child" = tracing::field::Empty,
+            "by.refused" = tracing::field::Empty,
+            "otel.status_description" = tracing::field::Empty,
+        );
+        if let Some(parent) = self.delegation_parent() {
+            branchyard_support::trace::adopt(&span, &parent);
+        }
+        span
+    }
+
+    fn delegation_parent(&self) -> Option<String> {
+        crate::live_trace::turn_traceparent(&self.branch)
+            .or_else(|| self.options.trace_parent.clone())
     }
 
     /// Run a turn on a thread of this process.

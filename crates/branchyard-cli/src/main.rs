@@ -101,6 +101,7 @@ mod telemetry_cmd;
 #[cfg(test)]
 mod testing;
 mod tools_cmd;
+mod trace_cmd;
 mod trackers;
 mod trigger_cmd;
 mod up_cmd;
@@ -656,6 +657,23 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
         Command::Reincarnate { branch, task } => commands::reincarnate(env, target, &branch, &task),
         Command::Ls { json } => commands::ls(env, target, json),
         Command::Stats { json } => stats_cmd::main(env, target, json),
+        Command::Trace {
+            branch,
+            subtree,
+            json,
+            otlp,
+            endpoint,
+        } => trace_cmd::main(
+            env,
+            target,
+            &trace_cmd::Args {
+                branch: &branch,
+                subtree,
+                json,
+                otlp: otlp.as_deref(),
+                endpoint: endpoint.as_deref(),
+            },
+        ),
         Command::Startup { json, action } => match action {
             args::StartupAction::Report { provider, since } => {
                 startup_cmd::report(env, target, provider, since, json)

@@ -82,6 +82,7 @@ regex = "1.13"
 [dev-dependencies]
 branchyard-testkit = { path = "../branchyard-testkit" }
 branchyard-support = { path = "../branchyard-support", features = ["testing"] }
+branchyard-telemetry = { path = "../branchyard-telemetry", features = ["testing"] }
 branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
 rcgen = { workspace = true }
 tempfile = { workspace = true }

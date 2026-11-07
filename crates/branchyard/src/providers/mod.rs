@@ -193,7 +193,16 @@ pub(crate) trait ProviderKind {
     fn recover(&self, yard: &Yard, record: &Record, sandbox: &str) -> Option<String>;
 
     /// The sandbox provider these options run through, as a trait object.
-    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String>;
+    fn open_untraced(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String>;
+
+    /// [`ProviderKind::open_untraced`], with each action it is asked to do
+    /// a span and an observation in
+    /// `branchyard_sandbox_action_duration_seconds` under this provider's
+    /// kind.
+    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+        self.open_untraced(yard)
+            .map(|provider| branchyard_sandbox::traced(self.name(), provider))
+    }
 
     /// Destroy sandbox `sandbox` of a branch this provider ran, if it is
     /// still there, and say what happened.

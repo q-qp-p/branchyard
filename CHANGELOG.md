@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+Observability phase 2 (`docs/observability.md`). A turn is traced live: the
+engine's recorder opens a `turn` span at the prompt and closes it at the turn's
+end, with the OpenTelemetry GenAI attributes (`gen_ai.operation.name`,
+`gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens` and
+`output_tokens`, `error.type`), and under it `tool` spans carrying the bounded,
+scrubbed tool target (never an input), `permission wait`, `steer` and `stall`
+spans; a branch's `spawn`, `apply_graph` and `delegate` are `delegation` spans
+that the children's turns run under, whichever thread they run on. The
+after-the-fact spans from the event log stay as the fallback for a turn the
+engine did not trace live, and a turn is never traced by both. `by trace BRANCH
+[--subtree] [--json | --otlp FILE | --endpoint URL]` rebuilds a branch's
+trajectory from its log as an OTLP trace, with ids derived from the log (the
+same log, the same trace), for Jaeger or Tempo. The engine's own work has spans
+too: sandbox provider actions with the provider kind, hot git operations
+(`worktree_add`, `commit`, `merge`, `rebase`, `push`), connector token requests,
+the messaging pipeline's observe stage under the message's `traceparent`, and,
+with `BRANCHYARD_TRACE_STORE=1`, one span per store call inside a trace. Two
+metric families, `branchyard_sandbox_action_duration_seconds` and
+`branchyard_git_operation_duration_seconds`; no existing name moved. With
+telemetry off no span is built (tested with a counting subscriber). A delegated
+child's harness now gets the `TRACEPARENT` of its delegation when spans are
+exported. Hermetic: the fake ACP agent, `FakeProvider`, in-memory capture and a
+loopback collector. Not done: a real collector, Jaeger or Tempo; spans for the
+Substrate provider's actions; a live span for a connector call ingested after
+its turn ended; `by trace --remote`.
+
 Four workflow skills for a session that runs Branchyard as the person or
 meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
 (when to fan out, harness choice, a result contract, `by fan`, `by compare`,

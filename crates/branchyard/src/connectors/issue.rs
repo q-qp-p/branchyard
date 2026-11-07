@@ -184,7 +184,34 @@ fn refuse<T>(kind: RefusalKind, message: impl Into<String>) -> Result<T, Refusal
 impl Yard {
     /// The gateway token of the turn `branch` is running, for a sandbox that
     /// proved itself with `proof`, or why not. See the module's rules.
+    ///
+    /// The request is a `connector token` span, a child of the branch's
+    /// live turn, whose attributes name the branch and, when refused, the
+    /// refusal's code; never the secret, the token or the manifest.
     pub fn issue_turn_token(
+        &self,
+        branch: &str,
+        request: &TokenRequest,
+        proof: Proof<'_>,
+    ) -> Result<TokenResponse, Refusal> {
+        let span = branchyard_support::trace_span!(
+            "connector token",
+            "by.branch" = branch,
+            "by.refusal" = tracing::field::Empty,
+            "otel.status_description" = tracing::field::Empty,
+        );
+        if let Some(parent) = crate::live_trace::turn_traceparent(branch) {
+            branchyard_support::trace::adopt(&span, &parent);
+        }
+        let result = span.in_scope(|| self.issue_turn_token_untraced(branch, request, proof));
+        if let Err(refusal) = &result {
+            span.record("by.refusal", refusal.kind.code());
+            span.record("otel.status_description", refusal.kind.code());
+        }
+        result
+    }
+
+    fn issue_turn_token_untraced(
         &self,
         branch: &str,
         request: &TokenRequest,

@@ -452,6 +452,7 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 | `TRACEPARENT` in a server-run turn's environment; `TaskOptions::trace_parent` | none | the operation's span, for the harness and what it calls (a connector SDK's `_meta.traceparent`) |
 | `traceparent` on webhook deliveries | none | the trace of the operation that last worked on the branch here |
 | `by startup report [--provider P] [--since DUR] [--json]` | none | p50 and p95 of each startup phase per provider and path, from the turns recorded here |
+| `by trace BRANCH [--subtree] [--json \| --otlp FILE \| --endpoint URL]` | none | a branch's (and with `--subtree` its delegated branches') turns, tool calls, permission waits, steers, stalls, connector calls and delegations as an OpenTelemetry trace rebuilt from the event log, with ids derived from it; a tree, the OTLP/JSON document, a file of it, or posted to a collector; local only |
 | `by stats [--json]` | none | branches, turns, outcomes, durations, tools, connectors and cost locally; branches and the server's queue by priority with `--remote` |
 
 ## Added with the OpenTelemetry stack

@@ -796,6 +796,29 @@
         "code"
       ],
       "help": "API requests refused, by the error code in the response."
+    },
+    {
+      "name": "branchyard_sandbox_action_duration_seconds",
+      "exposed": "branchyard_sandbox_action_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "labels": [
+        "provider",
+        "action",
+        "result"
+      ],
+      "help": "Time a sandbox provider's action took in turns this process ran, by provider, action (ensure, exec, checkpoint, restore, branch, pause, resume, stop, destroy) and result (ok, error)."
+    },
+    {
+      "name": "branchyard_git_operation_duration_seconds",
+      "exposed": "branchyard_git_operation_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "labels": [
+        "operation",
+        "result"
+      ],
+      "help": "Time a git operation on a hot path took in this process, by operation (worktree_add, commit, merge, rebase, push) and result (ok, error)."
     }
   ],
   "runtime": {

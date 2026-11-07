@@ -91,7 +91,7 @@ impl ProviderKind for Local {
         None
     }
 
-    fn open(&self, _: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, _: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         Err("a local harness has no sandbox".into())
     }
 

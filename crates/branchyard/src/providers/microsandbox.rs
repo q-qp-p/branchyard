@@ -113,7 +113,7 @@ impl ProviderKind for SandboxOptions {
         Some(destroy_orphan(microsandbox(yard, self), sandbox))
     }
 
-    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         microsandbox(yard, self)
     }
 

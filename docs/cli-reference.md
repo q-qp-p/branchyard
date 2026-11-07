@@ -2185,6 +2185,24 @@ by startup report [OPTIONS]
 | `--provider <NAME>` | Only this provider (`local`, `microsandbox`, `container`, `agent_sandbox`, `substrate`, ...) |
 | `--since <DURATION>` | Only startups recorded within this long, such as 30m or 7d |
 
+## `by trace`
+
+Export a branch's trajectory as an OpenTelemetry trace, from its event log
+
+Rebuilds the branch's turns, tool calls, permission waits, steers, stalls, connector calls and delegations as spans, with ids derived from the log (the same log always gives the same trace), so a run that is over can be loaded into Jaeger or Tempo. Tool targets are the bounded, scrubbed ones in the log; tool inputs are never exported. Prints a tree; --json prints the OTLP/JSON document, --otlp FILE writes it, --endpoint URL posts it to a collector's /v1/traces.
+
+```text
+by trace [OPTIONS] <BRANCH>
+```
+
+| Option | What it does |
+|---|---|
+| `<BRANCH>` | The branch whose trajectory to export; `by ls` lists them |
+| `--subtree` | Include the branches delegated under it, as children of the delegations that started them |
+| `--json` | Print the OTLP/JSON document instead of the tree |
+| `--otlp <FILE>` | Write the OTLP/JSON document to FILE |
+| `--endpoint <URL>` | POST the OTLP/JSON document to a collector (OTLP/HTTP; /v1/traces is added when the URL does not end with it) |
+
 ## `by handoff`
 
 Relay a settled result and selected artifacts without steering its recipient

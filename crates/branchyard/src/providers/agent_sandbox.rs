@@ -152,7 +152,7 @@ impl ProviderKind for AgentSandboxOptions {
     fn recover(&self, yard: &Yard, record: &Record, sandbox: &str) -> Option<String> {
         Some(native::recover(self, yard, record, sandbox))
     }
-    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         branchyard_agent_sandbox::AgentSandboxProvider::new(
             self.config_with(
                 store_volume(yard),

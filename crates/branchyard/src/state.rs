@@ -1019,7 +1019,7 @@ impl Store {
         let signal = signal_for(backend.path());
         Ok(Store {
             dir,
-            backend: backend.clone(),
+            backend: crate::store_trace::Traced::wrap("sqlite", backend.clone()),
             storage: backend.clone(),
             graph: backend.clone(),
             extras: backend,
@@ -1041,7 +1041,7 @@ impl Store {
         let signal = signal_for(&dir.join(format!("postgres/{scope}")));
         Ok(Store {
             dir,
-            backend: backend.clone(),
+            backend: crate::store_trace::Traced::wrap("postgres", backend.clone()),
             storage: backend.clone(),
             graph: backend.clone(),
             extras: backend,

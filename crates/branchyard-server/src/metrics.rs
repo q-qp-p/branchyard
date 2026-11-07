@@ -207,6 +207,15 @@ pub const TOOL_DURATION: &str = "branchyard_tool_call_duration_seconds";
 /// A connector gateway call's recorded latency.
 pub const CONNECTOR_DURATION: &str = "branchyard_connector_call_duration_seconds";
 
+/// Time a sandbox provider's action took.
+pub const SANDBOX_ACTION: &str = "branchyard_sandbox_action_duration_seconds";
+// The sandbox crate times its actions under the same name; a test below
+// checks the two are one string.
+/// Time a git operation on a hot path took.
+pub const GIT_OPERATION: &str = "branchyard_git_operation_duration_seconds";
+// The workspace crate times git under the same name; a test below checks
+// the two are one string.
+
 /// Every family this server exposes, in the order it is written.
 pub const FAMILIES: &[Family] = &[
     family(
@@ -533,6 +542,18 @@ pub const FAMILIES: &[Family] = &[
         "",
         "API requests refused, by the error code in the response.",
     ),
+    histogram(
+        SANDBOX_ACTION,
+        "s",
+        "Time a sandbox provider's action took in turns this process ran, by provider, action (ensure, exec, checkpoint, restore, branch, pause, resume, stop, destroy) and result (ok, error).",
+        CALL_SECONDS,
+    ),
+    histogram(
+        GIT_OPERATION,
+        "s",
+        "Time a git operation on a hot path took in this process, by operation (worktree_add, commit, merge, rebase, push) and result (ok, error).",
+        CALL_SECONDS,
+    ),
 ];
 
 fn declared(name: &str) -> Option<&'static Family> {
@@ -587,6 +608,8 @@ pub fn label_order(name: &str) -> &'static [&'static str] {
         HTTP_DURATION => &["http.route", "http.request.method", "status_class"],
         HTTP_ACTIVE => &["http.request.method"],
         API_ERRORS => &["code"],
+        SANDBOX_ACTION => &["provider", "action", "result"],
+        GIT_OPERATION => &["operation", "result"],
         _ => &[],
     }
 }

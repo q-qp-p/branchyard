@@ -352,6 +352,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
     // cost it left; this turn starts from that figure.
     record.metered_from = None;
     let mut recorder = Recorder::fenced(&store, &fence, turn.options.observer.clone());
+    recorder.trace_live(&record.info.harness, turn.options.trace_parent.as_deref());
     let bounds = Bounds {
         budget: delegation::effective_budget(&record, &turn.options.budget),
         // A branch writing its plan runs read-only, whatever the caller

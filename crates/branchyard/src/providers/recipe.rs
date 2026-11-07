@@ -85,7 +85,7 @@ impl ProviderKind for RecipeOptions {
         Some(recover_machine(yard, record, self, sandbox))
     }
 
-    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         Ok(recipe_provider(yard, self))
     }
 
