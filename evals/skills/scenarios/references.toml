@@ -42,6 +42,7 @@ id = "reference-pdf-render-review"
 area = "references"
 prompt = "Render every page of report.pdf to PNG with pdftoppm so I can check spacing and legibility, and when I later generate a fresh PDF of the summary, do it with reportlab and re-render to verify."
 skills = ["inspect-layout", "pdf", "docx", "visual-design"]
+fixtures = ["report.pdf"]
 expect_skills = ["inspect-layout/references/upstream-pdf.md"]
 
 [[scenario]]

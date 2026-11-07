@@ -22,8 +22,14 @@ generated into the [toolkit reference](artifact-toolkit.md).
 
 ## Choosing built-in skills
 
-A task may stage only some built-in skills: `provision.skills` on a task, or
-`skills` on a console session start (the console's Tools step, "How-tos").
+A task may stage only some built-in skills: `provision.skills` on a task,
+`--skill NAME` (repeatable) on `by run`, `fan`, `send`, `fork`, `map` and
+`reincarnate`, or `skills` on a console session start (the console's Tools step,
+"How-tos"). `by run "..." --skill docx --skill pdf` stages `docx`, `pdf` and
+what they need; a name that is not built in is refused before the branch exists,
+with the built-in skills listed (`skill "docz" is not a built-in skill; the
+built-in skills are ...`). A turn that wants a repository's own skills is
+unaffected: those follow their gate below.
 Each chosen skill brings the skills it needs (`pptx` brings `artifact-tools`),
 the rest are not staged, and a skill an earlier, wider turn left in the home is
 removed. The root and topic indexes are rebuilt from the catalog in the
