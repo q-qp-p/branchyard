@@ -16,8 +16,11 @@
 //! nothing a later run recomputes, so the same approved set written twice
 //! gives the same bytes and the same [`skillset::digest`]. A topic whose
 //! bundle would pass the skill limits (200 files, 1 MiB, or a `SKILL.md`
-//! over [`SKILL_MD_MAX`] characters) is split into `memory-<topic>-2` and
-//! on, and the first bundle's `SKILL.md` says so.
+//! over [`SKILL_MD_MAX`] characters) is split into `memory-<topic>--2` and
+//! on (a double hyphen no topic can hold, so `parser`'s continuation is
+//! never the bundle of a topic `parser-2`), and the first bundle's
+//! `SKILL.md` says so. A bundle belongs to the topic its `memory.json`
+//! names, never to the topic its directory's name suggests.
 //!
 //! A [`Library`] is a directory of such bundles: it reads them, adds, edits
 //! and removes memories, rewriting every bundle of the topic each time.
@@ -256,7 +259,7 @@ pub struct Manifest {
 /// path order and their digest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bundle {
-    /// `memory-<topic>`, or `memory-<topic>-N` for a continuation.
+    /// `memory-<topic>`, or `memory-<topic>--N` for a continuation.
     pub name: String,
     /// Relative path and content of each file, in path order.
     pub files: Vec<(String, String)>,
@@ -265,8 +268,16 @@ pub struct Bundle {
 }
 
 /// A skill name's worth of topic: lowercase letters, digits and hyphens,
-/// such that `memory-<topic>` is a skill name.
+/// such that `memory-<topic>` is a skill name. A topic neither starts nor
+/// ends with a hyphen nor holds two in a row: `--` separates a topic from
+/// the number of its continuation bundle (`memory-<topic>--2`).
 pub fn check_topic(topic: &str) -> Result<(), Error> {
+    if topic.starts_with('-') || topic.ends_with('-') || topic.contains("--") {
+        return Err(Error::InvalidMemory(format!(
+            "topic {topic:?} must not start or end with a hyphen or hold two in a row; \
+             `--` is how a continuation bundle is named"
+        )));
+    }
     skillset::check_name(&format!("{PREFIX}{topic}"))
         .map_err(|why| Error::InvalidMemory(format!("topic {why}")))?;
     if topic.is_empty() || topic.len() > 54 {
@@ -601,11 +612,13 @@ pub fn bundles(topic: &str, memories: &[Memory], audience: Audience) -> Result<V
     Ok(out)
 }
 
-/// `memory-<topic>` for the first chunk, `memory-<topic>-N` after.
+/// `memory-<topic>` for the first chunk, `memory-<topic>--N` after: the
+/// double hyphen cannot occur in a topic ([`check_topic`]), so no other
+/// topic's bundle has a continuation's name.
 fn chunk_name(base: &str, at: usize) -> String {
     match at {
         0 => base.to_owned(),
-        n => format!("{base}-{}", n + 1),
+        n => format!("{base}--{}", n + 1),
     }
 }
 
@@ -843,12 +856,52 @@ impl Library {
         Ok(produced)
     }
 
+    /// The topic the manifest of the bundle directory `name` names; `None`
+    /// for a directory that is not there, is not a real directory, or has
+    /// no manifest. A manifest that does not read is an error, as in
+    /// [`Library::read`].
+    fn manifest_topic(&self, name: &str) -> Result<Option<String>, Error> {
+        let dir = self.dir.join(name);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(Error::Io(error)),
+        }
+        let path = dir.join(MANIFEST);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(Error::Io(error)),
+        };
+        let manifest: Manifest = serde_json::from_str(&text)
+            .map_err(|e| Error::InvalidMemory(format!("{} does not read: {e}", path.display())))?;
+        Ok(Some(manifest.topic))
+    }
+
+    /// The bundle directories (name and path) whose manifest names
+    /// `topic`: the base and its continuations, found by what they say.
+    fn topic_dirs(&self, topic: &str) -> Result<Vec<(String, PathBuf)>, Error> {
+        let listing = match std::fs::read_dir(&self.dir) {
+            Ok(listing) => listing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(Error::Io(error)),
+        };
+        let mut found = Vec::new();
+        for entry in listing.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(PREFIX) && self.manifest_topic(&name)?.as_deref() == Some(topic) {
+                found.push((name, entry.path()));
+            }
+        }
+        Ok(found)
+    }
+
     /// Write `topic`'s bundles from `memories`, removing the files and
     /// continuation directories a smaller set no longer has. The bundle
     /// directories that exist afterwards.
     fn write_topic(&self, topic: &str, memories: &[Memory]) -> Result<Vec<PathBuf>, Error> {
         let produced = bundles(topic, memories, self.audience)?;
-        let base = format!("{PREFIX}{topic}");
         // Refuse every symbolic link before anything is written or removed.
         check_real_dir(&self.dir)?;
         for bundle in &produced {
@@ -859,31 +912,31 @@ impl Library {
             true => BTreeSet::new(),
             false => produced.iter().map(|b| b.name.as_str()).collect(),
         };
-        // Every directory of this topic that exists: the base and its
-        // continuations.
-        if let Ok(listing) = std::fs::read_dir(&self.dir) {
-            for entry in listing.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let of_topic = name == base
-                    || name
-                        .strip_prefix(&format!("{base}-"))
-                        .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()));
-                if of_topic && !wanted.contains(name.as_str()) {
-                    check_tree(&entry.path())?;
+        // A directory is this topic's when its manifest says so, whatever
+        // it is called; one that is not (another topic's, even if its name
+        // looks like a continuation of this one) is never removed.
+        for bundle in &produced {
+            if let Some(owner) = self.manifest_topic(&bundle.name)? {
+                if owner != topic {
+                    return Err(Error::InvalidMemory(format!(
+                        "{} holds the memory of topic {owner}, not {topic}; move it away and run \
+                         the command again",
+                        self.dir.join(&bundle.name).display()
+                    )));
                 }
             }
         }
-        if let Ok(listing) = std::fs::read_dir(&self.dir) {
-            for entry in listing.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let of_topic = name == base
-                    || name
-                        .strip_prefix(&format!("{base}-"))
-                        .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()));
-                if of_topic && !wanted.contains(name.as_str()) {
-                    std::fs::remove_dir_all(entry.path())?;
-                }
-            }
+        let obsolete: Vec<PathBuf> = self
+            .topic_dirs(topic)?
+            .into_iter()
+            .filter(|(name, _)| !wanted.contains(name.as_str()))
+            .map(|(_, path)| path)
+            .collect();
+        for path in &obsolete {
+            check_tree(path)?;
+        }
+        for path in &obsolete {
+            std::fs::remove_dir_all(path)?;
         }
         if memories.is_empty() {
             return Ok(Vec::new());

@@ -103,8 +103,8 @@ fn a_topic_over_the_limits_is_split_with_the_note_and_every_skill_md_fits() {
     assert!(produced.len() >= 3, "{} bundles", produced.len());
     let names: Vec<&str> = produced.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names[0], "memory-releases");
-    assert_eq!(names[1], "memory-releases-2");
-    assert_eq!(names[2], "memory-releases-3");
+    assert_eq!(names[1], "memory-releases--2");
+    assert_eq!(names[2], "memory-releases--3");
     let mut listed = 0;
     for (at, bundle) in produced.iter().enumerate() {
         let md = &bundle.files[0].1;
@@ -120,7 +120,7 @@ fn a_topic_over_the_limits_is_split_with_the_note_and_every_skill_md_fits() {
         if at + 1 < produced.len() {
             assert!(
                 md.contains(&format!(
-                    "Continued in memory-releases-{} ({} more).",
+                    "Continued in memory-releases--{} ({} more).",
                     at + 2,
                     set.len() - listed
                 )),
@@ -316,7 +316,7 @@ fn a_split_topic_is_rewritten_as_a_whole_and_continuations_go_when_it_shrinks() 
         new.title = format!("Memory number {n:03} about releases, written to be found");
         library.add(new).unwrap();
     }
-    assert!(dir.join("memory-releases-2/SKILL.md").is_file());
+    assert!(dir.join("memory-releases--2/SKILL.md").is_file());
     let all = library.read().unwrap();
     assert_eq!(all.len(), 120);
     assert!(all.iter().all(|m| m.topic == "releases"));
@@ -326,9 +326,106 @@ fn a_split_topic_is_rewritten_as_a_whole_and_continuations_go_when_it_shrinks() 
     assert_eq!(library.read().unwrap().len(), 20);
     assert!(dir.join("memory-releases/SKILL.md").is_file());
     assert!(
-        !dir.join("memory-releases-2").exists(),
+        !dir.join("memory-releases--2").exists(),
         "a continuation no longer produced is removed"
     );
+}
+
+fn add_to(library: &Library, topic: &str, title: &str) -> String {
+    let mut new = new_memory(title, "Body.", MemoryKind::Fact, &[]);
+    new.topic = Some(topic.into());
+    library.add(new).unwrap().memory.id
+}
+
+fn bundle_dirs(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn topics_parser_and_parser_2_coexist_through_add_edit_and_remove() {
+    let scratch = tempfile::tempdir().unwrap();
+    let library = Library::team(scratch.path());
+    let dir = scratch.path().join(".agents/skills");
+    let other = add_to(&library, "parser-2", "Belongs to parser two");
+    let first = add_to(&library, "parser", "Belongs to parser");
+    assert_eq!(bundle_dirs(&dir), ["memory-parser", "memory-parser-2"]);
+    let before = fs::read(dir.join("memory-parser-2/memory.json")).unwrap();
+    add_to(&library, "parser", "Another for parser");
+    library
+        .edit(
+            &first,
+            MemoryEdit {
+                body: Some("Edited.".into()),
+                by: "bob".into(),
+                now_ms: 5,
+                ..MemoryEdit::default()
+            },
+        )
+        .unwrap();
+    library.remove(&first).unwrap();
+    assert_eq!(
+        fs::read(dir.join("memory-parser-2/memory.json")).unwrap(),
+        before,
+        "the other topic's bundle is untouched"
+    );
+    let remaining = library.read().unwrap();
+    assert!(remaining.iter().any(|m| m.id == other && m.topic == "parser-2"));
+    // Emptying `parser` removes only its own directory.
+    for memory in remaining.iter().filter(|m| m.topic == "parser") {
+        library.remove(&memory.id).unwrap();
+    }
+    assert_eq!(bundle_dirs(&dir), ["memory-parser-2"]);
+    // And the other way round.
+    library.remove(&other).unwrap();
+    assert!(bundle_dirs(&dir).is_empty());
+}
+
+#[test]
+fn an_overflowing_parser_never_touches_parser_2() {
+    let scratch = tempfile::tempdir().unwrap();
+    let library = Library::team(scratch.path());
+    let dir = scratch.path().join(".agents/skills");
+    add_to(&library, "parser-2", "Belongs to parser two");
+    let before = fs::read(dir.join("memory-parser-2/memory.json")).unwrap();
+    for n in 0..120 {
+        let mut new = new_memory(
+            &format!("Memory number {n:03} about parsing, written to be found"),
+            &format!("Body {n}."),
+            MemoryKind::ALL[n % 4],
+            &[],
+        );
+        new.topic = Some("parser".into());
+        library.add(new).unwrap();
+    }
+    let names = bundle_dirs(&dir);
+    assert!(names.contains(&"memory-parser--2".to_owned()), "{names:?}");
+    assert_eq!(
+        fs::read(dir.join("memory-parser-2/memory.json")).unwrap(),
+        before
+    );
+    let all = library.read().unwrap();
+    assert_eq!(all.iter().filter(|m| m.topic == "parser-2").count(), 1);
+    assert_eq!(all.iter().filter(|m| m.topic == "parser").count(), 120);
+}
+
+#[test]
+fn a_topic_cannot_hold_the_continuation_separator() {
+    let scratch = tempfile::tempdir().unwrap();
+    let library = Library::team(scratch.path());
+    for topic in ["a--2", "-a", "a-"] {
+        let mut new = new_memory("Title", "Body.", MemoryKind::Fact, &[]);
+        new.topic = Some(topic.into());
+        assert!(
+            matches!(library.add(new), Err(Error::InvalidMemory(_))),
+            "{topic}"
+        );
+    }
 }
 
 #[test]
