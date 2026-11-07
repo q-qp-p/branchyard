@@ -835,9 +835,7 @@ class FakeAgentEndToEnd(unittest.TestCase):
             rows = {r["id"]: r for r in report["scenarios"]}
             skipped = out / "skipped.json"
             why = skipped.read_text(encoding="utf-8") if skipped.is_file() else "{}"
-            self.assertEqual(
-                set(rows), {"docx-status-report", "xlsx-pivot", "none-write-text-file"}, f"skipped: {why}"
-            )
+            self.assertEqual(set(rows), {"docx-status-report", "xlsx-pivot", "none-write-text-file"}, f"skipped: {why}")
 
             docx = rows["docx-status-report"]
             self.assertTrue(docx["searched_command"])
