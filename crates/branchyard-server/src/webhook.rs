@@ -317,7 +317,7 @@ async fn deliver(
             .failed(now_ms(), error.reason())
     };
     let metrics = &observability.metrics;
-    let traceparent = observability.tracer.branch_trace(repo, &entry.branch);
+    let traceparent = observability.branches.get(repo, &entry.branch);
     let envelope = Envelope {
         repo,
         seq: entry.seq,

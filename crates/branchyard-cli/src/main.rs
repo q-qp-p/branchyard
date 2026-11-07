@@ -95,6 +95,7 @@ mod stats_cmd;
 mod substrate_cmd;
 mod sync_cmd;
 mod task_cmd;
+mod telemetry_cmd;
 #[cfg(test)]
 mod testing;
 mod tools_cmd;
@@ -194,12 +195,32 @@ fn main() -> ExitCode {
     // Warnings from best-effort steps (a cleanup that failed, a lock whose
     // holder panicked) go to stderr. Not under the live `watch` screen,
     // which owns the terminal.
-    if !matches!(command, Command::Watch { once: false, .. }) {
-        branchyard_server::logging::init_for_commands();
-    }
+    // The same call sets up OpenTelemetry, which is off unless an OTLP
+    // endpoint is set; the guard flushes it when the command is done.
+    let telemetry = (!matches!(command, Command::Watch { once: false, .. }))
+        .then(branchyard_server::logging::init_for_commands);
+    let traced = telemetry.as_ref().and_then(|guard| {
+        let name = argv
+            .iter()
+            .skip(1)
+            .map(|a| a.to_string_lossy())
+            .find(|a| !a.starts_with('-'))
+            .unwrap_or_default();
+        telemetry_cmd::begin(&name, guard.exporting_traces() || guard.exporting_metrics())
+    });
     let mut env_now = Env::detect();
     env_now.notify = notify::Settings::resolve(globals.no_notify, &globals.notify, &env);
-    let outcome = run(&env_now, &globals, command);
+    let outcome = match &traced {
+        Some(traced) => {
+            let _running = traced.span().enter();
+            run(&env_now, &globals, command)
+        }
+        None => run(&env_now, &globals, command),
+    };
+    if let Some(traced) = traced {
+        traced.finish(outcome.is_err().then_some("the command failed"));
+    }
+    drop(telemetry);
     detach::finish(&outcome);
     // The one place a failure is printed, and its kind's exit status
     // (docs/cli.md, "Exit status").
@@ -787,8 +808,15 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             as_branch,
             text,
             wait_seconds,
+            key,
             json,
-        } => commands::ask(target, as_branch, &text, wait_seconds, json),
+        } => commands::ask(
+            target,
+            as_branch,
+            &text,
+            (wait_seconds, key.as_deref()),
+            json,
+        ),
         Command::Report {
             as_branch,
             text,
@@ -832,6 +860,24 @@ fn dispatch(env: &Env, target: &Target, command: Command) -> commands::Outcome {
             unread,
             json,
         } => commands::inbox(target, as_branch, unread, json),
+        Command::Message {
+            as_branch,
+            to,
+            text,
+            kind,
+            payload,
+            key,
+            deadline,
+            json,
+        } => commands::message(
+            target,
+            as_branch,
+            (&to, &text),
+            (kind.as_deref(), payload.as_deref(), key.as_deref()),
+            deadline,
+            json,
+        ),
+        Command::Kinds { json } => commands::kinds(json),
         Command::Rig { json, action } => commands::rig(env, target, &action.into_args(json)),
         Command::Gateway { json, action } => gateway_cmd::main(target, &action, json),
         Command::Models {

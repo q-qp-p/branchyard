@@ -37,6 +37,7 @@ Task-focused guides for daily workflows.
 | [Plans and goals](plans-and-goals.md) | Run a branch in read-only planning mode for approval before editing files, and verify completion criteria with a goal judge. |
 | [Repository knowledge](knowledge.md) | Distill reusable repository rules from completed branches, review and adopt them, and inject them into matching harnesses. |
 | [Delegation](delegation.md) | Let an agent spawn and coordinate child branches via `by`, Python, Rust, or MCP within bounded budgets, paths, and permissions. |
+| [Messaging](messaging.md) | The one layer every harness-to-harness message goes through: envelope, addresses, kind registry, pipeline and delivery classes; what is built and what is designed. |
 | [Rigs](rigs.md) | Define a multi-agent team layout in TOML, validate it with `by rig check`, and run it with `by rig run`. |
 | [Wide map](map.md) | Run a prompt across a list of inputs in parallel (`by map`), validate each branch's output against a JSON schema, and collect results into a table. |
 | [Triggers and schedules](triggers.md) | Start tasks on cron schedules, intervals, or signed webhooks from GitHub, Slack, and Linear with deduplication and failure circuit-breakers. |
@@ -120,7 +121,7 @@ Architecture notes and internal specifications. Some pages describe target desig
 | [Console execution presets and source titles](superpowers/specs/2026-10-29-console-execution-presets-contract.md) | Design spec for operator-defined execution presets, side-effect-free readiness discovery, and Unicode source filenames. |
 | [Skill delivery design](superpowers/specs/2026-10-29-skill-delivery-design.md) | Design spec for repository, workspace, user, and team skills, per-turn skill provenance, and packaging the document runtime. |
 | [Sandbox snapshots](sandbox-snapshots.md) | How sandbox providers pause between turns, take checkpoint snapshots, and branch or rewind from snapshots with Git fallback. |
-| [Observability](observability.md) | Server metrics, OpenTelemetry traces, and how turn trace context is passed to harnesses. |
+| [Observability](observability.md) | Metrics and traces on `tracing` and OpenTelemetry: `/metrics`, OTLP export from the standard `OTEL_*` variables, the span tree, and how turn trace context is passed to harnesses. |
 | [Sync](sync.md) | Backing up and syncing tasks across Cloud Storage, S3, Azure Blob, Git remotes, or local directories with leases and client-side encryption. |
 | [Environment recipes](recipes.md) | Defining custom VM or container lifecycle scripts in `branchyard.toml` and driving harnesses inside them over SSH. |
 | [Toolchain images](images.md) | Sandbox images with harness CLIs pre-installed at pinned versions, labelled and digest-pinned, and how routing reads them. |

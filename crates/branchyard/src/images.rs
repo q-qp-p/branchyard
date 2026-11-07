@@ -529,6 +529,16 @@ impl ContextPlan {
             .harnesses
             .iter()
             .any(|h| h.command.contains("| ") || h.command.starts_with("curl"));
+        // Git is a runtime prerequisite, whatever the harnesses: a container
+        // or Agent Sandbox placement copies the workspace in with `git init`
+        // in the guest (branchyard-substrate's transfer), and the default
+        // slim base has none. A base that already has it (`--base`) is left
+        // as it is.
+        text.push_str(
+            "RUN command -v git >/dev/null 2>&1 || { apt-get update \\\n \
+             && apt-get install -y --no-install-recommends ca-certificates git \\\n \
+             && rm -rf /var/lib/apt/lists/*; }\n",
+        );
         if piped {
             text.push_str(
                 "RUN apt-get update \\\n && apt-get install -y --no-install-recommends bash ca-certificates curl \\\n \
@@ -1153,7 +1163,12 @@ mod tests {
             "LABEL dev.branchyard.toolchain=\"{}\"\n",
             plan.labels().toolchain()
         )));
-        assert!(!text.contains("apt-get"), "no piped installer, no curl");
+        assert!(
+            text.contains("RUN command -v git >/dev/null 2>&1 || { apt-get update")
+                && text.contains("--no-install-recommends ca-certificates git"),
+            "git is installed unless the base has it: {text}"
+        );
+        assert!(!text.contains("curl"), "no piped installer, no curl");
     }
 
     #[test]

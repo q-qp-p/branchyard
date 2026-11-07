@@ -80,7 +80,8 @@ your parent gave you a result_contract in inspect: it is checked against the con
 and it is what your parent reads back), escalate to it or, if your rig seat allows, further up; \
 state your own status in a line with report_status (working, idle, blocked, complete or failure; \
 blocked and failure also reach your parent's inbox), which is a claim shown beside the status \
-Branchyard derives, not a message; and read your own inbox. Each harness keeps its native \
+Branchyard derives, not a message; read your own inbox; and message a sibling (another child \
+of your parent) with message, which it reads at its next turn. Each harness keeps its native \
 planning, subagents and internal task graph; Branchyard depth limits count Branchyard branches \
 only. For native final JSON without requiring the reporting tool, use a result contract with \
 purpose: deliverable and required: true; a valid current-turn answer can complete without a Git \
@@ -687,6 +688,7 @@ fn all_tools() -> Vec<Tool> {
                 "properties": {
                     "text": {"type": "string"},
                     "wait_seconds": {"type": "number", "exclusiveMinimum": 0, "description": "Block up to this long for an answer"},
+                    "key": {"type": "string"},
                 },
                 "required": ["text"],
                 "additionalProperties": false,
@@ -694,17 +696,16 @@ fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "report",
-            "Report to your parent; no answer is expected. Give result, a JSON value, to \
-             answer in the shape your parent asked for: if your inspect shows a \
-             result_contract, result is checked against its schema (a mismatch is refused, \
-             naming the path and the rule, and nothing is recorded), and when the contract is \
-             required, a report without one is refused. The latest result is what your parent \
-             reads as your inspect's result.",
+            "Report to your parent; no answer is expected. result, a JSON value, answers in the \
+             shape your parent asked for: with a result_contract in your inspect it is checked \
+             against the schema (a mismatch is refused naming the path and the rule, and nothing \
+             is recorded), and a required contract refuses a report without one. Your parent \
+             reads the latest result from inspect.",
             schema(json!({
                 "type": "object",
                 "properties": {
                     "text": {"type": "string"},
-                    "result": {"description": "Your answer as a JSON value (an object, array, string, number or boolean), matching result_contract when you have one. null counts as none, unless your result_contract's schema accepts null"},
+                    "result": {"description": "Your answer as JSON, matching result_contract when you have one; null counts as none unless the schema accepts null"},
                 },
                 "required": ["text"],
                 "additionalProperties": false,
@@ -723,16 +724,13 @@ fn all_tools() -> Vec<Tool> {
         ),
         Tool::new(
             "report_status",
-            "State your own status in one line, beside the one Branchyard derives: what you \
-             are doing now (working), that you are waiting (idle), that you cannot go on \
-             without something you name (blocked), that the task is done (complete), or that \
-             you gave up (failure). Your parent and the person watching see it next to your \
-             status. Blocked and failure are also escalated to your parent's inbox. It is a \
-             claim, not a result: it changes nothing about your branch, and report is still \
-             how you send your parent a message. Give ttl_seconds when the claim holds only \
-             for a while: once it passes, the report is shown as stale. A report also goes \
-             stale when a later turn of yours finishes without a new one, or your branch \
-             ends.",
+            "State your own status in one line, beside the one Branchyard derives: working, \
+             idle, blocked (you cannot go on without something you name), complete or failure. \
+             Your parent and the person watching see it; blocked and failure are also escalated \
+             to your parent's inbox. It is a claim, not a result or a message: report is how you \
+             tell your parent something. ttl_seconds says how long the claim holds; after it, or \
+             once a later turn of yours ends without a new one, or your branch ends, it is shown \
+             as stale.",
             schema(json!({
                 "type": "object",
                 "properties": {
@@ -742,12 +740,12 @@ fn all_tools() -> Vec<Tool> {
                         "description": "What you are doing: working, idle, blocked, complete or failure",
                     },
                     "summary": {"type": "string", "maxLength": branchyard::reported::SUMMARY_MAX, "description": "One line, at most 280 characters"},
-                    "link": {"type": "string", "description": "Optional http(s) URL with more, such as a pull request or an issue"},
+                    "link": {"type": "string", "description": "Optional http(s) URL with more"},
                     "ttl_seconds": {
                         "type": "integer",
                         "minimum": branchyard::reported::TTL_MIN_SECONDS,
                         "maximum": branchyard::reported::TTL_MAX_SECONDS,
-                        "description": "Optional: how long the claim holds, in whole seconds (1 to 604800, 7 days); after that it is shown as stale",
+                        "description": "Whole seconds the claim holds, 1 to 604800 (7 days)",
                     },
                 },
                 "required": ["state", "summary"],
@@ -781,6 +779,25 @@ fn all_tools() -> Vec<Tool> {
             inbox.annotations = Some(read_only("Read your inbox"));
             inbox
         },
+        Tool::new(
+            "message",
+            "Message a sibling (another child of your parent): it waits in the sibling's inbox \
+             and is given to it when its next turn starts, never into a running turn. kind is a \
+             registered message kind (default note) whose schema checks payload; the same key \
+             returns the first message.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "to": branch_property("The sibling"),
+                    "text": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "payload": {"description": "JSON the kind's schema checks"},
+                    "key": {"type": "string"},
+                },
+                "required": ["to", "text"],
+                "additionalProperties": false,
+            })),
+        ),
         Tool::new(
             "approve_plan",
             "Approve a descendant's plan that awaits approval, as proposed or with edited in its              place, and start the turn that carries it out; returns once it has started.",
@@ -1233,6 +1250,7 @@ mod tests {
                 "events",
                 "inbox",
                 "inspect",
+                "message",
                 "report",
                 "report_status"
             ]

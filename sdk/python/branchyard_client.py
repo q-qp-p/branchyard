@@ -899,6 +899,13 @@ class Message(Record):
         """Whether delivery waits for a later turn without steering the active one."""
         return bool(self.get("next_turn", False))
 
+    @property
+    def meta(self) -> Optional[Record]:
+        """What the legacy fields do not carry (`docs/messaging.md`): the registered `kind`, its
+        `schema_version`, the `payload`, the `trace` and the `deadline_ms`; None when there is nothing."""
+        value = self.get("meta")
+        return Record(value) if isinstance(value, dict) else None
+
 
 class Approval(Record):
     """`ApprovalAsk`: `id`, `branch`, `turn`, `subject`, `about`
@@ -3048,9 +3055,10 @@ class Repo:
     def timeline(self, branch: str) -> Record:
         """`Timeline`: the shape of `branch`'s work with none of its
         content: each turn's `started_at_ms`, `ended_at_ms`, `outcome`,
-        `cost_usd` and `tools` (each `at_ms`, `name` and `call_id`), and
-        `merged_at_ms`, read from its whole log (`docs/server.md`,
-        "Reading a branch")."""
+        `cost_usd`, `tokens`, `startup`, `tools` (each `at_ms`, `name`,
+        `call_id` and `seq`) and `marks` (each `at_ms`, `seq`, `kind`, and
+        a `label`, `ok` or `score` where one applies), and `merged_at_ms`,
+        read from its whole log (`docs/server.md`, "Reading a branch")."""
         return Record(self.client.get(self._branch(branch, "/timeline")))
 
     def said(self, branch: str, cursor: int = 0) -> tuple[str, int]:
@@ -3111,11 +3119,14 @@ class Repo:
         body = _drop_none({"from": source, "to": to, "artifacts": list(artifacts), "note": note, "expected": expected})
         return Message(self.client.post(self._branch(source, "/handoff"), body, key=new_key()))
 
-    def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None) -> Record:
+    def ask(self, branch: str, text: str, wait_seconds: Optional[float] = None, key: Optional[str] = None) -> Record:
         """Ask `branch`'s parent (the person, if it has none) a question, as `branch`. With `wait_seconds` (capped at
-        120 on the server) it waits for the answer, `answer` being None when none came."""
+        120 on the server) it waits for the answer, `answer` being None when none came. A repeat with the same `key`
+        returns the first question; the same key with other text is refused."""
         return Record(
-            self.client.post(self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds}))
+            self.client.post(
+                self._branch(branch, "/ask"), _drop_none({"text": text, "wait_seconds": wait_seconds, "key": key})
+            )
         )
 
     def report(self, branch: str, text: str, result: Optional[Any] = None) -> Message:
@@ -3156,6 +3167,26 @@ class Repo:
     def answer(self, branch: str, message_id: int, text: str) -> Message:
         """Answer one of `branch`'s descendants' messages, as `branch`."""
         return Message(self.client.post(self._branch(branch, "/answer"), {"message_id": message_id, "text": text}))
+
+    def message(
+        self,
+        branch: str,
+        to: str,
+        text: str,
+        kind: Optional[str] = None,
+        payload: Optional[Any] = None,
+        key: Optional[str] = None,
+        deadline_ms: Optional[int] = None,
+    ) -> Message:
+        """Message `to`, one of `branch`'s siblings, as `branch` (`by message --as branch`): `kind` is a
+        registered message kind (`note` when None) whose schema checks `payload`, and a repeat with the same
+        `key` returns the first message. It waits for the sibling's next turn; with `deadline_ms` (milliseconds
+        since the Unix epoch, in the future) a message still unread when the sibling's turn starts after it is
+        dropped with a warning on the sibling's log."""
+        body = _drop_none(
+            {"to": to, "text": text, "kind": kind, "payload": payload, "key": key, "deadline_ms": deadline_ms}
+        )
+        return Message(self.client.post(self._branch(branch, "/message"), body, key=new_key()))
 
     # -- the inbox, as the person ------------------------------------------
 

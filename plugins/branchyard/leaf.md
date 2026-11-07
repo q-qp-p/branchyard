@@ -18,7 +18,9 @@ graphs and subagents follow harness permissions and limits. `by` on PATH and in
   access granted scratch areas and parent bindings.
 - `by ask "<question>" [--wait SECS]` asks your parent, or the person if you
   have none, optionally waiting. `by report "<text>"` reports progress;
-  `by escalate "<text>"` raises a problem; `by inbox` lists your messages.
+  `by escalate "<text>"` raises a problem; `by inbox` lists your messages;
+  `by message <sibling> "<text>"` messages another child of your parent,
+  which reads it at its next turn.
 - If `by inspect` shows a `result_contract`, return JSON matching its schema.
   For `purpose: "deliverable"`, native final JSON after success needs no reporting
   tool. This turn's accepted explicit result takes precedence; prior results cannot
@@ -81,6 +83,8 @@ plans a worker; `--apply` provisions the reviewed VM and its dedicated IAP TCP
 roles decide API access, `--scopes` narrows it. Harness sessions and `--remote`
 are refused. `--gvisor` installs the pinned gVisor
 Docker runtime; Container needs access to the worker's Docker socket.
+Operators, outside harness sessions, run `by harnesses update ID --qualify`,
+`by images build`, `by images pin REF@DIGEST` and `by startup report`.
 `by run` accepts `--substrate-api-token-file PATH` for Control authentication and
 `--substrate-server-name NAME` for verified forwarded TLS. Egress is
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable

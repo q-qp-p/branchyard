@@ -167,6 +167,10 @@
     "images": {
       "$ref": "#/$defs/ImagesConfig",
       "description": "The sandbox image each provider falls back to when a run names none\n(docs/images.md): `microsandbox = \"REF@sha256:...\"`. Written by\n`by images pin`; a `--image` flag or the provider's own table wins."
+    },
+    "messaging": {
+      "$ref": "#/$defs/MessagingConfig",
+      "description": "Kinds of message branches may send each other\n(docs/messaging.md): `[[messaging.kinds]]`."
     }
   },
   "title": "Branchyard configuration",
@@ -2223,6 +2227,53 @@
         }
       },
       "description": "`[images]`: the default sandbox image of each provider, digest-pinned."
+    },
+    "MessagingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kinds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessageKindConfig"
+          },
+          "description": "Kinds of message a branch may send a sibling with `by message\n--kind NAME` (the MCP and Python `message` too), beside the\nbuilt-in `note`: `[[messaging.kinds]]`. A project file's list\nreplaces the user file's."
+        }
+      },
+      "description": "`[messaging]`."
+    },
+    "MessageKindConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The kind's name, `[a-z0-9._-]`, at most 64 characters."
+        },
+        "schema_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The version of the payload schema, stored with each message\n(default 1)."
+        },
+        "schema": {
+          "description": "A JSON Schema, written inline as a TOML table, that a message's\n`payload` must match (`type`, `properties`, `required`, `enum`,\n`pattern`, bounds, `anyOf`/`oneOf`). Without one, any payload or\nnone is accepted; with one, a message must carry a payload."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "One line `by message kinds` shows beside the name."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "description": "One `[[messaging.kinds]]` entry: a registered kind of peer message. The\nbuilt-in names (`question`, `report`, `escalation`, `answer`,\n`handoff`, `note`) are refused when the yard opens, as is a schema\nkeyword outside the supported subset (`$ref`, `allOf`, `not`,\n`format`)."
     }
   },
   "$id": "https://raw.githubusercontent.com/vamsiramakrishnan/branchyard/main/schema/branchyard.config.json"

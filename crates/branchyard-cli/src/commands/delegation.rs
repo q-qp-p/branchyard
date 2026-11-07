@@ -582,21 +582,21 @@ pub fn ask(
     target: &Target,
     as_branch: Option<String>,
     text: &str,
-    wait_seconds: Option<f64>,
+    (wait_seconds, key): (Option<f64>, Option<&str>),
     json: bool,
 ) -> Outcome {
     let wait = wait_seconds.map(std::time::Duration::from_secs_f64);
     let result = match (harness_delegate(json)?, target) {
         (Some(delegate), _) => as_itself(&delegate, as_branch.as_deref(), "--as")
-            .and_then(|()| delegate.ask(text, wait)),
+            .and_then(|()| delegate.ask(text, wait, key)),
         (None, Target::Remote(remote)) => as_branch_required(as_branch, "ask").and_then(|b| {
             remote
                 .repo
-                .ask(&b, text, wait_seconds)
+                .ask(&b, text, wait_seconds, key)
                 .map_err(remote::sdk_error)
         }),
         (None, Target::Local) => as_branch_required(as_branch, "ask")
-            .and_then(|b| as_user(&b, TaskOptions::default())?.ask(text, wait)),
+            .and_then(|b| as_user(&b, TaskOptions::default())?.ask(text, wait, key)),
     };
     emit(json, result, |asked| match &asked.answer {
         Some(answer) => format!(
@@ -817,6 +817,108 @@ pub fn inbox(target: &Target, as_branch: Option<String>, unread: bool, json: boo
             })
             .collect()
     })
+}
+
+/// `by message TO TEXT [--kind K] [--payload JSON] [--key KEY] [--deadline
+/// DURATION]`: a message to a sibling, delivered at its next turn
+/// ([`Delegate::message`]); a `deadline` is counted from now into the
+/// absolute `deadline_ms` every other surface takes.
+pub fn message(
+    target: &Target,
+    as_branch: Option<String>,
+    (to, text): (&str, &str),
+    (kind, payload, key): (Option<&str>, Option<&str>, Option<&str>),
+    deadline: Option<std::time::Duration>,
+    json: bool,
+) -> Outcome {
+    let deadline_ms = deadline.map(|d| {
+        branchyard_support::time::now_ms()
+            .saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    });
+    let payload = match payload
+        .map(|text| {
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|e| branchyard::Error::Usage(format!("--payload is not JSON: {e}")))
+        })
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return fail(json, &error),
+    };
+    let result = match (harness_delegate(json)?, target) {
+        (Some(delegate), _) => as_itself(&delegate, as_branch.as_deref(), "--as")
+            .and_then(|()| delegate.message(to, text, kind, payload.clone(), key, deadline_ms)),
+        (None, Target::Remote(remote)) => as_branch_required(as_branch, "message").and_then(|b| {
+            remote
+                .repo
+                .message(
+                    &b,
+                    &branchyard_client::api::MessageRequest {
+                        to: to.to_owned(),
+                        text: text.to_owned(),
+                        kind: kind.map(str::to_owned),
+                        payload: payload.clone(),
+                        key: key.map(str::to_owned),
+                        deadline_ms,
+                    },
+                )
+                .map_err(remote::sdk_error)
+        }),
+        (None, Target::Local) => as_branch_required(as_branch, "message").and_then(|b| {
+            as_user(&b, TaskOptions::default())?.message(
+                to,
+                text,
+                kind,
+                payload.clone(),
+                key,
+                deadline_ms,
+            )
+        }),
+    };
+    emit(json, result, |m| {
+        format!("sent {} #{} to {}: {}\n", m.kind_name(), m.id, m.to, m.text)
+    })
+}
+
+/// `by kinds`: the message kinds this repository's yard knows, built-in
+/// and from `[[messaging.kinds]]`.
+pub fn kinds(json: bool) -> Outcome {
+    let result = open_yard().map(|yard| yard.message_kinds());
+    emit(json, result.map(|kinds| kind_rows(&kinds)), |rows| {
+        let mut out = String::new();
+        for row in rows {
+            let schema = match row["schema"].is_null() {
+                true => "any payload",
+                false => "schema",
+            };
+            out.push_str(&format!(
+                "{:<16} {:<10} v{} {:<11} {}\n",
+                row["name"].as_str().unwrap_or_default(),
+                row["class"].as_str().unwrap_or_default(),
+                row["schema_version"],
+                schema,
+                row["description"].as_str().unwrap_or_default()
+            ));
+        }
+        out
+    })
+}
+
+/// One JSON object per kind: `name`, `class`, `schema_version`, `schema`
+/// (null without one) and `description`.
+fn kind_rows(kinds: &[branchyard::messaging::KindSpec]) -> Vec<serde_json::Value> {
+    kinds
+        .iter()
+        .map(|kind| {
+            serde_json::json!({
+                "name": kind.name,
+                "class": kind.class,
+                "schema_version": kind.version,
+                "schema": kind.schema_value(),
+                "description": kind.description,
+            })
+        })
+        .collect()
 }
 
 pub fn children(env: &Env, target: &Target, branch: Option<String>, json: bool) -> Outcome {

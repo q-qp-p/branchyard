@@ -198,7 +198,52 @@ fn finished(status: &BranchStatus) -> bool {
     )
 }
 
-/// Freeze, authorize and enqueue one handoff; never steer or run a turn.
+/// A handoff frozen by [`relay`] and ready for the messaging pipeline
+/// (`crate::messaging`): its commit, and the facts its `authorize` and
+/// `validate` stages recheck before the store commits it.
+pub(crate) struct Prepared {
+    pub commit: HandoffCommit,
+    source: Record,
+    event_count: u64,
+    lineage: Lineage,
+    artifacts: Vec<(ArtifactRow, Vec<Share>)>,
+}
+
+impl Prepared {
+    /// Only a common ancestor relays between its descendants (an operator
+    /// relays between any two).
+    pub(crate) fn authorize(&self) -> Result<(), Error> {
+        let version = &self
+            .commit
+            .message
+            .handoff
+            .as_ref()
+            .ok_or_else(|| {
+                Error::State("a handoff transaction requires its frozen payload".into())
+            })?
+            .version;
+        check_actor(
+            &self.lineage,
+            self.commit.actor.as_ref(),
+            version.incarnation,
+            self.commit.recipient_incarnation,
+        )
+    }
+
+    /// Every frozen fact, as [`HandoffCommit::validate`] checks it.
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        self.commit.validate(
+            &self.source,
+            self.event_count,
+            &self.lineage,
+            &self.artifacts,
+        )
+    }
+}
+
+/// Freeze and authorize one handoff, then send it through the messaging
+/// pipeline as the `handoff` kind, whose `persist` stage commits it with
+/// its artifact grants in one transaction; never steer or run a turn.
 pub(crate) fn relay(
     yard: &Yard,
     actor: Option<&str>,
@@ -295,18 +340,28 @@ pub(crate) fn relay(
         delivered: false,
         handoff: Some(snapshot),
         next_turn: true,
+        meta: None,
     };
     let key_bytes = serde_json::to_vec(&(&actor, recipient_incarnation, &message))
         .map_err(|e| Error::State(format!("cannot encode a handoff: {e}")))?;
-    let prepared = HandoffCommit {
-        actor,
-        recipient_incarnation,
-        source_event_count: events.len() as u64,
-        dedupe_key: blake3::hash(&key_bytes).to_hex().to_string(),
-        message,
+    let envelope = crate::messaging::Envelope::new(
+        "handoff",
+        crate::messaging::Address::parse(&message.from),
+        crate::messaging::Address::parse(&message.to),
+        &message.text,
+    );
+    let prepared = Prepared {
+        commit: HandoffCommit {
+            actor,
+            recipient_incarnation,
+            source_event_count: events.len() as u64,
+            dedupe_key: blake3::hash(&key_bytes).to_hex().to_string(),
+            message,
+        },
+        source,
+        event_count: events.len() as u64,
+        lineage,
+        artifacts: selected,
     };
-    prepared.validate(&source, events.len() as u64, &lineage, &selected)?;
-    let message = store.backend().commit_handoff(&prepared)?;
-    store.notify();
-    Ok(message)
+    crate::messaging::send_handoff(yard, envelope, prepared)
 }

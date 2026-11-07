@@ -189,7 +189,9 @@ CREATE TABLE IF NOT EXISTS messages (
     next_turn BOOLEAN NOT NULL DEFAULT FALSE,
     handoff_key TEXT,
     recipient_incarnation INTEGER,
-    min_recipient_turn INTEGER
+    min_recipient_turn INTEGER,
+    meta TEXT,
+    idempotency_key TEXT
 );
 CREATE INDEX IF NOT EXISTS messages_to ON messages (to_branch, id);
 CREATE INDEX IF NOT EXISTS messages_steer ON messages (steer_id);
@@ -456,6 +458,14 @@ fn upgrade_handoff_columns(tx: &Transaction<'_>) -> Result<(), Error> {
             "min_recipient_turn",
             "ALTER TABLE messages ADD COLUMN min_recipient_turn INTEGER",
         ),
+        // The messaging layer's columns (`crate::messaging`): what a
+        // message carries beyond its legacy fields, and its idempotency
+        // key.
+        ("meta", "ALTER TABLE messages ADD COLUMN meta TEXT"),
+        (
+            "idempotency_key",
+            "ALTER TABLE messages ADD COLUMN idempotency_key TEXT",
+        ),
     ] {
         if !columns.iter().any(|name| name == column) {
             tx.execute(sql, []).map_err(|e| db("schema", e))?;
@@ -463,6 +473,11 @@ fn upgrade_handoff_columns(tx: &Transaction<'_>) -> Result<(), Error> {
     }
     tx.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS messages_handoff ON messages (handoff_key)",
+        [],
+    )
+    .map_err(|e| db("schema", e))?;
+    tx.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS messages_key ON messages (idempotency_key)",
         [],
     )
     .map_err(|e| db("schema", e))?;
@@ -1855,18 +1870,23 @@ impl Backend for Sqlite {
         })
     }
 
-    fn send_message(&self, message: &Message) -> Result<Message, Error> {
-        if message.handoff.is_some() || message.next_turn {
+    fn send_message(&self, message: &Message, key: Option<&str>) -> Result<Message, Error> {
+        if message.handoff.is_some() {
             return Err(Error::Denied(
                 "structured handoffs require an atomic handoff commit".into(),
             ));
         }
+        let meta = message
+            .meta
+            .as_ref()
+            .map(|meta| encode("meta", meta))
+            .transpose()?;
         self.tx(true, |tx| {
             let at_ms = now_ms();
             tx.execute(
                 "INSERT INTO messages \
-                 (from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                 (from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, next_turn, \
+                 meta, idempotency_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9)",
                 params![
                     message.from,
                     message.to,
@@ -1874,15 +1894,42 @@ impl Backend for Sqlite {
                     message.text,
                     to_db_opt("in_reply_to", message.in_reply_to)?,
                     to_db("at_ms", at_ms)?,
+                    message.next_turn,
+                    meta,
+                    key,
                 ],
             )
             .map_err(|e| db("message", e))?;
-            Ok(Message {
+            let stored = Message {
                 id: from_db("id", tx.last_insert_rowid())?,
                 at_ms,
                 delivered: false,
                 ..message.clone()
-            })
+            };
+            // The row and its log entries commit together, or neither does.
+            let event = RecordedEvent {
+                at_ms,
+                activity: Activity::Message(stored.clone()),
+            };
+            for (n, branch) in [&stored.from, &stored.to].into_iter().enumerate() {
+                let logged = n == 0 || stored.from != stored.to;
+                if logged && branch != crate::PERSON && incarnation(tx, branch)?.is_some() {
+                    insert_event(tx, branch, &event)?;
+                }
+            }
+            Ok(stored)
+        })
+    }
+
+    fn message_by_key(&self, key: &str) -> Result<Option<Message>, Error> {
+        self.query(|conn| {
+            conn.query_row(
+                &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE idempotency_key = ?1"),
+                params![key],
+                message_from,
+            )
+            .optional()
+            .map_err(|e| db("message", e))
         })
     }
 
@@ -1891,7 +1938,7 @@ impl Backend for Sqlite {
             let snapshot = commit.message.handoff.as_ref().ok_or_else(|| Error::State("missing handoff payload".into()))?;
             let existing = tx.query_row(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, \
-                 next_turn FROM messages WHERE handoff_key = ?1",
+                 next_turn, meta FROM messages WHERE handoff_key = ?1",
                 params![commit.dedupe_key], message_from,
             ).optional().map_err(|e| db("handoff", e))?;
             if let Some(previous) = &existing {
@@ -1957,7 +2004,7 @@ impl Backend for Sqlite {
         self.query(|conn| {
             conn.query_row(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM messages WHERE id = ?1",
+                 delivered_ms, handoff, next_turn, meta FROM messages WHERE id = ?1",
                 params![to_db("id", id)?],
                 message_from,
             )
@@ -1971,7 +2018,7 @@ impl Backend for Sqlite {
             let mut statement = conn
                 .prepare(
                     "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                     delivered_ms, handoff, next_turn FROM messages WHERE to_branch = ?1 \
+                     delivered_ms, handoff, next_turn, meta FROM messages WHERE to_branch = ?1 \
                      AND (recipient_incarnation IS NULL OR recipient_incarnation = \
                      (SELECT incarnation FROM branches WHERE name = ?1 AND record IS NOT NULL)) ORDER BY id",
                 )
@@ -1987,7 +2034,7 @@ impl Backend for Sqlite {
         self.query(|conn| {
             let mut statement = conn.prepare(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, \
-                 next_turn FROM messages WHERE to_branch = ?1 AND (min_recipient_turn IS NULL OR \
+                 next_turn, meta FROM messages WHERE to_branch = ?1 AND (min_recipient_turn IS NULL OR \
                  min_recipient_turn <= ?2) AND (recipient_incarnation IS NULL OR recipient_incarnation = \
                  (SELECT incarnation FROM branches WHERE name = ?1 AND record IS NOT NULL)) ORDER BY id",
             ).map_err(|e| db("inbox", e))?;
@@ -2018,7 +2065,7 @@ impl Backend for Sqlite {
         self.query(|conn| {
             conn.query_row(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM messages WHERE in_reply_to = ?1 ORDER BY id LIMIT 1",
+                 delivered_ms, handoff, next_turn, meta FROM messages WHERE in_reply_to = ?1 ORDER BY id LIMIT 1",
                 params![to_db("question_id", question_id)?],
                 message_from,
             )
@@ -2078,7 +2125,7 @@ impl Backend for Sqlite {
 pub(crate) fn unanswered(conn: &Connection) -> rusqlite::Result<Vec<Message>> {
     let mut statement = conn.prepare(
         "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, \
-         handoff, next_turn FROM messages q WHERE kind IN ('question', 'escalation') \
+         handoff, next_turn, meta FROM messages q WHERE kind IN ('question', 'escalation') \
          AND NOT EXISTS (SELECT 1 FROM messages a WHERE a.in_reply_to = q.id) \
          ORDER BY id DESC LIMIT ?1",
     )?;
@@ -2483,8 +2530,19 @@ pub(crate) fn message_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             })
             .transpose()?,
         next_turn: r.get(9)?,
+        meta: r
+            .get::<_, Option<String>>(10)?
+            .map(|text| {
+                decode("meta", &text)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+            })
+            .transpose()?,
     })
 }
+
+/// The `messages` columns [`message_from`] reads, in its order.
+pub(crate) const MESSAGE_COLUMNS: &str = "id, from_branch, to_branch, kind, text, in_reply_to, \
+                                          at_ms, delivered_ms, handoff, next_turn, meta";
 
 /// One `artifacts` row, in `ARTIFACT_COLUMNS` order.
 struct ArtifactCols {
@@ -3949,6 +4007,45 @@ mod tests {
                 opener.join().unwrap().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn a_store_from_before_the_message_key_opens_and_gains_it() {
+        // The key's unique index was once in TABLES, which runs before the
+        // column upgrades, so a store from before the messaging layer failed
+        // to open with "no such column: idempotency_key".
+        let (dir, store) = open("before-message-key");
+        drop(store);
+        let conn = Connection::open(dir.0.join("state.db")).unwrap();
+        conn.execute_batch(
+            "DROP INDEX messages_key; \
+             ALTER TABLE messages DROP COLUMN idempotency_key; \
+             ALTER TABLE messages DROP COLUMN meta;",
+        )
+        .unwrap();
+        drop(conn);
+        drop(Sqlite::open(&dir.0).unwrap());
+        let conn = Connection::open(dir.0.join("state.db")).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(messages)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(columns.iter().any(|c| c == "meta"), "{columns:?}");
+        assert!(
+            columns.iter().any(|c| c == "idempotency_key"),
+            "{columns:?}"
+        );
+        let index: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     fn open(name: &str) -> (Temp, Sqlite) {

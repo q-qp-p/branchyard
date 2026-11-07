@@ -1,0 +1,47 @@
+[package]
+name = "branchyard-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "OpenTelemetry setup for every Branchyard binary: tracing bridged to OTel spans, a meter provider with a Prometheus text reader, OTLP export from the standard OTEL_* variables, and W3C trace-context propagation"
+
+# reqwest is named only for its features: the workspace takes it without
+# defaults, and the OTLP/HTTP exporter's blocking client needs `blocking` and
+# rustls to reach an https collector. No code here calls it, so cargo-machete
+# cannot see it is used.
+[package.metadata.cargo-machete]
+ignored = ["reqwest"]
+
+[lints]
+workspace = true
+
+[features]
+# `testing::capture`, an in-memory span capture for the tests of crates that
+# emit spans.
+testing = ["opentelemetry_sdk/testing"]
+
+[dependencies]
+branchyard-support = { path = "../branchyard-support" }
+jiff = { workspace = true, features = ["std"] }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "rustls-no-provider"] }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+branchyard-telemetry = { path = ".", features = ["testing"] }
+branchyard-testkit = { path = "../branchyard-testkit" }
+# The OTLP messages the stand-in collector decodes.
+opentelemetry-proto = { workspace = true, features = ["gen-tonic", "trace", "metrics"] }
+prost = { workspace = true }
+# The gRPC stand-in collector. Already in Cargo.lock.
+tonic = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net"] }
+tokio-stream = { workspace = true, features = ["net"] }

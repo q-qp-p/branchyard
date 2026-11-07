@@ -1046,7 +1046,16 @@ pub fn main(args: &[String], program: &str) -> ExitCode {
     }
     // `--quiet` keeps meaning "warn and above" for anyone who does not set
     // `BRANCHYARD_LOG`/`RUST_LOG` themselves; see `logging::init`.
-    crate::logging::init(flags.quiet, flags.log_format);
+    // The guard flushes OpenTelemetry's exporters when the process ends.
+    let _telemetry = crate::logging::init(
+        flags.quiet,
+        flags.log_format,
+        if flags.worker {
+            branchyard_telemetry::Role::Worker
+        } else {
+            branchyard_telemetry::Role::Server
+        },
+    );
     let (config, warnings) = match build(flags) {
         Ok(built) => built,
         Err(error) => {

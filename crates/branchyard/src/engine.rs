@@ -1712,6 +1712,9 @@ fn run(
                         },
                     })?;
                 }
+                for note in submission.expiry_notes(fence.turn) {
+                    recorder.record(Activity::Warning(note))?;
+                }
                 recorder.record(Activity::Prompt(submission.prompt.clone()))?;
                 // Observers can apply a durable cancellation intent at this last
                 // boundary. Do not send a model prompt after that cancellation.

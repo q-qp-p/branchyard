@@ -10,6 +10,10 @@
 //! authority check every surface goes through; it follows the delegation
 //! tree exactly as spawning does.
 //!
+//! Since the messaging layer (`docs/messaging.md`), [`send`] is one
+//! envelope through [`crate::messaging`]'s pipeline, whose stages call
+//! [`authorize`] and [`try_deliver_now`]; the delivery below is unchanged.
+//!
 //! Every message is durable ([`crate::state::Backend`]'s `messages` rows,
 //! both SQLite and PostgreSQL) and is also recorded as `Activity::Message`
 //! on the event log of each branch it is between (the person keeps none),
@@ -42,9 +46,8 @@
 
 use std::time::Duration;
 
-use crate::record::Recorder;
 use crate::state::Store;
-use crate::{Activity, BranchInfo, Error, Message, MessageKind, Observer, SteerState, Yard};
+use crate::{BranchInfo, Error, Message, MessageKind, Observer, SteerState, Yard};
 
 /// At most this many pending messages are rendered into one prompt; the
 /// rest stay pending for a later turn.
@@ -129,8 +132,15 @@ pub(crate) fn render_running(message: &Message) -> String {
 fn line(message: &Message) -> String {
     let mut text = format!(
         "[#{}] {} from {}: {}\n",
-        message.id, message.kind, message.from, message.text
+        message.id,
+        message.kind_name(),
+        message.from,
+        message.text
     );
+    if let Some(payload) = message.meta.as_ref().and_then(|meta| meta.payload.as_ref()) {
+        let payload: String = payload.to_string().chars().take(2000).collect();
+        text.push_str(&format!("payload: {payload}\n"));
+    }
     if let Some(handoff) = &message.handoff {
         let result: String = handoff.result.to_string().chars().take(2000).collect();
         text.push_str(&format!(
@@ -164,8 +174,10 @@ pub(crate) fn answerer(info: &BranchInfo) -> &str {
 /// `report` only to its parent; an `escalation` goes to its answerer too,
 /// or, from a delegated branch, further up an ancestor whose seat `from`'s
 /// seat's `escalates_to` names; an `answer` goes from an ancestor to one of
-/// its own descendants. The person sends only answers; [`send`] checks
-/// that each replies to a message sent to it.
+/// its own descendants; a `peer` message goes between siblings, the
+/// delegated children of one parent ([`siblings`]). The person sends only
+/// answers; the pipeline's `authorize` stage checks that each replies to
+/// a message sent to it.
 pub(crate) fn authorize(
     store: &Store,
     from: &str,
@@ -184,6 +196,7 @@ pub(crate) fn authorize(
         };
     }
     match kind {
+        MessageKind::Peer => siblings(store, from, to),
         MessageKind::Answer => {
             if crate::delegation::is_ancestor(store, from, to)? {
                 Ok(())
@@ -233,11 +246,57 @@ pub(crate) fn authorize(
     }
 }
 
+/// Whether `from` and `to` are siblings: delegated children (`depth > 0`)
+/// of one parent. A root or a fork has no siblings; a cousin, an ancestor
+/// or a branch in another tree is refused by name.
+pub(crate) fn siblings(store: &Store, from: &str, to: &str) -> Result<(), Error> {
+    if to == PERSON {
+        return Err(Error::Denied(format!(
+            "{from} may only message its siblings, not {PERSON}; ask or escalate reach the person"
+        )));
+    }
+    let sender = store.read(from)?.info;
+    let Some(parent) = sender.parent.as_deref().filter(|_| sender.depth > 0) else {
+        return Err(Error::Denied(format!(
+            "{from} was not delegated, so it has no siblings to message"
+        )));
+    };
+    let recipient = store.read(to)?.info;
+    match recipient.parent.as_deref() {
+        Some(p) if p == parent && recipient.depth > 0 => Ok(()),
+        _ => Err(Error::Denied(format!(
+            "{from} may only message its siblings, the other children of {parent}, not {to}"
+        ))),
+    }
+}
+
+/// The envelope [`send`] makes of a legacy message: `kind`'s class, from
+/// `from` (a branch, or [`PERSON`] answering) to `to`, replying to
+/// `in_reply_to` when given. A caller that knows the sender's trace sets
+/// `trace` on it before [`crate::messaging::send`].
+pub(crate) fn envelope(
+    from: &str,
+    kind: MessageKind,
+    to: &str,
+    text: &str,
+    in_reply_to: Option<u64>,
+) -> crate::messaging::Envelope {
+    let mut envelope = crate::messaging::Envelope::new(
+        kind.as_str(),
+        crate::messaging::Address::parse(from),
+        crate::messaging::Address::parse(to),
+        text,
+    );
+    envelope.correlation = in_reply_to;
+    envelope
+}
+
 /// Send `kind` from `from` (a branch, or [`PERSON`] answering) to `to`,
 /// replying to message `in_reply_to` when given, which must have been sent
-/// to `from`. Checks it ([`authorize`]), stores it, records it on the log
-/// of each branch it is between, and tries to deliver it into `to`'s
-/// running turn; otherwise it waits for `to`'s next turn to start.
+/// to `from`: one [`envelope`] through the messaging pipeline
+/// ([`crate::messaging`]), checked ([`authorize`]), stored, recorded on the
+/// log of each branch it is between, and delivered into `to`'s running
+/// turn when it has one; otherwise it waits for `to`'s next turn to start.
 pub(crate) fn send(
     yard: &Yard,
     observer: Option<Observer>,
@@ -247,46 +306,7 @@ pub(crate) fn send(
     text: &str,
     in_reply_to: Option<u64>,
 ) -> Result<Message, Error> {
-    if text.trim().is_empty() {
-        return Err(Error::Denied(format!("a {kind} needs text")));
-    }
-    let store = yard.store();
-    authorize(&store, from, kind, to)?;
-    if let Some(question_id) = in_reply_to {
-        let question = store
-            .backend()
-            .message(question_id)?
-            .ok_or(Error::UnknownMessage(question_id))?;
-        if question.to != from {
-            return Err(Error::Denied(format!(
-                "message #{question_id} was not sent to {from}"
-            )));
-        }
-    }
-    let message = store.backend().send_message(&Message {
-        id: 0,
-        from: from.to_owned(),
-        to: to.to_owned(),
-        kind,
-        text: text.to_owned(),
-        in_reply_to,
-        at_ms: 0,
-        delivered: false,
-        handoff: None,
-        next_turn: false,
-    })?;
-    // `authorize` above refused `to == from`, so these are two distinct
-    // logs.
-    for branch in [from, to].into_iter().filter(|b| *b != PERSON) {
-        if let Ok(mut recorder) = Recorder::open(&store, branch, observer.clone()) {
-            branchyard_support::best_effort(
-                "record the activity",
-                recorder.record(Activity::Message(message.clone())),
-            );
-        }
-    }
-    try_deliver_now(yard, &store, to, &message);
-    Ok(message)
+    crate::messaging::send(yard, observer, envelope(from, kind, to, text, in_reply_to))
 }
 
 /// Whether `from`'s rig seat lists `to`'s seat in its `escalates_to`.
@@ -306,8 +326,9 @@ fn escalates_to(store: &Store, from: &str, to: &str) -> Result<bool, Error> {
 /// [`begin_submit`]. Errors from the hook or the store are not
 /// fatal to sending the message, so they are swallowed here. For
 /// [`SteerDelivery`] the engine has already marked it, so this is a no-op.
-/// The person has no turn to deliver into.
-fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
+/// The person has no turn to deliver into. The pipeline's `deliver` stage
+/// is the caller.
+pub(crate) fn try_deliver_now(yard: &Yard, store: &Store, to: &str, message: &Message) {
     if message.next_turn || to == PERSON {
         return;
     }
@@ -406,41 +427,86 @@ pub(crate) fn combine(prompt: &str, waiting: &[Message]) -> (String, Vec<u64>) {
 }
 
 /// `branch`'s pending messages combined into the prompt the engine call
-/// `turn` is about to submit, and the ids of those it includes. Messages
-/// steered input queued for this same turn carries are left to it. Marks
-/// nothing: [`begin_submit`] acknowledges them with the submit's intent.
+/// `turn` is about to submit, the ids of those it includes, and the
+/// messages whose deadline has passed ([`Message::expired_at`]), which are
+/// not given to the turn. Messages steered input queued for this same turn
+/// carries are left to it. Marks nothing: [`begin_submit`] acknowledges
+/// them with the submit's intent.
 pub(crate) fn compose_turn_start(
     store: &Store,
     branch: &str,
     turn: u64,
     prompt: &str,
-) -> Result<(String, Vec<u64>), Error> {
+) -> Result<(String, Vec<u64>, Vec<Message>), Error> {
+    let now = branchyard_support::time::now_ms();
     let mut waiting = Vec::new();
+    let mut expired = Vec::new();
     for message in store
         .backend()
         .inbox_for_turn(branch, turn)?
         .into_iter()
         .filter(|message| !message.delivered)
     {
-        if !steering(store, branch, turn, &message)? {
+        if message.expired_at(now) {
+            expired.push(message);
+        } else if !steering(store, branch, turn, &message)? {
             waiting.push(message);
         }
     }
-    Ok(combine(prompt, &waiting))
+    let (prompt, included) = combine(prompt, &waiting);
+    Ok((prompt, included, expired))
 }
 
 /// A turn's prompt as submitted: the task with its pending messages
-/// prepended, and the ids of the messages it carries.
+/// prepended, the ids of the messages it carries, and the messages that
+/// expired instead of being given to it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Submission {
     pub prompt: String,
     pub delivered: Vec<u64>,
+    pub expired: Vec<Message>,
+}
+
+impl Submission {
+    /// One line per expired message for the recipient's event log
+    /// ([`crate::Activity::Warning`]): its id, sender and deadline, so a
+    /// message that was not delivered is never silently lost.
+    pub(crate) fn expiry_notes(&self, turn: u64) -> Vec<String> {
+        self.expired
+            .iter()
+            .map(|message| {
+                let deadline = message
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.deadline_ms)
+                    .map_or_else(String::new, branchyard_support::time::rfc3339);
+                format!(
+                    "message #{} from {} expired: its deadline {deadline} passed before turn \
+                     {turn} started, so it was not delivered",
+                    message.id, message.from
+                )
+            })
+            .collect()
+    }
+
+    /// The ids the store marks delivered with the submit: the messages the
+    /// prompt carries and the expired ones it does not.
+    fn acknowledged(&self) -> Vec<u64> {
+        self.delivered
+            .iter()
+            .copied()
+            .chain(self.expired.iter().map(|m| m.id))
+            .collect()
+    }
 }
 
 /// Deliver `branch`'s pending messages into the fenced turn's prompt:
 /// journal its `submit` step, whose intent holds the combined prompt and
 /// the message ids, and acknowledge (mark delivered) exactly those messages
-/// in the same store transaction. Any failure before that commit leaves
+/// in the same store transaction. A message whose deadline has passed is
+/// not given to the turn but is acknowledged in the same transaction, so
+/// it is never delivered late; the engine records a warning naming it
+/// ([`Submission::expiry_notes`]). Any failure before that commit leaves
 /// them pending; once it commits they count delivered, as the prompt counts
 /// submitted, so recovery never gives either again.
 pub(crate) fn begin_submit(
@@ -449,14 +515,20 @@ pub(crate) fn begin_submit(
     branch: &str,
     prompt: &str,
 ) -> Result<Submission, Error> {
-    let (prompt, delivered) = compose_turn_start(store, branch, fence.turn, prompt)?;
-    let intent = serde_json::json!({ "prompt": prompt, "messages": delivered });
+    let (prompt, delivered, expired) = compose_turn_start(store, branch, fence.turn, prompt)?;
+    let submission = Submission {
+        prompt,
+        delivered,
+        expired,
+    };
+    let intent =
+        serde_json::json!({ "prompt": submission.prompt, "messages": submission.delivered });
     let begun = store.backend().begin_step_delivering(
         fence,
         fence.turn,
         crate::engine::STEP_SUBMIT,
         &intent,
-        &delivered,
+        &submission.acknowledged(),
     )?;
     if !matches!(begun, crate::state::Begun::Fresh) {
         return Err(Error::State(format!(
@@ -464,7 +536,7 @@ pub(crate) fn begin_submit(
             fence.turn
         )));
     }
-    Ok(Submission { prompt, delivered })
+    Ok(submission)
 }
 
 /// Undo [`begin_submit`] when the harness refused the prompt with nothing
@@ -479,7 +551,7 @@ pub(crate) fn abandon_submit(
         fence,
         fence.turn,
         crate::engine::STEP_SUBMIT,
-        &submission.delivered,
+        &submission.acknowledged(),
     )
 }
 
@@ -558,7 +630,7 @@ mod tests {
         };
         let sent = store
             .backend()
-            .send_message(&message(0, MessageKind::Question, "rename it?"))
+            .send_message(&message(0, MessageKind::Question, "rename it?"), None)
             .unwrap();
         (Temp(dir), store, fence, sent.id)
     }
@@ -602,7 +674,7 @@ mod tests {
         assert_eq!(steps[0].intent["messages"], serde_json::json!([id]));
         assert!(delivered(&store, id));
         // The next turn start has nothing left to give.
-        let (_, again) = compose_turn_start(&store, "parent", fence.turn, "next").unwrap();
+        let (_, again, _) = compose_turn_start(&store, "parent", fence.turn, "next").unwrap();
         assert!(again.is_empty());
     }
 
@@ -621,8 +693,47 @@ mod tests {
             .steps("parent", fence.turn)
             .unwrap()
             .is_empty());
-        let (_, again) = compose_turn_start(&store, "parent", fence.turn, "go").unwrap();
+        let (_, again, _) = compose_turn_start(&store, "parent", fence.turn, "go").unwrap();
         assert_eq!(again, [id]);
+    }
+
+    /// A message whose deadline has passed is acknowledged with the submit
+    /// but left out of the prompt, and named by an expiry note; abandoning
+    /// the submit returns it to pending with the rest.
+    #[test]
+    fn an_expired_message_is_acknowledged_but_not_given_to_the_turn() {
+        let (_t, store, fence, live) = running("expired");
+        let mut late = message(0, MessageKind::Report, "stale news");
+        late.meta = Some(crate::messaging::MessageMeta {
+            deadline_ms: Some(1),
+            ..crate::messaging::MessageMeta::default()
+        });
+        let late = store.backend().send_message(&late, None).unwrap();
+        assert!(late.expired_at(branchyard_support::time::now_ms()));
+        assert!(!message(0, MessageKind::Report, "x").expired_at(u64::MAX));
+
+        let submission = begin_submit(&store, &fence, "parent", "go").unwrap();
+        assert_eq!(submission.delivered, [live]);
+        assert_eq!(
+            submission.expired.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [late.id]
+        );
+        assert!(
+            !submission.prompt.contains("stale news"),
+            "{}",
+            submission.prompt
+        );
+        let notes = submission.expiry_notes(fence.turn);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with(&format!("message #{} from kid expired", late.id)),
+            "{notes:?}"
+        );
+        assert!(delivered(&store, late.id), "never delivered late");
+
+        abandon_submit(&store, &fence, &submission).unwrap();
+        assert!(!delivered(&store, late.id));
+        assert!(!delivered(&store, live));
     }
 
     /// `wait_for_answer` with `Duration::MAX`, what the agent `ask` tool
@@ -647,7 +758,7 @@ mod tests {
             }
             let mut reply = message(0, MessageKind::Answer, "yes, rename it");
             (reply.from, reply.to, reply.in_reply_to) = ("parent".into(), "kid".into(), Some(id));
-            store.backend().send_message(&reply).unwrap();
+            store.backend().send_message(&reply, None).unwrap();
             waiter.join().unwrap()
         });
         let answer = answered.unwrap().expect("the answer ends the wait");
@@ -663,10 +774,13 @@ mod tests {
         let (_t, store, _fence, _) = running("person");
         let asked = store
             .backend()
-            .send_message(&Message {
-                to: PERSON.into(),
-                ..message(0, MessageKind::Question, "which database?")
-            })
+            .send_message(
+                &Message {
+                    to: PERSON.into(),
+                    ..message(0, MessageKind::Question, "which database?")
+                },
+                None,
+            )
             .unwrap();
         std::thread::scope(|scope| {
             let waiter = scope.spawn(|| wait_for_answer(&store, asked.id, Duration::from_secs(30)));
@@ -677,7 +791,7 @@ mod tests {
             let mut reply = message(0, MessageKind::Answer, "postgres");
             (reply.from, reply.to, reply.in_reply_to) =
                 (PERSON.into(), "kid".into(), Some(asked.id));
-            store.backend().send_message(&reply).unwrap();
+            store.backend().send_message(&reply, None).unwrap();
             assert!(waiter.join().unwrap().unwrap().is_some());
         });
         assert!(!waiting_for_answer(&store, "kid"));
@@ -695,6 +809,7 @@ mod tests {
             delivered: false,
             handoff: None,
             next_turn: false,
+            meta: None,
         }
     }
 

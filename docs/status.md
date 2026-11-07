@@ -78,7 +78,7 @@ A live run is protocol qualification against the real binary as a local process.
 
 ## Crates
 
-<!-- fact:workspace.crate_count -->25<!-- /fact --> crates. Test counts are in [validation](validation.md#passed-locally), generated from the source.
+<!-- fact:workspace.crate_count -->26<!-- /fact --> crates. Test counts are in [validation](validation.md#passed-locally), generated from the source.
 
 | Crate | What it is | State |
 |---|---|---|

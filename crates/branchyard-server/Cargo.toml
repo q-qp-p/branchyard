@@ -43,12 +43,12 @@ hex = { workspace = true }
 hmac = "0.13"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service", "server", "server-graceful"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
 rusqlite = { workspace = true }
 postgres = { workspace = true, optional = true }
-# OTLP's protobuf messages for trace export (docs/observability.md); already
-# in the workspace through the Substrate provider.
-prost = { workspace = true }
+# Traces, metrics and propagation on OpenTelemetry (docs/observability.md).
+branchyard-telemetry = { path = "../branchyard-telemetry" }
+opentelemetry = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -84,6 +84,8 @@ branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
 branchyard-runtime = { path = "../branchyard-runtime" }
 branchyard-sandbox = { path = "../branchyard-sandbox" }
 branchyard-testkit = { path = "../branchyard-testkit" }
+# In-memory span capture for the tests of the span tree.
+branchyard-telemetry = { path = "../branchyard-telemetry", features = ["testing"] }
 blake3 = { workspace = true }
 branchyard-sync = { path = "../branchyard-sync", features = ["testing"] }
 tempfile = { workspace = true }

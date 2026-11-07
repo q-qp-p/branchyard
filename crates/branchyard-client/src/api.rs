@@ -769,6 +769,11 @@ pub struct AskRequest {
     /// the question is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_seconds: Option<f64>,
+    /// An idempotency key, scoped to the asking branch: a repeat with the
+    /// same key returns the first question (waiting for its answer again if
+    /// asked to), and the same key with different text is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// `POST /v1/repos/{repo}/branches/{branch}/escalate`: a message with no
@@ -799,6 +804,33 @@ pub struct ReportRequest {
         deserialize_with = "branchyard::contract::present"
     )]
     pub result: Option<serde_json::Value>,
+}
+
+/// `POST /v1/repos/{repo}/branches/{branch}/message`: a message from the
+/// branch to a sibling, like `by message --as`; see `docs/messaging.md`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRequest {
+    /// The sibling, another child of the branch's parent.
+    pub to: String,
+    /// The message, one line.
+    pub text: String,
+    /// A registered message kind; `note` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// A JSON value the kind's schema checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Milliseconds since the Unix epoch, in the future, after which the
+    /// message is not given to the sibling's turn: it is marked delivered
+    /// and a warning naming it goes on the sibling's log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
 }
 
 /// `POST /v1/repos/{repo}/branches/{branch}/answer`: an answer to one of

@@ -799,6 +799,9 @@ pub enum Command {
         /// Block up to this many seconds for an answer (default: return once the question is sent)
         #[arg(long = "wait", value_name = "SECONDS", value_parser = seconds, allow_negative_numbers = true)]
         wait_seconds: Option<f64>,
+        /// An idempotency key: asking again with the same key returns the first question
+        #[arg(long, value_name = "KEY", value_parser = non_blank)]
+        key: Option<String>,
         /// Print JSON
         #[arg(long)]
         json: bool,
@@ -896,6 +899,50 @@ pub enum Command {
         /// Only messages not yet delivered to a turn
         #[arg(long)]
         unread: bool,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Message a sibling branch; it reads the message at its next turn
+    ///
+    /// A sibling is another child of this branch's parent. The message waits in the sibling's inbox and is prepended to its next turn's prompt; it
+    /// is never steered into a running turn. --kind names a registered message kind (`note`
+    /// without one) whose schema checks --payload; --key makes a repeat return the first message.
+    /// --deadline drops a message still unread when the sibling's turn starts after it, with a
+    /// warning on the sibling's log. A sibling with 32 unread peer messages refuses another.
+    #[command(hide = true, display_order = 313)]
+    Message {
+        /// Act as this branch (outside a harness; inside one, it is the harness's own)
+        #[arg(long = "as", value_name = "BRANCH")]
+        as_branch: Option<String>,
+        /// The sibling to message
+        to: String,
+        /// The message, one line
+        text: String,
+        /// A registered message kind; `note` without one
+        #[arg(long, value_name = "KIND", value_parser = non_blank)]
+        kind: Option<String>,
+        /// A JSON value the kind's schema checks
+        #[arg(long, value_name = "JSON", value_parser = non_blank)]
+        payload: Option<String>,
+        /// An idempotency key: a repeat with the same key returns the first message
+        #[arg(long, value_name = "KEY", value_parser = non_blank)]
+        key: Option<String>,
+        /// Drop the message if the sibling has not started a turn within this long (a duration
+        /// such as 10m or 2h; bare numbers are seconds)
+        #[arg(long, value_name = "DURATION", value_parser = message_deadline)]
+        deadline: Option<Duration>,
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the message kinds `by message --kind` accepts
+    ///
+    /// The built-in kinds, then those declared in branchyard.toml as `[[messaging.kinds]]`, each
+    /// with its class, schema version, whether a payload schema checks --payload, and its
+    /// description. Reads the configuration, not the server's.
+    #[command(hide = true, display_order = 314)]
+    Kinds {
         /// Print JSON
         #[arg(long)]
         json: bool,

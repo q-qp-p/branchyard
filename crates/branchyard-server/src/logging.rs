@@ -59,7 +59,17 @@ impl LogFormat {
 /// (see [`LogFormat::resolve`]). Idempotent: a second call (as in a test
 /// binary that runs several integration tests linked together) is a
 /// harmless no-op.
-pub fn init(quiet: bool, format: Option<LogFormat>) {
+///
+/// The subscriber also carries the OpenTelemetry layer and providers that
+/// `branchyard-telemetry` builds from the standard `OTEL_*` variables (off
+/// unless an endpoint is set). Keep the returned guard for the life of the
+/// process: dropping it flushes and shuts the exporters down.
+pub fn init(
+    quiet: bool,
+    format: Option<LogFormat>,
+    role: branchyard_telemetry::Role,
+) -> branchyard_telemetry::Guard {
+    use tracing_subscriber::Layer as _;
     let filter = std::env::var("BRANCHYARD_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
         .ok()
@@ -67,23 +77,38 @@ pub fn init(quiet: bool, format: Option<LogFormat>) {
         .unwrap_or_else(|| EnvFilter::new(if quiet { "warn" } else { "info" }));
     let env = std::env::var("BRANCHYARD_LOG_FORMAT").ok();
     let json = LogFormat::resolve(format, env.as_deref()) == LogFormat::Json;
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_ansi(ansi_here())
         .with_writer(QuietStderr);
-    // `.json()` changes the builder's type, so the two formats each finish
-    // their own call to `try_init`; either way a second call anywhere in
-    // the process (a global subscriber is already set) is ignored rather
-    // than panicking.
-    branchyard_support::best_effort(
-        "install the log subscriber",
-        if json {
-            builder.json().try_init()
-        } else {
-            builder.try_init()
-        },
-    );
+    // `.json()` changes the layer's type, so the two formats are each
+    // boxed. A second call anywhere in the process (a global subscriber is
+    // already set) is ignored rather than panicking.
+    let layer: branchyard_telemetry::BoxedLayer = if json {
+        layer.json().with_filter(filter).boxed()
+    } else {
+        layer.with_filter(filter).boxed()
+    };
+    telemetry(role, layer)
+}
+
+/// Install `layer` and the OpenTelemetry setup of `role`.
+fn telemetry(
+    role: branchyard_telemetry::Role,
+    layer: branchyard_telemetry::BoxedLayer,
+) -> branchyard_telemetry::Guard {
+    use branchyard_telemetry::Role;
+    branchyard_telemetry::init(branchyard_telemetry::Config {
+        role,
+        service_name: match role {
+            Role::Server => "branchyard-server",
+            Role::Worker => "branchyard-worker",
+            Role::Cli => "by",
+        }
+        .to_owned(),
+        service_version: env!("CARGO_PKG_VERSION").to_owned(),
+        layers: vec![layer],
+    })
 }
 
 /// Standard error for log lines, where a write that fails is dropped.
@@ -218,21 +243,22 @@ where
 /// Best-effort failures anywhere in the workspace (`branchyard-support`) log
 /// at `warn`, so this is what makes a swallowed cleanup error visible to the
 /// person running the command: `by: warning: destroy the sandbox: ...`.
-/// Idempotent, like [`init`].
-pub fn init_for_commands() {
+/// Idempotent, like [`init`]. Like it, it sets up OpenTelemetry for the
+/// `cli` role (off unless an OTLP endpoint is set) and returns the guard
+/// that flushes it when dropped.
+pub fn init_for_commands() -> branchyard_telemetry::Guard {
+    use tracing_subscriber::Layer as _;
     let filter = std::env::var("BRANCHYARD_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
         .ok()
         .and_then(|directives| EnvFilter::try_new(directives).ok())
         .unwrap_or_else(|| EnvFilter::new("warn"));
-    branchyard_support::best_effort(
-        "install the log subscriber",
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .event_format(CommandFormat { ansi: ansi_here() })
-            .with_writer(QuietStderr)
-            .try_init(),
-    );
+    let layer = tracing_subscriber::fmt::layer()
+        .event_format(CommandFormat { ansi: ansi_here() })
+        .with_writer(QuietStderr)
+        .with_filter(filter)
+        .boxed();
+    telemetry(branchyard_telemetry::Role::Cli, layer)
 }
 
 #[cfg(test)]

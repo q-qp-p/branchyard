@@ -252,7 +252,9 @@ CREATE TABLE IF NOT EXISTS by_messages (
     next_turn BOOLEAN NOT NULL DEFAULT FALSE,
     handoff_key TEXT,
     recipient_incarnation BIGINT,
-    min_recipient_turn BIGINT
+    min_recipient_turn BIGINT,
+    meta TEXT,
+    idempotency_key TEXT
 );
 CREATE INDEX IF NOT EXISTS by_messages_to ON by_messages (repo, to_branch, id);
 CREATE INDEX IF NOT EXISTS by_messages_steer ON by_messages (steer_id);
@@ -898,10 +900,14 @@ impl Postgres {
                 "ALTER TABLE by_messages ADD COLUMN IF NOT EXISTS handoff_key TEXT",
                 "ALTER TABLE by_messages ADD COLUMN IF NOT EXISTS recipient_incarnation BIGINT",
                 "ALTER TABLE by_messages ADD COLUMN IF NOT EXISTS min_recipient_turn BIGINT",
+                // The messaging layer's columns (`crate::messaging`).
+                "ALTER TABLE by_messages ADD COLUMN IF NOT EXISTS meta TEXT",
+                "ALTER TABLE by_messages ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
             ] {
                 tx.batch_execute(sql).map_err(db("schema"))?;
             }
             tx.batch_execute("CREATE UNIQUE INDEX IF NOT EXISTS by_messages_handoff ON by_messages (repo, handoff_key)").map_err(db("schema"))?;
+            tx.batch_execute("CREATE UNIQUE INDEX IF NOT EXISTS by_messages_key ON by_messages (repo, idempotency_key)").map_err(db("schema"))?;
             let version: Option<String> = tx
                 .query_opt("SELECT value FROM by_meta WHERE key = 'schema'", &[])
                 .map_err(db("schema"))?
@@ -2231,19 +2237,25 @@ impl Backend for Postgres {
         .and_then(|r| Ok(from_db("id", r.get::<_, i64>(0))?))
     }
 
-    fn send_message(&self, message: &Message) -> Result<Message, Error> {
-        if message.handoff.is_some() || message.next_turn {
+    fn send_message(&self, message: &Message, key: Option<&str>) -> Result<Message, Error> {
+        if message.handoff.is_some() {
             return Err(Error::Denied(
                 "structured handoffs require an atomic handoff commit".into(),
             ));
         }
-        self.tx(true, |tx| {
+        let meta = message
+            .meta
+            .as_ref()
+            .map(|meta| encode("meta", meta))
+            .transpose()?;
+        self.appending(true, |tx, feed| {
             let at_ms = now_ms();
             let row = tx
                 .query_one(
                     "INSERT INTO by_messages \
                      (repo, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                      delivered_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL) RETURNING id",
+                      delivered_ms, next_turn, meta, idempotency_key) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10) RETURNING id",
                     &[
                         &self.repo,
                         &message.from,
@@ -2252,15 +2264,30 @@ impl Backend for Postgres {
                         &message.text,
                         &to_db_opt("in_reply_to", message.in_reply_to)?,
                         &to_db("at_ms", at_ms)?,
+                        &message.next_turn,
+                        &meta,
+                        &key,
                     ],
                 )
                 .map_err(db("message"))?;
-            Ok(Message {
+            let stored = Message {
                 id: from_db("id", row.get(0))?,
                 at_ms,
                 delivered: false,
                 ..message.clone()
-            })
+            };
+            // The row and its log entries commit together, or neither does.
+            let event = RecordedEvent {
+                at_ms,
+                activity: Activity::Message(stored.clone()),
+            };
+            for (n, branch) in [&stored.from, &stored.to].into_iter().enumerate() {
+                let logged = n == 0 || stored.from != stored.to;
+                if logged && branch != crate::PERSON && self.incarnation(tx, branch)?.is_some() {
+                    self.insert_event(tx, feed, branch, &event)?;
+                }
+            }
+            Ok(stored)
         })
     }
 
@@ -2277,7 +2304,7 @@ impl Backend for Postgres {
             ).map_err(db("handoff branches"))?;
             let existing = tx.query_opt(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, \
-                 next_turn FROM by_messages WHERE repo = $1 AND handoff_key = $2",
+                 next_turn, meta FROM by_messages WHERE repo = $1 AND handoff_key = $2",
                 &[&self.repo, &commit.dedupe_key],
             ).map_err(db("handoff"))?.map(|row| message_row(&row)).transpose()?;
             if let Some(previous) = &existing {
@@ -2352,8 +2379,21 @@ impl Backend for Postgres {
         let row = self.query(|c| {
             c.query_opt(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM by_messages WHERE repo = $1 AND id = $2",
+                 delivered_ms, handoff, next_turn, meta FROM by_messages WHERE repo = $1 AND id = $2",
                 &[&self.repo, &id_db],
+            )
+        })?;
+        row.map(|r| message_row(&r)).transpose()
+    }
+
+    fn message_by_key(&self, key: &str) -> Result<Option<Message>, Error> {
+        let row = self.query(|c| {
+            c.query_opt(
+                &format!(
+                    "SELECT {MESSAGE_COLUMNS} FROM by_messages WHERE repo = $1 AND \
+                     idempotency_key = $2"
+                ),
+                &[&self.repo, &key],
             )
         })?;
         row.map(|r| message_row(&r)).transpose()
@@ -2363,7 +2403,7 @@ impl Backend for Postgres {
         let rows = self.query(|c| {
             c.query(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM by_messages WHERE repo = $1 AND to_branch = $2 \
+                 delivered_ms, handoff, next_turn, meta FROM by_messages WHERE repo = $1 AND to_branch = $2 \
                  AND (recipient_incarnation IS NULL OR recipient_incarnation = \
                  (SELECT incarnation FROM by_branches WHERE repo = $1 AND name = $2 AND record IS NOT NULL)) ORDER BY id",
                 &[&self.repo, &to],
@@ -2376,7 +2416,7 @@ impl Backend for Postgres {
         let turn_db = to_db("turn", turn)?;
         let rows = self.query(|client| client.query(
             "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, delivered_ms, handoff, \
-             next_turn FROM by_messages WHERE repo = $1 AND to_branch = $2 AND (min_recipient_turn IS NULL OR \
+             next_turn, meta FROM by_messages WHERE repo = $1 AND to_branch = $2 AND (min_recipient_turn IS NULL OR \
              min_recipient_turn <= $3) AND (recipient_incarnation IS NULL OR recipient_incarnation = (SELECT \
              incarnation FROM by_branches WHERE repo = $1 AND name = $2 AND record IS NOT NULL)) ORDER BY id",
             &[&self.repo, &to, &turn_db],
@@ -2407,7 +2447,7 @@ impl Backend for Postgres {
         let row = self.query(|c| {
             c.query_opt(
                 "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                 delivered_ms, handoff, next_turn FROM by_messages WHERE repo = $1 AND in_reply_to = $2 \
+                 delivered_ms, handoff, next_turn, meta FROM by_messages WHERE repo = $1 AND in_reply_to = $2 \
                  ORDER BY id LIMIT 1",
                 &[&self.repo, &question_id_db],
             )
@@ -2469,7 +2509,7 @@ impl Backend for Postgres {
 /// [`Backend::unanswered`]'s query, also read by [`Glanced`]: `$1` is the
 /// repository, `$2` the limit, newest first.
 const UNANSWERED: &str = "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-     delivered_ms, handoff, next_turn FROM by_messages q \
+     delivered_ms, handoff, next_turn, meta FROM by_messages q \
      WHERE q.repo = $1 AND q.kind IN ('question', 'escalation') \
      AND NOT EXISTS (SELECT 1 FROM by_messages a WHERE a.repo = $1 AND a.in_reply_to = q.id) \
      ORDER BY id DESC LIMIT $2";
@@ -2555,7 +2595,7 @@ impl Glanced {
             Some(branch) => tx
                 .query(
                     "SELECT id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
-                     delivered_ms, handoff, next_turn FROM by_messages \
+                     delivered_ms, handoff, next_turn, meta FROM by_messages \
                      WHERE repo = $1 AND to_branch = $2 AND delivered_ms IS NULL \
                      AND (recipient_incarnation IS NULL OR recipient_incarnation = (SELECT incarnation FROM by_branches WHERE repo = $1 AND name = $2 AND record IS NOT NULL)) ORDER BY id",
                     &[&repo, &branch],
@@ -2594,8 +2634,16 @@ fn message_row(r: &Row) -> Result<Message, Error> {
             .map(|text| decode("handoff", &text))
             .transpose()?,
         next_turn: r.get(9),
+        meta: r
+            .get::<_, Option<String>>(10)
+            .map(|text| decode("meta", &text))
+            .transpose()?,
     })
 }
+
+/// The `by_messages` columns [`message_row`] reads, in its order.
+const MESSAGE_COLUMNS: &str = "id, from_branch, to_branch, kind, text, in_reply_to, at_ms, \
+                               delivered_ms, handoff, next_turn, meta";
 
 /// Upgrade a schema 1 database: add the identity columns and bind every
 /// name-only grant of every repository once, by [`LegacyBinder`]'s rule, in

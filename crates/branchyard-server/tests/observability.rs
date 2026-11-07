@@ -4,15 +4,10 @@
 #![allow(clippy::panic, clippy::unwrap_used)] // tests: a panic is the failure report
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use branchyard_client::api::{OperationState, PolicySpec, SpawnRequest, TaskRequest};
 use branchyard_client::new_key;
 use branchyard_server::config::{MetricsConfig, Principal, TenantPolicy, Token};
-use branchyard_server::metrics::Metrics;
-use branchyard_server::observe::Observability;
-use branchyard_server::telemetry::{Attr, MemoryExporter, SpanContext, Tracer};
+use branchyard_telemetry::testing::capture;
 use common::{await_operation, get, post, raw, run, task, Fixture, Server, TOKEN};
 
 fn json(body: &str) -> serde_json::Value {
@@ -243,17 +238,12 @@ fn metrics_need_an_operator_or_the_metrics_token_and_count_the_work() {
 /// harness gets the operation's span as `TRACEPARENT`.
 #[test]
 fn an_operation_is_traced_from_admission_to_its_turns() {
+    let capture = capture().unwrap();
     let f = Fixture::new();
-    let memory = Arc::new(MemoryExporter::default());
-    let tracer = Tracer::new(memory.clone());
-    let mut config = f.config();
-    config.observability = Some(Observability {
-        metrics: Arc::new(Metrics::default()),
-        tracer: tracer.clone(),
-    });
-    let server = Server::start(config);
+    let server = Server::start(f.config());
     let client = server.client();
-    let incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let trace = new_key();
+    let incoming = format!("00-{trace}-00f067aa0ba902b7-01");
     let body = serde_json::to_string(&TaskRequest {
         priority: Some(3),
         ..task("ENV TRACEPARENT", "traced")
@@ -274,31 +264,30 @@ fn an_operation_is_traced_from_admission_to_its_turns() {
         await_operation(&client, &id).state,
         OperationState::Succeeded
     );
-    tracer.flush(Duration::from_secs(10));
-    let spans = memory.spans();
+    let spans = capture.trace(&trace);
     let named = |name: &str| {
         spans
             .iter()
             .find(|s| s.name == name)
             .unwrap_or_else(|| panic!("no {name} span in {spans:#?}"))
     };
-    let parent = SpanContext::parse(incoming).unwrap();
     let admission = named("admission");
-    assert_eq!(admission.context.trace_id, parent.trace_id);
-    assert_eq!(admission.parent, Some(parent.span_id));
-    assert_eq!(admission.attribute("by.priority"), Some(&Attr::Int(3)));
+    assert_eq!(admission.parent_id.as_deref(), Some("00f067aa0ba902b7"));
+    assert_eq!(admission.kind, "server");
+    assert_eq!(admission.attributes["by.priority"], "3");
+    assert_eq!(admission.attributes["by.operation"], id);
+    assert_eq!(admission.attributes["by.kind"], "task");
     let claim = named("claim");
-    assert_eq!(claim.parent, Some(admission.context.span_id));
+    assert_eq!(claim.parent_id.as_ref(), Some(&admission.span_id));
+    assert_eq!(claim.attributes["by.operation"], id);
     let operation = named("operation task");
-    assert_eq!(operation.parent, Some(admission.context.span_id));
-    assert_eq!(operation.context.trace_id, parent.trace_id);
+    assert_eq!(operation.parent_id.as_ref(), Some(&admission.span_id));
+    assert_eq!(operation.attributes["by.repo"], "app");
+    assert_eq!(operation.attributes["by.branches"], "traced");
     let turn = named("turn");
-    assert_eq!(turn.parent, Some(operation.context.span_id));
-    assert_eq!(
-        turn.attribute("by.outcome"),
-        Some(&Attr::Str("completed".into()))
-    );
-    assert!(turn.start_ns <= turn.end_ns);
+    assert_eq!(turn.parent_id.as_ref(), Some(&operation.span_id));
+    assert_eq!(turn.attributes["by.outcome"], "completed");
+    assert!(turn.start_ms <= turn.end_ms);
     // The harness saw the operation's span as its parent.
     let said: String = client
         .repo("app")
@@ -314,7 +303,7 @@ fn an_operation_is_traced_from_admission_to_its_turns() {
         })
         .collect();
     assert!(
-        said.contains(&format!("TRACEPARENT={}", operation.context.traceparent())),
+        said.contains(&format!("TRACEPARENT=00-{trace}-{}-01", operation.span_id)),
         "{said}"
     );
     // A malformed traceparent starts a trace of its own.
@@ -328,20 +317,104 @@ fn an_operation_is_traced_from_admission_to_its_turns() {
         ),
     );
     assert_eq!(status, 202, "{answer}");
-    let id = json(&answer)["id"].as_str().unwrap().to_owned();
+    let fresh_id = json(&answer)["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        await_operation(&client, &id).state,
+        await_operation(&client, &fresh_id).state,
         OperationState::Succeeded
     );
-    tracer.flush(Duration::from_secs(10));
-    let fresh = memory
+    let fresh = capture
         .spans()
         .into_iter()
-        .find(|s| {
-            s.name == "admission" && s.attribute("by.operation") == Some(&Attr::Str(id.clone()))
-        })
+        .find(|s| s.name == "admission" && s.attributes.get("by.operation") == Some(&fresh_id))
         .unwrap();
-    assert_eq!(fresh.parent, None);
-    assert_ne!(fresh.context.trace_id, parent.trace_id);
+    assert_eq!(fresh.parent_id, None);
+    assert_ne!(fresh.trace_id, trace);
+    server.stop();
+}
+
+/// The golden metrics the OpenTelemetry rebuild adds, over real HTTP: the
+/// request rate by route template, refused requests by error code, an
+/// operation's duration, and the turn as a GenAI client operation. Label
+/// sets stay bounded: a route is a template, never a URL with an id.
+#[test]
+fn the_golden_metrics_count_requests_errors_operations_and_turns() {
+    let f = Fixture::new();
+    let server = Server::start(metrics_config(&f, false));
+    let client = server.client();
+    let op = run(&client, &task("WRITE a.txt=1", "golden"));
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    // A refused request: an unknown branch, by its id in the URL.
+    let (status, _, _) = raw(
+        server.addr,
+        &get("/v1/repos/app/branches/no-such-branch-91", Some(TOKEN)),
+    );
+    assert_eq!(status, 404);
+    let (status, _, _) = raw(server.addr, &get("/no/such/route/77", Some(TOKEN)));
+    assert_eq!(status, 404);
+    let (status, _, text) = raw(server.addr, &get("/metrics", Some(TOKEN)));
+    assert_eq!(status, 200, "{text}");
+    // Requests, by the route's template.
+    assert!(
+        text.lines().any(|l| l.starts_with(
+            "http_server_request_duration_seconds_count{http_route=\"/v1/repos/{repo}/tasks\",http_request_method=\"POST\",status_class=\"2xx\"}"
+        )),
+        "{text}"
+    );
+    assert!(
+        !text.contains("no-such-branch-91"),
+        "an id became a label:\n{text}"
+    );
+    assert!(
+        !text.contains("/no/such/route/77"),
+        "a URL became a label:\n{text}"
+    );
+    assert!(
+        text.contains("http_route=\"unmatched\""),
+        "a request no route took is `unmatched`:\n{text}"
+    );
+    assert!(sample(
+        &text,
+        "http_server_active_requests{http_request_method=\"GET\"}"
+    )
+    .is_some());
+    // Errors, by code.
+    assert!(
+        sample(
+            &text,
+            "branchyard_api_errors_total{code=\"unknown_branch\"}"
+        )
+        .is_some_and(|n| n >= 1.0),
+        "{text}"
+    );
+    assert!(
+        sample(&text, "branchyard_api_errors_total{code=\"not_found\"}").is_some_and(|n| n >= 1.0),
+        "{text}"
+    );
+    // The operation's duration, and its turn as a GenAI client operation.
+    assert_eq!(
+        sample(
+            &text,
+            r#"branchyard_operation_duration_seconds_count{kind="task",state="succeeded"}"#
+        ),
+        Some(1.0),
+        "{text}"
+    );
+    assert_eq!(
+        sample(
+            &text,
+            r#"gen_ai_client_operation_duration_seconds_count{gen_ai_operation_name="invoke_agent",gen_ai_agent_name="gemini-cli",by_turn_outcome="completed"}"#
+        ),
+        Some(1.0),
+        "{text}"
+    );
+    // Every series of the golden families has a bounded label set: no
+    // value looks like an id.
+    for line in text
+        .lines()
+        .filter(|l| l.starts_with("http_server_") || l.starts_with("branchyard_api_errors_total"))
+    {
+        assert!(!line.contains("op_"), "{line}");
+        assert!(!line.contains("req_"), "{line}");
+    }
     server.stop();
 }

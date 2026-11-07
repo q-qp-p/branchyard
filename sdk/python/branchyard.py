@@ -108,6 +108,7 @@ __all__ = [
     "report_status",
     "answer",
     "inbox",
+    "message",
     "approve_plan",
     "reject_plan",
 ]
@@ -514,6 +515,10 @@ class Message:
     delivered: bool
     handoff: Optional[Dict[str, Any]] = None
     next_turn: bool = False
+    # What the legacy fields do not carry (`docs/messaging.md`): the
+    # registered `kind` and its `schema_version`, the `payload`, the
+    # `trace` and the `deadline_ms`; None when there is nothing to carry.
+    meta: Optional[Dict[str, Any]] = None
 
 
 def _message(value: Dict[str, Any]) -> Message:
@@ -529,6 +534,7 @@ def _message(value: Dict[str, Any]) -> Message:
         delivered=value.get("delivered", False),
         handoff=value.get("handoff"),
         next_turn=value.get("next_turn", False),
+        meta=value.get("meta"),
     )
 
 
@@ -1020,17 +1026,22 @@ def children() -> Children:
     return _make(Children, _run(["children"]))
 
 
-def ask(text: str, wait: Optional[float] = None) -> Asked:
+def ask(text: str, wait: Optional[float] = None, key: Optional[str] = None) -> Asked:
     """Ask your parent (the person, if you have none) a question. Without
     `wait`, returns once it is sent.
 
     With `wait`, blocks on `by`'s side for up to that many seconds for an
     answer; a wait that passes with no answer yet is not an error, `answer`
     is just `None`: check `inbox()` later, or `ask` again.
+
+    With `key`, asking again with the same key returns the first question
+    instead of asking twice; the same key with other text raises DeniedError.
     """
     args = ["ask"]
     if wait is not None:
         args += ["--wait", str(wait)]
+    if key is not None:
+        args += ["--key", key]
     args += ["--", text]
     value = _run(args)
     return Asked(
@@ -1150,6 +1161,40 @@ def inbox(unread: bool = False) -> Inbox:
         messages=[_message(m) for m in value["messages"]],
         steered_this_turn=value.get("steered_this_turn"),
     )
+
+
+def message(
+    to: str,
+    text: str,
+    kind: Optional[str] = None,
+    payload: Optional[Any] = None,
+    key: Optional[str] = None,
+    deadline: Optional[float] = None,
+) -> Message:
+    """Message a sibling, another child of your parent. It waits in the
+    sibling's inbox and is given to it when its next turn starts; it never
+    interrupts a running turn.
+
+    `kind` names a registered message kind (`note` without one) whose schema
+    checks `payload`, a JSON value; a payload that does not match raises
+    DeniedError naming the path and the rule, and so does a recipient that
+    is not a sibling. A repeat with the same `key` returns the first message.
+
+    With `deadline` (seconds from now), a message the sibling has not read
+    by then is not given to it: it is marked delivered and a warning naming
+    it goes on the sibling's log. A sibling that already has 32 unread peer
+    messages refuses another (DeniedError).
+    """
+    args = ["message"]
+    if kind is not None:
+        args += ["--kind", kind]
+    if payload is not None:
+        args += ["--payload", json.dumps(payload)]
+    if key is not None:
+        args += ["--key", key]
+    if deadline is not None:
+        args += ["--deadline", str(deadline)]
+    return _message(_run([*args, "--", to, text]))
 
 
 def _wait(branches: List[str], any_: bool, timeout: Optional[float]) -> Waited:

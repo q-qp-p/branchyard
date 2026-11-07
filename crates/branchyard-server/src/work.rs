@@ -544,7 +544,7 @@ impl Executor for AppExecutor {
                 }
             }
             if let Some(trace) = &stored.trace {
-                observability.tracer.note_branch(&repo.name, name, trace);
+                observability.branches.note(&repo.name, name, trace);
             }
         }
         // With sync: each branch's task pulled and its lease held for the
@@ -752,16 +752,12 @@ fn observe_run(
         .map(|i| (i.name.clone(), i.harness.clone()))
         .collect();
     let harness_of = |b: &str| harness.get(b).cloned().unwrap_or_else(|| "unknown".into());
-    let parent = stored
-        .trace
-        .as_deref()
-        .and_then(crate::telemetry::SpanContext::parse);
     crate::observe::record_events(
         observability,
         &branches,
         &harness_of,
         &entries,
-        parent.as_ref(),
+        stored.trace.as_deref(),
     );
     if operation.kind == OperationKind::Task {
         let created = operation.branches.iter().cloned().collect();

@@ -543,6 +543,7 @@ by report "Found two files" --result '{"files": ["a.rs", "b.rs"]}'   # when your
 by report-status working "Porting the tokenizer's tests"
 by inbox --unread
 by answer 12 "Yes, accept tabs"
+by message formatter "Lexer done; token kinds are in src/token.rs"   # a sibling reads it at its next turn
 ```
 
 `by report-status <state> "<one line>" [--link URL]` states your own status
@@ -637,9 +638,11 @@ If you cannot run commands, the same operations are MCP tools on the
 together), `check` (configured checks for your coding work or a child's), `wait` (`branches`, `any`, `timeout_seconds`), `cancel`, `discard`,
 `children`, `graph`, `apply_graph`, `approve_plan` and `reject_plan` (a
 plan-first child's plan), `answer_approval`, the artifact and scratch tools, and
-`ask`, `report` (with `result`), `escalate`, `report_status`, `answer` and
-`inbox`. `handoff` (`from`, `to`, optional `artifacts`, `note`, and
-`expected`) relays a settled result without starting a recipient turn.
+`ask`, `report` (with `result`), `escalate`, `report_status`, `answer`,
+`inbox` and `message` (`to`, `text`, optional `kind`, `payload`, `key`: a
+sibling reads it at its next turn). `handoff` (`from`, `to`, optional
+`artifacts`, `note`, and `expected`) relays a settled result without
+starting a recipient turn.
 
 ## Substrate setup and readiness
 
@@ -665,6 +668,10 @@ forwarded TLS accepts `--substrate-server-name NAME`. Actor egress is explicit:
 `--substrate-egress deny`, `--substrate-egress unrestricted`, or repeatable
 `--substrate-allow-host HOST`. Saved `[substrate]` configuration avoids repeating
 connection flags. See the Substrate setup documentation for image and pool prerequisites.
+Operators also run `by harnesses update ID --qualify` (checks a release before
+pinning it), `by images build` and `by images pin REF@DIGEST` (digest-pinned
+harness images) and `by startup report` (launch time by provider), never from
+inside a harness session.
 For GKE, an operator can use `tools/substrate_gke.py --atenet-dataplane=agentgateway`
 with the required target options. This pins a compatible gateway before installation
 from a private source export; the default Envoy path is unchanged.

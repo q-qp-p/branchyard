@@ -551,14 +551,10 @@ fn a_receiver_that_resets_the_connection_never_delays_the_operation() {
 #[test]
 fn deliveries_carry_the_operations_traceparent_and_are_counted() {
     use branchyard_server::observe::Observability;
-    use branchyard_server::telemetry::{MemoryExporter, SpanContext, Tracer};
+    let capture = branchyard_telemetry::testing::capture().unwrap();
     let f = Fixture::new();
     let receiver = Receiver::start();
-    let memory = Arc::new(MemoryExporter::default());
-    let observability = Observability {
-        metrics: Arc::new(branchyard_server::metrics::Metrics::default()),
-        tracer: Tracer::new(memory.clone()),
-    };
+    let observability = Observability::default();
     let mut config = f.config();
     config.webhooks = vec![webhook(&receiver.url(), SECRET, &["status"])];
     config.observability = Some(observability.clone());
@@ -577,20 +573,22 @@ fn deliveries_carry_the_operations_traceparent_and_are_counted() {
         .find(|d| d.json()["activity"]["status"]["state"] == "ready")
         .unwrap();
     let traceparent = delivery.headers.get("traceparent").expect("a traceparent");
-    let context = SpanContext::parse(traceparent).unwrap();
-    observability.tracer.flush(Duration::from_secs(10));
-    let operation = memory
+    assert!(branchyard_telemetry::propagation::is_valid(traceparent));
+    let operation = capture
         .spans()
         .into_iter()
-        .find(|s| s.name == "operation task")
+        .find(|s| s.name == "operation task" && s.attributes.get("by.operation") == Some(&op.id))
         .expect("the operation's span");
-    assert_eq!(context, operation.context, "{op:?}");
-    let delivered = observability.metrics.snapshot();
-    let counted = &delivered[branchyard_server::metrics::WEBHOOKS]
-        [&vec![("result".to_owned(), "delivered".to_owned())]];
+    assert_eq!(
+        traceparent,
+        &format!("00-{}-{}-01", operation.trace_id, operation.span_id),
+        "{op:?}"
+    );
     assert!(
-        matches!(counted, branchyard_server::metrics::Value::Number(n) if *n >= 1.0),
-        "{counted:?}"
+        observability.metrics.value(
+            branchyard_server::metrics::WEBHOOKS,
+            &[("result", "delivered")]
+        ) >= 1.0
     );
     server.stop();
 }

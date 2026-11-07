@@ -1,8 +1,76 @@
 # Observability
 
-What a Branchyard server tells you about itself: Prometheus metrics at `GET /metrics`, OpenTelemetry traces of each operation from admission to its turns, a `traceparent` carried to harnesses, the connector gateway and webhook receivers, and `by stats` for a quick summary from the command line. The scheduling these describe (priority, fair share, aging) is in [the server reference](server.md#scheduling).
+What a Branchyard server, a worker and a local `by` command tell you about themselves: OpenTelemetry traces of each operation from admission to its turns, OpenTelemetry metrics served at `GET /metrics` in Prometheus text and pushed over OTLP, a `traceparent` carried to harnesses, the connector gateway and webhook receivers, and `by stats` for a quick summary from the command line. The scheduling these describe (priority, fair share, aging) is in [the server reference](server.md#scheduling).
 
-> **Status, 1 October 2026.** Tested hermetically: the exposition format against an independent parser, the counters over real HTTP with the fake ACP agent, spans in memory and over OTLP/HTTP to a local stand-in collector. Not yet scraped by a real Prometheus or exported to a real collector, and no dashboard is provided.
+> **Status, 6 November 2026.** Tested hermetically: spans and metrics from the `tracing` and OpenTelemetry crates against in-memory exporters and against stand-in collectors on loopback (OTLP over HTTP with protobuf bodies, and over gRPC), the exposition format against an independent parser, the counters over real HTTP with the fake ACP agent, and a local `by run` exporting to a loopback collector. Not yet exported to a real collector or scraped by a real Prometheus, no dashboard is provided, and no model was called. Not done: a real collector or Prometheus scrape, dashboards, OTLP logs, and live turn spans from the engine (a served operation's turns, tool calls and connector calls are still written from the events they recorded; see [Traces](#traces)).
+
+## The stack
+
+Branchyard uses the standard Rust stack, one crate for all of it:
+
+| Piece | Crate | Version |
+|---|---|---|
+| Spans and logs in the code | [`tracing`](https://docs.rs/tracing) with [`tracing-subscriber`](https://docs.rs/tracing-subscriber) | the workspace's |
+| The OpenTelemetry API and SDK | `opentelemetry`, `opentelemetry_sdk` | 0.33.1 |
+| The bridge from `tracing` spans to OpenTelemetry spans | `tracing-opentelemetry` | 0.34.0 |
+| OTLP export (HTTP with protobuf or JSON bodies, and gRPC) | `opentelemetry-otlp` | 0.33.1 |
+
+[`branchyard-telemetry`](../crates/branchyard-telemetry/src/lib.rs) owns the setup for every binary: `init` installs a `tracing` subscriber with the binary's own log layer plus the OpenTelemetry layer, a tracer provider and a meter provider configured from the standard `OTEL_*` variables, and the W3C trace-context propagator, and returns a guard that flushes and shuts the exporters down when it is dropped. The server (`by serve`, `branchyard-server`), the worker (`by worker`) and every other `by` command call it, with the resource attribute `by.role` set to `server`, `worker` or `cli`. The engine crate depends on none of it: it emits `tracing` events, and the binary that installs the SDK decides where they go.
+
+**Off unless asked.** With no OTLP endpoint in the environment nothing is exported, no exporter thread is started and no span is bridged; an incoming `traceparent` is passed on unchanged, so a trace started upstream is not lost. Branchyard's own `branchyard_*` metrics are always recorded in process, because `GET /metrics` serves them.
+
+**Prometheus without a Prometheus crate.** The meter provider has a pull reader, [`PromReader`](../crates/branchyard-telemetry/src/prometheus.rs), over the SDK's manual reader (the `experimental_metrics_custom_reader` feature), and a renderer of what it collects as Prometheus text exposition 0.0.4. `opentelemetry-prometheus` would add the `prometheus` crate and its dependencies and is no longer where the OpenTelemetry project points people; the same instruments are pushed over OTLP when a metrics endpoint is set, so `/metrics` and a collector read one set of numbers. The translation of an instrument's name is the usual one: `.` becomes `_`, a unit adds a suffix (`s` is `_seconds`) unless the name has it, a monotonic sum ends in `_total` once. Branchyard's own families are named the way they are exposed, so nothing about them moved when the hand-written encoder went.
+
+**Dependencies.** The change adds 9 third-party packages that are built (`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`, `opentelemetry-proto`, `opentelemetry-http`, `tracing-opentelemetry`, `tonic-types`, `const-hex` and the crate itself) and three that only the lock names (`proptest` and two helpers, an optional dependency of `opentelemetry-proto`). No second TLS stack: `reqwest` and `tonic` were already in the tree, on `rustls` and `ring`. `cargo deny check` passes with no new exception.
+
+## Configuration
+
+Branchyard reads the standard OpenTelemetry variables; the OTLP exporters read their own transport variables.
+
+| Variable | Meaning |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The collector's base URL. Setting it (or a signal's own endpoint) turns that signal's push on: spans go to `<it>/v1/traces`, metrics to `<it>/v1/metrics` over HTTP, or to the endpoint itself over gRPC. Unlike the specification's default, nothing is sent to `localhost:4318` unasked |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | A signal's full URL, used as is; wins over the above |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` (and `..._TRACES_PROTOCOL`, `..._METRICS_PROTOCOL`) | `http/protobuf` (the default), `http/json` or `grpc` |
+| `OTEL_EXPORTER_OTLP_HEADERS` (and the per-signal forms) | `key=value,key2=value2`, percent-decoded, sent with each export (an API key, a tenant header) |
+| `OTEL_EXPORTER_OTLP_TIMEOUT`, `..._COMPRESSION`, `..._INSECURE` | As the OTLP exporter reads them |
+| `OTEL_SERVICE_NAME` | The resource's `service.name`; default `branchyard-server`, `branchyard-worker` or `by` |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes. Every resource also has `service.version`, `host.name` and `by.role` |
+| `OTEL_SDK_DISABLED=true` | Nothing is exported or sampled |
+| `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `none` turns that signal's push off even with an endpoint set; `otlp` turns it on at the default endpoint. `prometheus` is the pull endpoint, always available on a server. Any other value is named in a warning and not exported to |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` (the default), `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`, with the ratio as the argument. A trace that arrives sampled stays sampled under a parent-based sampler |
+| `OTEL_BSP_*`, `OTEL_METRIC_EXPORT_INTERVAL` | The SDK's own batching and push interval (spans batch on a thread of their own; metrics push every 60 seconds) |
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 OTEL_SERVICE_NAME=by-prod by serve --config server.json
+```
+
+An export that fails is logged by the SDK and dropped, never retried indefinitely, and never delays an operation. Telemetry settings that cannot be honoured (an unknown protocol, a sampler argument that is not a number) are logged once at start-up as `telemetry: ...` warnings.
+
+These are the variables a harness's own telemetry (Claude Code's, Codex's) also reads. `by` run in an environment that sets them exports its own spans and metrics too, as the service `by`; to keep `by` itself quiet, set `OTEL_TRACES_EXPORTER=none` and `OTEL_METRICS_EXPORTER=none` in its environment (the harness inherits them, so this also silences a harness that reads them; `--telemetry` on a run sends the harness's own telemetry where the run says).
+
+## Traces
+
+A served operation's trace:
+
+| Span | Parent | From, to | Attributes (`by.*`) |
+|---|---|---|---|
+| `admission` (server kind) | the request's `traceparent` header, when it sends a valid one; else a new trace | the admission's transaction | `operation`, `repo`, `kind`, `tenant`, `priority`, `admitted` (false when a key replayed, a branch was busy or a quota refused) |
+| `claim` | `admission` | admission to the claim: the time it waited queued | `operation`, `worker`, `fence`, `took_over`, `waited_ms`, `priority` |
+| `operation <kind>` (`operation task`, `operation merge`, ...) | `admission` | the worker's run, start to outcome | `operation`, `repo`, `kind`, `tenant`, `branches`, `fence`; `error` and an error status when it failed |
+| `turn` | `operation <kind>` | the prompt to the turn's end | `branch`, `harness`, `turn`, `outcome`; an error status unless it completed |
+| `tool <name>` | `turn` | the harness's `tool_started` to the branch's next event (harnesses report when a tool starts, not when it ends) | `branch`, `tool`, `call_id` |
+| `connector <operation>` (client kind) | `turn` | the gateway's recorded latency, ending when the call was recorded | `branch`, `connector`, `operation`, `decision`; an error status unless allowed |
+
+`admission` and `operation <kind>` are live `tracing` spans, entered on the thread that does the work, so the log lines written meanwhile (`--log-format json`) can be joined to the trace; the engine's own spans and events run inside the operation's. `claim`, `turn`, `tool` and `connector` are written after the fact through the OpenTelemetry API with explicit times, because the claim's start is the admission and a turn's, tool call's and connector call's are known only from the events they recorded; so a trace is complete when its operation is. Only spans of the target `branchyard_trace` are bridged, so a request, a poll or a library's own span does not become a trace of its own.
+
+The admission's context is stored with the operation (`StoredOperation::trace`), so the worker that claims it, on any server sharing the database, continues the same trace. A second worker's `claim` and `operation` spans are children of the admission in its trace, whichever process writes them.
+
+**Sampling** is by `OTEL_TRACES_SAMPLER` (above); the default follows the parent's decision and samples every root.
+
+## Local commands
+
+A `by` command run locally exports the same way when an endpoint is set (it does not, otherwise). The command runs under a `by <command>` span (`by run`, `by send`, ...), a child of the `TRACEPARENT` it inherited when that is valid, so a CI job or a harness that runs `by` continues its own trace. When it ends, the turns, tool calls and connector calls the repository recorded while it ran become the same `turn`, `tool` and `connector` spans, under the command's span, and the same metrics (`branchyard_turns_*`, `branchyard_tool_*`, `gen_ai.client.*`, the start latency of a branch it made), as a served operation's: one recorder reads the events for both. A command that records no events makes the span only. Commands that run no turn (`by ls`) are spans of a few milliseconds.
 
 ## Metrics
 
@@ -17,95 +85,94 @@ Off by default. Turn them on with `--metrics` (on the server's own listener), `-
 | `GET /metrics` on the server's listener | a principal with the `admin` scope, or the metrics token. Another principal gets `403 scope_required` (`detail.scope = "admin"`), no token `401` |
 | `GET /metrics` on `--metrics-addr` | the metrics token when one is configured, else anyone who can reach it. A non-loopback metrics address needs a token and `--insecure-bind` (it is plain HTTP) |
 
-The metrics token (at least 16 characters) reads `/metrics` and nothing else: it is not a credential for the API. A `by worker`, which has no listener, can serve metrics with `--metrics-addr`.
+The metrics token (at least 16 characters) reads `/metrics` and nothing else: it is not a credential for the API. A `by worker`, which has no listener, can serve metrics with `--metrics-addr`. With an OTLP metrics endpoint set the same instruments are also pushed every `OTEL_METRIC_EXPORT_INTERVAL` (60 s); the gauges read from the store are read for each push, at most once every 2 seconds.
 
-The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`), written by a small encoder in [`metrics.rs`](../crates/branchyard-server/src/metrics.rs): no metrics crate was in `Cargo.lock` to adopt. Every family is declared once, with its `HELP` and `TYPE`, and written even before it has samples.
+The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`). Every family is declared once, in [`metrics.rs`](../crates/branchyard-server/src/metrics.rs), with its type, unit and help, and written even before it has samples. Labels are written in the order the table gives. The catalogue below is generated from those declarations (`python3 tools/docs_facts.py --write`), <!-- fact:metrics.count -->54<!-- /fact --> families:
 
-| Metric | Type | Labels | What |
-|---|---|---|---|
-| `branchyard_build_info` | gauge | `version` | Always 1 |
-| `branchyard_operations` | gauge | `state` (`queued`, `running`) | Unfinished operations in the shared queue: unclaimed, and claimed under a live lease |
-| `branchyard_operations_admitted_total` | counter | `kind`, `tenant` | Operations this process admitted |
-| `branchyard_operations_finished_total` | counter | `kind`, `state` (`succeeded`, `failed`, `interrupted`) | Operations this process recorded finished |
-| `branchyard_queue_depth` | gauge | `tenant`, `priority`, `labels` | Unclaimed queued operations; `labels` is the required worker labels, comma-joined, empty for none |
-| `branchyard_queue_oldest_age_seconds` | gauge | `tenant`, `priority`, `labels` | How long the oldest unclaimed operation of the group has waited |
-| `branchyard_claims_total` | counter | `tenant`, `priority` | Claims this process's dispatcher made |
-| `branchyard_claim_wait_seconds` | histogram | `priority` | Time from admission to claim |
-| `branchyard_lease_renewals_total` | counter | `result` (`renewed`, `lost`, `error`) | Claim lease renewals |
-| `branchyard_lease_expiries_total` | counter | | Claims that took over another worker's lapsed claim (its lease expired, or its process is gone from this host) |
-| `branchyard_turns_started_total` | counter | `harness` | Turns started by operations this process ran |
-| `branchyard_turns_ended_total` | counter | `harness`, `outcome` | Turns ended: the harness's outcome (`completed`, `interrupted`, `failed`, `limit_reached`, `refused`), or the engine's (`budget_exceeded`, `failed`, `interrupted`) when it ended the turn itself, or `unknown` |
-| `branchyard_turn_duration_seconds` | histogram | `harness` | From the prompt to the turn's end |
-| `branchyard_tool_calls_total` | counter | `harness` | Tool calls the harnesses reported |
-| `branchyard_cost_usd_total` | counter | `tenant`, `harness` | Harness-reported cost: what each of an operation's branches added to its recorded `cost_usd` |
-| `branchyard_connector_calls_total` | counter | `connector`, `decision` (`allowed`, `denied`, `confirmation_required`) | Connector gateway calls, from its audit log |
-| `branchyard_webhook_deliveries_total` | counter | `result` (`delivered`, `retried`, `dead_lettered`) | Webhook delivery attempts |
-| `branchyard_trigger_looks_total` | counter | | Times this process's [trigger](triggers.md) dispatcher looked for schedules due and runs waiting to fire: once a tick (a second by default) and at once after a webhook delivery. Flat on a server that dispatches means its dispatcher has stopped |
-| `branchyard_workers_live` | gauge | | Workers that recorded themselves alive in the last 15 seconds |
-| `branchyard_worker_last_seen_seconds` | gauge | `worker`, `host` | Seconds since each live worker's last beat |
-| `branchyard_pool_slots` | gauge | `repo`, `state` (`ready`, `filling`, `claimed`) | [Warm pool](pools.md) slots of each served repository whose workspace has a pool, on this host, read at scrape time |
-| `branchyard_pool_claims_total` | counter | `repo`, `result` (`hit`, `miss`) | New branches of tasks this process ran whose workspace has a pool: took a ready slot, or found none |
-| `branchyard_pool_slots_made_total` | counter | `repo`, `result` (`made`, `failed`) | Slots this process's keepers made, and fills that stopped on an error |
-| `branchyard_pool_fill_seconds` | histogram | `repo` | Time a keeper took to make one slot (worktree and environment) |
-| `branchyard_pool_slots_discarded_total` | counter | `repo` | Slots a keeper removed: stale, or left by a stopped process |
-| `branchyard_start_seconds` | histogram | `pool` (`hit`, `miss`, `none`), `provider`, `path` | Start latency of a task's new branches: from the operation's admission to the harness's first prompt, by whether the worktree came from a warm pool, and by the provider (`local`, `microsandbox`, `container`, `agent_sandbox`, `substrate`, a recipe's name; `unknown` when the branch recorded no startup) and the path its sandbox was made ready by (`cold`, `cached_image`, `snapshot`, `resumed`, `pool`, `local`; `unknown`) |
-| `branchyard_start_phase_seconds` | histogram | `provider`, `path`, `phase` (`queued`, `placement`, `image_ready`, `sandbox_ready`, `source_attached`, `harness_started`, `handshake_done`, `first_event`) | The time one phase of a task's new branches' first turn took (its offset less the previous phase that occurred); a phase that did not occur is not counted. See [launch time](providers.md#measuring-launch-time) |
-| `branchyard_sync_bytes_total` | counter | `repo`, `direction` (`up`, `down`) | Bytes this process's [sync](sync.md) sent to and read from the remote |
-| `branchyard_sync_objects_total` | counter | `repo`, `direction` | Objects written to and read from the remote |
-| `branchyard_sync_swaps_total` | counter | `repo` | Task manifests swapped into the remote |
-| `branchyard_sync_swap_conflicts_total` | counter | `repo` | Swaps that lost to another writer, then merged and tried again |
-| `branchyard_sync_retries_total` | counter | `repo` | Remote requests tried again after a transient failure |
-| `branchyard_sync_divergences_total` | counter | `repo` | Divergences recorded as conflict branches |
-| `branchyard_sync_corrupt_total` | counter | `repo` | Objects refused because they did not match their name |
-| `branchyard_sync_errors_total` | counter | `repo` | Task syncs that failed and were queued to try again |
-| `branchyard_sync_pending` | gauge | `repo` | Tasks queued in the sync outbox |
-| `branchyard_sync_lag_seconds` | gauge | `repo` | How long the oldest queued change has waited to reach the remote |
+<!-- fact:metrics.table -->
 
-Histogram buckets are 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600, 1800 and 3600 seconds, except `branchyard_start_seconds`: 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300 and 1800 seconds.
+| Metric | Type | Unit | Labels | What |
+|---|---|---|---|---|
+| `branchyard_build_info` | gauge |  | `version` | Always 1; the version label is this server's. |
+| `branchyard_operations` | gauge |  | `state` | Unfinished operations in the shared queue, by state (queued: unclaimed; running: claimed). |
+| `branchyard_operations_admitted_total` | counter |  | `kind`, `tenant` | Operations this process admitted, by kind and tenant. |
+| `branchyard_operations_finished_total` | counter |  | `kind`, `state` | Operations this process recorded finished, by kind and state (succeeded, failed, interrupted). |
+| `branchyard_operation_duration_seconds` | histogram | `s` | `kind`, `state` | Time an operation ran, from its run starting to its outcome being recorded, by kind and state. |
+| `branchyard_queue_depth` | gauge |  | `tenant`, `priority`, `labels` | Unclaimed queued operations, by tenant, priority and required worker labels. |
+| `branchyard_queue_oldest_age_seconds` | gauge | `s` | `tenant`, `priority`, `labels` | Age of the oldest unclaimed queued operation, by tenant, priority and required worker labels. |
+| `branchyard_claims_total` | counter |  | `tenant`, `priority` | Queued operations this process's dispatcher claimed, by tenant and priority. |
+| `branchyard_claim_wait_seconds` | histogram | `s` | `priority` | Time from admission to a claim, by priority. |
+| `branchyard_lease_renewals_total` | counter |  | `result` | Claim lease renewals by this process, by result (renewed, lost, error). |
+| `branchyard_lease_expiries_total` | counter |  | none | Claims this process took over from a worker whose lease had lapsed. |
+| `branchyard_turns_started_total` | counter |  | `harness` | Turns started by operations this process ran, by harness. |
+| `branchyard_turns_ended_total` | counter |  | `harness`, `outcome` | Turns ended by operations this process ran, by harness and outcome. |
+| `branchyard_turn_duration_seconds` | histogram | `s` | `harness` | Turn duration, from the prompt to the turn's end, by harness. |
+| `branchyard_turn_first_event_seconds` | histogram | `s` | `harness` | Time from a turn's prompt to the harness's first event, by harness. |
+| `branchyard_turns_in_flight` | gauge |  | `harness` | Branches with a turn running, by harness, in the repositories this process serves. |
+| `branchyard_turn_stalls_total` | counter |  | `harness` | Branches that an operation this process ran left stalled (no harness activity for the stall budget), by harness. |
+| `gen_ai_client_operation_duration_seconds` | histogram | `s` | `gen_ai_operation_name`, `gen_ai_agent_name`, `by_turn_outcome`, `error_type` | GenAI client operation duration: a turn as an invoke_agent operation, by agent (harness) and outcome. |
+| `gen_ai_client_token_usage` | histogram | `{token}` | `gen_ai_operation_name`, `gen_ai_token_type`, `gen_ai_agent_name`, `gen_ai_request_model` | Tokens harnesses reported spending in turns this process ran, by token type (input, output), agent (harness) and model. |
+| `branchyard_usage_cost_usd_total` | counter |  | `harness`, `model` | Cost, in USD, harnesses reported with their usage in turns this process ran, by harness and model. |
+| `branchyard_tool_calls_total` | counter |  | `harness` | Tool calls harnesses reported in operations this process ran, by harness. |
+| `branchyard_tool_call_duration_seconds` | histogram | `s` | `harness`, `tool` | Tool call duration (from tool_started to the branch's next event), by harness and tool; tools outside the known list are `other`. |
+| `branchyard_cost_usd_total` | counter |  | `tenant`, `harness` | Harness-reported cost, in USD, of operations this process ran, by tenant and harness. |
+| `branchyard_connector_calls_total` | counter |  | `connector`, `decision` | Connector gateway calls in operations this process ran, by connector and decision. |
+| `branchyard_connector_call_duration_seconds` | histogram | `s` | `connector`, `decision` | Connector gateway call latency in operations this process ran, by connector and decision. |
+| `branchyard_model_calls_total` | counter |  | `model`, `decision` | Model gateway calls in operations this process ran, by model and decision. |
+| `branchyard_model_tokens_total` | counter |  | `model`, `kind` | Tokens of model gateway calls in operations this process ran, by model and kind (input, output, cache_read, cache_write). |
+| `branchyard_model_cost_usd_total` | counter |  | `model` | Metered cost, in USD, of model gateway calls in operations this process ran, by model. |
+| `branchyard_webhook_deliveries_total` | counter |  | `result` | Webhook deliveries by this process, by result (delivered, retried, dead_lettered). |
+| `branchyard_trigger_looks_total` | counter |  | none | Times this process's trigger dispatcher looked for schedules due and runs waiting to fire. |
+| `branchyard_workers_live` | gauge |  | none | Workers that recorded themselves alive in the last 15 seconds. |
+| `branchyard_worker_last_seen_seconds` | gauge | `s` | `worker`, `host` | Seconds since each live worker last recorded itself alive. |
+| `branchyard_effects` | gauge |  | `repo`, `class`, `state` | Entries in each repository's effect ledger, by class (reversible, compensable, irreversible) and state. |
+| `branchyard_approvals_pending` | gauge |  | `repo` | Approvals waiting for an answer in each repository. |
+| `branchyard_pool_slots` | gauge |  | `repo`, `state` | Warm pool slots of each repository on this host, by state (ready, filling, claimed). |
+| `branchyard_pool_claims_total` | counter |  | `repo`, `result` | New branches of operations this process ran whose workspace has a pool, by repository and result (hit, miss). |
+| `branchyard_pool_slots_made_total` | counter |  | `repo`, `result` | Warm pool slots this process's keepers made, by repository and result (made, failed). |
+| `branchyard_pool_fill_seconds` | histogram | `s` | `repo` | Time this process's keepers took to make one warm pool slot, by repository. |
+| `branchyard_pool_slots_discarded_total` | counter |  | `repo` | Warm pool slots this process's keepers removed as stale or left by a stopped process, by repository. |
+| `branchyard_start_seconds` | histogram | `s` | `pool`, `provider`, `path` | Start latency of a task's new branches, from admission to the harness's first prompt, by pool (hit, miss, none), provider and path. |
+| `branchyard_start_phase_seconds` | histogram | `s` | `provider`, `path`, `phase` | Time one phase of a task's new branches' start took, by provider, path and phase; a phase that did not occur is not counted. |
+| `branchyard_sync_bytes_total` | counter | `By` | `repo`, `direction` | Bytes this process's sync sent to and read from the remote, by repository and direction (up, down). |
+| `branchyard_sync_objects_total` | counter |  | `repo`, `direction` | Objects this process's sync wrote to and read from the remote, by repository and direction (up, down). |
+| `branchyard_sync_swaps_total` | counter |  | `repo` | Task manifests this process swapped into the remote, by repository. |
+| `branchyard_sync_swap_conflicts_total` | counter |  | `repo` | Manifest swaps that lost to another writer and were merged and tried again, by repository. |
+| `branchyard_sync_retries_total` | counter |  | `repo` | Remote requests tried again after a transient failure, by repository. |
+| `branchyard_sync_divergences_total` | counter |  | `repo` | Divergences recorded as conflict branches, by repository. |
+| `branchyard_sync_corrupt_total` | counter |  | `repo` | Objects read from the remote and refused because they did not match their name, by repository. |
+| `branchyard_sync_errors_total` | counter |  | `repo` | Task syncs that failed (and were queued to try again), by repository. |
+| `branchyard_sync_pending` | gauge |  | `repo` | Tasks queued in the sync outbox, by repository. |
+| `branchyard_sync_lag_seconds` | gauge | `s` | `repo` | How long the oldest queued change has waited to reach the remote, by repository. |
+| `http_server_request_duration_seconds` | histogram | `s` | `http_route`, `http_request_method`, `status_class` | Duration of HTTP requests this server served, by route template, method and status class. |
+| `http_server_active_requests` | gauge | `{request}` | `http_request_method` | HTTP requests being served now, by method. |
+| `branchyard_api_errors_total` | counter |  | `code` | API requests refused, by the error code in the response. |
 
-**Counters and gauges on several servers.** Counters count what the process that serves them did. Each operation is admitted by one server and claimed, run and finished by one worker, so on several servers and workers sharing a database, sum counters across them. Gauges read at scrape time from the store (`branchyard_operations`, queue depth and age, live workers) describe the shared database, so every server reports the same values: take one, or `max`, not the sum.
+<!-- /fact -->
 
-**What turns are counted.** Turns, tool calls, connector calls and cost are read, once an operation finishes, from the events its branches (and the branches they delegated to) recorded between its admission and its end. Turns no operation ran are not counted: a local `by run` on a served repository, and a graph dependent started by a recovery tick.
+**Names.** The families before `http_server_request_duration_seconds` keep the names and labels they have always had. The last few follow the OpenTelemetry semantic conventions where one fits: `http.server.request.duration` and `http.server.active_requests` (HTTP RED), and `gen_ai.client.operation.duration` and `gen_ai.client.token.usage` (a turn as an `invoke_agent` operation, and the tokens its harness reported). `by.turn.outcome`, `status_class` and the rest are Branchyard's own attributes.
 
-## Traces
+**Label cardinality is bounded.** A label is a state, a kind, a harness, a configured name or a template, never an id: the HTTP route is the matched template (`/v1/repos/{repo}/tasks`; a request no route took is `unmatched`), the method is one of the standard seven or `_OTHER`, the status is its class (`2xx`). A name a client could make up passes through a guard: a tool is one of a closed list of known tools (`bash`, `read`, `edit`, `grep`, ...), `mcp` for any MCP server's tool, or `other`; a model's name is its own for the first 64 models seen and `other` after; an error code is one of the API's. The SDK also caps a series at 2000 attribute sets per instrument.
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) in the server's or worker's environment:
+Histogram buckets are 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300, 600, 1800 and 3600 seconds, except `branchyard_start_seconds` and `branchyard_start_phase_seconds` (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 1800), `http_server_request_duration_seconds` (OpenTelemetry's 0.005 to 10), tool and connector calls (0.01 to 300), `branchyard_turn_first_event_seconds` (0.1 to 120) and `gen_ai_client_token_usage` (OpenTelemetry's powers of four, 1 to 67108864).
 
-```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 OTEL_SERVICE_NAME=by-prod by serve --config server.json
-```
+**Counters and gauges on several servers.** Counters count what the process that serves them did. Each operation is admitted by one server and claimed, run and finished by one worker, so on several servers and workers sharing a database, sum counters across them. Gauges read at scrape time from the store (`branchyard_operations`, queue depth and age, live workers, effects) describe the shared database, so every server reports the same values: take one, or `max`, not the sum. `branchyard_turns_in_flight` counts branches whose status is running in the repositories this process serves.
 
-| Variable | Meaning |
-|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | The collector's base URL; spans go to `<it>/v1/traces` |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | The full traces URL, used as is; wins over the above |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` (or `..._TRACES_PROTOCOL`) | `http/protobuf` (the default) or `http/json`. `grpc` is not built in: the server warns and exports nothing; point it at the collector's HTTP port, 4318 |
-| `OTEL_EXPORTER_OTLP_HEADERS` (or `..._TRACES_HEADERS`) | `key=value,key2=value2`, percent-decoded (`+` stays a plus), sent with each export (an API key, a tenant header) |
-| `OTEL_SERVICE_NAME` | The resource's `service.name`; default `branchyard-server` |
-| `OTEL_SDK_DISABLED=true`, `OTEL_TRACES_EXPORTER=none` | No export |
+**What turns are counted.** Turns, tool calls, connector calls, tokens and cost are read, once an operation finishes, from the events its branches (and the branches they delegated to) recorded between its admission and its end. Turns no operation ran are not counted: a local `by run` on a served repository, and a graph dependent started by a recovery tick (a local command's own turns are counted by that command, above). Tokens a harness reports as a running total count what the total grew by; the first observation of a branch in an operation counts whole. A turn's duration is a GenAI client operation (`gen_ai_client_operation_duration_seconds`, by agent and outcome) as well as `branchyard_turn_duration_seconds`.
 
-Spans are batched (256 at most, every 2 seconds) on a thread of their own; an export that fails is logged and dropped, never retried, and never delays an operation. The admission and operation spans also enter a [`tracing`](https://docs.rs/tracing) span carrying `trace_id` and `span_id` on the thread that runs them, so a `--log-format json` line written while an operation runs there can be joined to its trace.
+**Request errors.** `branchyard_api_errors_total` counts every refused request by the `code` of its error response (`unknown_branch`, `scope_required`, `busy`, ...), so an alert can name a kind of refusal; the request's duration is in `http_server_request_duration_seconds` by status class.
 
-An operation's trace:
+## Propagation
 
-| Span | Parent | From, to | Attributes (`by.*`) |
-|---|---|---|---|
-| `admission` (server kind) | the request's `traceparent` header, when it sends a valid one; else a new trace | the admission's transaction | `operation`, `repo`, `kind`, `tenant`, `priority`, `admitted` (false when a key replayed, a branch was busy or a quota refused) |
-| `claim` | `admission` | admission to the claim: the time it waited queued | `operation`, `worker`, `fence`, `took_over`, `waited_ms`, `priority` |
-| `operation <kind>` (`operation task`, `operation merge`, ...) | `admission` | the worker's run, start to outcome | `operation`, `repo`, `kind`, `tenant`, `branches`, `fence`; `error` and an error status when it failed |
-| `turn` | `operation <kind>` | the prompt to the turn's end | `branch`, `harness`, `turn`, `outcome`; an error status unless it completed |
-| `tool <name>` | `turn` | the harness's `tool_started` to the branch's next event (harnesses report when a tool starts, not when it ends) | `branch`, `tool`, `call_id` |
-| `connector <operation>` (client kind) | `turn` | the gateway's recorded latency, ending when the call was recorded | `branch`, `connector`, `operation`, `decision`; an error status unless allowed |
-
-The admission's context is stored with the operation (`StoredOperation::trace`), so the worker that claims it, on any server sharing the database, continues the same trace. Turn, tool and connector spans are made after the operation finishes, from its branches' recorded events and their timestamps (as the metrics above are), so a trace is complete when its operation is.
-
-**Propagation.**
+W3C trace context, through the OpenTelemetry propagator ([`propagation`](../crates/branchyard-telemetry/src/propagation.rs)); a malformed header, all-zero ids or an unknown version is no parent, and a new trace starts.
 
 - **Into the harness.** Each turn of a task, send, fork, reincarnate or spawn the server runs gets `TRACEPARENT` (the operation span's context) in its environment ([`TaskOptions::trace_parent`](../crates/branchyard/src/lib.rs)). What the harness runs inherits it: a connector SDK that copies `TRACEPARENT` into the gateway call's `_meta.traceparent`, where Anvil reads it, makes the gateway's spans children of the operation; a tool that exports its own spans joins the trace the same way. A local `by run` passes on whatever `TRACEPARENT` its own environment has.
 - **Into webhooks.** A delivery of a branch's activity carries a `traceparent` header with the context of the last operation this server ran on that branch, when there is one (not for a branch another server worked on).
+- **Into messages.** A message a branch sends (`ask`, `report`, `escalate`, `answer`, `message`, `handoff`) carries the `TRACEPARENT` of the turn that sent it in the message's `meta.trace`, where the recipient's side can read it (`by inbox --json`, the event log); it is carried, not turned into spans. A message sent with no trace has no `meta` at all, so the JSON of every existing message is unchanged ([messaging](messaging.md#decisions)).
 - **From clients.** Send `traceparent` on any operation's `POST`; a malformed one starts a new trace.
+- **From the environment.** A local `by` command continues a valid `TRACEPARENT`.
 
-**Why not the OpenTelemetry crates.** `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and `tracing-opentelemetry` are not in `Cargo.lock` or the local registry, and this was built offline, so they could not be added. [`telemetry.rs`](../crates/branchyard-server/src/telemetry.rs) implements the part the server needs instead: the span model, W3C `traceparent` parsing and generation, a batching tracer behind a pluggable `SpanExporter` trait (`MemoryExporter` for tests and embedding), and `OtlpExporter`, which encodes OTLP's `ExportTraceServiceRequest` with `prost` (already a workspace dependency, through the Substrate provider) or as OTLP's JSON mapping, and posts it with `reqwest`. Replacing it with `tracing-opentelemetry` later changes this module only. Not implemented: OTLP over gRPC, sampling (every operation is traced when an exporter is set), span events and links, and metrics or logs over OTLP (metrics are Prometheus only).
+`tracestate` is not stored or forwarded.
 
 ## Survived failures
 
@@ -147,12 +214,18 @@ Locally it reads the repository's store: branches by status, turns and cost by h
 
 ## Tests
 
-- `crates/branchyard-server/src/metrics.rs` (3): the warm pool's gauges, counters and fill histogram; every family's `HELP` and `TYPE`, counters, histograms (cumulative buckets, `+Inf`, sum and count), queue gauges and label escaping, checked with a parser of the exposition format written independently of the encoder; number formatting.
+- `crates/branchyard-telemetry/src` (18, `cargo test -p branchyard-telemetry --lib`): the `OTEL_*` variables (nothing is pushed without an endpoint, per-signal endpoints, `none` and the kill switch, protocols, samplers and their arguments); `traceparent` round trips through the propagator, injection, and malformed headers, all-zero ids and bad versions as no parent; Prometheus name translation, exposition of counters, gauges and histograms with cumulative buckets and declared label order, observable callbacks, and a shut-down provider as an error; samplers deciding as the variables say, and isolated meters.
+- `crates/branchyard-telemetry/tests/spans.rs` (3): nested `tracing` spans become parent and child with their attributes, kind and error status, only spans of the bridged target are exported, an incoming `traceparent` becomes the parent and a malformed one starts a new trace; spans written after the fact keep their times and their children join them.
+- `crates/branchyard-telemetry/tests/otlp.rs` (1) and `tests/grpc.rs` (1): a real export to a stand-in collector on loopback, over OTLP/HTTP (the endpoint, headers and service name from the standard variables, the resource attributes, the span tree and a metric decoded from the protobuf) and over OTLP/gRPC from a process with no runtime of its own.
+- `crates/branchyard-telemetry/tests/disabled.rs` (1): with nothing configured, nothing is exported, no thread is started (counted from `/proc`), no span is bridged, and an incoming `traceparent` passes through.
+- `crates/branchyard-server/src/metrics.rs` (9): every family's `HELP` and `TYPE` in order, counters, histograms (cumulative buckets, `+Inf`, sum and count), queue gauges and label escaping, checked with a parser of the exposition format written independently of the renderer; the existing names unchanged; the new families under their semantic-convention names; bounded labels; gauges filled from a registered source for an OTLP push; the catalogue above naming every family.
 - `crates/branchyard/src/startup.rs` (5) and `crates/branchyard/tests/startup.rs` (5): the timer on a fake clock, durations, the wire form, the path a launch means, the report's percentiles; a local and a sandboxed turn (FakeProvider, with and without a pool and an image measurement) recording ordered phases, the queue as the first phase, and the report over the store's feed.
-- `crates/branchyard-server/src/telemetry.rs` (6): `traceparent` round trip and malformed headers; the protobuf encoding's field numbers checked byte by byte; the JSON mapping; the standard variables; the batching tracer; and a real export over HTTP, in both encodings, to a stand-in collector on loopback.
-- `crates/branchyard-server/src/observe.rs` (3): a task's new branches' start latency by pool use, provider and path, each startup phase's time, and hits and misses; turns, tools and connector calls from recorded events into metrics and spans (a tool lasting until the next event, an engine-ended turn, another operation's branch ignored); cost as each branch's growth.
-- `crates/branchyard-server/tests/observability.rs` (3, over real HTTP with the fake ACP agent): priority checked, capped and inherited; `/metrics` off by default, `401`/`403`, the metrics token reading nothing else, the counters after a task, and the separate listener; an operation traced from an incoming `traceparent` through admission, claim and run to its turn, with the harness seeing the operation's span as `TRACEPARENT`.
+- `crates/branchyard-server/src/observe.rs` (6): a task's new branches' start latency by pool use, provider and path, each startup phase's time, and hits and misses; turns, tools, connector calls, first-event latency, tokens and cost from recorded events into metrics and spans (a tool lasting until the next event, an engine-ended turn, another operation's branch ignored, no span without a parent); the closed set of tool labels; cost as each branch's growth, and stalls.
+- `crates/branchyard-server/src/ops.rs` (1 of its tests): another worker claiming an operation from the store continues the admission's stored trace.
+- `crates/branchyard-server/tests/observability.rs` (4, over real HTTP with the fake ACP agent): priority checked, capped and inherited; `/metrics` off by default, `401`/`403`, the metrics token reading nothing else, the counters after a task, and the separate listener; an operation traced from an incoming `traceparent` through admission, claim and run to its turn, with the harness seeing the operation's span as `TRACEPARENT`; the golden metrics (requests by route template and never by URL, errors by code, operation duration, the turn as a GenAI operation).
+- `crates/branchyard/tests/peers.rs` (1 of its tests): an `ask` sent under a `TRACEPARENT` stores it in `meta.trace` on both logs, and without one the message's JSON has no `meta`, byte for byte as before.
 - `crates/branchyard-server/tests/webhook.rs`: a delivery carries the operation's `traceparent`, and deliveries are counted.
 - `crates/branchyard-server/tests/pools.rs` (1): the pool metrics over real HTTP after a miss and a hit.
 - `crates/branchyard-server/tests/sync.rs` (1): the sync series over real HTTP after two pushes.
+- `crates/branchyard-cli/tests/telemetry.rs` (2): a local `by run` with the fake agent exports its `by run` span, the turn under it and the turn metrics to a loopback collector; with `OTEL_SDK_DISABLED` or no endpoint nothing is sent.
 - `crates/branchyard-cli/src/stats_cmd.rs` (2, one for pool hits, misses and start latency) and `crates/branchyard-cli/tests/remote.rs` (1): the summary's arithmetic and rendering; `--priority` reaching the server's queue, `by --remote stats` showing it, and `by stats` locally.

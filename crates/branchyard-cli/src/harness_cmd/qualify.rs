@@ -506,6 +506,13 @@ fn live_run(
     if let Err(e) = std::fs::create_dir_all(&workdir) {
         return Check::fail("live", format!("{}: {e}", workdir.display()));
     }
+    // Only this run's evidence counts: a record an earlier run left at the
+    // same path must not pass a run that fails before writing its own.
+    match std::fs::remove_file(record) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Check::fail("live", format!("{}: {e}", record.display())),
+    }
     let mut command = Command::new(&runner);
     command
         .args(["--profile", profile, "--command"])
@@ -535,15 +542,31 @@ fn live_run(
     .unwrap_or_default();
     match status {
         Err(e) => Check::fail("live", format!("could not run {}: {e}", runner.display())),
-        Ok(_) if text.is_empty() => Check::fail(
+        Ok(status) if text.is_empty() => Check::fail(
             "live",
             format!(
-                "{} wrote no record to {}",
+                "{} wrote no record to {} ({status})",
                 runner.display(),
                 record.display()
             ),
         ),
-        Ok(_) => qualified::live_check(&text, profile, &side.version, record),
+        // The record was written by this run (an earlier one was removed
+        // above), so it says what failed; a runner that failed can still
+        // never pass, whatever its record claims.
+        Ok(status) => {
+            let check = qualified::live_check(&text, profile, &side.version, record);
+            if check.passed && !status.success() {
+                Check::fail(
+                    "live",
+                    format!(
+                        "{} failed ({status}) though its record reads as passed",
+                        runner.display()
+                    ),
+                )
+            } else {
+                check
+            }
+        }
     }
 }
 
@@ -1010,6 +1033,25 @@ mod tests {
         ));
         assert!(good.passed, "{good:?}");
         assert!(record.is_file());
+        // The good record is still at the same path. A later run that fails
+        // before writing its own cannot pass on it: the old record is removed
+        // first, and a failed runner fails whatever record is there.
+        let crashed = live(&script("crashed", "exit 3\n"));
+        assert!(
+            !crashed.passed && crashed.detail.contains("wrote no record"),
+            "{crashed:?}"
+        );
+        assert!(!record.exists(), "the earlier record is not left to pass");
+        let failed_after_writing = live(&script(
+            "failed-after-writing",
+            "while [ $# -gt 0 ]; do case $1 in --report) r=$2; shift 2;; *) shift;; esac; done\n\
+             echo '{\"profile\":\"qwen-code-acp\",\"harness_version\":\"0.5.1\",\"date\":\"2026-11-05\",\"scenarios\":[{\"name\":\"fresh_turn\",\"passed\":true}]}' > \"$r\"\n\
+             exit 1\n",
+        ));
+        assert!(
+            !failed_after_writing.passed && failed_after_writing.detail.contains("failed"),
+            "{failed_after_writing:?}"
+        );
     }
 
     #[test]

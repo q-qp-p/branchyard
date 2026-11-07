@@ -12,7 +12,7 @@ Surfaces:
 - **delegation**: a harness acting as its branch through `by` in its shell, the Python module, `Delegate` in Rust, or the MCP tools (`by mcp`). The four reach one set of operations and give the same answers ([delegation](delegation.md)); they work in local mode and on a server that allows delegation.
 - **workspace manager MCP**: an external operator agent starts `by mcp manager --url URL --token-file FILE`, with optional `--ca-file FILE`. Its separate HTTP credential reaches the same authorized project, workspace, session, artifact, lifecycle and operation actions as the console. It refuses managed harness turns and never adds account authority to the delegation tools. See [workspace management](workspace-management.md).
 
-The server registers <!-- fact:http.route_count -->144<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
+The server registers <!-- fact:http.route_count -->145<!-- /fact --> routes; each is documented in [the server reference](server.md) or on this page, and `tools/docs_facts.py --check` fails when one is not.
 
 The external manager bounds each tool's text and structured JSON payload to
 32 KiB. Larger responses return an explicit error with small identifiers and
@@ -143,11 +143,13 @@ A person acts with their own authority, or the server's, bounded by the branch's
 | Spawn a child that waits for siblings | `Spawn::depends_on`, `after` | `spawn --depends-on [--after integrated]` | yes | `depends_on`, `after` in the spawn | yes |
 | Bind a child to scratch areas | `Spawn::bindings` | `spawn --bind NAME:ACCESS` | yes | `bindings` in the spawn | yes |
 | Start dependents no engine started | `Yard::resume_graph` | `graph resume` | no: every server and `by worker` does it every 30 s, one claim winning | n/a | n/a |
-| Ask the branch's parent a question, optionally waiting for an answer | `Delegate::ask` | `ask "<text>" [--wait SECS]` | yes; capped at 120s | `POST …/ask` | `ask` |
+| Ask the branch's parent a question, optionally waiting for an answer | `Delegate::ask` | `ask "<text>" [--wait SECS] [--key KEY]` | yes; capped at 120s | `POST …/ask` | `ask` |
 | Report to the branch's parent | `Delegate::report` | `report "<text>"` | yes | `POST …/report` | `report` |
 | Escalate to the parent, or further up if a rig seat allows | `Delegate::escalate` | `escalate "<text>"` | yes | `POST …/escalate` | `escalate` |
 | Answer a descendant's message | `Delegate::answer` | `answer <message-id> "<text>"` | yes | `POST …/answer` | `answer` |
 | The branch's own inbox | `Delegate::inbox` | `inbox [--unread]` | yes | `GET …/inbox` | `inbox` |
+| List the message kinds `by message --kind` accepts, built-in and from `[[messaging.kinds]]` ([messaging](messaging.md)) | `Yard::message_kinds` | `kinds [--json]` | no: reads this machine's configuration | no | no |
+| Message a sibling, of a registered kind, read at its next turn ([messaging](messaging.md)) | `Delegate::message` | `message TO "<text>" [--kind K] [--payload JSON] [--key KEY] [--deadline DURATION]` | yes | `POST …/message` | `message` |
 
 `by --remote` prints the same JSON as `by` for each, and the same `{"error": {"kind", "message", "next", "detail"}}` for refusals; tests compare them. [The `--json` contract](#the---json-contract) below says what every command does with it. Outside a harness every messaging command needs `--as <branch>`, since there is no other way to say who is asking; see [delegation](delegation.md#inbox). A message to a branch with a running turn is steered into it on every surface (`SteerDelivery`, the default `DeliveryHook` of every `Yard`), and otherwise delivered at its next turn's start; `Activity::MessagesDelivered` (`messages_delivered` in `by log --json`) records which ([delegation](delegation.md#delivery)).
 
@@ -254,6 +256,15 @@ Every command that takes a branch or prints a result takes `--json`. This round 
 | `Activity` | no messages | `message` (the `Message`) on the sender's and recipient's logs; `messages_delivered` (`ids`, `via`: `{"path": "steer", "steer"}` or `{"path": "turn_start"}`) on the recipient's |
 | `DeliveryHook`, `Yard::set_delivery_hook`/`clear_delivery_hook`, `SteerDelivery` | none | every `Yard` steers a message into its recipient's running turn by default ([delegation](delegation.md#delivery)) |
 | Stall detection | children and permission answers excluded | a turn blocked in `ask --wait` is excluded too ([lifecycle](lifecycle.md#stall-detection)) |
+
+## Added with the messaging layer
+
+| Surface | Before | Now |
+|---|---|---|
+| `Delegate::message`, `by message TO TEXT [--kind K] [--payload JSON] [--key KEY] [--deadline DURATION]`, the MCP `message` tool (without the deadline), `branchyard.message(to, text, kind=, payload=, key=, deadline=)`, `POST …/branches/{b}/message`, `Repo::message` in the client and `Repo.message` in Python | a branch messaged its parent or its descendants only | a message to a sibling, of a registered kind, delivered at the sibling's next turn ([messaging](messaging.md)) |
+| `Message` | `{id, from, to, kind, text, in_reply_to, at_ms, delivered, handoff?, next_turn?}` | the same, plus `kind` `peer` and `meta` (`{kind?, schema_version?, payload?, trace?, deadline_ms?}`) only when the message carries one of them; a message of a legacy kind reads as before |
+| `Yard::register_kind`, `message_kinds`, `set_messaging_pipeline`; `branchyard::messaging::{Envelope, Address, Class, Delivery, KindSpec, Registry, Pipeline, Stage}` | none | kinds registered by schema, and the pipeline every message goes through, in the Rust SDK |
+| The store | `messages` rows with no payload | the additive columns `meta` and `idempotency_key` on SQLite and PostgreSQL, which an older binary ignores |
 
 ## Added with tenants
 
@@ -434,12 +445,30 @@ See [scheduling](server.md#scheduling) and [observability](observability.md). He
 | `tenants.<name>.weight`, `max_priority`; `aging_seconds`, `fair_share_window_seconds` in the configuration | none | the tenant's fair share and priority ceiling; aging step and usage decay |
 | `GET /metrics`; `--metrics`, `--metrics-addr`, `--metrics-token-file`; `metrics` in the configuration | none | Prometheus text, for `admin` or the metrics token; off by default |
 | `GET /v1/problems` (`ProblemList`, `Problem`, `ProblemKind`); `Client::problems`, Python `Client.problems` | none | what background work could not do that a person can act on (a trigger that paused itself, an operation no live worker can claim), oldest first, for the caller's tenant or, with `admin`, every tenant; in `schema/contract.json` ([problems](server.md#problems)) |
-| `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP/HTTP traces (protobuf or JSON) of admission, claim, operation, turns, tool and connector calls |
+| `OTEL_EXPORTER_OTLP_*`, `OTEL_SERVICE_NAME` in the server's environment | ignored | OTLP traces of admission, claim, operation, turns, tool and connector calls, and OTLP metrics ([OpenTelemetry stack](#added-with-the-opentelemetry-stack)) |
 | `traceparent` request header | ignored | the operation's trace continues it |
 | `TRACEPARENT` in a server-run turn's environment; `TaskOptions::trace_parent` | none | the operation's span, for the harness and what it calls (a connector SDK's `_meta.traceparent`) |
 | `traceparent` on webhook deliveries | none | the trace of the operation that last worked on the branch here |
 | `by startup report [--provider P] [--since DUR] [--json]` | none | p50 and p95 of each startup phase per provider and path, from the turns recorded here |
 | `by stats [--json]` | none | branches, turns, outcomes, durations, tools, connectors and cost locally; branches and the server's queue by priority with `--remote` |
+
+## Added with the OpenTelemetry stack
+
+[Observability](observability.md) rebuilt on `tracing`, `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and `tracing-opentelemetry`, in the new `branchyard-telemetry` crate. Hermetic tests only (in-memory exporters and stand-in collectors on loopback): no real collector or Prometheus.
+
+| Surface | Before | Now |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (and `_TRACES_`, `_METRICS_` forms), `OTEL_EXPORTER_OTLP_PROTOCOL`, `_HEADERS`, `_TIMEOUT` in the environment of `by serve`, `by worker` or any other `by` command | OTLP/HTTP traces from a server only; `grpc` refused | traces and metrics over OTLP, `http/protobuf`, `http/json` or `grpc`, from a server, a worker or a local command |
+| `OTEL_SDK_DISABLED`, `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER` | `OTEL_SDK_DISABLED` and `OTEL_TRACES_EXPORTER=none` | the same, per signal; `none` wins over an endpoint |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | every operation traced | `parentbased_always_on` by default; the ratio samplers and the others |
+| `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_METRIC_EXPORT_INTERVAL`, `OTEL_BSP_*` | ignored | read by the SDK; every resource has `service.name`, `service.version`, `host.name` and `by.role` (`server`, `worker`, `cli`) |
+| `TRACEPARENT` in the environment of a local `by` command | passed to the harness | also the parent of the command's `by <command>` span when telemetry is on |
+| `by <command>` span, `turn`, `tool` and `connector` spans of a local run | none | exported when an endpoint is set; none otherwise |
+| `GET /metrics`: `http_server_request_duration_seconds`, `http_server_active_requests`, `branchyard_api_errors_total` | none | requests by route template, method and status class; requests in flight; refusals by error code |
+| `GET /metrics`: `branchyard_operation_duration_seconds`, `branchyard_turn_first_event_seconds`, `branchyard_turns_in_flight`, `branchyard_turn_stalls_total` | none | an operation's run time; the prompt to the harness's first event; branches with a turn running; branches left stalled |
+| `GET /metrics`: `gen_ai_client_operation_duration_seconds`, `gen_ai_client_token_usage`, `branchyard_usage_cost_usd_total` | none | a turn as an `invoke_agent` operation by harness and outcome; tokens harnesses reported, by type, harness and model; cost by harness and model |
+| `GET /metrics`: `branchyard_tool_call_duration_seconds`, `branchyard_connector_call_duration_seconds` | `branchyard_tool_calls_total`, `branchyard_connector_calls_total` only | tool calls by harness and tool (a closed list, else `other`); connector calls by connector and decision |
+| `GET /metrics` label order | as written by the encoder | unchanged for every existing family; names and labels are what they were |
 | `branchyard_server::metrics`, `telemetry`, `observe`; `Config::observability`; `store::Scheduling`, `check_scheduling` | none | Rust only: the registry and encoder, the tracer with a pluggable `SpanExporter`, and the scheduling conformance |
 | `tenant_usage` (SQLite), `by_tenant_usage` (PostgreSQL); `priority`, `tenant`, `enqueued_ms` on the queue | none | each tenant's decayed recent claims; what the claim orders by |
 
@@ -823,7 +852,7 @@ Every connector call that changes the world is decided, written to a ledger befo
 | List asks | `Yard::approvals`, `approval` | `approvals [ls [--all]] [--json]` | yes | `GET …/approvals[?all=true]` | `Repo::approvals` | no |
 | What waits for a person | `Yard::branches`, `branch` (`BranchInfo::awaiting`, `BranchInfo::stage`), `asking` | `ls` and `watch` show `waiting for approval: …`; bare `by`, `by hook` and `by statusline` read each branch's stage | yes | `GET …/decisions` (`DecisionList`) | `Repo::decisions` | no |
 | Which files are in whose hands (the ground plan) | `Yard::branches`, `Branch::diff`, `diff_files` | none | no | `GET …/ground` (`Ground`, `GroundFile`, `GroundBranch`) | `Repo::ground` | no |
-| A branch's shape: each turn's span, outcome and cost, and its tool calls by time and name, with none of its content ([reading a branch](server.md#reading-a-branch)) | `Timeline::of` over `Branch::events` | none | no | `GET …/branches/{b}/timeline` (`Timeline`, `TimelineTurn`, `TimelineTool`) | `Repo::timeline`; Python `Repo.timeline` | no |
+| A branch's shape: each turn's span, outcome, cost, tokens and startup, its tool calls by time and name, and the marks inside it (steers, permissions and their answers, stalls, delegations, judge scores), with none of its content ([reading a branch](server.md#reading-a-branch)) | `Timeline::of` over `Branch::events` | none | no | `GET …/branches/{b}/timeline` (`Timeline`, `TimelineTurn`, `TimelineTool`, `TimelineMark`, `MarkKind`) | `Repo::timeline`; Python `Repo.timeline` | no |
 | What waits for a person in a project's workspaces (outputs to accept, sessions that stopped) | none: a workspace is a server resource | none | no | `GET /v1/projects/{project}/decisions` (`DecisionList`; `output` and `session` decisions) | `Client::project_decisions` | no |
 | Answer an ask | `Yard::answer_approval` | `approvals allow\|deny ID\|--branch B [--reason]`; `A`, `D` in `by watch` | yes | `POST …/approvals/{id}/allow\|deny` (`ApprovalAnswerRequest`) | `Repo::answer_approval` | `Delegate::answer_approval`, the MCP `answer_approval` tool, `by approvals` in its shell; descendants only |
 | The ledger | `Yard::effects`, `effect`, `effect_history` | `effects [--branch B] [show ID] [--json]` | yes | `GET …/effects[?branch=]`, `GET …/effects/{id}` | `Repo::effects`, `effect` | no |

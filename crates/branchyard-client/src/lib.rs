@@ -80,9 +80,9 @@ use api::{
     AnswerRequest, AskRequest, BranchEvents, BranchList, CancelRequest, CancelResult, CheckRequest,
     Diff, DiscardRequest, ErrorBody, ErrorResponse, FeedEntry, ForkRequest, GraphRequest,
     HarnessList, IntegrateRequest, InventoryReport, MapList, MapRequest, MapResumeRequest,
-    MergeRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry, RepoList,
-    ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest, SteerRequest,
-    TaskList, TaskRequest, TextRequest, WaitRequest,
+    MergeRequest, MessageRequest, Operation, ProblemList, ReincarnateRequest, Removed, RepoEntry,
+    RepoList, ReportRequest, ReportStatusRequest, RewindRequest, SendRequest, SpawnRequest,
+    SteerRequest, TaskList, TaskRequest, TextRequest, WaitRequest,
 };
 use branchyard_support::time::now_ms;
 use http::{encode, Endpoint, Reply};
@@ -812,13 +812,22 @@ impl Repo {
 
     /// Ask `branch`'s parent (the person, if it has none) a question; like
     /// `by ask`. Without `wait_seconds`, returns once the question is sent;
-    /// with it, blocks on the server for up to that long for an answer.
-    pub fn ask(&self, branch: &str, text: &str, wait_seconds: Option<f64>) -> Result<Asked, Error> {
+    /// with it, blocks on the server for up to that long for an answer. A
+    /// `key` makes a repeat return the first question instead of asking
+    /// twice (scoped to `branch`; the same key with other text is refused).
+    pub fn ask(
+        &self,
+        branch: &str,
+        text: &str,
+        wait_seconds: Option<f64>,
+        key: Option<&str>,
+    ) -> Result<Asked, Error> {
         self.client.post(
             &self.branch_path(branch, "/ask"),
             &AskRequest {
                 text: text.to_owned(),
                 wait_seconds,
+                key: key.map(str::to_owned),
             },
             &new_key(),
         )
@@ -899,6 +908,18 @@ impl Repo {
             },
             &new_key(),
         )
+    }
+
+    /// Message one of `branch`'s siblings as `branch`, like `by message
+    /// --as branch`: `request.to` is the sibling, `kind` a registered
+    /// message kind (`note` when omitted), `payload` a JSON value its
+    /// schema checks, `key` an idempotency key, `deadline_ms` the moment after
+    /// which it is no longer given to the sibling. The message waits for the
+    /// sibling's next turn. Needs the `run` scope; a recipient that is not
+    /// a sibling is `403 denied`. See `docs/messaging.md`.
+    pub fn message(&self, branch: &str, request: &MessageRequest) -> Result<Message, Error> {
+        self.client
+            .post(&self.branch_path(branch, "/message"), request, &new_key())
     }
 
     /// Answer question or escalation `message_id` as whoever it was sent

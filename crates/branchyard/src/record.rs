@@ -74,7 +74,7 @@ impl Recorder {
 /// recorded and the turn goes on: a reader that went away must not take the
 /// turn it was watching with it (`by run | head -1` once left the branch
 /// `interrupted` with its completed turn lost).
-fn observe(observer: &Observer, event: &BranchEvent) {
+pub(crate) fn observe(observer: &Observer, event: &BranchEvent) {
     branchyard_support::survive_panic("tell the observer of an event", || observer(event));
 }
 

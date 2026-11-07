@@ -2747,9 +2747,10 @@ fn help_version_typos_and_exit_codes() {
     assert_eq!(typo.status.code(), Some(2));
     assert!(stdout(&typo).is_empty());
     assert!(
-        // `review`, `recipe` and `remote` are close to `mrege` too, so clap lists them.
-        stderr(&typo)
-            .contains("tip: some similar subcommands exist: 'review', 'recipe', 'remote', 'merge'"),
+        // `review`, `recipe`, `remote` and `message` are close to `mrege` too, so clap lists them.
+        stderr(&typo).contains(
+            "tip: some similar subcommands exist: 'review', 'recipe', 'remote', 'message', 'merge'"
+        ),
         "{}",
         stderr(&typo)
     );
@@ -4953,4 +4954,78 @@ fn a_child_answers_in_the_shape_its_parent_asked_for_and_by_shows_it() {
         "{}",
         stderr(&lonely)
     );
+}
+
+/// `by kinds` lists the built-in message kinds and those a repository
+/// declares as `[[messaging.kinds]]`; a bad kind fails the command naming
+/// it, here and for every command that opens the repository.
+#[test]
+fn by_kinds_lists_built_in_and_configured_message_kinds() {
+    let repo = Repo::new();
+    let plain: Value = serde_json::from_str(&stdout(&repo.by(&["kinds", "--json"]))).unwrap();
+    let names: Vec<&str> = plain
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "answer",
+            "escalation",
+            "handoff",
+            "note",
+            "question",
+            "report"
+        ]
+    );
+    fs::write(
+        repo.root.join("branchyard.toml"),
+        "[[messaging.kinds]]\nname = \"step\"\nschema_version = 3\n\
+         description = \"a build step finished\"\n\
+         [messaging.kinds.schema]\ntype = \"object\"\nrequired = [\"n\"]\n\
+         [messaging.kinds.schema.properties.n]\ntype = \"integer\"\n",
+    )
+    .unwrap();
+    assert!(repo.by(&["config", "validate"]).status.success());
+    let kinds: Value = serde_json::from_str(&stdout(&repo.by(&["kinds", "--json"]))).unwrap();
+    let step = kinds
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "step")
+        .expect("the configured kind is listed");
+    assert_eq!(step["class"], "peer");
+    assert_eq!(step["schema_version"], 3);
+    assert_eq!(step["description"], "a build step finished");
+    assert_eq!(step["schema"]["required"][0], "n");
+    let text = stdout(&repo.by(&["kinds"]));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("step") && l.contains("peer") && l.contains("v3")),
+        "{text}"
+    );
+
+    // A built-in name is refused, naming the kind.
+    fs::write(
+        repo.root.join("branchyard.toml"),
+        "[[messaging.kinds]]\nname = \"report\"\n",
+    )
+    .unwrap();
+    let out = repo.by(&["kinds"]);
+    assert!(!out.status.success());
+    let said = stderr(&out);
+    assert!(
+        said.contains("\"report\"") && said.contains("built-in"),
+        "{said}"
+    );
+    // So is a schema keyword outside the supported subset.
+    fs::write(
+        repo.root.join("branchyard.toml"),
+        "[[messaging.kinds]]\nname = \"ref\"\n[messaging.kinds.schema]\n\"$ref\" = \"#/x\"\n",
+    )
+    .unwrap();
+    let said = stderr(&repo.by(&["kinds"]));
+    assert!(said.contains("\"ref\"") && said.contains("$ref"), "{said}");
 }

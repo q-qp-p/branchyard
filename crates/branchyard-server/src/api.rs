@@ -8,7 +8,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{FromRequest, Path, RawQuery, Request, State};
+use axum::extract::{FromRequest, MatchedPath, Path, RawQuery, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -885,6 +885,10 @@ pub fn router(app: Shared) -> Router {
             "/v1/repos/{repo}/branches/{branch}/answer",
             axum::routing::post(post_answer),
         )
+        .route(
+            "/v1/repos/{repo}/branches/{branch}/message",
+            axum::routing::post(post_message),
+        )
         .route("/v1/repos/{repo}/inbox", get(person_inbox))
         .route(
             "/v1/repos/{repo}/answer",
@@ -984,6 +988,9 @@ pub fn router(app: Shared) -> Router {
                 }),
         )
         .layer(middleware::from_fn(request_id))
+        // Outermost: it times what every other layer does, a refusal by
+        // `authenticate` included.
+        .layer(middleware::from_fn_with_state(app.clone(), request_metrics))
         .with_state(app)
 }
 
@@ -1080,37 +1087,8 @@ pub(crate) fn metrics_token_matches(
 /// each repository's warm pool read now, in the Prometheus text format.
 pub(crate) async fn render_metrics(app: Shared) -> Response {
     let rendered = tokio::task::spawn_blocking(move || {
-        let registry = &app.registry;
-        let mut snapshot = registry.observability().metrics.snapshot();
-        let queue = registry.queue()?;
-        let workers = registry.live_workers()?;
-        crate::metrics::queue_gauges(
-            &mut snapshot,
-            &queue,
-            &workers,
-            branchyard_support::time::now_ms() as i64,
-        );
-        for repo in app.repos.values() {
-            // The effect ledger and the approvals waiting (docs/effects.md).
-            let entries = repo.yard.effects(None).map_err(std::io::Error::other)?;
-            let pending = repo
-                .yard
-                .approvals(true)
-                .map_err(std::io::Error::other)?
-                .len();
-            crate::metrics::effect_gauges(&mut snapshot, &repo.name, &entries, pending);
-            // Only a repository whose workspace has a pool.
-            if let Ok(Some(spec)) = app.workspace(repo) {
-                if spec.pool.is_some() {
-                    let slots = repo.yard.pool_slots().map_err(std::io::Error::other)?;
-                    crate::metrics::pool_gauges(&mut snapshot, &repo.name, &slots);
-                }
-            }
-        }
-        if let Some(sync) = &app.sync {
-            crate::metrics::sync_series(&mut snapshot, &sync.observe());
-        }
-        Ok::<_, std::io::Error>(crate::metrics::encode(&snapshot))
+        let metrics = app.registry.observability().metrics.clone();
+        metrics.render_with(|board| fill_gauges(&app, board))
     })
     .await;
     match rendered {
@@ -1120,6 +1098,123 @@ pub(crate) async fn render_metrics(app: Shared) -> Response {
         Ok(Err(e)) => ApiError::internal(format!("could not read the queue: {e}")).into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
+}
+
+/// The gauges read from the shared store and this host at scrape time: the
+/// queue and the workers, each repository's effect ledger, approvals, warm
+/// pool and running turns, and the sync replicator's counters.
+pub(crate) fn fill_gauges(
+    app: &App,
+    board: &mut crate::metrics::Board,
+) -> Result<(), std::io::Error> {
+    let registry = &app.registry;
+    let queue = registry.queue()?;
+    let workers = registry.live_workers()?;
+    crate::metrics::queue_gauges(
+        board,
+        &queue,
+        &workers,
+        branchyard_support::time::now_ms() as i64,
+    );
+    for repo in app.repos.values() {
+        // The effect ledger and the approvals waiting (docs/effects.md).
+        let entries = repo.yard.effects(None).map_err(std::io::Error::other)?;
+        let pending = repo
+            .yard
+            .approvals(true)
+            .map_err(std::io::Error::other)?
+            .len();
+        crate::metrics::effect_gauges(board, &repo.name, &entries, pending);
+        // Only a repository whose workspace has a pool.
+        if let Ok(Some(spec)) = app.workspace(repo) {
+            if spec.pool.is_some() {
+                let slots = repo.yard.pool_slots().map_err(std::io::Error::other)?;
+                crate::metrics::pool_gauges(board, &repo.name, &slots);
+            }
+        }
+        let branches = repo.yard.branches().map_err(std::io::Error::other)?;
+        crate::metrics::turn_gauges(board, &branches);
+    }
+    if let Some(sync) = &app.sync {
+        crate::metrics::sync_series(board, &sync.observe());
+    }
+    Ok(())
+}
+
+/// Marks a response as an API error, for the request metrics: its code.
+#[derive(Clone, Debug)]
+pub(crate) struct ErrorCode(pub(crate) String);
+
+/// A request being served, counted in `http.server.active_requests` until
+/// it ends or its future is dropped.
+struct ActiveRequest {
+    metrics: Arc<crate::metrics::Metrics>,
+    method: &'static str,
+}
+
+impl ActiveRequest {
+    fn start(metrics: Arc<crate::metrics::Metrics>, method: &'static str) -> ActiveRequest {
+        metrics.up_down(
+            crate::metrics::HTTP_ACTIVE,
+            &[("http.request.method", method)],
+            1.0,
+        );
+        ActiveRequest { metrics, method }
+    }
+}
+
+impl Drop for ActiveRequest {
+    fn drop(&mut self) {
+        self.metrics.up_down(
+            crate::metrics::HTTP_ACTIVE,
+            &[("http.request.method", self.method)],
+            -1.0,
+        );
+    }
+}
+
+/// A request method as a label: the standard methods, else `_OTHER`.
+fn method_label(method: &Method) -> &'static str {
+    match *method {
+        Method::GET => "GET",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::PATCH => "PATCH",
+        Method::DELETE => "DELETE",
+        Method::HEAD => "HEAD",
+        Method::OPTIONS => "OPTIONS",
+        _ => "_OTHER",
+    }
+}
+
+/// Rate, errors and duration of every request, by route template, method
+/// and status class: the route is the matched path (`/v1/repos/{repo}/tasks`,
+/// never the URL), and `unmatched` for a request no route took.
+async fn request_metrics(State(app): State<Shared>, request: Request, next: Next) -> Response {
+    let metrics = app.registry.observability().metrics.clone();
+    let method = method_label(request.method());
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or_else(|| "unmatched".to_owned(), |path| path.as_str().to_owned());
+    let _active = ActiveRequest::start(metrics.clone(), method);
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    let class = format!("{}xx", response.status().as_u16() / 100);
+    metrics.observe(
+        crate::metrics::HTTP_DURATION,
+        &[
+            ("http.route", &route),
+            ("http.request.method", method),
+            ("status_class", &class),
+        ],
+        started.elapsed().as_secs_f64(),
+    );
+    if let Some(ErrorCode(code)) = response.extensions().get::<ErrorCode>() {
+        let code = metrics.bounded("error_code", code);
+        metrics.inc(crate::metrics::API_ERRORS, &[("code", &code)]);
+    }
+    response
 }
 
 /// The router of `--metrics-addr`'s listener: `/metrics` only, with the
@@ -1683,7 +1778,7 @@ pub(crate) fn incoming_trace(headers: &HeaderMap) -> Option<String> {
     headers
         .get("traceparent")
         .and_then(|v| v.to_str().ok())
-        .filter(|v| crate::telemetry::SpanContext::parse(v).is_some())
+        .filter(|v| branchyard_telemetry::propagation::is_valid(v))
         .map(str::to_owned)
 }
 
@@ -2705,7 +2800,7 @@ async fn post_ask(
         .filter(|s| s.is_finite() && *s > 0.0)
         .map(|s| Duration::from_secs_f64(s).min(MAX_ASK_WAIT));
     as_person(&app, &caller, &repo, branch, "run", move |d, _| {
-        d.ask(&request.text, wait)
+        d.ask(&request.text, wait, request.key.as_deref())
     })
     .await
     .map(Json)
@@ -2796,6 +2891,34 @@ async fn post_answer(
     }
     as_person(&app, &caller, &repo, branch, "run", move |d, _| {
         d.answer(request.message_id, &request.text)
+    })
+    .await
+    .map(Json)
+}
+
+/// A message from `branch` to one of its siblings, as the person or a
+/// surface acting for it (`by message --as`): the engine's `message`
+/// operation, with its refusals (`403 denied` for a recipient that is not
+/// a sibling, a payload its kind's schema refuses, an unknown kind). Needs
+/// the `run` scope, as `ask` does. See `docs/messaging.md`.
+async fn post_message(
+    State(app): State<Shared>,
+    Path((repo, branch)): Path<(String, String)>,
+    Extension(caller): Extension<Caller>,
+    JsonBody(request, _): JsonBody<branchyard_client::api::MessageRequest>,
+) -> Result<Json<branchyard::Message>, ApiError> {
+    if request.text.trim().is_empty() {
+        return Err(ApiError::bad_request("text is empty"));
+    }
+    as_person(&app, &caller, &repo, branch, "run", move |d, _| {
+        d.message(
+            &request.to,
+            &request.text,
+            request.kind.as_deref(),
+            request.payload.clone(),
+            request.key.as_deref(),
+            request.deadline_ms,
+        )
     })
     .await
     .map(Json)

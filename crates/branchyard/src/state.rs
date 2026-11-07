@@ -692,8 +692,20 @@ pub(crate) trait Backend: Send + Sync + fmt::Debug {
     fn head(&self) -> Result<u64, Error>;
 
     /// Store a harness-to-harness message: assigns its id (counting from 1
-    /// across the repository) and `at_ms`, and returns the stored copy.
-    fn send_message(&self, message: &Message) -> Result<Message, Error>;
+    /// across the repository) and `at_ms`, appends [`crate::Activity::Message`]
+    /// to the log of each of its endpoints that is a stored branch (the
+    /// person keeps none), and returns the stored copy. The row and the log
+    /// entries are one transaction, as [`Backend::commit_handoff`]'s are:
+    /// a failure writing either leaves neither, so no message exists that
+    /// no log names and no log names a message that does not exist.
+    /// `key` is its idempotency key as [`crate::messaging::Envelope::scoped_key`]
+    /// scopes it, unique across the repository: a second row with the same
+    /// key is refused by the store (the pipeline reads the first with
+    /// [`Backend::message_by_key`] before it inserts). A message with a
+    /// `handoff` is refused: that is [`Backend::commit_handoff`]'s.
+    fn send_message(&self, message: &Message, key: Option<&str>) -> Result<Message, Error>;
+    /// The message stored with idempotency `key`, if one was.
+    fn message_by_key(&self, key: &str) -> Result<Option<Message>, Error>;
     /// Freeze a validated result, grant its artifacts and enqueue its next-turn
     /// message in one transaction, returning the original message on a retry.
     fn commit_handoff(&self, commit: &crate::handoff::HandoffCommit) -> Result<Message, Error>;

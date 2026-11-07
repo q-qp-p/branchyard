@@ -560,18 +560,22 @@ pub(crate) fn steers(s: Opened) {
 pub(crate) fn messages(s: Opened) {
     let store = &s.backend;
     let sent = store
-        .send_message(&crate::Message {
-            id: 0,
-            from: "kid".into(),
-            to: "parent".into(),
-            kind: crate::MessageKind::Question,
-            text: "should I rename the module?".into(),
-            in_reply_to: None,
-            at_ms: 0,
-            delivered: false,
-            handoff: None,
-            next_turn: false,
-        })
+        .send_message(
+            &crate::Message {
+                id: 0,
+                from: "kid".into(),
+                to: "parent".into(),
+                kind: crate::MessageKind::Question,
+                text: "should I rename the module?".into(),
+                in_reply_to: None,
+                at_ms: 0,
+                delivered: false,
+                handoff: None,
+                next_turn: false,
+                meta: None,
+            },
+            None,
+        )
         .unwrap();
     assert!(sent.id > 0);
     assert!(sent.at_ms > 0);
@@ -582,18 +586,22 @@ pub(crate) fn messages(s: Opened) {
     // A second, unrelated message to someone else does not show up in
     // parent's inbox or as an answer to the first.
     store
-        .send_message(&crate::Message {
-            id: 0,
-            from: "other".into(),
-            to: "elsewhere".into(),
-            kind: crate::MessageKind::Report,
-            text: "tests pass".into(),
-            in_reply_to: None,
-            at_ms: 0,
-            delivered: false,
-            handoff: None,
-            next_turn: false,
-        })
+        .send_message(
+            &crate::Message {
+                id: 0,
+                from: "other".into(),
+                to: "elsewhere".into(),
+                kind: crate::MessageKind::Report,
+                text: "tests pass".into(),
+                in_reply_to: None,
+                at_ms: 0,
+                delivered: false,
+                handoff: None,
+                next_turn: false,
+                meta: None,
+            },
+            None,
+        )
         .unwrap();
 
     let inbox = store.inbox("parent").unwrap();
@@ -608,36 +616,44 @@ pub(crate) fn messages(s: Opened) {
     store.mark_delivered(&[sent.id, sent.id + 999]).unwrap();
 
     let answer = store
-        .send_message(&crate::Message {
-            id: 0,
-            from: "parent".into(),
-            to: "kid".into(),
-            kind: crate::MessageKind::Answer,
-            text: "yes, rename it".into(),
-            in_reply_to: Some(sent.id),
-            at_ms: 0,
-            delivered: false,
-            handoff: None,
-            next_turn: false,
-        })
+        .send_message(
+            &crate::Message {
+                id: 0,
+                from: "parent".into(),
+                to: "kid".into(),
+                kind: crate::MessageKind::Answer,
+                text: "yes, rename it".into(),
+                in_reply_to: Some(sent.id),
+                at_ms: 0,
+                delivered: false,
+                handoff: None,
+                next_turn: false,
+                meta: None,
+            },
+            None,
+        )
         .unwrap();
     assert_eq!(store.answer_to(sent.id).unwrap().as_ref(), Some(&answer));
     assert_eq!(store.inbox("kid").unwrap(), [answer]);
 
     let note = |from: &str, to: &str, kind: crate::MessageKind| {
         store
-            .send_message(&crate::Message {
-                id: 0,
-                from: from.into(),
-                to: to.into(),
-                kind,
-                text: "note".into(),
-                in_reply_to: None,
-                at_ms: 0,
-                delivered: false,
-                handoff: None,
-                next_turn: false,
-            })
+            .send_message(
+                &crate::Message {
+                    id: 0,
+                    from: from.into(),
+                    to: to.into(),
+                    kind,
+                    text: "note".into(),
+                    in_reply_to: None,
+                    at_ms: 0,
+                    delivered: false,
+                    handoff: None,
+                    next_turn: false,
+                    meta: None,
+                },
+                None,
+            )
             .unwrap()
     };
     let delivered = |id: u64| store.message(id).unwrap().unwrap().delivered;
@@ -709,8 +725,171 @@ pub(crate) fn messages(s: Opened) {
     let mut reply = note("parent", "asker", crate::MessageKind::Answer);
     reply.in_reply_to = Some(question.id);
     assert!(store.awaiting_answer("asker", 1_000).unwrap());
-    store.send_message(&reply).unwrap();
+    store.send_message(&reply, None).unwrap();
     assert!(!store.awaiting_answer("asker", 1_000).unwrap(), "answered");
+
+    // The messaging layer's columns (`crate::messaging`): a peer message
+    // waits for the next turn without a handoff, carries its meta back
+    // whole, and is found by its idempotency key, which names one row.
+    let meta = crate::messaging::MessageMeta {
+        kind: Some("step".into()),
+        schema_version: Some(2),
+        payload: Some(serde_json::json!({"n": 1, "files": ["a.rs"]})),
+        trace: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()),
+        deadline_ms: Some(9_000),
+    };
+    let peer = crate::Message {
+        id: 0,
+        from: "a".into(),
+        to: "b".into(),
+        kind: crate::MessageKind::Peer,
+        text: "step one done".into(),
+        in_reply_to: None,
+        at_ms: 0,
+        delivered: false,
+        handoff: None,
+        next_turn: true,
+        meta: Some(meta.clone()),
+    };
+    let stored = store.send_message(&peer, Some("a/step-1")).unwrap();
+    assert!(stored.next_turn);
+    assert_eq!(stored.meta.as_ref(), Some(&meta));
+    let read = store.message(stored.id).unwrap().unwrap();
+    assert_eq!(read, stored, "meta and next_turn read back as stored");
+    assert_eq!(read.kind, crate::MessageKind::Peer);
+    assert_eq!(store.inbox("b").unwrap(), std::slice::from_ref(&stored));
+    assert_eq!(
+        store.inbox_for_turn("b", 1).unwrap(),
+        std::slice::from_ref(&stored),
+        "no fence: the next turn to open delivers it"
+    );
+    assert_eq!(
+        store.message_by_key("a/step-1").unwrap(),
+        Some(stored.clone())
+    );
+    assert_eq!(store.message_by_key("a/step-2").unwrap(), None);
+    assert_eq!(
+        store.message_by_key("b/step-1").unwrap(),
+        None,
+        "scoped to the sender"
+    );
+    // A second row with the same key is refused by the store itself.
+    assert!(store.send_message(&peer, Some("a/step-1")).is_err());
+    assert_eq!(store.inbox("b").unwrap().len(), 1);
+    // A message with nothing to carry has no meta.
+    let plain = note("a", "b", crate::MessageKind::Peer);
+    assert_eq!(plain.meta, None);
+    assert_eq!(store.message(plain.id).unwrap().unwrap().meta, None);
+}
+
+/// An ordinary message and its two log entries are one transaction: a
+/// failure writing the recipient's entry (injected as a trigger on the
+/// events table) leaves neither the row, nor the sender's entry, nor the
+/// idempotency key, and the same send succeeds once the fault is gone,
+/// logging once on each side. Run on SQLite here and on PostgreSQL in CI.
+pub(crate) fn message_logs(s: Opened) {
+    let store = &s.backend;
+    let raw = &s.raw;
+    store.write(&record("sender"), None).unwrap();
+    store.write(&record("receiver"), None).unwrap();
+    let peer = |text: &str| crate::Message {
+        id: 0,
+        from: "sender".into(),
+        to: "receiver".into(),
+        kind: crate::MessageKind::Peer,
+        text: text.into(),
+        in_reply_to: None,
+        at_ms: 0,
+        delivered: false,
+        handoff: None,
+        next_turn: true,
+        meta: None,
+    };
+    let logged = |branch: &str| -> Vec<u64> {
+        store
+            .events_since(branch, 0, 100)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| match e.1.activity {
+                Activity::Message(m) => Some(m.id),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // A message is logged on both endpoints in the transaction that stores it.
+    let first = store.send_message(&peer("one"), None).unwrap();
+    assert_eq!(logged("sender"), [first.id]);
+    assert_eq!(logged("receiver"), [first.id]);
+    // The person keeps no log, and a branch that is not stored gets none.
+    let mut to_person = peer("to the person");
+    to_person.to = crate::PERSON.into();
+    to_person.kind = crate::MessageKind::Question;
+    to_person.next_turn = false;
+    let asked = store.send_message(&to_person, None).unwrap();
+    assert_eq!(logged("sender"), [first.id, asked.id]);
+    assert_eq!(store.event_count("receiver").unwrap(), 1);
+
+    // Fail the recipient's log entry: the sender's entry, written first in
+    // the same transaction, and the row go with it.
+    // A name of its own on PostgreSQL, where functions are shared by every
+    // test in the database; the scope is unique to this test.
+    let fault = format!(
+        "fail_message_log_{}",
+        s.scope
+            .as_deref()
+            .unwrap_or("")
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+    );
+    let (install, remove) = match &s.scope {
+        None => (
+            format!(
+                "CREATE TRIGGER {fault} BEFORE INSERT ON events WHEN NEW.branch = 'receiver' \
+                 BEGIN SELECT RAISE(ABORT, 'injected log failure'); END"
+            ),
+            format!("DROP TRIGGER {fault}"),
+        ),
+        Some(repo) => (
+            format!(
+                "CREATE FUNCTION {fault}() RETURNS trigger LANGUAGE plpgsql AS \
+                 $$ BEGIN RAISE EXCEPTION 'injected log failure'; END $$; \
+                 CREATE TRIGGER {fault} BEFORE INSERT ON by_events FOR EACH ROW \
+                 WHEN (NEW.repo = '{repo}' AND NEW.branch = 'receiver') \
+                 EXECUTE FUNCTION {fault}()"
+            ),
+            format!("DROP TRIGGER {fault} ON by_events; DROP FUNCTION {fault}()"),
+        ),
+    };
+    raw(&install);
+    let inbox_before = store.inbox("receiver").unwrap();
+    let events_before = (
+        store.event_count("sender").unwrap(),
+        store.event_count("receiver").unwrap(),
+    );
+    let refused = store.send_message(&peer("two"), Some("sender/two"));
+    raw(&remove);
+    assert!(refused.is_err(), "the injected fault must fail the send");
+    assert_eq!(store.inbox("receiver").unwrap(), inbox_before, "no row");
+    assert_eq!(
+        (
+            store.event_count("sender").unwrap(),
+            store.event_count("receiver").unwrap()
+        ),
+        events_before,
+        "no log entry on either side"
+    );
+    assert_eq!(store.message_by_key("sender/two").unwrap(), None, "no key");
+
+    // Retried without the fault, it is stored and logged once each.
+    let retried = store
+        .send_message(&peer("two"), Some("sender/two"))
+        .unwrap();
+    assert_eq!(
+        store.message_by_key("sender/two").unwrap().as_ref(),
+        Some(&retried)
+    );
+    assert_eq!(logged("sender"), [first.id, asked.id, retried.id]);
+    assert_eq!(logged("receiver"), [first.id, retried.id]);
 }
 
 pub(crate) fn records(s: Opened) {
@@ -1165,6 +1344,7 @@ fn handoff_fixture(s: &Opened) -> crate::handoff::HandoffCommit {
             at_ms: 0,
             delivered: false,
             next_turn: true,
+            meta: None,
             handoff: Some(crate::Handoff {
                 source: "producer".into(),
                 version: crate::SourceVersion {
@@ -1252,7 +1432,7 @@ pub(crate) fn handoffs(s: Opened) {
     assert_eq!(retry.id, message.id);
     assert!(retry.delivered);
     assert_eq!(s.backend.event_count("consumer").unwrap(), 1);
-    assert!(s.backend.send_message(&commit.message).is_err());
+    assert!(s.backend.send_message(&commit.message, None).is_err());
 
     // Reusing a recipient name inherits neither the frozen payload nor its grant.
     s.backend.delete("consumer").unwrap();
@@ -1426,18 +1606,22 @@ pub(crate) fn delivery(s: Opened) {
     let store = &s.backend;
     let send = |to: &str| {
         store
-            .send_message(&crate::Message {
-                id: 0,
-                from: "kid".into(),
-                to: to.into(),
-                kind: crate::MessageKind::Report,
-                text: "done".into(),
-                in_reply_to: None,
-                at_ms: 0,
-                delivered: false,
-                handoff: None,
-                next_turn: false,
-            })
+            .send_message(
+                &crate::Message {
+                    id: 0,
+                    from: "kid".into(),
+                    to: to.into(),
+                    kind: crate::MessageKind::Report,
+                    text: "done".into(),
+                    in_reply_to: None,
+                    at_ms: 0,
+                    delivered: false,
+                    handoff: None,
+                    next_turn: false,
+                    meta: None,
+                },
+                None,
+            )
             .unwrap()
             .id
     };
@@ -2926,18 +3110,22 @@ fn upgrade_handoffs(
     reopen: &dyn Fn() -> Arc<dyn Backend>,
 ) {
     let ordinary = backend
-        .send_message(&crate::Message {
-            id: 0,
-            from: "legacy-sender".into(),
-            to: "legacy-recipient".into(),
-            kind: crate::MessageKind::Report,
-            text: "legacy message".into(),
-            in_reply_to: None,
-            at_ms: 0,
-            delivered: false,
-            handoff: None,
-            next_turn: false,
-        })
+        .send_message(
+            &crate::Message {
+                id: 0,
+                from: "legacy-sender".into(),
+                to: "legacy-recipient".into(),
+                kind: crate::MessageKind::Report,
+                text: "legacy message".into(),
+                in_reply_to: None,
+                at_ms: 0,
+                delivered: false,
+                handoff: None,
+                next_turn: false,
+                meta: None,
+            },
+            None,
+        )
         .unwrap();
     exec(&format!("DROP INDEX {prefix}messages_handoff"));
     for column in [
@@ -2964,18 +3152,22 @@ fn upgrade_handoffs(
         [ordinary]
     );
     let new = upgraded
-        .send_message(&crate::Message {
-            id: 0,
-            from: "new-sender".into(),
-            to: "new-recipient".into(),
-            kind: crate::MessageKind::Report,
-            text: "new message".into(),
-            in_reply_to: None,
-            at_ms: 0,
-            delivered: false,
-            handoff: None,
-            next_turn: false,
-        })
+        .send_message(
+            &crate::Message {
+                id: 0,
+                from: "new-sender".into(),
+                to: "new-recipient".into(),
+                kind: crate::MessageKind::Report,
+                text: "new message".into(),
+                in_reply_to: None,
+                at_ms: 0,
+                delivered: false,
+                handoff: None,
+                next_turn: false,
+                meta: None,
+            },
+            None,
+        )
         .unwrap();
     assert_eq!(upgraded.message(new.id).unwrap(), Some(new));
 }
@@ -3078,7 +3270,7 @@ macro_rules! suite {
     ($open:expr) => {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
-            concurrent_appends, contended_feed, races, storage, artifact_capture, messages, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
+            concurrent_appends, contended_feed, races, storage, artifact_capture, messages, message_logs, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
             outcomes, knowledge, pools, usage, effects, timers, clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {

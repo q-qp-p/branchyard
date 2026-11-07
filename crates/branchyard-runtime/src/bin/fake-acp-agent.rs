@@ -594,6 +594,19 @@ fn prompt(
             awaits_steer: false,
         });
     }
+    // `TOOLS Read,Edit,Bash`: one tool call per comma-separated name, each
+    // after a line of the agent's talk, as a harness makes them.
+    if let Some(names) = directive(text, "TOOLS").and_then(|mut rest| rest.next()) {
+        for (n, name) in names.split(',').filter(|n| !n.is_empty()).enumerate() {
+            chunk(session, &format!("about to use {name}\n"));
+            update(
+                session,
+                json!({"sessionUpdate": "tool_call", "toolCallId": format!("tool-{}", n + 1),
+                       "title": name, "kind": "other", "status": "in_progress",
+                       "rawInput": {"step": n + 1}}),
+            );
+        }
+    }
     write_files(session, text);
     let answer = if directive(text, "BACKGROUND").is_some() {
         // Same process group, detached from the protocol pipes.
@@ -989,6 +1002,7 @@ mod tests {
             "WHOAMI",
             "WRITE",
             "ENV",
+            "TOOLS",
         ] {
             let path = format!("/work/{name}/tasks/01ABC{name}XYZ/INDEX.md");
             assert!(directive(&path, name).is_none(), "{name}");

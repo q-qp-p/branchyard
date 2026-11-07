@@ -32,6 +32,9 @@ branchyard-client = { path = "../branchyard-client" }
 branchyard-config = { path = "../branchyard-config" }
 branchyard-wire = { path = "../branchyard-wire" }
 branchyard-server = { path = "../branchyard-server" }
+# A local command's OpenTelemetry (docs/observability.md).
+branchyard-telemetry = { path = "../branchyard-telemetry" }
+tracing = { workspace = true }
 branchyard-workspace = { path = "../branchyard-workspace" }
 branchyard-mcp = { path = "../branchyard-mcp" }
 serde = { workspace = true }
@@ -83,6 +86,9 @@ branchyard-testkit = { path = "../branchyard-testkit" }
 branchyard-bridge = { path = "../branchyard-bridge" }
 branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
 tempfile = { workspace = true }
+# The OTLP messages tests/telemetry.rs's stand-in collector decodes.
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "metrics"] }
+prost = { workspace = true }
 
 # Binary distribution is independent of crates.io publication.
 [package.metadata.dist]

@@ -303,6 +303,17 @@ pub(crate) fn report_ttl(text: &str) -> Result<Duration, String> {
     branchyard_support::time::parse_duration(text).map_err(|e| e.to_string())
 }
 
+/// `by message --deadline`: how long the message stays deliverable, a
+/// duration such as `10m`, more than zero.
+pub(crate) fn message_deadline(text: &str) -> Result<Duration, String> {
+    branchyard_support::time::parse_duration(text)
+        .map_err(|e| e.to_string())
+        .and_then(|window| match window.is_zero() {
+            true => Err("needs a duration longer than zero, such as 10m or 2h".into()),
+            false => Ok(window),
+        })
+}
+
 /// `by startup report --since`: how far back to look, a duration such as
 /// `30m` or `7d`, more than zero.
 pub(crate) fn since_window(text: &str) -> Result<Duration, String> {

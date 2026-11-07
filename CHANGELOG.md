@@ -25,6 +25,50 @@ Reported by @arsenyspb in
 [#62](https://github.com/vamsiramakrishnan/branchyard/issues/62); the details
 are in [composing with a harness's own permissions](docs/harness-integration.md#composing-with-a-harnesss-own-permissions).
 
+Observability is rebuilt on the standard Rust stack: `tracing`,
+`opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp` and
+`tracing-opentelemetry`, set up for every binary by the new
+`branchyard-telemetry` crate. The hand-written span model, `traceparent` parser
+and OTLP encoder are gone. Traces and metrics are configured by the standard
+`OTEL_*` variables and exported over OTLP (HTTP with protobuf or JSON bodies,
+or gRPC) from `by serve`, `by worker` and now any local `by` command, and only
+when an endpoint is set. `GET /metrics` keeps every existing name and label and
+gains HTTP request rate and duration by route template, refusals by error code,
+operation duration, turns in flight, first-event latency and stalls, tool and
+connector call durations, and the GenAI client metrics `gen_ai.client.operation.duration`
+and `gen_ai.client.token.usage`. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` for a
+harness's own telemetry now also makes a `by` that inherits it export; see
+[observability](docs/observability.md#configuration).
+
+A message between siblings can now carry a deadline: `by message --deadline 10m`
+(or `branchyard.message(..., deadline=600)`, or `deadline_ms` in the server's
+`POST .../message` body and the Rust and Python clients; the MCP tool leaves it
+out to stay within a leaf's tool-list cap). A message still pending when the
+recipient's next turn starts after its deadline is not given to the turn: it
+counts delivered, and a warning naming its id goes on the recipient's log. A
+sibling with 32 undelivered peer messages now refuses another with `denied`,
+naming the count and the limit.
+
+`branchyard.toml` can now declare kinds of message siblings may send each other:
+`[[messaging.kinds]]` with a `name`, an optional `schema_version` and
+`description`, and an inline JSON Schema table (`[messaging.kinds.schema]`)
+that a message's `--payload` must match. A yard registers them when it is opened
+with its configuration, with the refusals `Yard::register_kind` makes; a bad
+kind is a configuration error naming it. `by kinds [--json]` lists the built-in
+and configured kinds.
+
+`ask` takes an idempotency key like `message` does: `by ask --key KEY`, the MCP
+`ask` tool's `key`, `branchyard.ask(key=)`, `key` in the server's `POST .../ask`
+body and the Rust and Python clients. Asking again with the same key returns the
+first question (and its answer once there is one) instead of asking twice; the
+same key with other text is refused. `report`, `escalate` and `answer` do not
+take a key.
+
+A message and its entries on the sender's and the recipient's event logs are now
+written in one transaction, on SQLite and on PostgreSQL, as a handoff's already
+were: a failure writing either leaves neither, so no crash leaves a message that
+no log names.
+
 ## 0.4.0 - 2026-11-02
 
 A running branch reports engine liveness, and `by obligations` lists unresolved

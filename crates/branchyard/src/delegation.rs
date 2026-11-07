@@ -1432,10 +1432,15 @@ impl Delegate {
     /// long for an answer (`in_reply_to` the question). A wait that passes
     /// with no answer yet is not an error: `answer` is `None`; ask `inbox`
     /// or wait again.
-    pub fn ask(&self, text: &str, wait: Option<Duration>) -> Result<Asked, Error> {
+    pub fn ask(
+        &self,
+        text: &str,
+        wait: Option<Duration>,
+        key: Option<&str>,
+    ) -> Result<Asked, Error> {
         self.typed(
             "ask",
-            json!({"text": text, "wait_seconds": wait.map(|d| d.as_secs_f64())}),
+            json!({"text": text, "wait_seconds": wait.map(|d| d.as_secs_f64()), "key": key}),
         )
     }
 
@@ -1504,6 +1509,38 @@ impl Delegate {
     /// first.
     pub fn inbox(&self) -> Result<Inbox, Error> {
         self.typed("inbox", json!({}))
+    }
+
+    /// Message a sibling, another child of this branch's parent: `text`,
+    /// as a message of `kind` (`note` when `None`; a kind the yard
+    /// registered with [`crate::Yard::register_kind`] otherwise), with a
+    /// `payload` the kind's schema checks, under an idempotency `key` (a
+    /// repeat with the same key returns the first message). It waits for
+    /// the sibling's next turn and is never steered; the sibling finds it
+    /// in its inbox and in its prompt's `<branchyard-inbox>` block. A
+    /// recipient that is not a sibling is refused `denied`. With a
+    /// `deadline_ms` (milliseconds since the Unix epoch, in the future), a
+    /// message still pending when the sibling's turn starts after it is
+    /// not given to the turn: it is marked delivered and a warning naming
+    /// it goes on the sibling's log. A sibling that already has
+    /// [`crate::messaging::PEER_PENDING_MAX`] undelivered peer messages
+    /// refuses another. See `docs/messaging.md`.
+    pub fn message(
+        &self,
+        to: &str,
+        text: &str,
+        kind: Option<&str>,
+        payload: Option<Value>,
+        key: Option<&str>,
+        deadline_ms: Option<u64>,
+    ) -> Result<Message, Error> {
+        self.typed(
+            "message",
+            json!({
+                "to": to, "text": text, "kind": kind, "payload": payload, "key": key,
+                "deadline_ms": deadline_ms
+            }),
+        )
     }
 
     /// The messages addressed to this branch not yet delivered to a turn.
@@ -4444,10 +4481,11 @@ impl Local {
     }
 
     /// Send a `question` or an `escalation` from this branch to whoever
-    /// answers it ([`inbox::answerer`]): its parent, or the person.
-    fn send_up(&self, kind: MessageKind, text: &str) -> Result<Message, Error> {
+    /// answers it ([`inbox::answerer`]): its parent, or the person. A `key`
+    /// (only `ask` passes one) makes a repeat return the first message.
+    fn send_up(&self, kind: MessageKind, text: &str, key: Option<&str>) -> Result<Message, Error> {
         let info = self.store().read(&self.branch)?.info;
-        self.send_message(kind, inbox::answerer(&info), text, None)
+        self.send_message(kind, inbox::answerer(&info), text, None, key)
     }
 
     /// `record`'s parent, or why there is none to send `kind` to.
@@ -4469,7 +4507,7 @@ impl Local {
         let record = store.read(&self.branch)?;
         let Some(value) = contract::accept(record.result_contract.as_ref(), result)? else {
             let parent = self.parent_to(&record, MessageKind::Report)?;
-            return self.send_message(MessageKind::Report, &parent, text, None);
+            return self.send_message(MessageKind::Report, &parent, text, None, None);
         };
         let parent = self.parent_to(&record, MessageKind::Report)?;
         if text.trim().is_empty() {
@@ -4478,7 +4516,7 @@ impl Local {
         inbox::authorize(&store, &self.branch, MessageKind::Report, &parent)?;
         Recorder::open(&store, &self.branch, self.options.observer.clone())?
             .record(Activity::Result { value })?;
-        self.send_message(MessageKind::Report, &parent, text, None)
+        self.send_message(MessageKind::Report, &parent, text, None, None)
     }
 
     /// Record this branch's own status report, and escalate a `blocked` or
@@ -4520,6 +4558,7 @@ impl Local {
                     inbox::answerer(&info),
                     &report.describe(),
                     None,
+                    None,
                 ),
             ),
             false => None,
@@ -4534,7 +4573,13 @@ impl Local {
             .backend()
             .message(message_id)?
             .ok_or(Error::UnknownMessage(message_id))?;
-        self.send_message(MessageKind::Answer, &question.from, text, Some(message_id))
+        self.send_message(
+            MessageKind::Answer,
+            &question.from,
+            text,
+            Some(message_id),
+            None,
+        )
     }
 
     fn send_message(
@@ -4543,18 +4588,45 @@ impl Local {
         to: &str,
         text: &str,
         in_reply_to: Option<u64>,
+        key: Option<&str>,
     ) -> Result<Message, Error> {
-        let result = inbox::send(
-            &self.yard,
-            self.options.observer.clone(),
-            &self.branch,
-            kind,
-            to,
-            text,
-            in_reply_to,
-        );
+        let mut envelope = inbox::envelope(&self.branch, kind, to, text, in_reply_to);
+        envelope.idempotency_key = key.map(str::to_owned);
+        envelope.trace = self.options.trace_parent.clone();
+        let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
         self.note("message", to, &result, |m| {
             format!("sent {} #{}", m.kind, m.id)
+        });
+        result
+    }
+
+    /// Message a sibling (another child of this branch's parent) with a
+    /// registered kind (`note` without one), a payload the kind's schema
+    /// checks, and an idempotency key: one envelope through the messaging
+    /// pipeline (`crate::messaging`), delivered at the sibling's next turn
+    /// and carrying this turn's trace.
+    fn message(
+        &self,
+        to: &str,
+        text: &str,
+        kind: Option<&str>,
+        payload: Option<Value>,
+        key: Option<&str>,
+        deadline_ms: Option<u64>,
+    ) -> Result<Message, Error> {
+        let mut envelope = crate::messaging::Envelope::new(
+            kind.unwrap_or(crate::messaging::DEFAULT_KIND),
+            crate::messaging::Address::Branch(self.branch.clone()),
+            crate::messaging::Address::parse(to),
+            text,
+        );
+        envelope.payload = payload;
+        envelope.idempotency_key = key.map(str::to_owned);
+        envelope.deadline_ms = deadline_ms;
+        envelope.trace = self.options.trace_parent.clone();
+        let result = crate::messaging::send(&self.yard, self.options.observer.clone(), envelope);
+        self.note("message", to, &result, |m| {
+            format!("sent {} #{}", m.kind_name(), m.id)
         });
         result
     }
@@ -4904,6 +4976,27 @@ struct InboxArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MessageArgs {
+    to: String,
+    text: String,
+    /// The registered kind; `note` when absent.
+    #[serde(default)]
+    kind: Option<String>,
+    /// A JSON value the kind's schema checks.
+    #[serde(default)]
+    payload: Option<Value>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// message.
+    #[serde(default)]
+    key: Option<String>,
+    /// Milliseconds since the Unix epoch after which the message is not
+    /// delivered.
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PublishArtifactArgs {
     path: String,
     name: Option<String>,
@@ -4951,6 +5044,10 @@ struct AskArgs {
     /// returns as soon as the question is sent.
     #[serde(default)]
     wait_seconds: Option<f64>,
+    /// An idempotency key: a repeat with the same key returns the first
+    /// question.
+    #[serde(default)]
+    key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -5249,7 +5346,7 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
         }
         "ask" => {
             let args: AskArgs = parse(tool, arguments)?;
-            let message = local.send_up(MessageKind::Question, &args.text)?;
+            let message = local.send_up(MessageKind::Question, &args.text, args.key.as_deref())?;
             let answer = match args.wait_seconds.filter(|s| *s > 0.0) {
                 Some(secs) => inbox::wait_for_answer(
                     &local.store(),
@@ -5266,7 +5363,7 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
         }
         "escalate" => {
             let args: TextArgs = parse(tool, arguments)?;
-            to_json(&local.send_up(MessageKind::Escalation, &args.text)?)
+            to_json(&local.send_up(MessageKind::Escalation, &args.text, None)?)
         }
         "report_status" => {
             let args: ReportStatusArgs = parse(tool, arguments)?;
@@ -5296,6 +5393,17 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
                 true => to_json(&inbox.unread_only()),
                 false => to_json(&inbox),
             }
+        }
+        "message" => {
+            let args: MessageArgs = parse(tool, arguments)?;
+            to_json(&local.message(
+                &args.to,
+                &args.text,
+                args.kind.as_deref(),
+                args.payload,
+                args.key.as_deref(),
+                args.deadline_ms,
+            )?)
         }
         other => Err(Error::Denied(format!("no delegation tool named {other}"))),
     }

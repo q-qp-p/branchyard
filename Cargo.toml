@@ -22,6 +22,7 @@ members = [
     "crates/branchyard-substrate",
     "crates/branchyard-support",
     "crates/branchyard-sync",
+    "crates/branchyard-telemetry",
     "crates/branchyard-testkit",
     "crates/branchyard-wire",
     "crates/branchyard-workspace",
@@ -53,10 +54,15 @@ hex = "0.4.3"
 httparse = "1"
 jiff = { version = "0.2.37", default-features = false }
 libc = "0.2"
+opentelemetry = { version = "0.33", default-features = false, features = ["trace", "metrics", "internal-logs"] }
+opentelemetry-proto = { version = "0.33", default-features = false }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "metrics", "http-proto", "http-json", "reqwest-blocking-client", "grpc-tonic", "tls-ring", "tls-webpki-roots", "internal-logs"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "metrics", "internal-logs", "experimental_metrics_custom_reader"] }
 percent-encoding = "2"
 postgres = "0.19"
 tokio-postgres-rustls = { version = "0.13", default-features = false }
 prost = "0.14"
+reqwest = { version = "0.13", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 ring = "0.17"
 rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
@@ -70,9 +76,12 @@ strum = { version = "0.28", features = ["derive"] }
 shlex = "2"
 tempfile = "3.27.0"
 tokio = { version = "1.52", default-features = false }
+tokio-stream = "0.1"
+tonic = "0.14"
 toml = "1.1.6"
 toml_edit = { version = "0.25.15", default-features = false, features = ["parse"] }
 tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 url = "2"
 uuid = { version = "1.26.1", features = ["v4"] }
