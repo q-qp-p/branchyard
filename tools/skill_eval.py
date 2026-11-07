@@ -6,9 +6,10 @@ the mounted tool tree (docs/tools-model.md section 3)? See docs/skill-eval.md.
     python3 tools/skill_eval.py score LOGDIR [--out DIR]            score recorded logs, no model
     python3 tools/skill_eval.py run --harness ID [--model M] ...    run each scenario with `by run`, then score
     python3 tools/skill_eval.py sizes [--tree DIR]                  the static text a turn pays for
+    python3 tools/skill_eval.py rank [--tree DIR] [--plain]         rank each prompt with bin/tools, no model
 
 `run` starts a real harness with a real model unless `--command` points at a fake agent. A person runs it;
-no test does. `score` and `list` read files only.
+no test does. `score`, `list`, `sizes` and `rank` read files only.
 
 A LOGDIR holds, per scenario ID, `ID.log.json` (the output of `by log BRANCH --json`: a JSON array, or one
 object per line) and optionally `ID.meta.json` (`harness`, `model`, `wall_s`, `checks`), which `run` writes.
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import importlib.util
 import json
 import os
 import re
@@ -42,6 +44,11 @@ SKILLS = ROOT / "plugins/branchyard/skills"
 BUNDLES = ROOT / "tests/fixtures/anvil/bundles"
 CATALOG = ROOT / "catalog/harnesses.toml"
 LEAF = ROOT / "plugins/branchyard/leaf.md"
+CAPABILITIES = ROOT / "plugins/branchyard/capabilities.json"
+TOOLS_SCRIPT = SKILLS / "find-tools/scripts/tools.py"
+ANVIL_MOCK = ROOT / "tests/fixtures/anvil/anvil"
+#: What separates a skill from one of its references in an id: `pptx/references/layouts.md`.
+REFERENCE = "/references/"
 
 #: The keys a scenario may have; anything else is a typo and is refused.
 KEYS = {
@@ -165,6 +172,21 @@ def grant_connector(grant: str) -> str:
     return grant.split(":", 1)[0].split("@", 1)[0]
 
 
+def reference_skill(ident: str) -> str:
+    """The skill an `expect_skills` id belongs to: itself, or the skill before `/references/`."""
+    return ident.split(REFERENCE, 1)[0]
+
+
+def reference_problem(ident: str) -> str | None:
+    """Why a reference id (`SKILL/references/FILE.md`) names no shipped reference, or None when it does."""
+    skill, _, file = ident.partition(REFERENCE)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.md", file):
+        return f"reference {ident!r} must be SKILL/references/FILE.md"
+    if not (SKILLS / skill / "references" / file).is_file():
+        return f"reference {ident!r} is not a file of the skill"
+    return None
+
+
 def problems(scenarios: Iterable[Scenario]) -> list[str]:
     """Why a scenario cannot be run or scored: the rot check. Empty when every one is sound."""
     skills, ops, helpers = tree_skills(), mock_operations(), helper_ids()
@@ -184,8 +206,10 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
         if not s.prompt.strip():
             bad("empty prompt")
         for name in (*s.expect_skills, *s.skills):
-            if name not in skills:
-                bad(f"skill {name!r} is not one a turn's tool tree lists (the topic indexes)")
+            if reference_skill(name) not in skills:
+                bad(f"skill {reference_skill(name)!r} is not one a turn's tool tree lists (the topic indexes)")
+            elif REFERENCE in name and (why := reference_problem(name)):
+                bad(why)
         for op in (*s.expect_operations, *(m for m in s.must_not if "." in m)):
             if op not in all_ops:
                 bad(f"operation {op!r} is not one the Anvil mock's bundles define")
@@ -202,8 +226,8 @@ def problems(scenarios: Iterable[Scenario]) -> list[str]:
             if not any(grant_connector(g) == op.split(".", 1)[0] for g in s.connectors):
                 bad(f"operation {op!r} needs its connector in `connectors`")
         for name in s.expect_skills:
-            if s.skills and name not in s.skills:
-                bad(f"expected skill {name!r} is not among the skills chosen for the turn")
+            if s.skills and reference_skill(name) not in s.skills:
+                bad(f"expected skill {reference_skill(name)!r} is not among the skills chosen for the turn")
         for helper in s.expect_helpers:
             if not s.helpers:
                 bad(f"expected helper {helper!r} needs `helpers = true`")
@@ -953,10 +977,148 @@ def sizes(tree: Path | None = None) -> dict[str, Any]:
     }
     for topic in sorted((SKILLS / "topics").glob("*/INDEX.md")):
         out[f"skills/topics/{topic.parent.name}/INDEX.md (shipped)"] = file_size(topic)
+    for reference in sorted((SKILLS / "delegate/references").glob("*.md")):
+        out[f"delegate references/{reference.name} (read on demand)"] = file_size(reference)
     if tree is not None:
         out["tools/INDEX.md (mounted)"] = file_size(tree / "INDEX.md")
         out["tools/helpers/INDEX.md (mounted)"] = file_size(tree / "helpers/INDEX.md")
     return {name: value for name, value in out.items() if value is not None}
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Ranking without a model: each scenario's prompt as the query to bin/tools
+
+
+def load_tools(script: Path = TOOLS_SCRIPT) -> Any:
+    """The `tools` script as a module: the ranker a sandbox runs, from this checkout or another commit's copy."""
+    spec = importlib.util.spec_from_file_location("skill_eval_tools", script)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{script} cannot be loaded as a module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def shipped_tree(base: Path) -> dict[str, Any]:
+    """A tool tree under `base` as `by run` mounts one today: every skill `capabilities.json` lists, chosen, and
+    the Anvil mock's packages as connectors. Returns what it holds; the tree is `base/tools`."""
+    tools, capabilities, connectors = base / "tools", base / "capabilities", base / "connectors"
+    for directory in (tools, capabilities, connectors):
+        directory.mkdir(parents=True, exist_ok=True)
+    skills = json.loads(CAPABILITIES.read_text(encoding="utf-8"))["skills"]
+    lines = ["# Your tools\n", "\n## Skills (skills/NAME/SKILL.md)\n"]
+    for skill in skills:
+        (capabilities / skill["id"]).symlink_to(SKILLS / skill["id"])
+        lines.append(f"- {skill['id']}: {skill['description']}\n")
+    (tools / "skills").symlink_to("../capabilities")
+    (tools / "connectors").symlink_to("../connectors")
+    packaged: list[str] = []
+    notes: list[str] = []
+    for bundle in sorted(p for p in BUNDLES.iterdir() if p.is_dir()):
+        out = str(connectors / bundle.name)
+        done = subprocess.run(
+            [str(ANVIL_MOCK), "package", "harness", str(bundle), "--out", out, "--connector", bundle.name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if done.returncode == 0:
+            packaged.append(bundle.name)
+        else:
+            notes.append(f"connector {bundle.name} not packaged: {done.stderr.strip() or done.returncode}")
+    if packaged:
+        lines.append("\n## Connectors (connectors/ID/SKILL.md)\n")
+        lines += [f"- {name}\n" for name in packaged]
+    (tools / "INDEX.md").write_text("".join(lines), encoding="utf-8")
+    return {"skills": [s["id"] for s in skills], "connectors": packaged, "notes": notes}
+
+
+def expected_documents(scenario: Scenario) -> list[tuple[str, str]]:
+    """(kind, id) of each thing a scenario expects, in the document kinds `tools` ranks."""
+    out = [("reference" if REFERENCE in name else "skill", name) for name in scenario.expect_skills]
+    out += [("operation", op) for op in scenario.expect_operations]
+    return out + [("helper", helper) for helper in scenario.expect_helpers if helper != "own"]
+
+
+def rank_scenarios(
+    scenarios: list[Scenario], tree: Path, plain: bool = False, script: Path = TOOLS_SCRIPT
+) -> dict[str, Any]:
+    """Each scenario's prompt ranked by `tools search` over `tree`: the rank of every expected id, and overall
+    the top-1 and top-3 rates and the mean reciprocal rank. An expected id with no document in the tree is
+    `absent` and not counted; one with a document that scored nothing is unranked and counts as a miss."""
+    tools = load_tools(script)
+    refused: list[str] = []
+    docs = tools.documents(tree, refused)
+    present = {(d.kind, d.id) for d in docs}
+    chosen = frozenset() if plain or not hasattr(tools, "chosen_tools") else tools.chosen_tools(tree)
+    rows: list[dict[str, Any]] = []
+    reciprocals: list[float] = []
+    absent = 0
+    for scenario in scenarios:
+        if scenario.none:
+            continue
+        ranked = tools.rank(docs, [scenario.prompt], chosen) if chosen else tools.rank(docs, [scenario.prompt])
+        position = {(d.kind, d.id): at for at, (_, d) in enumerate(ranked, start=1)}
+        expected: list[dict[str, Any]] = []
+        for kind, ident in expected_documents(scenario):
+            if (kind, ident) not in present:
+                absent += 1
+                expected.append({"kind": kind, "id": ident, "rank": None, "absent": True})
+                continue
+            at = position.get((kind, ident))
+            reciprocals.append(1 / at if at else 0.0)
+            expected.append({"kind": kind, "id": ident, "rank": at, "absent": False})
+        rows.append(
+            {
+                "id": scenario.id,
+                "area": scenario.area,
+                "expected": expected,
+                "top": [f"{d.kind}:{d.id}" for _, d in ranked[:3]],
+            }
+        )
+    ranks = [e["rank"] for r in rows for e in r["expected"] if not e["absent"]]
+    return {
+        "schema": "branchyard.skill-eval-rank/v1",
+        "tree": str(tree),
+        "plain": plain,
+        "tools": str(script),
+        "documents": len(docs),
+        "refused": refused,
+        "overall": {
+            "scenarios": len(rows),
+            "expected": len(ranks),
+            "absent": absent,
+            "top1": sum(1 for at in ranks if at == 1),
+            "top3": sum(1 for at in ranks if at is not None and at <= 3),
+            "unranked": sum(1 for at in ranks if at is None),
+            "top1_rate": rate(sum(1 for at in ranks if at == 1), len(ranks)),
+            "top3_rate": rate(sum(1 for at in ranks if at is not None and at <= 3), len(ranks)),
+            "mrr": round(sum(reciprocals) / len(reciprocals), 4) if reciprocals else None,
+        },
+        "scenarios": rows,
+    }
+
+
+def rank_markdown(report: dict[str, Any]) -> str:
+    """The overall rates, then one line per expected id with the three documents ranked first."""
+    a = report["overall"]
+    lines = [
+        "# Skill-discovery eval: ranking",
+        "",
+        f"- tree `{report['tree']}`: {report['documents']} documents; "
+        f"{'BM25 alone (--plain)' if report['plain'] else 'BM25 with the chosen factor'}",
+        f"- {a['scenarios']} scenarios, {a['expected']} expected ids ranked"
+        + (f", {a['absent']} absent from the tree" if a["absent"] else ""),
+        f"- top-1 {pct(a['top1_rate'])} ({a['top1']}), top-3 {pct(a['top3_rate'])} ({a['top3']}), "
+        f"MRR {'-' if a['mrr'] is None else format(a['mrr'], '.3f')}, unranked {a['unranked']}",
+    ]
+    lines += [f"- refused: {why}" for why in report["refused"]]
+    lines += ["", "| scenario | expected | rank | top 3 |", "|---|---|---|---|"]
+    for row in report["scenarios"]:
+        for e in row["expected"]:
+            at = "absent" if e["absent"] else ("-" if e["rank"] is None else str(e["rank"]))
+            lines.append(f"| {row['id']} | {e['kind']}:{e['id']} | {at} | {', '.join(row['top']) or '-'} |")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -990,6 +1152,12 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     runner.add_argument("--record", action="store_true", help="also write evals/skills/records/DATE-HARNESS.json")
     size = sub.add_parser("sizes", help="print the static text sizes a turn pays for")
     size.add_argument("--tree", type=Path, help="a mounted tool tree (.branchyard/tools) to measure too")
+    ranker = sub.add_parser("rank", help="rank each scenario's prompt with bin/tools over a tool tree; no model")
+    ranker.add_argument("--tree", type=Path, help="a mounted tool tree (default: the shipped skills and the mock)")
+    ranker.add_argument("--scenarios", default="*")
+    ranker.add_argument("--plain", action="store_true", help="BM25 alone, without the chosen factor")
+    ranker.add_argument("--tools", type=Path, default=TOOLS_SCRIPT, help="the tools script to rank with")
+    ranker.add_argument("--json", action="store_true", help="print the report as JSON")
     return parser.parse_args(argv)
 
 
@@ -1022,6 +1190,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.action == "score":
         emit(score_dir(args.logdir, scenarios), args.out, args.json)
+        return 0
+    if args.action == "rank":
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = args.tree
+            if tree is None:
+                shipped_tree(Path(tmp))
+                tree = Path(tmp) / "tools"
+            report = rank_scenarios(scenarios, tree, plain=args.plain, script=args.tools)
+        print(json.dumps(report, indent=2, sort_keys=True) if args.json else rank_markdown(report), end="")
         return 0
     script = json.loads(args.script.read_text(encoding="utf-8")) if args.script else {}
     options = RunOptions(
