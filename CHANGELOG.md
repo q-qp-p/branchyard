@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+A skill's references are searchable. In a turn's tool tree, `bin/tools search`
+ranks each `references/*.md` of a staged skill as a document of its own
+(`SKILL/references/FILE.md`: the skill's and the file's name, the first heading
+and the content words of the body), so a search lands on one paragraph of a
+skill without the model reading the skill, and `bin/tools show
+pptx/references/layouts.md` prints that file alone. A reference adds nothing to
+the corpus statistics, so the tools keep their order among themselves. A tool
+`INDEX.md` lists (chosen for the turn) scores 1.5 times one it does not, and a
+reference is scored on its words alone; `--plain` ranks by BM25 alone and
+`--kind reference` narrows to references. Frontmatter `keywords` are indexed.
+Ids are `[kind:][source:]name[/references/FILE.md]`. `python3
+tools/skill_eval.py rank` ranks every eval scenario's prompt through the script
+over a tool tree without a model (top-1, top-3, mean reciprocal rank), and
+`expect_skills` may name a reference; seven reference scenarios were added.
+Hermetic result, 7 November 2026: top-3 98% and MRR 0.800 over 48 expected
+ids, against 98% and 0.779 over 41 at the commit before; the references rank
+in the top three 7 of 7 times.
+
 The delegate skill is now a small core plus reference files. `SKILL.md` fell
 from 38,969 to about 7,500 bytes, and a spawning branch's instructions from
 42,875 to 11,682 characters (`spawning-branch` cap 44,500 to 12,500). The rest of

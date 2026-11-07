@@ -2,7 +2,7 @@
 
 Does an agent find and use the right skill, connector operation or helper through the mounted tool tree? [Tools: one model](tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted) says a turn sees one line of pointer, a 4 KB `INDEX.md`, and `tools search|show|schema`; [layered skill indexes](knowledge-skills.md#discover-only-what-is-needed) say the same for the built-in skills. Every claim about that was hermetic. This eval is the yardstick for measuring it with a real model, and for comparing one change to the skills, the index or `find-tools` with the one before.
 
-**Status (7 November 2026): the scenarios, the scorer and the runner are built and tested hermetically; nothing has been measured with a model.** Evidence: hermetic. `python3 tests/test_skill_eval.py` (45 tests) checks the scenarios against the skill directories, the Anvil mock's `search.json` and the harness catalog; scores hand-written logs in the shape `by log --json` emits; and, with a built `by` and `fake-acp-agent` (`REQUIRE_BINARIES=1`, run by `tools/check.py`), runs three scenarios against the fake agent scripted to search and open a skill, through `by run`, `by log --json` and the scorer. Not done: no live run yet, with any harness or model; so no record is under `evals/skills/records/`, no number here is a measurement of an agent, and whether a real harness's log shows the tool inputs the scorer needs is unchecked (below). Connector scenarios have not run at all, even against the fake agent: the Anvil mock cannot serve the gateway they need. Helper scenarios that name a harness other than the run's own need an envelope `by run` has no flag for.
+**Status (7 November 2026): the scenarios, the scorer, the runner and a model-free ranking measure are built and tested hermetically; nothing has been measured with a model.** Evidence: hermetic. `python3 tests/test_skill_eval.py` (54 tests, one skipped without the built binaries) checks the scenarios against the skill directories, the Anvil mock's `search.json` and the harness catalog; scores hand-written logs in the shape `by log --json` emits; ranks every scenario's prompt through the shipped `tools` script over a tree of the shipped skills and the mock's packages ([ranking without a model](#ranking-without-a-model)); and, with a built `by` and `fake-acp-agent` (`REQUIRE_BINARIES=1`, run by `tools/check.py`), runs three scenarios against the fake agent scripted to search and open a skill, through `by run`, `by log --json` and the scorer. Not done: no live run yet, with any harness or model; so no record is under `evals/skills/records/`, no number here is a measurement of an agent, and whether a real harness's log shows the tool inputs the scorer needs is unchecked (below). The scorer does not yet credit an opened reference (`tools show SKILL/references/FILE.md`, or a read of the file) as finding a reference scenario's expected id; only `rank` measures those seven scenarios today. Connector scenarios have not run at all, even against the fake agent: the Anvil mock cannot serve the gateway they need. Helper scenarios that name a harness other than the run's own need an envelope `by run` has no flag for.
 
 ## What it measures
 
@@ -25,7 +25,7 @@ The log has what the harness reported to Branchyard. `tool_started` carries a to
 
 ## Scenarios
 
-`evals/skills/scenarios/*.toml`, one file per area, 48 scenarios: documents (16: Word, Excel, PDF, PowerPoint, Google Docs, Sheets and Slides), knowledge (11), design (5), workflows (1), runtime (3), connectors (5, one of them an operation no package exposes), helpers (3) and distractors (4: arithmetic, a text file, a rename, a question about rebase). A scenario:
+`evals/skills/scenarios/*.toml`, one file per area, 55 scenarios: documents (16: Word, Excel, PDF, PowerPoint, Google Docs, Sheets and Slides), knowledge (11), design (5), workflows (1), runtime (3), connectors (5, one of them an operation no package exposes), helpers (3), references (7: each asks for what one paragraph of a skill's `references/*.md` says, and expects that reference, `SKILL/references/FILE.md`, not the skill) and distractors (4: arithmetic, a text file, a rename, a question about rebase). A scenario:
 
 ```toml
 [[scenario]]
@@ -37,7 +37,7 @@ skills = ["docx", "pdf", "pptx"]   # the tools chosen for the turn (see below)
 connectors = ["github:read"]       # grants, as `by run --connector` takes them
 helpers = true                     # the turn is given helpers (`--delegate`)
 envelope = ["codex"]               # harnesses the envelope must allow besides the run's own
-expect_skills = ["docx"]           # must be opened
+expect_skills = ["docx"]           # must be opened; "pptx/references/layouts.md" names one reference of a skill
 expect_operations = ["github.issues.list"]
 expect_helpers = ["codex"]         # a catalog harness id, or "own" for the harness the run uses
 must_not = ["pptx"]                # opening one of these fails the scenario
@@ -78,6 +78,29 @@ Skipped, and listed in the report with the reason:
 
 `--command FAKE --script FILE` runs a fake agent with scripted prompts (`{tools}` and `{repo}` are filled in); such a run is marked SCRIPTED in the report and measures only the pipeline. `tests/fixtures/skill_eval/fake-script.json` is the script the hermetic end-to-end uses.
 
+## Ranking without a model
+
+The ranker is what every change to the skills, their references or `find-tools` moves, so it has a measure that needs no agent:
+
+```sh
+python3 tools/skill_eval.py rank [--tree DIR] [--scenarios GLOB] [--plain] [--tools SCRIPT] [--json]
+```
+
+For each scenario that expects something, `rank` gives the whole prompt to the shipped `tools` script as the query (`search`, over a tool tree) and reports the rank of each expected id, with the three documents ranked first, and overall the **top-1 and top-3 rates** (the share of expected ids ranked first, or in the first three) and the **mean reciprocal rank**. Without `--tree` it builds the tree `by run` mounts today: every skill `capabilities.json` lists, chosen, with the Anvil mock's packages as connectors; `--tree` points it at a mounted tree (`REPO/.branchyard/capabilities/*/.branchyard/tools`) instead. An expected id with no document in the tree (a helper, since the shipped tree has no `helpers/INDEX.md`) is `absent` and not counted. `--plain` ranks by BM25 alone, without the factor a chosen tool gets. `--tools` ranks with another copy of the script, so the commit before a change and the commit after can be measured over one tree. It is a proxy: a prompt is a longer query than a model writes, and the live `discovery_recall` is the number that counts once a record exists. `tests/test_skill_eval.py` runs it over the shipped tree and holds the top-3 rate of the whole set at 0.95 or better and of the reference scenarios at 0.9 or better.
+
+**Result, 7 November 2026, hermetic** (the shipped skills and the mock's `github` and `linear` packages; no model), at the commit that made references searchable and at its parent (`b0f83eea`, measured with `--tools` on that commit's `tools.py`):
+
+| Measure | Parent | References searchable | `--plain` |
+|---|---|---|---|
+| documents in the tree | 25 | 32 (7 references) | 32 |
+| expected ids ranked (absent: 2 helpers) | 41 | 48 | 48 |
+| top-1 | 61% (25) | 65% (31) | 65% (31) |
+| top-3 | 98% (40) | 98% (47) | 94% (45) |
+| MRR | 0.779 | 0.800 | 0.789 |
+| reference scenarios, top-1 / top-3 | not indexed | 6/7, 7/7 | 7/7, 7/7 |
+
+No expected id that was in the top three at the parent left it; one that was a miss already (`claim-verify-numbers`, rank 11) is at 12. Without the factor, a reference outranks the expected skill in five scenarios (`calculate-units`, `inspect-layout-preview`, `source-capture-anchors`, `pdf-extract-text`, `artifact-tools-deps`), which is what the factor exists to prevent in a tree where every tool is chosen. Two designs were measured and not shipped: the first draft's field weights (`keywords` ×3 defaulting to the name, the `INDEX.md` line ×2, the first paragraph of `SKILL.md` ×1) lowered the top-1 rate of the existing scenarios from 61% to 41% and MRR from 0.779 to 0.649, because the first paragraph of a built-in skill is a generic command line and the extra weight dilutes the description; and indexing a reference by its title and first paragraph alone found the reference scenarios in the top three 3 of 7 times, because the first paragraph of every shipped reference is its attribution line. What shipped indexes a skill as before (its id, `keywords` when given, description, headings) and a reference by its content words, scored against the tools' statistics. Not done: a live run; a reference scenario scored from an agent's log.
+
 ## Reading a result
 
 - Low **searched** with high **found** means the agent knew the skill without the tree: the tree is not what is being exercised. Compare with the distractors.
@@ -109,10 +132,10 @@ Measured 7 November 2026 at v0.5.0 (`ab7537cf`) with `python3 tools/skill_eval.p
 | leaf branch, all its text (cap 9,000) | 8,878 chars | a leaf |
 | generic `AGENTS.md` (cap 1,500) | 1,262 chars | a harness with no plugin |
 
-So the discovery path for one skill costs about 3.7 KB (index, `find-tools`, the skill's description) before the skill's own 1 to 1.6 KB; the layered path costs 0.7 KB, 1 KB and the skill. A turn with helpers pays the delegate skill's 39 KB whether or not it searches; that is the number a split of that skill should move. Numbers drift as shipped text changes: re-measure with the command, do not edit this table to match.
+So the discovery path for one skill costs about 3.7 KB (index, `find-tools`, the skill's description) before the skill's own 1 to 1.6 KB; the layered path costs 0.7 KB, 1 KB and the skill. A turn with helpers pays the delegate skill's 39 KB whether or not it searches; that is the number a split of that skill should move (it did, on 7 November 2026: the core is about 7.5 KB, and `sizes` lists each of its 14 reference files as read on demand). Numbers drift as shipped text changes: re-measure with the command, do not edit this table to match.
 
 ## Files
 
-- [`tools/skill_eval.py`](../tools/skill_eval.py): `list`, `score`, `run`, `sizes`.
-- [`evals/skills/scenarios/`](../evals/skills/scenarios): the scenarios. [`evals/skills/records/`](../evals/skills/records): dated live results (none yet).
+- [`tools/skill_eval.py`](../tools/skill_eval.py): `list`, `score`, `run`, `sizes`, `rank`.
+- [`evals/skills/scenarios/`](../evals/skills/scenarios): the scenarios (`references.toml` expects references). [`evals/skills/records/`](../evals/skills/records): dated live results (none yet).
 - [`tests/test_skill_eval.py`](../tests/test_skill_eval.py), [`tests/fixtures/skill_eval/`](../tests/fixtures/skill_eval): the hermetic tests, the hand-written logs (in the shape of `crates/branchyard-cli/src/json.rs`'s `recorded`) and the fake agent's script.

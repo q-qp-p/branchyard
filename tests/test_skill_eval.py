@@ -61,9 +61,9 @@ def asked(command=None, at_ms=0, tool="Bash", **inp):
 
 
 class Scenarios(unittest.TestCase):
-    def test_there_are_thirty_to_fifty_across_every_area(self):
+    def test_there_are_thirty_to_sixty_across_every_area(self):
         self.assertGreaterEqual(len(SCENARIOS), 30)
-        self.assertLessEqual(len(SCENARIOS), 50)
+        self.assertLessEqual(len(SCENARIOS), 60)
         areas = {s.area for s in SCENARIOS.values()}
         for area in (
             "documents",
@@ -74,6 +74,7 @@ class Scenarios(unittest.TestCase):
             "connectors",
             "helpers",
             "distractors",
+            "references",
         ):
             self.assertIn(area, areas)
 
@@ -138,10 +139,31 @@ class Scenarios(unittest.TestCase):
             "path outside the tree": {"files": {"../x": "y"}},
             "expected skill not among the chosen": {"skills": ["pdf"]},
             "helper without helpers": {"expect_helpers": ["codex"]},
+            "reference of a skill that does not exist": {"expect_skills": ["docxx/references/a.md"]},
+            "reference that is not a file of the skill": {"expect_skills": ["calculate/references/none.md"]},
+            "reference without .md": {"expect_skills": ["calculate/references/units"]},
+            "reference deeper than one file": {"expect_skills": ["calculate/references/a/units.md"]},
+            "reference whose skill is not among the chosen": {
+                "skills": ["docx"],
+                "expect_skills": ["calculate/references/units.md"],
+            },
         }
         for why, change in cases.items():
             bad = skill_eval.Scenario(**{**good.__dict__, **change})
             self.assertTrue(skill_eval.problems([bad]), why)
+
+    def test_a_reference_id_is_an_expected_skill(self):
+        good = SCENARIOS["docx-status-report"]
+        scenario = skill_eval.Scenario(
+            **{**good.__dict__, "skills": ["calculate", "docx"], "expect_skills": ["calculate/references/units.md"]}
+        )
+        self.assertEqual(skill_eval.problems([scenario]), [])
+        self.assertEqual(skill_eval.reference_skill("calculate/references/units.md"), "calculate")
+        self.assertEqual(skill_eval.reference_skill("calculate"), "calculate")
+        self.assertEqual(skill_eval.expected_documents(scenario), [("reference", "calculate/references/units.md")])
+        self.assertEqual(len(skill_eval.load_scenarios("references")), 7)
+        for s in skill_eval.load_scenarios("references"):
+            self.assertTrue(all("/references/" in name for name in s.expect_skills), s.id)
 
     def test_an_unknown_key_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -490,6 +512,14 @@ class Sizes(unittest.TestCase):
             self.assertIn(name, found)
         self.assertEqual(found["leaf.md"]["bytes"], (ROOT / "plugins/branchyard/leaf.md").stat().st_size)
 
+    def test_each_delegate_reference_has_a_row(self):
+        found = skill_eval.sizes()
+        references = sorted((ROOT / "plugins/branchyard/skills/delegate/references").glob("*.md"))
+        self.assertTrue(references)
+        for reference in references:
+            row = found[f"delegate references/{reference.name} (read on demand)"]
+            self.assertEqual(row["bytes"], reference.stat().st_size)
+
     def test_a_mounted_tree_adds_its_index_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)
@@ -499,6 +529,94 @@ class Sizes(unittest.TestCase):
             found = skill_eval.sizes(tree)
         self.assertEqual(found["tools/INDEX.md (mounted)"]["bytes"], 10)
         self.assertEqual(found["tools/helpers/INDEX.md (mounted)"]["bytes"], 4)
+
+
+class Rank(unittest.TestCase):
+    """`rank`: each prompt as a query to the shipped `tools` script over a tree, no model."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.tree = Path(cls.tmp.name) / "tools"
+        cls.contents = skill_eval.shipped_tree(Path(cls.tmp.name))
+        cls.report = skill_eval.rank_scenarios(list(SCENARIOS.values()), cls.tree)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_shipped_tree_is_what_a_turn_mounts_today(self):
+        listed = json.loads((ROOT / "plugins/branchyard/capabilities.json").read_text(encoding="utf-8"))
+        self.assertEqual(self.contents["skills"], [s["id"] for s in listed["skills"]])
+        self.assertEqual(self.contents["connectors"], ["github", "linear"])
+        self.assertEqual(self.contents["notes"], [])
+        index = (self.tree / "INDEX.md").read_text(encoding="utf-8")
+        self.assertIn("## Skills", index)
+        self.assertIn("- github", index)
+        self.assertTrue((self.tree / "skills/docx/SKILL.md").is_file())
+        self.assertTrue((self.tree / "connectors/github/search.json").is_file())
+
+    def test_every_expected_id_is_ranked_or_absent_for_a_reason(self):
+        rows = {r["id"]: r for r in self.report["scenarios"]}
+        self.assertNotIn("none-arithmetic", rows)  # a distractor expects nothing
+        for row in rows.values():
+            for e in row["expected"]:
+                if e["absent"]:
+                    self.assertEqual(e["kind"], "helper", e)  # the shipped tree has no helpers/INDEX.md
+                else:
+                    self.assertIsInstance(e["rank"], int, e)
+        overall = self.report["overall"]
+        self.assertEqual(overall["scenarios"], len(rows))
+        self.assertEqual(overall["expected"] + overall["absent"], sum(len(r["expected"]) for r in rows.values()))
+        self.assertEqual(overall["unranked"], 0)
+        self.assertEqual(self.report["refused"], [])
+
+    def test_the_reference_scenarios_reach_the_top_three(self):
+        """docs/skill-registry.md, R1: the references.toml scenarios reach a top-3 rate of 0.9 or better."""
+        ranks = [
+            e["rank"]
+            for r in self.report["scenarios"]
+            if r["area"] == "references"
+            for e in r["expected"]
+            if not e["absent"]
+        ]
+        self.assertEqual(len(ranks), 7)
+        self.assertGreaterEqual(sum(1 for at in ranks if at <= 3) / len(ranks), 0.9, ranks)
+
+    def test_the_whole_set_keeps_its_top_three_rate(self):
+        """The hermetic number docs/skill-eval.md quotes; a change that lowers it is read before it merges."""
+        self.assertGreaterEqual(self.report["overall"]["top3_rate"], 0.95, self.report["overall"])
+
+    def test_plain_turns_the_chosen_factor_off(self):
+        plain = skill_eval.rank_scenarios(list(SCENARIOS.values()), self.tree, plain=True)
+        self.assertTrue(plain["plain"])
+        self.assertFalse(self.report["plain"])
+        self.assertEqual(plain["overall"]["expected"], self.report["overall"]["expected"])
+        # Without the factor a reference can outrank a tool of equal match, so the rate can only fall.
+        self.assertLessEqual(plain["overall"]["top3_rate"], self.report["overall"]["top3_rate"])
+
+    def test_the_markdown_and_the_command(self):
+        text = skill_eval.rank_markdown(self.report)
+        self.assertIn("top-3", text)
+        self.assertIn("| reference-mermaid-recipe | reference:diagram-design/references/diagrams.md |", text)
+        done = subprocess.run(
+            [sys.executable, str(ROOT / "tools/skill_eval.py"), "rank", "--scenarios", "references", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        report = json.loads(done.stdout)
+        self.assertEqual(report["schema"], "branchyard.skill-eval-rank/v1")
+        self.assertEqual(report["overall"]["scenarios"], 7)
+
+    def test_another_commits_tools_script_ranks_the_same_tree(self):
+        """`--tools` ranks with another copy of the script, so a before and after can be measured at one tree."""
+        copy = Path(self.tmp.name) / "tools-copy.py"
+        copy.write_text(skill_eval.TOOLS_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        again = skill_eval.rank_scenarios(list(SCENARIOS.values()), self.tree, script=copy)
+        self.assertEqual(again["overall"], self.report["overall"])
+        self.assertEqual(again["tools"], str(copy))
 
 
 class FakeAgentEndToEnd(unittest.TestCase):
