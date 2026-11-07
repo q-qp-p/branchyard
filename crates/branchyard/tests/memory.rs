@@ -355,3 +355,103 @@ fn the_yard_writes_team_memory_into_the_checkouts_skills_directory() {
         branchyard::skills::Found::Nothing
     );
 }
+
+#[cfg(unix)]
+mod symlinks {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn sentinel_repo() -> (branchyard_testkit::Scratch, std::path::PathBuf) {
+        let scratch = branchyard_testkit::Scratch::new("memory-links");
+        let root = scratch.path().join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(root.join("sentinel.txt"), "keep\n").unwrap();
+        fs::create_dir_all(root.join(".agents/skills")).unwrap();
+        (scratch, root)
+    }
+
+    #[test]
+    fn a_symlinked_bundle_directory_is_refused_and_nothing_outside_is_touched() {
+        let (_scratch, root) = sentinel_repo();
+        symlink("../..", root.join(".agents/skills/memory-general")).unwrap();
+        let error = Library::team(&root)
+            .add(new_memory("T", "B", MemoryKind::Rule, &[]))
+            .unwrap_err();
+        assert!(matches!(&error, Error::InvalidMemory(m) if m.contains("symbolic link")));
+        assert_eq!(
+            fs::read_to_string(root.join("sentinel.txt")).unwrap(),
+            "keep\n"
+        );
+        assert!(root.join(".git/HEAD").is_file());
+        assert!(!root.join("SKILL.md").exists());
+        assert!(!root.join("memory.json").exists());
+        assert!(!root.join("references").exists());
+    }
+
+    #[test]
+    fn a_symlinked_references_directory_is_refused_on_add_and_export() {
+        let (scratch, root) = sentinel_repo();
+        let library = Library::team(&root);
+        library
+            .add(new_memory("First", "Body.", MemoryKind::Rule, &[]))
+            .unwrap();
+        let bundle = root.join(".agents/skills/memory-general");
+        let outside = scratch.path().join("outside");
+        fs::rename(bundle.join("references"), &outside).unwrap();
+        fs::write(outside.join("victim.md"), "keep\n").unwrap();
+        symlink(&outside, bundle.join("references")).unwrap();
+        let error = library
+            .add(new_memory("Second", "Body.", MemoryKind::Rule, &[]))
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidMemory(_)));
+        assert_eq!(
+            fs::read_to_string(outside.join("victim.md")).unwrap(),
+            "keep\n"
+        );
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 2);
+        // Export into a directory whose bundle has a link is refused too.
+        let out = scratch.path().join("out");
+        fs::create_dir_all(out.join("memory-general")).unwrap();
+        symlink(&outside, out.join("memory-general/references")).unwrap();
+        let error = library.export(Some(&out)).unwrap_err();
+        assert!(matches!(error, Error::InvalidMemory(_)));
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn a_symlinked_skills_root_is_refused() {
+        let (scratch, root) = sentinel_repo();
+        let real = scratch.path().join("elsewhere");
+        fs::create_dir_all(&real).unwrap();
+        fs::remove_dir(root.join(".agents/skills")).unwrap();
+        symlink(&real, root.join(".agents/skills")).unwrap();
+        let error = Library::team(&root)
+            .add(new_memory("T", "B", MemoryKind::Rule, &[]))
+            .unwrap_err();
+        assert!(matches!(error, Error::InvalidMemory(_)));
+        assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_manifest_id_that_is_a_path_is_refused_on_read() {
+        let (_scratch, root) = sentinel_repo();
+        let library = Library::team(&root);
+        library
+            .add(new_memory("First", "Body.", MemoryKind::Rule, &[]))
+            .unwrap();
+        let manifest = root.join(".agents/skills/memory-general/memory.json");
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains("\"first\""));
+        fs::write(
+            &manifest,
+            text.replace("\"first\"", "\"../../../sentinel\""),
+        )
+        .unwrap();
+        let error = library.read().unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidMemory(m) if m.contains("not a slug")),
+            "{error}"
+        );
+    }
+}

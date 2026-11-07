@@ -671,6 +671,13 @@ impl Library {
             .collect();
         names.sort();
         for name in names {
+            // A symbolic link is not read through; a write refuses it.
+            if std::fs::symlink_metadata(self.dir.join(&name))
+                .map(|meta| !meta.is_dir())
+                .unwrap_or(true)
+            {
+                continue;
+            }
             let manifest_path = self.dir.join(&name).join(MANIFEST);
             if !manifest_path.is_file() {
                 continue;
@@ -687,6 +694,16 @@ impl Library {
                 )));
             }
             for entry in &manifest.memories {
+                // The manifest is repository content: an id is a slug before
+                // it is a path component.
+                if entry.id.is_empty() || slug(&entry.id) != entry.id {
+                    return Err(Error::InvalidMemory(format!(
+                        "{} names the memory id {:?}, which is not a slug (lowercase letters, \
+                         digits and hyphens); fix or remove that entry",
+                        manifest_path.display(),
+                        entry.id
+                    )));
+                }
                 let path = self
                     .dir
                     .join(&name)
@@ -817,6 +834,9 @@ impl Library {
         }
         if let Some(out) = out {
             for bundle in &produced {
+                check_tree(&out.join(&bundle.name))?;
+            }
+            for bundle in &produced {
                 write_files(&out.join(&bundle.name), &bundle.files)?;
             }
         }
@@ -829,6 +849,11 @@ impl Library {
     fn write_topic(&self, topic: &str, memories: &[Memory]) -> Result<Vec<PathBuf>, Error> {
         let produced = bundles(topic, memories, self.audience)?;
         let base = format!("{PREFIX}{topic}");
+        // Refuse every symbolic link before anything is written or removed.
+        check_real_dir(&self.dir)?;
+        for bundle in &produced {
+            check_tree(&self.dir.join(&bundle.name))?;
+        }
         // A topic left empty wants no directory at all.
         let wanted: BTreeSet<&str> = match memories.is_empty() {
             true => BTreeSet::new(),
@@ -836,6 +861,18 @@ impl Library {
         };
         // Every directory of this topic that exists: the base and its
         // continuations.
+        if let Ok(listing) = std::fs::read_dir(&self.dir) {
+            for entry in listing.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let of_topic = name == base
+                    || name
+                        .strip_prefix(&format!("{base}-"))
+                        .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()));
+                if of_topic && !wanted.contains(name.as_str()) {
+                    check_tree(&entry.path())?;
+                }
+            }
+        }
         if let Ok(listing) = std::fs::read_dir(&self.dir) {
             for entry in listing.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -864,6 +901,7 @@ impl Library {
 /// Write `files` under `dir` and remove every other file there, so the
 /// directory holds the bundle and nothing else.
 fn write_files(dir: &Path, files: &[(String, String)]) -> Result<(), Error> {
+    check_tree(dir)?;
     let wanted: BTreeSet<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
     for (path, content) in files {
         let target = dir.join(path);
@@ -876,10 +914,63 @@ fn write_files(dir: &Path, files: &[(String, String)]) -> Result<(), Error> {
     while let Some(relative) = pending.pop() {
         for entry in std::fs::read_dir(dir.join(&relative))?.flatten() {
             let path = relative.join(entry.file_name());
-            if entry.path().is_dir() {
+            // `file_type` does not follow a link; a link was refused above.
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                return Err(symlink_refusal(&entry.path()));
+            }
+            if kind.is_dir() {
                 pending.push(path);
             } else if !wanted.contains(path.to_string_lossy().as_ref()) {
                 std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The refusal for a symbolic link where a bundle is written.
+fn symlink_refusal(path: &Path) -> Error {
+    Error::InvalidMemory(format!(
+        "{} is a symbolic link; memory is never written or removed through one. \
+         Replace it with a real directory or file, or remove it, and run the command again",
+        path.display()
+    ))
+}
+
+/// `path` is a real directory, or does not exist; a symbolic link, or
+/// anything else that is not a directory, is refused.
+fn check_real_dir(path: &Path) -> Result<(), Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(symlink_refusal(path)),
+        Ok(meta) if !meta.is_dir() => Err(Error::InvalidMemory(format!(
+            "{} is not a directory; move it away and run the command again",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Io(error)),
+    }
+}
+
+/// `dir` and everything under it holds no symbolic link (a missing `dir`
+/// is fine). Walks with `symlink_metadata`, so it never leaves `dir`.
+fn check_tree(dir: &Path) -> Result<(), Error> {
+    check_real_dir(dir)?;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(here) = pending.pop() {
+        let listing = match std::fs::read_dir(&here) {
+            Ok(listing) => listing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(Error::Io(error)),
+        };
+        for entry in listing.flatten() {
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                return Err(symlink_refusal(&entry.path()));
+            }
+            if kind.is_dir() {
+                pending.push(entry.path());
             }
         }
     }
