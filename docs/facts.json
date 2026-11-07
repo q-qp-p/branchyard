@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 147,
+    "route_count": 149,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
