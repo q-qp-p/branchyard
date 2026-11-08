@@ -676,6 +676,21 @@ fn run(
         held_on: Vec::new(),
         secret_values: Vec::new(),
     };
+    // A skill log an earlier turn left (it returned before the ingest
+    // below) is never this turn's: removed before anything of this turn
+    // can write one.
+    let stale_home = match &record.home {
+        Some(home) => Ok(home.clone()),
+        None => crate::capabilities::local_home(store.dir(), &record.info.name),
+    };
+    if let Some(home) =
+        branchyard_support::best_effort("find the home to clear a stale skill log", stale_home)
+    {
+        branchyard_support::best_effort(
+            "clear a stale skill log",
+            crate::skill_activity::clear(&home),
+        );
+    }
     // Revoked when this function returns, after the harness and its
     // sandbox are gone. A local harness runs the delegation tools itself;
     // a sandboxed one is served them over HTTP from this host, below, when

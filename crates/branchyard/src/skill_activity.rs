@@ -38,6 +38,19 @@ pub const LOG_FILE: &str = ".branchyard/turn/skills.jsonl";
 /// more wrote a loop, and the rest is dropped with a warning.
 pub const MAX_LINES: usize = 10_000;
 
+/// The most bytes the ingest reads from one turn's log; the file is the
+/// guest's, so it is streamed and cut here, never read whole.
+pub const MAX_BYTES: u64 = 1 << 20;
+
+/// The most searches and opens one turn records; the rest are counted in
+/// one warning, so a looping guest cannot fill the branch's log.
+pub const MAX_EVENTS: usize = 200;
+
+/// The closed set of `kind` labels a log line may carry: what a search is
+/// narrowed to and what an open shows. Anything else drops the line, so
+/// no metric label or event field is the guest's to invent.
+pub const KINDS: [&str; 5] = ["skill", "reference", "connector", "operation", "helper"];
+
 /// What a turn did with a skill, recorded as [`Activity::Skill`].
 /// Serialized as an object tagged by `type`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -152,47 +165,103 @@ pub(crate) struct Ingested {
     pub warnings: Vec<String>,
 }
 
+/// Remove a stale skill log from `home` before a turn starts, so lines an
+/// earlier turn left (it ended before [`ingest`] ran) are never attributed
+/// to this one. A home without one is left alone.
+pub(crate) fn clear(home: &Path) -> io::Result<()> {
+    match std::fs::remove_file(home.join(LOG_FILE)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Read the turn's skill log under `home` ([`LOG_FILE`]), turn each line
 /// into a [`SkillActivity`] with the digest and source `manifest` gives
 /// what was opened, and remove the file. A home without one yields nothing.
-/// The caller records what comes back.
+/// The file is the guest's, so it is read as a stream: at most [`MAX_BYTES`]
+/// bytes and [`MAX_LINES`] lines, and a regular file only. The caller
+/// records what comes back.
 pub(crate) fn ingest(home: &Path, manifest: &TurnManifest) -> io::Result<Ingested> {
     let path = home.join(LOG_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Ingested::default()),
-        Err(e) => return Err(e),
-    };
     let mut out = Ingested::default();
-    for (number, line) in text.lines().enumerate() {
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            // A link or a device the guest left: never opened.
+            out.warnings
+                .push("skill log: not a regular file, so not read".to_owned());
+            remove_log(&path)?;
+            return Ok(out);
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e),
+    }
+    let file = std::fs::File::open(&path)?;
+    let mut reader = io::BufReader::new(io::Read::take(file, MAX_BYTES));
+    let mut events = 0usize;
+    let mut over = 0usize;
+    let mut buf = Vec::new();
+    let mut number = 0usize;
+    loop {
+        buf.clear();
+        if io::BufRead::read_until(&mut reader, b'\n', &mut buf)? == 0 {
+            break;
+        }
         if number >= MAX_LINES {
             out.warnings.push(format!(
-                "skill log: {} lines after the first {MAX_LINES} were not read",
-                text.lines().count() - MAX_LINES
+                "skill log: lines after the first {MAX_LINES} were not read"
             ));
             break;
         }
-        match parse_line(line, manifest) {
-            Ok(Some(activity)) => out.activities.push(activity),
+        number += 1;
+        if buf.last() != Some(&b'\n') && reader.get_ref().limit() == 0 {
+            // Cut by the byte cap mid-line: the rest is not a line.
+            break;
+        }
+        let line = String::from_utf8_lossy(&buf);
+        match parse_line(line.trim_end_matches(['\n', '\r']), manifest) {
+            Ok(Some(activity)) if events < MAX_EVENTS => {
+                events += 1;
+                out.activities.push(activity);
+            }
+            Ok(Some(_)) => over += 1,
             Ok(None) => {}
             Err(why) => out
                 .warnings
-                .push(format!("skill log line {}: {why}", number + 1)),
+                .push(format!("skill log line {number}: {}", cut(&why, 120))),
         }
     }
-    std::fs::remove_file(&path)?;
-    // The directory goes with the log when nothing else of the guest's is
-    // in it.
+    if reader.get_ref().limit() == 0 {
+        out.warnings.push(format!(
+            "skill log: bytes after the first {MAX_BYTES} were not read"
+        ));
+    }
+    if over > 0 {
+        out.warnings.push(format!(
+            "skill log: {over} more searches and opens after the first {MAX_EVENTS} \
+             in this turn were counted, not recorded"
+        ));
+    }
+    remove_log(&path)?;
+    Ok(out)
+}
+
+/// Remove the log, and its directory when nothing else of the guest's is
+/// in it.
+fn remove_log(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)?;
     if let Some(dir) = path.parent() {
         if std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none()) {
             std::fs::remove_dir(dir)?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// One line of the log as the script writes it (`tools.py`, `note`), or
-/// `None` for a blank one.
+/// `None` for a blank one. Every label is checked against a closed set
+/// ([`KINDS`], [`Source::ALL`]): a line with anything else is dropped.
 fn parse_line(line: &str, manifest: &TurnManifest) -> Result<Option<SkillActivity>, String> {
     if line.trim().is_empty() {
         return Ok(None);
@@ -204,6 +273,21 @@ fn parse_line(line: &str, manifest: &TurnManifest) -> Result<Option<SkillActivit
         .ok_or("no action")?;
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
     let number = |key: &str| value.get(key).and_then(Value::as_u64);
+    if let Some(source) = value.get("source").filter(|v| !v.is_null()) {
+        // The source of what was opened comes from the manifest; a line that
+        // claims one must name a real one.
+        let known = source
+            .as_str()
+            .is_some_and(|s| Source::ALL.iter().any(|known| known.as_str() == s));
+        if !known {
+            return Err("unknown source".to_owned());
+        }
+    }
+    let kind = |kind: Option<String>| match kind {
+        Some(kind) if KINDS.contains(&kind.as_str()) => Ok(kind),
+        Some(kind) => Err(format!("unknown kind {:?}", cut(&kind, 20))),
+        None => Err("no kind".to_owned()),
+    };
     Ok(Some(match action {
         "searched" => SkillActivity::Searched {
             terms: u32::try_from(number("terms").ok_or("no terms")?).unwrap_or(u32::MAX),
@@ -216,12 +300,15 @@ fn parse_line(line: &str, manifest: &TurnManifest) -> Result<Option<SkillActivit
                 .take(50)
                 .map(|id| cut(id, 200))
                 .collect(),
-            kind: text("kind"),
+            kind: match text("kind") {
+                Some(narrowed) => Some(kind(Some(narrowed))?),
+                None => None,
+            },
             plain: value.get("plain").and_then(Value::as_bool).unwrap_or(false),
         },
         "opened" => {
             let id = cut(&text("id").ok_or("no id")?, 200);
-            let kind = text("kind").ok_or("no kind")?;
+            let kind = kind(text("kind"))?;
             let (digest, source) = identity(manifest, &id, &kind);
             SkillActivity::Opened {
                 id,
@@ -235,7 +322,7 @@ fn parse_line(line: &str, manifest: &TurnManifest) -> Result<Option<SkillActivit
                 fetch_ms: None,
             }
         }
-        other => return Err(format!("unknown action {other:?}")),
+        other => return Err(format!("unknown action {:?}", cut(other, 20))),
     }))
 }
 
@@ -464,25 +551,125 @@ mod tests {
         );
     }
 
+    fn write_log(home: &Path, text: impl AsRef<[u8]>) -> std::path::PathBuf {
+        let log = home.join(LOG_FILE);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, text).unwrap();
+        log
+    }
+
     #[test]
     fn a_long_log_is_cut_with_a_warning_and_a_crowded_directory_is_left() {
         let home = tempfile::tempdir().unwrap();
         let log = home.path().join(LOG_FILE);
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(log.parent().unwrap().join("other"), "theirs").unwrap();
-        let line = r#"{"action":"searched","terms":1,"results":[]}"#;
-        let many: String = std::iter::repeat_n(line, MAX_LINES + 3)
-            .map(|l| format!("{l}\n"))
-            .collect();
+        // Blank lines: 10k lines of them are far inside the byte cap.
+        let many = "\n".repeat(MAX_LINES + 3);
         std::fs::write(&log, many).unwrap();
         let ingested = ingest(home.path(), &manifest()).unwrap();
-        assert_eq!(ingested.activities.len(), MAX_LINES);
+        assert!(ingested.activities.is_empty());
         assert_eq!(
             ingested.warnings,
-            ["skill log: 3 lines after the first 10000 were not read"]
+            [format!(
+                "skill log: lines after the first {MAX_LINES} were not read"
+            )]
         );
         assert!(!log.exists());
         assert!(log.parent().unwrap().join("other").is_file());
+    }
+
+    #[test]
+    fn ten_thousand_searches_record_a_few_events_and_one_count() {
+        let home = tempfile::tempdir().unwrap();
+        let line = r#"{"action":"searched","terms":1,"results":[]}"#;
+        let log = write_log(
+            home.path(),
+            std::iter::repeat_n(line, MAX_LINES + 5)
+                .map(|l| format!("{l}\n"))
+                .collect::<String>(),
+        );
+        let ingested = ingest(home.path(), &manifest()).unwrap();
+        assert_eq!(ingested.activities.len(), MAX_EVENTS);
+        assert_eq!(ingested.warnings.len(), 2, "{:?}", ingested.warnings);
+        assert!(ingested.warnings[0].contains("lines after the first 10000"));
+        assert_eq!(
+            ingested.warnings[1],
+            format!(
+                "skill log: {} more searches and opens after the first {MAX_EVENTS} in this \
+                 turn were counted, not recorded",
+                MAX_LINES - MAX_EVENTS
+            )
+        );
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn an_oversized_file_is_streamed_to_the_byte_cap_not_read_whole() {
+        let home = tempfile::tempdir().unwrap();
+        let mut text = String::from("{\"action\":\"searched\",\"terms\":2,\"results\":[]}\n");
+        // One huge line, then a good one past the cap.
+        text.push_str(&"x".repeat(usize::try_from(MAX_BYTES).unwrap() + 10));
+        text.push_str("\n{\"action\":\"searched\",\"terms\":9,\"results\":[]}\n");
+        let log = write_log(home.path(), text);
+        let ingested = ingest(home.path(), &manifest()).unwrap();
+        assert_eq!(ingested.activities.len(), 1, "{:?}", ingested.warnings);
+        assert!(ingested
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("skill log: bytes after the first")));
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn a_kind_or_source_outside_the_closed_sets_drops_the_line() {
+        let home = tempfile::tempdir().unwrap();
+        let long = "k".repeat(5_000);
+        let lines = [
+            r#"{"action":"searched","terms":1,"results":[],"kind":"banana"}"#.to_owned(),
+            r#"{"action":"opened","id":"a","kind":"weird","level":1,"bytes":0}"#.to_owned(),
+            format!(r#"{{"action":"opened","id":"a","kind":"{long}","level":1,"bytes":0}}"#),
+            r#"{"action":"opened","id":"pptx","kind":"skill","source":"evil","level":2,"bytes":0}"#
+                .to_owned(),
+            format!(r#"{{"action":"{long}"}}"#),
+            r#"{"action":"opened","id":"pptx","kind":"skill","source":"built_in","level":2,"bytes":0}"#
+                .to_owned(),
+        ];
+        write_log(home.path(), lines.join("\n") + "\n");
+        let ingested = ingest(home.path(), &manifest()).unwrap();
+        assert_eq!(ingested.activities.len(), 1);
+        assert_eq!(ingested.warnings.len(), 5, "{:?}", ingested.warnings);
+        assert!(
+            ingested.warnings.iter().all(|w| w.len() < 200),
+            "a guest's label is cut in the warning: {:?}",
+            ingested.warnings
+        );
+    }
+
+    #[test]
+    fn a_stale_log_is_cleared_before_the_next_turn_and_a_link_is_not_read() {
+        let home = tempfile::tempdir().unwrap();
+        let log = write_log(
+            home.path(),
+            r#"{"action":"searched","terms":1,"results":[]}"#,
+        );
+        clear(home.path()).unwrap();
+        assert!(!log.exists());
+        clear(home.path()).unwrap();
+        assert_eq!(
+            ingest(home.path(), &manifest()).unwrap(),
+            Ingested::default()
+        );
+        #[cfg(unix)]
+        {
+            let target = home.path().join("secret");
+            std::fs::write(&target, r#"{"action":"searched","terms":1,"results":[]}"#).unwrap();
+            std::os::unix::fs::symlink(&target, &log).unwrap();
+            let ingested = ingest(home.path(), &manifest()).unwrap();
+            assert!(ingested.activities.is_empty());
+            assert_eq!(ingested.warnings.len(), 1);
+            assert!(target.is_file(), "the link goes, not what it names");
+        }
     }
 
     #[test]

@@ -131,6 +131,20 @@ pub fn tool_label(name: &str) -> &'static str {
 
 /// The `kind` (or `state`) tag of a serde-tagged value, such as a turn's
 /// outcome.
+/// A skill event's `kind` as a metric label: one of the closed set the
+/// engine accepts from a guest, `all` for an unnarrowed search, else `other`
+/// (an event an older or hostile log recorded), so no series is a guest's.
+fn closed_kind(kind: &str) -> &'static str {
+    if kind == "all" {
+        return "all";
+    }
+    branchyard::skill_activity::KINDS
+        .iter()
+        .find(|known| **known == kind)
+        .copied()
+        .unwrap_or("other")
+}
+
 fn tag(value: &impl serde::Serialize, key: &str) -> String {
     serde_json::to_value(value)
         .ok()
@@ -401,13 +415,14 @@ pub fn record_events(
                     }
                 }
             }
-            // What the turn did with its skills: labels bounded by kind,
-            // source and level, never an id (docs/skill-registry.md, 7).
+            // What the turn did with its skills: labels from closed sets
+            // (`closed_kind`, `Source`) and the level, never an id and never
+            // a guest's text (docs/skill-registry.md, 7).
             Activity::Skill(activity) => match activity.as_ref() {
                 branchyard::SkillActivity::Searched { kind, .. } => {
                     metrics.inc(
                         metrics::SKILL_SEARCHES,
-                        &[("kind", kind.as_deref().unwrap_or("all"))],
+                        &[("kind", closed_kind(kind.as_deref().unwrap_or("all")))],
                     );
                     if let Some(turn) = turns.get_mut(branch) {
                         turn.searches_unopened += 1;
@@ -422,7 +437,7 @@ pub fn record_events(
                     let source = match source {
                         Some(source) => source.as_str(),
                         None if kind == "operation" => "connector",
-                        None => kind.as_str(),
+                        None => closed_kind(kind),
                     };
                     metrics.inc(
                         metrics::SKILL_OPENS,
@@ -941,6 +956,18 @@ mod tests {
                     plain: false,
                 })),
             ),
+            // A guest's own kind label: one series, not its text.
+            entry(
+                7,
+                "a",
+                2_650,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 1,
+                    results: Vec::new(),
+                    kind: Some("x".repeat(500)),
+                    plain: false,
+                })),
+            ),
             // A running total: 100/10 tokens, then 150/30; counted as
             // 100/10 and then the growth, 50/20.
             entry(8, "a", 3_000, usage(true, 100, 10, 0.5)),
@@ -1061,7 +1088,11 @@ mod tests {
             ),
             1.0
         );
-        assert_eq!(counter(m, metrics::SKILL_SEARCH_UNOPENED, &[]), 1.0);
+        assert_eq!(
+            counter(m, metrics::SKILL_SEARCHES, &[("kind", "other")]),
+            1.0
+        );
+        assert_eq!(counter(m, metrics::SKILL_SEARCH_UNOPENED, &[]), 2.0);
         assert_eq!(
             m.distribution(
                 metrics::CONNECTOR_DURATION,
