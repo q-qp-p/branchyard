@@ -1397,7 +1397,7 @@ impl Yard {
         secrets: &[String],
     ) -> Result<Vec<u64>, Error> {
         let incarnation = memory::observe::incarnation_of(self, branch)?;
-        Ok(memory::observe::observe_turn(self, branch, incarnation, turn, secrets)?.ids)
+        Ok(memory::observe::observe_turn(self, branch, incarnation, turn, secrets, None)?.ids)
     }
 
     /// The observations of `scope` with an id above `since`, oldest

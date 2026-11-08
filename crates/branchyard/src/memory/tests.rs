@@ -64,6 +64,7 @@ fn context<'a>(turn: u32, members: &'a [String], visibility: &'a Visibility) -> 
         task_kind: Some(TaskKind::Bugfix),
         members,
         at_ms: 2_000,
+        windowed: false,
     }
 }
 
@@ -793,4 +794,126 @@ fn a_failed_checks_output_is_scrubbed_before_it_is_cut_to_its_last_lines() {
         assert!(!stored.contains(part), "{part} kept in {stored}");
     }
     assert!(stored.ends_with("line 60 of ordinary compiler output, long enough to matter"));
+}
+
+#[test]
+fn a_pull_request_comment_without_an_author_is_external_and_a_review_comment_is_not() {
+    let members = vec!["ann".to_owned()];
+    let visibility = Visibility::Shared;
+    let pr = "Feedback on pull request #4 (https://x/4):\n\n1. @someone on src/lib.rs:3:\n\
+              > Never unwrap in library code anywhere\nAddress it on this branch.";
+    let events = feed(vec![
+        prompt("task"),
+        prompt(pr),
+        prompt("File: a.txt\nLine: 1\nUser comment: \"Always end the notes with a summary line\""),
+    ]);
+    let author_of = |turn: u32| {
+        derive(&events, &context(turn, &members, &visibility))
+            .into_iter()
+            .map(|d| d.author)
+            .collect::<Vec<_>>()
+    };
+    let from_pr = author_of(2);
+    assert_eq!(from_pr.len(), 1, "{from_pr:?}");
+    assert_eq!(
+        from_pr[0].as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+    // The person's own `by review` comment stays a member's.
+    assert_eq!(author_of(3), [None]);
+    // A recorded pull request comment with no login is external too.
+    let feedback = Feedback {
+        source: FeedbackSource::PullRequest,
+        reference: Some("https://x/4".into()),
+        items: vec![FeedbackItem {
+            kind: FeedbackKind::Comment,
+            body: "Never unwrap in library code anywhere".into(),
+            ..FeedbackItem::default()
+        }],
+        prompt: Some(prompt_digest(pr)),
+    };
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::Feedback(Box::new(feedback))),
+        prompt(pr),
+    ]);
+    let drafts = derive(&events, &context(2, &members, &visibility));
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].author.as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+}
+
+#[test]
+fn a_windowed_feed_derives_the_turn_the_whole_feed_does() {
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always run cargo fmt before you finish"),
+        tool("false"),
+        tool("false"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always keep the changelog in step with the code"),
+        tool("true"),
+        tool("true"),
+    ]);
+    let whole = derive(&events, &context(3, &members, &visibility));
+    assert_eq!(whole.len(), 2, "{whole:?}");
+    // The engine reads from a little before the turn's prompt.
+    let window = &events[4..];
+    let ctx = Context {
+        windowed: true,
+        ..context(3, &members, &visibility)
+    };
+    assert_eq!(derive(window, &ctx), whole);
+}
+
+#[test]
+fn members_are_read_once_per_ttl_and_not_from_pull_request_refs() {
+    let cache = MemberCache::default();
+    let root = std::path::Path::new("/repo");
+    let loads = std::cell::Cell::new(0);
+    let load = || {
+        loads.set(loads.get() + 1);
+        vec!["ann".to_owned()]
+    };
+    for at in [1_000, 2_000, MEMBERS_TTL_MS - 1] {
+        assert_eq!(cache.get_or_load(root, at, load), ["ann"]);
+    }
+    assert_eq!(loads.get(), 1, "one history read for the whole window");
+    cache.get_or_load(root, MEMBERS_TTL_MS + 1_000, load);
+    assert_eq!(loads.get(), 2, "read again once the entry is old");
+    cache.get_or_load(std::path::Path::new("/other"), 1_000, load);
+    assert_eq!(loads.get(), 3, "another repository has its own entry");
+}
+
+#[test]
+fn a_contributor_on_a_fetched_pull_request_ref_is_not_a_member() {
+    let scratch = branchyard_testkit::Scratch::new("members");
+    let root = scratch.path();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["-c", "user.name=Ann", "commit", "-q", "--allow-empty", "-m", "one"]);
+    git(&["checkout", "-q", "-b", "pr"]);
+    git(&["-c", "user.name=drive-by", "commit", "-q", "--allow-empty", "-m", "two"]);
+    git(&["update-ref", "refs/pull/5/head", "pr"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["branch", "-q", "-D", "pr"]);
+    let yard = crate::Yard::open(root).unwrap();
+    let members = members(&yard, &["Bob".to_owned()]);
+    assert!(members.contains(&"ann".to_owned()), "{members:?}");
+    assert!(members.contains(&"bob".to_owned()), "{members:?}");
+    assert!(!members.contains(&"drive-by".to_owned()), "{members:?}");
 }

@@ -195,6 +195,9 @@ pub(crate) struct Driven {
     /// the turn's end; taken out before the turn is concluded, never
     /// journaled.
     pub secret_values: Vec<String>,
+    /// The branch's newest event `seq` when the turn's prompt was about to
+    /// be recorded: where the memory derivation starts reading.
+    pub turn_from: Option<u64>,
 }
 
 /// A running turn's spend: the branch's spend when the turn started, or
@@ -372,6 +375,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
     // Whether this turn submitted its prompt: only a turn that was driven
     // holds its secret values, so only it is derived at its end.
     let mut driven_turn = false;
+    let mut turn_from: Option<u64> = None;
     let result = (|| {
         turn.yard
             .admit_provider(record.provider.as_ref(), turn.options)?;
@@ -429,6 +433,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
             let mut driven = driven?;
             secret_values = std::mem::take(&mut driven.secret_values);
             driven_turn = driven.submitted;
+            turn_from = driven.turn_from;
             let park_input = crate::wake::ParkInput::new(&bounds.budget, &driven.held_on);
             conclude(
                 turn.yard,
@@ -510,6 +515,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
                     fence.incarnation,
                     branch.info.turns,
                     &secret_values,
+                    turn_from,
                 );
             }
         }
@@ -683,6 +689,7 @@ fn run(
         live_cost: None,
         held_on: Vec::new(),
         secret_values: Vec::new(),
+        turn_from: None,
     };
     // Revoked when this function returns, after the harness and its
     // sandbox are gone. A local harness runs the delegation tools itself;
@@ -1773,6 +1780,7 @@ fn run(
                 for note in submission.expiry_notes(fence.turn) {
                     recorder.record(Activity::Warning(note))?;
                 }
+                driven.turn_from = Some(store.backend().event_count(&record.info.name)?);
                 recorder.record(Activity::Prompt(submission.prompt.clone()))?;
                 // Observers can apply a durable cancellation intent at this last
                 // boundary. Do not send a model prompt after that cancellation.

@@ -280,6 +280,7 @@ fn lease(yard: &Yard, row: &LeaseRow, why: &str) -> Result<Option<Recovery>, Err
         // observation is derived here: the scrubber could not remove the
         // values (`docs/memory.md`, section 2).
         secret_values: Vec::new(),
+        turn_from: None,
     };
     let finished = (|| {
         engine::conclude(yard, &prompt, &fence, &mut record, &mut recorder, driven)?;

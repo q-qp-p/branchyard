@@ -15,6 +15,8 @@
 
 use std::collections::BTreeMap;
 
+use branchyard_support::time::now_ms;
+
 use branchyard_harness::target::{ScrubKind, TargetKind};
 use branchyard_harness::Event;
 use serde::{Deserialize, Serialize};
@@ -300,6 +302,10 @@ pub struct Context<'a> {
     pub members: &'a [String],
     /// The turn's end, in milliseconds since the Unix epoch.
     pub at_ms: u64,
+    /// The feed is a window that ends with the turn (read from a little
+    /// before its prompt), so the turn is the one after the window's last
+    /// prompt, not the `turn`th prompt from the start.
+    pub windowed: bool,
 }
 
 /// One observation before scrubbing: what [`derive()`] finds.
@@ -414,6 +420,15 @@ pub fn turn_events(events: &[(u64, RecordedEvent)], turn: u32) -> Option<&[(u64,
     Some(&events[start..end])
 }
 
+/// The events from the last prompt of `events` on: the turn that ends a
+/// window of the feed.
+fn last_turn(events: &[(u64, RecordedEvent)]) -> Option<&[(u64, RecordedEvent)]> {
+    let start = events
+        .iter()
+        .rposition(|(_, e)| matches!(e.activity, Activity::Prompt(_)))?;
+    Some(&events[start..])
+}
+
 /// The author `name` as a member or not, given the lowercased members.
 pub fn author(name: &str, members: &[String]) -> Author {
     let lower = name.trim().trim_start_matches('@').to_ascii_lowercase();
@@ -424,6 +439,14 @@ pub fn author(name: &str, members: &[String]) -> Author {
     Author {
         name: name.trim().to_owned(),
         association,
+    }
+}
+
+/// The author of a comment whose source named none: unknown, so external.
+fn unknown_author() -> Author {
+    Author {
+        name: "(unknown)".to_owned(),
+        association: Association::External,
     }
 }
 
@@ -442,7 +465,11 @@ fn denial_source(source: &DecisionSource) -> String {
 /// (`events`, in `seq` order): deterministic, no model. The text is not
 /// scrubbed yet.
 pub fn derive(events: &[(u64, RecordedEvent)], ctx: &Context<'_>) -> Vec<Draft> {
-    let Some(turn) = turn_events(events, ctx.turn) else {
+    let range = match ctx.windowed {
+        true => last_turn(events),
+        false => turn_events(events, ctx.turn),
+    };
+    let Some(turn) = range else {
         return Vec::new();
     };
     // Feedback is recorded just before the prompt that carries it, so it
@@ -665,7 +692,14 @@ fn corrections(
                         kind: ObservationKind::Correction,
                         text: format!("[{source}] {body}"),
                         paths: item.path.iter().cloned().collect(),
-                        author: item.author.as_deref().map(|a| author(a, ctx.members)),
+                        author: match (item.author.as_deref(), feedback.source) {
+                            (Some(name), _) => Some(author(name, ctx.members)),
+                            // A pull request's comment without a login is
+                            // text anyone could have written. A review's is
+                            // the person's own.
+                            (None, FeedbackSource::PullRequest) => Some(unknown_author()),
+                            (None, FeedbackSource::Review) => None,
+                        },
                         seqs,
                         tail_lines: None,
                     });
@@ -691,7 +725,7 @@ fn corrections(
                     kind: ObservationKind::Correction,
                     text: format!("[pull request] {body}"),
                     paths: path.into_iter().collect(),
-                    author: None,
+                    author: Some(unknown_author()),
                     seqs: vec![seq],
                     tail_lines: None,
                 });
@@ -724,31 +758,83 @@ fn corrections(
     }
 }
 
-/// Lowercased author names and emails of the repository's commits, the
-/// members a correction's author is matched against; plus `extra`, the
-/// names `[memory] members` lists.
+/// How long the repository's committers are remembered before the history
+/// is read again.
+pub(crate) const MEMBERS_TTL_MS: u64 = 10 * 60 * 1_000;
+
+/// The committers of a repository by root, with when they were read.
+#[derive(Default)]
+pub(crate) struct MemberCache {
+    entries: std::sync::Mutex<BTreeMap<std::path::PathBuf, (u64, Vec<String>)>>,
+}
+
+impl MemberCache {
+    /// The members cached for `root` if they were read within
+    /// [`MEMBERS_TTL_MS`] of `now_ms`, else what `load` reads.
+    pub(crate) fn get_or_load(
+        &self,
+        root: &std::path::Path,
+        now_ms: u64,
+        load: impl FnOnce() -> Vec<String>,
+    ) -> Vec<String> {
+        use branchyard_support::LockExt as _;
+        let mut entries = self.entries.lock_recovering("memory members");
+        if let Some((read_ms, members)) = entries.get(root) {
+            if now_ms.saturating_sub(*read_ms) < MEMBERS_TTL_MS {
+                return members.clone();
+            }
+        }
+        let members = load();
+        entries.insert(root.to_path_buf(), (now_ms, members.clone()));
+        members
+    }
+}
+
+/// The process's member cache.
+fn member_cache() -> &'static MemberCache {
+    static CACHE: std::sync::OnceLock<MemberCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(MemberCache::default)
+}
+
+/// Lowercased author names and emails of the commits of the checked-out
+/// branch's history (not `--all`: that includes fetched pull request
+/// refs, and a contributor whose git name equals their forge login would
+/// become a member), the members a correction's author is matched against;
+/// plus `extra`, the names `[memory] members` lists. The history is read at
+/// most once per [`MEMBERS_TTL_MS`] per repository.
 pub(crate) fn members(yard: &Yard, extra: &[String]) -> Vec<String> {
     let mut out: Vec<String> = extra.iter().map(|m| m.to_ascii_lowercase()).collect();
-    if let Ok(log) = crate::git::run(
-        yard.root(),
-        &["log", "--all", "-n", "2000", "--format=%an%n%ae"],
-    ) {
-        out.extend(
+    out.extend(member_cache().get_or_load(yard.root(), now_ms(), || {
+        crate::git::run(
+            yard.root(),
+            &["log", "HEAD", "-n", "2000", "--format=%an%n%ae"],
+        )
+        .map(|log| {
             log.lines()
                 .map(|l| l.trim().to_ascii_lowercase())
-                .filter(|l| !l.is_empty()),
-        );
-    }
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+    }));
     out.sort();
     out.dedup();
     out
 }
 
-/// Every event of `branch`'s current incarnation, with its `seq`.
-pub(crate) fn feed(yard: &Yard, branch: &str) -> Result<Vec<(u64, RecordedEvent)>, Error> {
+/// How many events before a turn's prompt are read with it: the feedback
+/// a prompt carries is recorded just before it.
+pub(crate) const FEED_LOOKBACK: u64 = 200;
+
+/// The events of `branch`'s current incarnation with a `seq` above `after`.
+pub(crate) fn feed_after(
+    yard: &Yard,
+    branch: &str,
+    after: u64,
+) -> Result<Vec<(u64, RecordedEvent)>, Error> {
     let store = yard.store();
     let mut events = Vec::new();
-    let mut cursor = 0;
+    let mut cursor = after;
     loop {
         let page = store.backend().events_since(branch, cursor, 500)?;
         let Some((last, _)) = page.last() else {
@@ -780,13 +866,17 @@ pub struct Observed {
 
 /// Derive, scrub and store the observations of turn `turn` of `branch`,
 /// whose incarnation is `incarnation`, with `secrets` the exact values the
-/// turn was provisioned with. Deterministic, idempotent per turn.
+/// turn was provisioned with. Deterministic, idempotent per turn. With
+/// `from`, the newest event `seq` before the turn's prompt, only the events
+/// from [`FEED_LOOKBACK`] before it are read (the engine's call); without
+/// it, the whole feed.
 pub(crate) fn observe_turn(
     yard: &Yard,
     branch: &str,
     incarnation: i64,
     turn: u32,
     secrets: &[String],
+    from: Option<u64>,
 ) -> Result<Observed, Error> {
     let settings = yard.memory_settings();
     if !settings.capture {
@@ -794,8 +884,23 @@ pub(crate) fn observe_turn(
     }
     let store = yard.store();
     let record = store.read(branch)?;
-    let events = feed(yard, branch)?;
-    let plain: Vec<RecordedEvent> = events.iter().map(|(_, e)| e.clone()).collect();
+    let events = feed_after(
+        yard,
+        branch,
+        from.map_or(0, |seq| seq.saturating_sub(FEED_LOOKBACK)),
+    )?;
+    // The task kind is the router's recorded decision, which sits at the
+    // start of the log: a windowed read adds the log's first page.
+    let mut plain: Vec<RecordedEvent> = match from {
+        Some(_) => store
+            .backend()
+            .events_since(branch, 0, FEED_LOOKBACK as usize)?
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect(),
+        None => Vec::new(),
+    };
+    plain.extend(events.iter().map(|(_, e)| e.clone()));
     let members = members(yard, &settings.members);
     let tenant = record
         .actor
@@ -813,7 +918,8 @@ pub(crate) fn observe_turn(
         model: record.info.model.as_deref(),
         task_kind: Some(knowledge::kind_of(&record, &plain)),
         members: &members,
-        at_ms: branchyard_support::time::now_ms(),
+        at_ms: now_ms(),
+        windowed: from.is_some(),
     };
     let scrubber = super::scrub::Scrubber::new(secrets, &members);
     let mut observed = Observed::default();
@@ -847,9 +953,10 @@ pub(crate) fn on_turn_end(
     incarnation: i64,
     turn: u32,
     secrets: &[String],
+    from: Option<u64>,
 ) {
     branchyard_support::best_effort(
         "derive the turn's memory observations",
-        observe_turn(yard, branch, incarnation, turn, secrets),
+        observe_turn(yard, branch, incarnation, turn, secrets, from),
     );
 }
