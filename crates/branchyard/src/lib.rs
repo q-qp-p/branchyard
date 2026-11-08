@@ -164,6 +164,7 @@ mod pull_request;
 pub mod qualified;
 mod record;
 mod recover;
+pub mod registry;
 pub mod reported;
 mod review;
 mod run;

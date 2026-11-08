@@ -22,7 +22,12 @@ never the query's words), the engine ingests it when the harness exits as
 `skill` events with the manifest's digests, and a script run under a staged
 skill's `scripts/` is an event of its own; `by log` shows them, and three
 metrics count them (`branchyard_skill_searches_total`,
-`branchyard_skill_opens_total`, `branchyard_skill_search_unopened_total`).
+`branchyard_skill_opens_total`, `branchyard_skill_search_unopened_total`). New
+commands: `by skills list [--source S] [--state S]`, `by skills search
+WORDS... [--plain] [--limit N]` (the turn's own ranker over the tree a turn
+here would mount), `by skills show ID [--references]`, `by skills index --out
+DIR [--skill NAME]...` (that tree, for `tools/skill_eval.py rank --tree`) and
+`by skills usage [--since WINDOW]`; an unknown id is `unknown_skill` (exit 2).
 See [skill registry](docs/skill-registry.md) and [tools model, section
 3](docs/tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted).
 

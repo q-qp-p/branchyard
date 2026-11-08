@@ -1151,6 +1151,7 @@
           "unknown_message",
           "unknown_operation",
           "unknown_repo",
+          "unknown_skill",
           "unknown_trigger",
           "usage"
         ]

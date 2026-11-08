@@ -905,6 +905,65 @@ pub enum SkillsAction {
         /// Its name, as `by skills ls` lists it under user
         name: String,
     },
+    /// Every skill a turn started here may see, with its source, digest and state
+    ///
+    /// The built-in skills (ready), the repository's at HEAD (ready once trusted, else
+    /// available with the reason) and your own (ready, or withheld by name). A turn mounts
+    /// every ready skill where linking is free and names the chosen ones in its index
+    /// (docs/skill-registry.md).
+    List {
+        /// Only this source: built_in, repository or user
+        #[arg(long, value_name = "SOURCE", value_parser = ["built_in", "repository", "user"])]
+        source: Option<String>,
+        /// Only this state: ready or available
+        #[arg(long, value_name = "STATE", value_parser = ["ready", "available"])]
+        state: Option<String>,
+    },
+    /// Rank the skills a turn here could find against WORDS, with the turn's own ranker
+    ///
+    /// Writes the tree a turn would mount (every ready skill) to a scratch directory and
+    /// runs its `bin/tools search`, so the answer is what a harness would get.
+    Search {
+        /// The query
+        #[arg(required = true, value_name = "WORDS")]
+        words: Vec<String>,
+        /// BM25 alone: no extra weight for a tool over a reference
+        #[arg(long)]
+        plain: bool,
+        /// At most this many results
+        #[arg(long, default_value_t = 8, value_name = "N")]
+        limit: usize,
+    },
+    /// One skill's entry: source, digest, state, size; --references lists its references
+    Show {
+        /// The skill as the tree names it: pptx, repository:style, user:memory-parser
+        id: String,
+        /// List its `references/*.md`, the documents a search can land on
+        #[arg(long)]
+        references: bool,
+    },
+    /// Searches and opens by skill, from every branch's record
+    ///
+    /// A local measure from the `skill` events turns record: how often each skill was
+    /// found, shown or had a script run, and how many searches no open followed.
+    Usage {
+        /// Only events in this window: 30m, 12h, 7d, 30d
+        #[arg(long, value_name = "WINDOW", value_parser = since_window)]
+        since: Option<std::time::Duration>,
+    },
+    /// Write the tool tree a turn started here would mount, without running a turn
+    ///
+    /// Under DIR as the turn's home: DIR/.branchyard/tools holds INDEX.md and bin/tools, with
+    /// every ready skill staged; `--skill` names the chosen ones (default: every built-in
+    /// skill). For `python3 tools/skill_eval.py rank --tree` and `sizes --tree`.
+    Index {
+        /// Where to write the tree
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        /// A built-in skill to name in INDEX.md as chosen; the rest are counted. Repeatable
+        #[arg(long = "skill", value_name = "NAME")]
+        skills: Vec<String>,
+    },
 }
 
 /// `by memory`'s actions; see docs/memory.md.
