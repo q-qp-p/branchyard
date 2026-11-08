@@ -862,12 +862,9 @@ impl Library {
             .create(true)
             .truncate(false)
             .open(&path)
-            .map_err(|e| {
-                Error::State(format!("open the memory lock {}: {e}", path.display()))
-            })?;
-        file.lock().map_err(|e| {
-            Error::State(format!("lock {}: {e}", path.display()))
-        })?;
+            .map_err(|e| Error::State(format!("open the memory lock {}: {e}", path.display())))?;
+        file.lock()
+            .map_err(|e| Error::State(format!("lock {}: {e}", path.display())))?;
         // Whose directory it guards, for whoever looks at the file.
         branchyard_support::best_effort(
             "note the directory a memory lock guards",

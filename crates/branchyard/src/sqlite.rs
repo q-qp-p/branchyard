@@ -4153,7 +4153,10 @@ impl MemoryBackend for Sqlite {
                 )
                 .map_err(e)?;
             let rows = statement
-                .query_map(params![scope, tenant, status, after, limit], observation_row)
+                .query_map(
+                    params![scope, tenant, status, after, limit],
+                    observation_row,
+                )
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
         })?;

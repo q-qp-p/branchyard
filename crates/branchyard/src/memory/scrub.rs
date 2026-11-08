@@ -225,7 +225,10 @@ mod tests {
         // (value, spellings besides the value itself)
         let table: [(&str, &[&str]); 4] = [
             // RFC 3986 leaves `-` alone; `!` is escaped.
-            ("ab-cd!xyz", &["ab-cd%21xyz", "ab%2Dcd%21xyz", "ab-cd%21xyz"]),
+            (
+                "ab-cd!xyz",
+                &["ab-cd%21xyz", "ab%2Dcd%21xyz", "ab-cd%21xyz"],
+            ),
             (
                 "p@ss w0rd~x.y_z",
                 &[
@@ -243,7 +246,10 @@ mod tests {
                     "se%22cr%5Cet%2Fv%C3%A9%0Alinez",
                 ],
             ),
-            ("tok3n-value", &["746f6b336e2d76616c7565", "746F6B336E2D76616C7565"]),
+            (
+                "tok3n-value",
+                &["746f6b336e2d76616c7565", "746F6B336E2D76616C7565"],
+            ),
         ];
         for (value, forms) in table {
             let scrubber = Scrubber::new(&[value.to_owned()], &[]);

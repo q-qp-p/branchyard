@@ -668,8 +668,9 @@ mod engine {
             harness: Some("codex-acp".into()),
             isolated: true,
             provision: Some(branchyard::Provisioning {
-                secrets: vec![branchyard::SecretSource::parse(&format!("OPENAI_API_KEY={var}"))
-                    .unwrap()],
+                secrets: vec![
+                    branchyard::SecretSource::parse(&format!("OPENAI_API_KEY={var}")).unwrap(),
+                ],
                 ..branchyard::Provisioning::default()
             }),
             ..f.options()
@@ -689,7 +690,9 @@ mod engine {
             .unwrap();
         let sent = branch
             .send(
-                &format!("Always keep the token {secret} out of the notes footer\nSH false\nSH false"),
+                &format!(
+                    "Always keep the token {secret} out of the notes footer\nSH false\nSH false"
+                ),
                 options.clone(),
             )
             .unwrap();
@@ -717,7 +720,10 @@ mod engine {
             )
             .unwrap();
         assert!(
-            matches!(over.info().status, branchyard::BranchStatus::BudgetExceeded { .. }),
+            matches!(
+                over.info().status,
+                branchyard::BranchStatus::BudgetExceeded { .. }
+            ),
             "{:?}",
             over.info().status
         );

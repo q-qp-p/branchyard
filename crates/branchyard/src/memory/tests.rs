@@ -751,7 +751,11 @@ fn a_cut_body_counts_observations_not_lines() {
     let result = pass(&scope, &observations, &[], false, 20, 1, 5);
     assert_eq!(result.proposals.len(), 1);
     let body = &result.proposals[0].body;
-    assert!(body.ends_with("- ...and 2 more"), "{}", &body[body.len() - 60..]);
+    assert!(
+        body.ends_with("- ...and 2 more"),
+        "{}",
+        &body[body.len() - 60..]
+    );
 }
 
 #[test]
@@ -788,7 +792,10 @@ fn a_failed_checks_output_is_scrubbed_before_it_is_cut_to_its_last_lines() {
     let draft = drafts.into_iter().next().unwrap();
     let (text, _) = scrubber.scrub(&draft.text).unwrap();
     let stored = draft.into_observation(&ctx, text, Vec::new()).text;
-    assert!(stored.starts_with("check `cargo test` failed\n"), "{stored}");
+    assert!(
+        stored.starts_with("check `cargo test` failed\n"),
+        "{stored}"
+    );
     assert_eq!(stored.lines().count(), 41, "{stored}");
     for part in value.lines().filter(|l| l.len() > 8) {
         assert!(!stored.contains(part), "{part} kept in {stored}");
@@ -905,9 +912,25 @@ fn a_contributor_on_a_fetched_pull_request_ref_is_not_a_member() {
         crate::git::run(root, &full).unwrap()
     };
     git(&["init", "-q", "-b", "main"]);
-    git(&["-c", "user.name=Ann", "commit", "-q", "--allow-empty", "-m", "one"]);
+    git(&[
+        "-c",
+        "user.name=Ann",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "one",
+    ]);
     git(&["checkout", "-q", "-b", "pr"]);
-    git(&["-c", "user.name=drive-by", "commit", "-q", "--allow-empty", "-m", "two"]);
+    git(&[
+        "-c",
+        "user.name=drive-by",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "two",
+    ]);
     git(&["update-ref", "refs/pull/5/head", "pr"]);
     git(&["checkout", "-q", "main"]);
     git(&["branch", "-q", "-D", "pr"]);
@@ -1027,7 +1050,9 @@ fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
     assert_eq!(library.read().unwrap().len(), 2);
     // Two approvals of the same row: one wins, the other fails and takes
     // back only its own file.
-    let c = memory.propose(&proposal(&scope, "Keep notes short")).unwrap();
+    let c = memory
+        .propose(&proposal(&scope, "Keep notes short"))
+        .unwrap();
     let racers: Vec<_> = (0..2)
         .map(|_| {
             let yard = yard.clone();
@@ -1035,7 +1060,11 @@ fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
         })
         .collect();
     let results: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
     let winner = results.into_iter().find_map(Result::ok).unwrap();
     let slug = winner
         .record
@@ -1047,7 +1076,10 @@ fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
         .to_owned();
     let held = library.read().unwrap();
     assert_eq!(held.len(), 3, "{held:?}");
-    assert!(held.iter().any(|m| m.id == slug), "the winner's file is gone");
+    assert!(
+        held.iter().any(|m| m.id == slug),
+        "the winner's file is gone"
+    );
 }
 
 #[test]
@@ -1070,7 +1102,7 @@ fn an_edit_whose_row_swap_loses_leaves_the_file_as_it_was() {
         ..Default::default()
     };
     // Someone rejects the row between the file's rewrite and the swap.
-    let error = super::review::edit_row(&yard, id, &current, changed, &edit, "ana", None, || {
+    let error = super::review::edit_row(&yard, &current, changed, &edit, "ana", None, || {
         let decided = yard
             .store()
             .memory()

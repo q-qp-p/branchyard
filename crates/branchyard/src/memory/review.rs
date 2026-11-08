@@ -252,15 +252,13 @@ pub(crate) fn edit(
         record.task_kinds = task_kinds.clone();
     }
     check_record(&record)?;
-    edit_row(yard, id, &current, record, edit, by, person_dir, || {})
+    edit_row(yard, &current, record, edit, by, person_dir, || {})
 }
 
 /// [`edit`] after the checks. `between` runs after the file is rewritten
 /// and before the row's swap (a test decides the row there).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn edit_row(
     yard: &Yard,
-    id: u64,
     current: &MemoryRecord,
     mut record: MemoryRecord,
     edit: &MemoryRecordEdit,
@@ -268,6 +266,7 @@ pub(super) fn edit_row(
     person_dir: Option<&Path>,
     between: impl FnOnce(),
 ) -> Result<MemoryRecord, Error> {
+    let id = current.id;
     let mut restore: Option<super::Memory> = None;
     let mut held = None;
     let library = match current.published.as_ref().and_then(published_slug) {

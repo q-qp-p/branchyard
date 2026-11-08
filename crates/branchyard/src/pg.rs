@@ -5242,11 +5242,10 @@ mod contention_tests {
         let opened = postgres_at(base.clone(), "observation-lock");
         let repo = opened.backend.label();
         let mut holder = connect(&base).unwrap();
-        holder
-            .execute(super::FEED_LOCK, &[&repo])
-            .unwrap();
+        holder.execute(super::FEED_LOCK, &[&repo]).unwrap();
         let store = opened.memory.clone();
-        let observation = crate::conformance::observation(&repo, "acme", None, "fix", 1, "Run fmt", 1);
+        let observation =
+            crate::conformance::observation(&repo, "acme", None, "fix", 1, "Run fmt", 1);
         let writer = std::thread::spawn(move || store.observe(&[observation]));
         // The writer is queued on the lock this session holds.
         branchyard_testkit::wait::until("the observation to wait for the feed lock", || {

@@ -3037,7 +3037,15 @@ pub(crate) fn memory_commit_order(s: Opened) {
                 for batch in 0..BATCHES {
                     let text = format!("writer {writer} batch {batch}");
                     let obs = [
-                        observation(&repo, "orderco", None, &format!("w{writer}"), batch, &text, 1),
+                        observation(
+                            &repo,
+                            "orderco",
+                            None,
+                            &format!("w{writer}"),
+                            batch,
+                            &text,
+                            1,
+                        ),
                         observation(
                             &repo,
                             "orderco",

@@ -316,10 +316,7 @@ fn another_tenants_row_is_unknown_a_non_admin_cannot_read_a_persons_row_and_list
     unknown(repo.reject_memory(other.id, None).unwrap_err());
     unknown(repo.forget_memory(other.id).unwrap_err());
     unknown(repo.promote_memory(other.id).unwrap_err());
-    unknown(
-        repo.edit_memory(other.id, &Default::default())
-            .unwrap_err(),
-    );
+    unknown(repo.edit_memory(other.id, &Default::default()).unwrap_err());
     assert!(repo.memories(None, None).unwrap().is_empty());
 
     // Listings are pages with a cursor.
