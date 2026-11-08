@@ -57,6 +57,9 @@ struct Turn {
     /// Spans inside the turn, written with the turn's span as their parent
     /// once it is known.
     children: Vec<Finished>,
+    /// Searches of the tool tree since the last open: the misses, when the
+    /// turn ends with them.
+    searches_unopened: u64,
 }
 
 struct Tool {
@@ -199,6 +202,13 @@ pub fn record_events(
             metrics::TURNS_ENDED,
             &[("harness", harness), ("outcome", outcome)],
         );
+        if turn.searches_unopened > 0 {
+            metrics.add(
+                metrics::SKILL_SEARCH_UNOPENED,
+                &[],
+                turn.searches_unopened as f64,
+            );
+        }
         let seconds = at.saturating_sub(turn.start_ms) as f64 / 1000.0;
         metrics.observe(metrics::TURN_DURATION, &[("harness", harness)], seconds);
         let mut genai = vec![
@@ -246,6 +256,7 @@ pub fn record_events(
                         saw_event: false,
                         tool: None,
                         children: Vec::new(),
+                        searches_unopened: 0,
                     },
                 );
             }
@@ -365,6 +376,39 @@ pub fn record_events(
                     }
                 }
             }
+            // What the turn did with its skills: labels bounded by kind,
+            // source and level, never an id (docs/skill-registry.md, 7).
+            Activity::Skill(activity) => match activity.as_ref() {
+                branchyard::SkillActivity::Searched { kind, .. } => {
+                    metrics.inc(
+                        metrics::SKILL_SEARCHES,
+                        &[("kind", kind.as_deref().unwrap_or("all"))],
+                    );
+                    if let Some(turn) = turns.get_mut(branch) {
+                        turn.searches_unopened += 1;
+                    }
+                }
+                branchyard::SkillActivity::Opened {
+                    source,
+                    kind,
+                    level,
+                    ..
+                } => {
+                    let source = match source {
+                        Some(source) => source.as_str(),
+                        None if kind == "operation" => "connector",
+                        None => kind.as_str(),
+                    };
+                    metrics.inc(
+                        metrics::SKILL_OPENS,
+                        &[("source", source), ("level", &level.to_string())],
+                    );
+                    if let Some(turn) = turns.get_mut(branch) {
+                        turn.searches_unopened = 0;
+                    }
+                }
+                branchyard::SkillActivity::Invoked { .. } => {}
+            },
             Activity::ConnectorCall(call) => {
                 let pairs = [
                     ("connector", call.connector.as_str()),
@@ -806,6 +850,71 @@ mod tests {
             ),
             entry(6, "a", 2_000, Activity::ConnectorCall(Box::new(call))),
             entry(7, "a", 2_100, Activity::ConnectorCall(Box::new(denied))),
+            // The turn searched its tool tree twice and opened one result;
+            // the search after the open had none (R2's local measure).
+            entry(
+                7,
+                "a",
+                2_200,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 3,
+                    results: vec!["skill:pptx".into()],
+                    kind: None,
+                    plain: false,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_300,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Opened {
+                    id: "pptx/references/layouts.md".into(),
+                    digest: "d".into(),
+                    source: Some(branchyard::skills::Source::BuiltIn),
+                    kind: "reference".into(),
+                    level: 3,
+                    fetched: false,
+                    bytes: 4_120,
+                    fetch_ms: None,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_400,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 1,
+                    results: Vec::new(),
+                    kind: Some("reference".into()),
+                    plain: true,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_500,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Opened {
+                    id: "github.issues.list".into(),
+                    digest: "bundle".into(),
+                    source: None,
+                    kind: "operation".into(),
+                    level: 1,
+                    fetched: false,
+                    bytes: 0,
+                    fetch_ms: None,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_600,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 2,
+                    results: Vec::new(),
+                    kind: None,
+                    plain: false,
+                })),
+            ),
             // A running total: 100/10 tokens, then 150/30; counted as
             // 100/10 and then the growth, 50/20.
             entry(8, "a", 3_000, usage(true, 100, 10, 0.5)),
@@ -903,6 +1012,30 @@ mod tests {
             ),
             1.0
         );
+        // Skill searches by kind, opens by source and level, and the one
+        // search the turn ended without opening anything after.
+        assert_eq!(counter(m, metrics::SKILL_SEARCHES, &[("kind", "all")]), 2.0);
+        assert_eq!(
+            counter(m, metrics::SKILL_SEARCHES, &[("kind", "reference")]),
+            1.0
+        );
+        assert_eq!(
+            counter(
+                m,
+                metrics::SKILL_OPENS,
+                &[("source", "built_in"), ("level", "3")]
+            ),
+            1.0
+        );
+        assert_eq!(
+            counter(
+                m,
+                metrics::SKILL_OPENS,
+                &[("source", "connector"), ("level", "1")]
+            ),
+            1.0
+        );
+        assert_eq!(counter(m, metrics::SKILL_SEARCH_UNOPENED, &[]), 1.0);
         assert_eq!(
             m.distribution(
                 metrics::CONNECTOR_DURATION,

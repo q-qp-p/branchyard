@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+Mounted, not chosen (skill registry, slice R2): where the harness reads the
+tool tree where the engine writes it (a local harness, Microsandbox) or links
+the shared tool store, a turn stages every ready skill, chosen or not: every
+built-in skill the policy allows (`Provisioning::allowed_skills`, set by the
+server from the policy), the repository's trusted set and the person's own
+folder. `INDEX.md` names only the chosen skills and counts the rest in its
+overflow line (`- ...N more: bin/tools search WORDS`), so an unchosen skill
+costs a directory entry and one number and `tools search` finds it; the
+harness's own skills directory links the chosen skills only. A container,
+Substrate and a recipe machine, which copy the home in, stay chosen-only. The
+manifest's `skill_digests` became `mounted` (read under either name): every
+mounted skill with its digest and, for a `repository:` or `user:` entry, its
+source; a mounted repository or user skill that is gone or hashes to another
+digest fails the turn `bundle_mismatch` by name. What a turn did with its
+skills is recorded: `tools search` and `tools show` note one JSON line each in
+the home's `.branchyard/turn/skills.jsonl` (the term count and the ids found,
+never the query's words), the engine ingests it when the harness exits as
+`skill` events with the manifest's digests, and a script run under a staged
+skill's `scripts/` is an event of its own; `by log` shows them, and three
+metrics count them (`branchyard_skill_searches_total`,
+`branchyard_skill_opens_total`, `branchyard_skill_search_unopened_total`).
+See [skill registry](docs/skill-registry.md) and [tools model, section
+3](docs/tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted).
+
 The ranker in a turn's tool tree (`bin/tools search`) indexes a reference by
 what it says: the words of its name without English function words (the slug
 `cut-a-release-with-the-release-script-then-tag` no longer matches a prompt's

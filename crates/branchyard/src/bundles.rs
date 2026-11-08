@@ -25,12 +25,13 @@
 //! mismatch is to resolve the manifest again: change the session's tools, or
 //! wake a kept sandbox, which resolves it afresh (`docs/connectors.md`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::manifest::{ManifestSkill, TurnManifest};
+use crate::skills::Source;
 use crate::toolstore::{Kind, ToolStore};
 
 /// The kind of failure a turn reports when it holds a bundle other than
@@ -131,37 +132,30 @@ fn embedded() -> &'static HashMap<String, String> {
     })
 }
 
-/// The digests of the built-in skills a turn stages for `only` (the task's
-/// choice, `None` for every skill): those and the skills they need, sorted
-/// by name.
-pub(crate) fn skill_digests(only: Option<&[String]>) -> Result<Vec<ManifestSkill>, String> {
-    let chosen = only
-        .map(branchyard_provision::built_in::closure)
-        .transpose()?;
+/// The digests of the built-in skills a turn stages, `staged` (the set
+/// [`crate::capabilities::Choice::staged`] gives, closed over what each
+/// needs; `None` for every skill), sorted by name.
+pub(crate) fn skill_digests(
+    staged: Option<&BTreeSet<String>>,
+) -> Result<Vec<ManifestSkill>, String> {
     let mut out: Vec<ManifestSkill> = embedded()
         .iter()
-        .filter(|(name, _)| {
-            chosen
-                .as_ref()
-                .is_none_or(|set| set.contains(name.as_str()))
-        })
-        .map(|(id, digest)| ManifestSkill {
-            id: id.clone(),
-            digest: digest.clone(),
-        })
+        .filter(|(name, _)| staged.is_none_or(|set| set.contains(name.as_str())))
+        .map(|(id, digest)| ManifestSkill::built_in(id, digest))
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
 }
 
-/// Check the skills `manifest` admitted against this host: the embedded
-/// skill, and the tool-store entry the turn would link, when `store` is
-/// the store the turn sees.
+/// Check the built-in skills `manifest` mounts against this host: the
+/// embedded skill, and the tool-store entry the turn would link, when
+/// `store` is the store the turn sees. The repository's and the person's
+/// skills are checked by [`verify_custom`], once the turn has read them.
 pub(crate) fn verify_skills(
     manifest: &TurnManifest,
     store: Option<&ToolStore>,
 ) -> Result<(), Mismatch> {
-    for skill in &manifest.skill_digests {
+    for skill in manifest.mounted_from(Source::BuiltIn) {
         let held = embedded().get(&skill.id);
         if held != Some(&skill.digest) {
             return Err(Mismatch {
@@ -174,6 +168,47 @@ pub(crate) fn verify_skills(
         }
         if let Some(dir) = store.and_then(|s| s.skill_entry(&skill.id, &skill.digest)) {
             entry_holds(Kind::Skill, &skill.id, &skill.digest, &dir)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check the repository's and the person's skills `manifest` mounts against
+/// what this turn read from the base commit and the folder (`sources`): an
+/// entry whose skill is not staged now, or hashes to another digest, is a
+/// [`Mismatch`] naming it. A skill the turn stages and the manifest does not
+/// name is not checked here: a changed folder resolves the manifest again
+/// ([`TurnManifest::same_tools`]), so this catches a stored manifest that
+/// no longer describes what is on disk, never a person's own edit.
+pub(crate) fn verify_custom(
+    manifest: &TurnManifest,
+    sources: crate::manifest::Sources<'_>,
+) -> Result<(), Mismatch> {
+    let staged: HashMap<String, String> = sources
+        .entries()
+        .into_iter()
+        .map(|entry| (entry.id, entry.digest))
+        .collect();
+    for skill in manifest
+        .mounted
+        .iter()
+        .filter(|s| s.source != Source::BuiltIn)
+    {
+        let found = staged.get(&skill.id);
+        if found != Some(&skill.digest) {
+            return Err(Mismatch {
+                kind: Kind::Skill,
+                id: skill.id.clone(),
+                expected: skill.digest.clone(),
+                found: found.cloned().unwrap_or_else(|| "none".to_owned()),
+                why: match skill.source {
+                    Source::Repository => {
+                        "the repository's skills at the branch's base commit are other files"
+                    }
+                    _ => "the person's skills folder holds other files",
+                }
+                .to_owned(),
+            });
         }
     }
     Ok(())
@@ -262,7 +297,7 @@ mod tests {
                 digest: "bundle-1".into(),
                 content: Some("content-1".into()),
             }],
-            skill_digests: skill_digests(Some(&only)).unwrap(),
+            mounted: skill_digests(staged(&only).as_ref()).unwrap(),
             image: None,
             helpers: None,
             models: None,
@@ -272,17 +307,108 @@ mod tests {
         }
     }
 
+    /// The built-in set a choice of `only` stages: those and what they need;
+    /// `None` for every skill.
+    fn staged(only: &[String]) -> Option<BTreeSet<String>> {
+        match only.is_empty() {
+            true => None,
+            false => Some(branchyard_provision::built_in::closure(only).unwrap()),
+        }
+    }
+
     #[test]
     fn a_manifest_records_the_digest_of_each_staged_skill_and_its_needs() {
         let all = skill_digests(None).unwrap();
         assert!(all.len() > 3, "every built-in skill: {all:?}");
-        let one = skill_digests(Some(&["docx".to_owned()])).unwrap();
+        assert!(all.iter().all(|s| s.source == Source::BuiltIn));
+        let one = skill_digests(staged(&["docx".to_owned()]).as_ref()).unwrap();
         assert!(one.iter().any(|s| s.id == "docx"), "{one:?}");
         assert!(one.len() < all.len());
         let docx = branchyard_provision::skills::skill("docx").expect("docx is built in");
         let recorded = one.iter().find(|s| s.id == "docx").unwrap();
         assert_eq!(recorded.digest, crate::toolstore::skill_digest(docx));
-        assert!(skill_digests(Some(&["no-such-skill".to_owned()])).is_err());
+        // A set that names what this build does not embed records nothing for it.
+        let unknown: BTreeSet<String> = ["no-such-skill".to_owned()].into();
+        assert!(skill_digests(Some(&unknown)).unwrap().is_empty());
+    }
+
+    /// The repository's and the person's skills are held to the manifest
+    /// too: a staged skill that hashes to another digest, or is gone, fails
+    /// the turn by name; a skill the manifest does not name is not checked.
+    #[test]
+    fn a_custom_skill_other_than_the_admitted_one_is_a_mismatch() {
+        use crate::skills::{ForTurn, RepositorySet, UserSet};
+        use branchyard_provision::skillset::Skill;
+        let skill = |name: &str, body: &str| {
+            Skill::new(
+                name,
+                vec![(
+                    "SKILL.md".to_owned(),
+                    format!("---\nname: {name}\ndescription: d\n---\n{body}\n"),
+                )],
+            )
+            .unwrap()
+        };
+        let style = skill("style", "one");
+        let mine = skill("memory-parser", "mine");
+        let repository = ForTurn::Staged(RepositorySet {
+            commit: "c".into(),
+            digest: "set".into(),
+            skills: vec![style.clone()],
+        });
+        let user = UserSet {
+            skills: vec![mine.clone()],
+            withheld: Vec::new(),
+        };
+        let sources = crate::manifest::Sources {
+            repository: &repository,
+            user: Some(&user),
+        };
+        let mut m = manifest(&[]);
+        m.mounted.extend(sources.entries());
+        assert_eq!(m.mounted_from(Source::Repository).count(), 1);
+        assert_eq!(m.mounted_from(Source::User).count(), 1);
+        verify_custom(&m, sources).unwrap();
+        // The folder now holds other files for the skill the manifest names.
+        let edited = UserSet {
+            skills: vec![skill("memory-parser", "edited")],
+            withheld: Vec::new(),
+        };
+        let mismatch = verify_custom(
+            &m,
+            crate::manifest::Sources {
+                repository: &repository,
+                user: Some(&edited),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(mismatch.id, "user:memory-parser");
+        assert_eq!(mismatch.expected, mine.digest);
+        assert_eq!(mismatch.found, skill("memory-parser", "edited").digest);
+        assert!(
+            mismatch.to_string().contains("skill user:memory-parser"),
+            "{mismatch}"
+        );
+        // The repository's set withheld: its skill is gone from the tree.
+        let withheld = ForTurn::Withheld(crate::skills::WithheldSkills {
+            entries: Vec::new(),
+            reason: "changed".into(),
+        });
+        let gone = verify_custom(
+            &m,
+            crate::manifest::Sources {
+                repository: &withheld,
+                user: Some(&user),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            (gone.id.as_str(), gone.found.as_str()),
+            ("repository:style", "none")
+        );
+        assert!(gone.why.contains("base commit"), "{gone}");
+        // A manifest that names no custom skill checks none, whatever is staged.
+        verify_custom(&manifest(&[]), sources).unwrap();
     }
 
     #[test]
@@ -321,12 +447,12 @@ mod tests {
         let mut admitted = manifest(&["docx"]);
         verify_skills(&admitted, None).unwrap();
         let index = admitted
-            .skill_digests
+            .mounted
             .iter()
             .position(|s| s.id == "docx")
             .unwrap();
-        let held = admitted.skill_digests[index].digest.clone();
-        admitted.skill_digests[index].digest = "0".repeat(64);
+        let held = admitted.mounted[index].digest.clone();
+        admitted.mounted[index].digest = "0".repeat(64);
         let mismatch = verify_skills(&admitted, None).unwrap_err();
         assert_eq!(mismatch.kind, Kind::Skill);
         assert_eq!(mismatch.id, "docx");
@@ -340,10 +466,8 @@ mod tests {
         );
         // A skill this build does not embed at all is no match either.
         let mut gone = manifest(&["docx"]);
-        gone.skill_digests.push(ManifestSkill {
-            id: "from-the-future".into(),
-            digest: "abc".into(),
-        });
+        gone.mounted
+            .push(ManifestSkill::built_in("from-the-future", "abc"));
         let missing = verify_skills(&gone, None).unwrap_err();
         assert_eq!(
             (missing.id.as_str(), missing.found.as_str()),
@@ -359,11 +483,7 @@ mod tests {
         let admitted = manifest(&["docx"]);
         verify_skills(&admitted, Some(&store)).unwrap();
         // Another host's store holds other files under the same name.
-        let docx = admitted
-            .skill_digests
-            .iter()
-            .find(|s| s.id == "docx")
-            .unwrap();
+        let docx = admitted.mounted.iter().find(|s| s.id == "docx").unwrap();
         let entry = dir.path().join(format!("skills/docx@{}", docx.digest));
         std::fs::write(entry.join("SKILL.md"), "# a different docx\n").unwrap();
         let mismatch = verify_skills(&admitted, Some(&store)).unwrap_err();

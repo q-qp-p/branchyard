@@ -720,6 +720,24 @@ fn chosen_tools(
     if let Some(skills) = skills {
         provision.skills = Some(skills);
     }
+    // The built-in skills the policy allows, which a turn may mount beside
+    // the chosen ones where linking is free (docs/skill-registry.md, R2);
+    // unset when the policy has no skills part, which allows them all.
+    let allowed: Option<Vec<String>> = match resolved.store.skills.is_some() {
+        true => {
+            let catalogue =
+                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+            Some(
+                catalogue
+                    .skills
+                    .iter()
+                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
+                    .map(|s| s.id.clone())
+                    .collect(),
+            )
+        }
+        false => None,
+    };
     match &provision.skills {
         Some(asked) => {
             branchyard_provision::built_in::check(asked).map_err(|why| {
@@ -738,20 +756,9 @@ fn chosen_tools(
             }
         }
         // No choice means every built-in skill the policy allows.
-        None if resolved.store.skills.is_some() => {
-            let catalogue =
-                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
-            provision.skills = Some(
-                catalogue
-                    .skills
-                    .iter()
-                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
-                    .map(|s| s.id.clone())
-                    .collect(),
-            );
-        }
-        None => {}
+        None => provision.skills = allowed.clone(),
     }
+    provision.allowed_skills = allowed;
     let helpers: Option<branchyard_client::workspace_api::Helpers> = field("helpers")
         .map(serde_json::from_value)
         .transpose()
@@ -819,6 +826,10 @@ fn chosen_tools(
             "account": e.account,
         })).collect::<Vec<_>>(),
         "skills": provision.skills,
+        // The built-in skills the policy allows, which a turn mounts beside the
+        // chosen ones where linking is free (docs/skill-registry.md, R2); absent
+        // without a skills policy, when every built-in skill is allowed.
+        "allowed_skills": provision.allowed_skills,
         "helpers": helpers,
     });
     Ok(Chosen { delegation, view })

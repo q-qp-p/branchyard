@@ -38,11 +38,71 @@ struct Capability {
 pub(crate) struct Staged {
     /// Files written or removed, relative to the home.
     pub written: Vec<String>,
-    /// The built-in skills staged, in catalog order.
+    /// The built-in skills staged, in catalog order: the chosen ones, and
+    /// where every ready skill is mounted the rest the policy allows.
     pub built_in: Vec<SkillEntry>,
-    /// Every skill staged, built-in, then the repository's, then the
-    /// person's own, as the tool tree lists them ([`crate::tooltree`]).
-    pub listed: Vec<Tool>,
+    /// The skills the turn chose, which the tool tree's index names
+    /// ([`crate::tooltree`]) and the harness's native skills directory
+    /// links: the built-in skills the task picked, or every staged
+    /// built-in when it picked none.
+    pub chosen: Vec<Tool>,
+    /// The skills staged beside them and not chosen, which the index only
+    /// counts (`docs/skill-registry.md`, R2): built-in skills the policy
+    /// allows and the task did not pick, where every ready skill is
+    /// mounted; then the repository's trusted skills and the person's own,
+    /// which are ready, not chosen, wherever they are staged.
+    pub mounted: Vec<Tool>,
+}
+
+impl Staged {
+    /// Every staged skill, chosen then mounted: built-in, then the
+    /// repository's, then the person's own.
+    #[cfg(test)]
+    pub fn listed(&self) -> Vec<Tool> {
+        self.chosen.iter().chain(&self.mounted).cloned().collect()
+    }
+}
+
+/// Which built-in skills a turn stages and which it names
+/// (`docs/skill-registry.md`, R2).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Choice<'a> {
+    /// The built-in skills the task chose ([`crate::Provisioning::skills`]),
+    /// each with the skills it needs; `None` chooses every staged one.
+    pub chosen: Option<&'a [String]>,
+    /// The built-in skills the policy allows
+    /// ([`crate::Provisioning::allowed_skills`]); `None` allows all.
+    pub allowed: Option<&'a [String]>,
+    /// Whether every allowed skill is staged, chosen or not: where the
+    /// provider reads the tree in place or links the store
+    /// ([`crate::providers::ProviderKind::mounts_ready_skills`]). Else the
+    /// chosen skills alone are staged, as before R2.
+    pub mount_ready: bool,
+}
+
+impl Choice<'_> {
+    /// The built-in skills staged for this choice, by name; `None` is every
+    /// one. Each set is closed over the skills its members need.
+    pub fn staged(&self) -> Result<Option<BTreeSet<String>>, String> {
+        let allowed = self.allowed.map(built_in::closure).transpose()?;
+        let chosen = self.chosen().transpose()?;
+        Ok(match (self.mount_ready, chosen) {
+            (true, _) | (false, None) => allowed,
+            (false, Some(chosen)) => Some(chosen),
+        })
+    }
+
+    /// The built-in skills the task chose, closed over what they need and
+    /// held within what the policy allows; `None` is every staged one.
+    pub fn chosen(&self) -> Option<Result<BTreeSet<String>, String>> {
+        let chosen = self.chosen?;
+        Some(built_in::closure(chosen).and_then(|set| {
+            Ok(match self.allowed.map(built_in::closure).transpose()? {
+                Some(allowed) => set.intersection(&allowed).cloned().collect(),
+                None => set,
+            })
+        }))
+    }
 }
 
 /// The directory of the state directory `state` holding the skills of
@@ -100,7 +160,7 @@ pub(crate) fn catalogued() -> Result<Vec<&'static skills::Skill>, String> {
 ///
 /// `only` is the task's choice of built-in skills
 /// ([`crate::Provisioning::skills`]): those and the skills they need are
-/// staged and listed, the rest removed, and the indexes list only what was
+/// staged and chosen, the rest removed, and the indexes list only what was
 /// staged. `None` stages every built-in skill.
 #[cfg(test)]
 pub(crate) fn stage(
@@ -109,39 +169,54 @@ pub(crate) fn stage(
     user: Option<&UserSet>,
     only: Option<&[String]>,
 ) -> Result<Staged, String> {
-    stage_from(host, repository, user, only, None)
+    stage_from(
+        host,
+        repository,
+        user,
+        Choice {
+            chosen: only,
+            ..Choice::default()
+        },
+        None,
+    )
 }
 
-/// [`stage`], linking each built-in skill the shared tool `store` has an
-/// entry for ([`crate::toolstore`]) instead of writing its files: the
-/// skill's directory is a link to the entry. The caller passes the store
-/// only when the harness sees it at the same path. A skill the store lacks
-/// is written as before, and a link left by an earlier turn that had the
-/// store is replaced by the files.
+/// [`stage`] for a [`Choice`], linking each built-in skill the shared tool
+/// `store` has an entry for ([`crate::toolstore`]) instead of writing its
+/// files: the skill's directory is a link to the entry. The caller passes
+/// the store only when the harness sees it at the same path. A skill the
+/// store lacks is written as before, and a link left by an earlier turn
+/// that had the store is replaced by the files. With `choice.mount_ready`,
+/// every allowed built-in skill is staged and the ones the task did not
+/// choose are returned as mounted; the repository's and the person's skills
+/// are staged and mounted wherever the turn runs.
 pub(crate) fn stage_from(
     host: &Path,
     repository: Option<&RepositorySet>,
     user: Option<&UserSet>,
-    only: Option<&[String]>,
+    choice: Choice<'_>,
     store: Option<&crate::toolstore::ToolStore>,
 ) -> Result<Staged, String> {
-    let chosen = only.map(built_in::closure).transpose()?;
-    let indexes = built_in::indexes(chosen.as_ref())?;
+    let staged = choice.staged()?;
+    let chosen = choice.chosen().transpose()?;
+    let indexes = built_in::indexes(staged.as_ref())?;
     let mut plan = Plan::default();
     let mut built_in = Vec::new();
-    let mut listed = Vec::new();
+    let mut picked = Vec::new();
+    let mut mounted = Vec::new();
     let mut links = Vec::new();
     let mut unlinked = Vec::new();
     for skill in catalogued()? {
         let directory = format!("{DIRECTORY}/{}", skill.name);
+        let is_staged = staged.as_ref().is_none_or(|set| set.contains(skill.name));
         let entry = store
-            .filter(|_| chosen.as_ref().is_none_or(|set| set.contains(skill.name)))
+            .filter(|_| is_staged)
             .and_then(|store| store.skill(skill));
         match &entry {
             Some(entry) => links.push((directory.clone(), entry.clone())),
             None => unlinked.push(directory.clone()),
         }
-        if !chosen.as_ref().is_none_or(|set| set.contains(skill.name)) {
+        if !is_staged {
             // A narrower turn than the last removes what it does not give.
             for stale in files_under(host, &directory)? {
                 plan.edit(&stale, false, Edit::Remove);
@@ -160,11 +235,15 @@ pub(crate) fn stage_from(
             }
         }
         built_in.push(skillset::built_in_entry(skill));
-        listed.push(Tool {
+        let tool = Tool {
             id: skill.name.to_owned(),
             description: description_of(skill)?,
             directory: skill.name.to_owned(),
-        });
+        };
+        match chosen.as_ref().is_none_or(|set| set.contains(skill.name)) {
+            true => picked.push(tool),
+            false => mounted.push(tool),
+        }
     }
     let index_path = format!("{DIRECTORY}/INDEX.md");
     let custom_path = format!("{DIRECTORY}/{}", skillset::CUSTOM_TOPIC);
@@ -186,7 +265,9 @@ pub(crate) fn stage_from(
     ] {
         let source_dir = format!("{DIRECTORY}/{}", source.root());
         for skill in skills {
-            listed.push(Tool {
+            // Ready by a person's trust or their own folder, never chosen
+            // per query: the index counts them and search finds them.
+            mounted.push(Tool {
                 id: skillset::label(source, &skill.name),
                 description: skill.description.clone(),
                 directory: format!("{}/{}", source.root(), skill.name),
@@ -241,7 +322,8 @@ pub(crate) fn stage_from(
             .chain(linked)
             .collect(),
         built_in,
-        listed,
+        chosen: picked,
+        mounted,
     })
 }
 
@@ -330,7 +412,7 @@ fn unlink_skill(dir: &Path) -> io::Result<bool> {
 }
 
 /// A built-in skill's description, from its `SKILL.md` frontmatter.
-fn description_of(skill: &skills::Skill) -> Result<String, String> {
+pub(crate) fn description_of(skill: &skills::Skill) -> Result<String, String> {
     let (_, text) = skill
         .files
         .iter()
@@ -397,8 +479,9 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let first = stage(host.path(), None, None, None).unwrap();
         assert!(!first.written.is_empty());
-        assert_eq!(first.listed.len(), first.built_in.len());
-        let find = first.listed.iter().find(|t| t.id == "find-tools").unwrap();
+        assert_eq!(first.listed().len(), first.built_in.len());
+        let listed = first.listed();
+        let find = listed.iter().find(|t| t.id == "find-tools").unwrap();
         assert_eq!(find.directory, "find-tools");
         assert!(find.description.starts_with("Search the tools mounted"));
         let root = host.path().join(DIRECTORY);
@@ -479,7 +562,8 @@ mod tests {
         let narrow = stage(host.path(), None, None, Some(&chosen)).unwrap();
         let names: Vec<&str> = narrow.built_in.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["artifact-tools", "pptx"]);
-        let listed: Vec<&str> = narrow.listed.iter().map(|t| t.id.as_str()).collect();
+        let staged_tools = narrow.listed();
+        let listed: Vec<&str> = staged_tools.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(listed, ["artifact-tools", "pptx"]);
         assert!(!root.join("docx/SKILL.md").exists());
         assert!(!root.join("topics/design/INDEX.md").exists());
@@ -578,9 +662,13 @@ mod tests {
         let topic = std::fs::read_to_string(root.join(skillset::CUSTOM_TOPIC)).unwrap();
         assert!(topic.starts_with("# Custom\n\nSkills the person running this branch"));
         assert!(topic.contains("- [user:memory-parser](../../user/memory-parser/SKILL.md)"));
-        let ids: Vec<&str> = alone.listed.iter().map(|t| t.id.as_str()).collect();
+        let alone_tools = alone.listed();
+        let ids: Vec<&str> = alone_tools.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids.last(), Some(&"user:memory-parser"));
-        assert_eq!(alone.listed.last().unwrap().directory, "user/memory-parser");
+        assert_eq!(
+            alone.listed().last().unwrap().directory,
+            "user/memory-parser"
+        );
         assert!(alone
             .written
             .contains(&format!("{DIRECTORY}/user/memory-parser/SKILL.md")));
@@ -589,7 +677,8 @@ mod tests {
         let both = stage(host.path(), Some(&set), Some(&mine), None).unwrap();
         let topic = std::fs::read_to_string(root.join(skillset::CUSTOM_TOPIC)).unwrap();
         assert!(topic.contains("as of commit 0123456789ab, and skills the person"));
-        let ids: Vec<&str> = both.listed.iter().map(|t| t.id.as_str()).collect();
+        let both_tools = both.listed();
+        let ids: Vec<&str> = both_tools.iter().map(|t| t.id.as_str()).collect();
         let style_at = ids.iter().position(|id| *id == "repository:style").unwrap();
         assert_eq!(ids[style_at + 1], "user:memory-parser", "{ids:?}");
         assert!(root.join("repository/style/SKILL.md").is_file());
@@ -680,9 +769,9 @@ mod tests {
             assert!(meta.is_dir() && !meta.file_type().is_symlink(), "{name}");
             std::fs::read_link(skill.join("SKILL.md")).ok()
         };
-        let first = stage_from(host.path(), None, None, None, Some(&store)).unwrap();
-        assert_eq!(first.listed.len(), first.built_in.len());
-        for tool in &first.listed {
+        let first = stage_from(host.path(), None, None, Choice::default(), Some(&store)).unwrap();
+        assert_eq!(first.listed().len(), first.built_in.len());
+        for tool in &first.listed() {
             let link = linked(&tool.directory).unwrap();
             assert!(link.starts_with(shared.path().join("skills")), "{link:?}");
             assert!(link.is_file());
@@ -698,15 +787,17 @@ mod tests {
             std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
             skills::INDEX
         );
-        assert!(stage_from(host.path(), None, None, None, Some(&store))
-            .unwrap()
-            .written
-            .is_empty());
+        assert!(
+            stage_from(host.path(), None, None, Choice::default(), Some(&store))
+                .unwrap()
+                .written
+                .is_empty()
+        );
 
         // An entry the store lacks is copied beside the links.
         let digest = crate::toolstore::skill_digest(skills::skill("pptx").unwrap());
         std::fs::remove_dir_all(shared.join(format!("skills/pptx@{digest}"))).unwrap();
-        let partial = stage_from(host.path(), None, None, None, Some(&store)).unwrap();
+        let partial = stage_from(host.path(), None, None, Choice::default(), Some(&store)).unwrap();
         assert_eq!(linked("pptx"), None);
         assert!(root.join("pptx/SKILL.md").is_file());
         assert!(partial
@@ -717,7 +808,17 @@ mod tests {
 
         // A narrower turn drops the links of the skills it does not give.
         let chosen = ["docx".to_owned()];
-        stage_from(host.path(), None, None, Some(&chosen), Some(&store)).unwrap();
+        stage_from(
+            host.path(),
+            None,
+            None,
+            Choice {
+                chosen: Some(&chosen),
+                ..Choice::default()
+            },
+            Some(&store),
+        )
+        .unwrap();
         assert!(linked("docx").is_some());
         assert!(!root.join("pptx/SKILL.md").exists());
         assert!(!root.join("xlsx/SKILL.md").exists());
@@ -726,9 +827,9 @@ mod tests {
         // A turn on a provider that does not see the store gets files, and
         // the store is not written through the links it replaces.
         let before = crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap();
-        let copied = stage_from(host.path(), None, None, None, None).unwrap();
+        let copied = stage_from(host.path(), None, None, Choice::default(), None).unwrap();
         assert!(!copied.written.is_empty());
-        for tool in &copied.listed {
+        for tool in &copied.listed() {
             assert_eq!(linked(&tool.directory), None, "{}", tool.id);
             assert!(root.join(&tool.directory).join("SKILL.md").is_file());
         }
@@ -736,9 +837,145 @@ mod tests {
             crate::connectors::packager::hash_dir(&shared.join("skills")).unwrap(),
             before
         );
-        assert!(stage_from(host.path(), None, None, None, None)
+        assert!(stage_from(host.path(), None, None, Choice::default(), None)
             .unwrap()
             .written
             .is_empty());
+    }
+
+    /// Where every ready skill is mounted, a turn that chooses `pptx` still
+    /// stages every built-in skill the policy allows: `pptx` and what it
+    /// needs are chosen, the rest are mounted; a policy that allows only
+    /// some built-ins narrows what is staged; and the layered indexes list
+    /// what is staged. A later chosen-only turn drops the rest again.
+    #[test]
+    fn mounting_every_ready_skill_stages_the_allowed_built_ins_and_chooses_the_picked_ones() {
+        let host = tempfile::tempdir().unwrap();
+        let root = host.path().join(DIRECTORY);
+        let chosen = ["pptx".to_owned()];
+        let all = stage_from(
+            host.path(),
+            None,
+            None,
+            Choice {
+                chosen: Some(&chosen),
+                allowed: None,
+                mount_ready: true,
+            },
+            None,
+        )
+        .unwrap();
+        let picked: Vec<&str> = all.chosen.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(picked, ["artifact-tools", "pptx"]);
+        assert_eq!(all.built_in.len(), catalogued().unwrap().len());
+        assert_eq!(all.mounted.len(), all.built_in.len() - 2);
+        assert!(all.mounted.iter().any(|t| t.id == "docx"));
+        assert!(all.mounted.iter().all(|t| t.id != "pptx"));
+        assert!(root.join("docx/SKILL.md").is_file(), "mounted, so staged");
+        assert_eq!(
+            std::fs::read_to_string(root.join("INDEX.md")).unwrap(),
+            skills::INDEX,
+            "the layered index lists what is staged"
+        );
+
+        // A policy that allows three skills: the chosen one, its need, and one more mounted.
+        let allowed = ["pptx".to_owned(), "docx".to_owned()];
+        let narrowed = stage_from(
+            host.path(),
+            None,
+            None,
+            Choice {
+                chosen: Some(&chosen),
+                allowed: Some(&allowed),
+                mount_ready: true,
+            },
+            None,
+        )
+        .unwrap();
+        let names: Vec<&str> = narrowed.built_in.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["artifact-tools", "docx", "pptx"]);
+        let mounted: Vec<&str> = narrowed.mounted.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(mounted, ["docx"]);
+        assert!(
+            !root.join("xlsx/SKILL.md").exists(),
+            "not allowed, not staged"
+        );
+        // No choice: every allowed skill is chosen, none merely mounted.
+        let unchosen = stage_from(
+            host.path(),
+            None,
+            None,
+            Choice {
+                chosen: None,
+                allowed: Some(&allowed),
+                mount_ready: true,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(unchosen.chosen.len(), 3);
+        assert!(unchosen.mounted.is_empty());
+
+        // A copied home stays chosen-only: the picked skills and nothing else.
+        let only = stage(host.path(), None, None, Some(&chosen)).unwrap();
+        assert_eq!(only.built_in.len(), 2);
+        assert!(only.mounted.is_empty());
+        assert!(!root.join("docx/SKILL.md").exists());
+    }
+
+    /// The repository's and the person's skills are mounted, not chosen,
+    /// wherever they are staged: the index counts them and search finds them.
+    #[test]
+    fn custom_skills_are_mounted_not_chosen() {
+        let host = tempfile::tempdir().unwrap();
+        let set = repository_set(&[("style", "")]);
+        let mine = user_set(&[("memory-parser", "")]);
+        for mount_ready in [false, true] {
+            let staged = stage_from(
+                host.path(),
+                Some(&set),
+                Some(&mine),
+                Choice {
+                    chosen: Some(&["docx".to_owned()]),
+                    allowed: None,
+                    mount_ready,
+                },
+                None,
+            )
+            .unwrap();
+            let chosen: Vec<&str> = staged.chosen.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(chosen, ["artifact-tools", "docx"], "docx and what it needs");
+            let mounted: Vec<&str> = staged.mounted.iter().map(|t| t.id.as_str()).collect();
+            assert!(
+                mounted.ends_with(&["repository:style", "user:memory-parser"]),
+                "{mounted:?}"
+            );
+            assert_eq!(mounted.contains(&"pptx"), mount_ready);
+        }
+    }
+
+    #[test]
+    fn a_choice_closes_over_needs_and_stays_within_the_allowed_set() {
+        let chosen = ["pptx".to_owned()];
+        let allowed = ["pptx".to_owned()];
+        let choice = Choice {
+            chosen: Some(&chosen),
+            allowed: Some(&allowed),
+            mount_ready: true,
+        };
+        // `pptx` needs `artifact-tools`, which the allowed set brings with it.
+        let staged = choice.staged().unwrap().unwrap();
+        assert!(staged.contains("artifact-tools") && staged.contains("pptx"));
+        let picked = choice.chosen().unwrap().unwrap();
+        assert_eq!(picked, staged);
+        assert!(Choice::default().staged().unwrap().is_none());
+        assert!(Choice::default().chosen().is_none());
+        let bad = ["nope".to_owned()];
+        assert!(Choice {
+            chosen: Some(&bad),
+            ..Choice::default()
+        }
+        .staged()
+        .is_err());
     }
 }

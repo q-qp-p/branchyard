@@ -22,10 +22,15 @@
 //! paths keep working. The harness is given one line ([`Mounted::line`])
 //! instead of a line for the skills and a line for the connectors. The
 //! tree is rewritten each turn, so it is the turn's set whatever an earlier
-//! turn left. Where the provisioner owns a private home for Claude Code or
-//! Codex, the same skills are also linked into the harness's own skills
-//! directory ([`link_native`]), so a harness that loads only frontmatter
-//! loads only these. See `docs/knowledge-skills.md`.
+//! turn left. `INDEX.md` names the *chosen* skills and counts the rest in
+//! its overflow line (`- ...N more: bin/tools search WORDS`): the skills
+//! that are staged and findable but were not picked for the turn, where
+//! every ready skill is mounted (`docs/skill-registry.md`, R2), and any
+//! chosen skill the budget had no room to name. Where the provisioner owns
+//! a private home for Claude Code or Codex, the chosen skills, and only
+//! those, are also linked into the harness's own skills directory
+//! ([`link_native`]), so a harness that loads every frontmatter there loads
+//! only what was chosen. See `docs/knowledge-skills.md`.
 
 use std::fs;
 use std::io;
@@ -82,10 +87,13 @@ pub(crate) const GUEST_ROOT: &str = "/tools";
 pub(crate) const ENV_TOOLS: &str = "BRANCHYARD_TOOLS";
 
 /// Mount the tree in `host`, naming paths as the guest sees them under
-/// `guest`: `skills` are those staged (built-in, then the repository's),
-/// `connectors` the ids of the turn's grant, and `helpers` the turn's
-/// delegation envelope. A turn whose envelope has no helpers (a leaf) gets
-/// no `helpers/INDEX.md`, and one an earlier turn wrote is removed.
+/// `guest`: `chosen` are the skills the index names (the built-in skills
+/// the task picked), `mounted` those staged beside them that it only
+/// counts (the rest of the allowed built-ins where every ready skill is
+/// mounted, the repository's and the person's), `connectors` the ids of
+/// the turn's grant, and `helpers` the turn's delegation envelope. A turn
+/// whose envelope has no helpers (a leaf) gets no `helpers/INDEX.md`, and
+/// one an earlier turn wrote is removed.
 ///
 /// With `root` (`/tools`), the guest also sees the tree there, as a read-only
 /// mount or a copy a provider makes, and not only under the home. A relative
@@ -94,7 +102,8 @@ pub(crate) const ENV_TOOLS: &str = "BRANCHYARD_TOOLS";
 pub(crate) fn mount(
     host: &Path,
     guest: &Path,
-    skills: &[Tool],
+    chosen: &[Tool],
+    mounted: &[Tool],
     connectors: &[String],
     helpers: Option<&crate::Envelope>,
     root: Option<&str>,
@@ -109,7 +118,12 @@ pub(crate) fn mount(
     plan.edit(
         &format!("{DIRECTORY}/INDEX.md"),
         false,
-        Edit::Put(render_index(skills, &described, helpers.is_some())),
+        Edit::Put(render_index(
+            chosen,
+            mounted.len(),
+            &described,
+            helpers.is_some(),
+        )),
     );
     plan.edit(
         &format!("{DIRECTORY}/helpers/INDEX.md"),
@@ -251,11 +265,12 @@ const CONNECTOR_RULES: &str = "Call connectors only through the gateway; never a
     `X-Branchyard-Decision-Key` header, such as `invoice-7-payment`; a repeat of a decision \
     already made is refused with what is known.";
 
-/// `INDEX.md`: how to search, then a line for each tool, with descriptions
-/// cut as far as it takes to fit [`INDEX_BUDGET`].
-fn render_index(skills: &[Tool], connectors: &[Tool], helpers: bool) -> String {
+/// `INDEX.md`: how to search, then a line for each chosen tool and one
+/// counting the `mounted` skills it does not name, with descriptions cut
+/// as far as it takes to fit [`INDEX_BUDGET`].
+fn render_index(skills: &[Tool], mounted: usize, connectors: &[Tool], helpers: bool) -> String {
     for cap in [160, 120, 90, 60, 40, 0] {
-        let text = index_with(skills, connectors, helpers, cap, usize::MAX);
+        let text = index_with(skills, mounted, connectors, helpers, cap, usize::MAX);
         if text.len() <= INDEX_BUDGET {
             return text;
         }
@@ -263,7 +278,7 @@ fn render_index(skills: &[Tool], connectors: &[Tool], helpers: bool) -> String {
     // Names alone, as many as fit.
     let mut shown = skills.len() + connectors.len();
     loop {
-        let text = index_with(skills, connectors, helpers, 0, shown);
+        let text = index_with(skills, mounted, connectors, helpers, 0, shown);
         if text.len() <= INDEX_BUDGET || shown == 0 {
             return text;
         }
@@ -273,6 +288,7 @@ fn render_index(skills: &[Tool], connectors: &[Tool], helpers: bool) -> String {
 
 fn index_with(
     skills: &[Tool],
+    mounted: usize,
     connectors: &[Tool],
     helpers: bool,
     cap: usize,
@@ -285,8 +301,10 @@ fn index_with(
          names it.\n",
     );
     let mut left = shown;
-    let mut section = |title: &str, tools: &[Tool], text: &mut String| {
-        if tools.is_empty() {
+    // `extra` are tools in the tree the section never names: the mounted
+    // skills, counted with any chosen one the budget cut.
+    let mut section = |title: &str, tools: &[Tool], extra: usize, text: &mut String| {
+        if tools.is_empty() && extra == 0 {
             return;
         }
         text.push_str(&format!("\n## {title}\n"));
@@ -297,16 +315,19 @@ fn index_with(
                 describe(&tool.description, cap)
             ));
         }
-        if tools.len() > left {
-            text.push_str(&format!(
-                "- ...{} more: `bin/tools search WORDS`\n",
-                tools.len() - left
-            ));
+        let counted = tools.len().saturating_sub(left) + extra;
+        if counted > 0 {
+            text.push_str(&format!("- ...{counted} more: `bin/tools search WORDS`\n"));
         }
         left = left.saturating_sub(tools.len());
     };
-    section("Skills (skills/NAME/SKILL.md)", skills, &mut text);
-    section("Connectors (connectors/ID/SKILL.md)", connectors, &mut text);
+    section("Skills (skills/NAME/SKILL.md)", skills, mounted, &mut text);
+    section(
+        "Connectors (connectors/ID/SKILL.md)",
+        connectors,
+        0,
+        &mut text,
+    );
     if helpers {
         text.push_str(
             "\n## Helpers\nYou may hand work to other harnesses: `helpers/INDEX.md` lists them and \
@@ -425,12 +446,16 @@ fn native_directory(harness: &str) -> Option<&'static str> {
 /// levels below the home.
 const STAGED_FROM_NATIVE: &str = "../../.branchyard/capabilities";
 
-/// Link `skills` into `harness`'s own skills directory of the private home
-/// `home`, and remove the links an earlier turn made to skills this turn
-/// does not have. Only links into the staged skills are touched: a skill the
-/// harness or its user put there stays. Returns the links changed, relative
-/// to the home; none for a harness without a skills directory, or when
-/// `.claude` or the skills directory is itself a link.
+/// Link `skills`, the turn's *chosen* skills, into `harness`'s own skills
+/// directory of the private home `home`, and remove the links an earlier
+/// turn made to skills this turn does not choose. A merely mounted skill is
+/// never linked here: the harness reads every frontmatter in this
+/// directory into its own context with no budget, which is the cost the
+/// tool tree exists to remove (`docs/skill-registry.md`, section 5). Only
+/// links into the staged skills are touched: a skill the harness or its
+/// user put there stays. Returns the links changed, relative to the home;
+/// none for a harness without a skills directory, or when `.claude` or the
+/// skills directory is itself a link.
 pub(crate) fn link_native(
     home: &Path,
     harness: &str,
@@ -511,7 +536,7 @@ mod tests {
     fn staged(host: &Path) -> Vec<Tool> {
         crate::capabilities::stage(host, None, None, None)
             .unwrap()
-            .listed
+            .listed()
     }
 
     #[test]
@@ -531,7 +556,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
         assert!(skills.iter().any(|s| s.id == "find-tools"));
-        let text = render_index(&skills, &[], false);
+        let text = render_index(&skills, 0, &[], false);
         assert!(text.len() <= INDEX_BUDGET, "{}", text.len());
         for skill in &skills {
             assert!(
@@ -553,13 +578,13 @@ mod tests {
         let many: Vec<Tool> = (0..600)
             .map(|n| tool(&format!("skill-{n:03}"), &"word ".repeat(60), "x"))
             .collect();
-        let text = render_index(&many, &[], false);
+        let text = render_index(&many, 0, &[], false);
         assert!(text.len() <= INDEX_BUDGET, "{}", text.len());
         assert!(text.contains("more: `bin/tools search WORDS`"), "{text}");
         let few: Vec<Tool> = (0..20)
             .map(|n| tool(&format!("skill-{n}"), &"word ".repeat(60), "x"))
             .collect();
-        let text = render_index(&few, &[], false);
+        let text = render_index(&few, 0, &[], false);
         assert!(text.len() <= INDEX_BUDGET);
         assert!(text.contains("skill-19"), "{text}");
         assert!(
@@ -572,7 +597,7 @@ mod tests {
     fn mounting_writes_the_index_the_script_and_two_links_and_repeats_unchanged() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        let first = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        let first = mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         let tree = host.path().join(DIRECTORY);
         assert!(first.line.contains("/g/.branchyard/tools/INDEX.md"));
         assert!(std::fs::read_to_string(tree.join("INDEX.md"))
@@ -590,7 +615,7 @@ mod tests {
         assert!(tree.join("skills/find-tools/SKILL.md").is_file());
         assert!(!tree.join("connectors").exists(), "no grant, no link");
         assert!(first.written.iter().any(|p| p.ends_with("bin/tools")));
-        let again = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        let again = mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         assert!(again.written.is_empty(), "{:?}", again.written);
     }
 
@@ -603,6 +628,7 @@ mod tests {
             host.path(),
             Path::new("/branchyard/home"),
             &skills,
+            &[],
             &granted,
             None,
             Some("/tools"),
@@ -626,7 +652,16 @@ mod tests {
         assert!(mounted.line.contains("`/tools/bin/tools search WORDS`"));
         assert!(mounted.line.chars().count() < LINE_BUDGET);
         // Remounted for a local turn, the links are relative again.
-        mount(host.path(), Path::new("/g"), &skills, &granted, None, None).unwrap();
+        mount(
+            host.path(),
+            Path::new("/g"),
+            &skills,
+            &[],
+            &granted,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_link(tree.join("skills")).unwrap(),
             Path::new("../capabilities")
@@ -637,7 +672,7 @@ mod tests {
     fn the_script_runs_from_the_mounted_tree_and_finds_a_staged_skill() {
         let host = tempfile::tempdir().unwrap();
         let skills = staged(host.path());
-        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         let output = std::process::Command::new("python3")
             .arg(host.path().join(DIRECTORY).join("bin/tools"))
             .args(["search", "arithmetic", "units"])
@@ -660,7 +695,16 @@ mod tests {
         .unwrap();
         let skills = staged(host.path());
         let granted = vec!["github".to_owned()];
-        let first = mount(host.path(), Path::new("/g"), &skills, &granted, None, None).unwrap();
+        let first = mount(
+            host.path(),
+            Path::new("/g"),
+            &skills,
+            &[],
+            &granted,
+            None,
+            None,
+        )
+        .unwrap();
         let tree = host.path().join(DIRECTORY);
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
         assert!(
@@ -671,7 +715,7 @@ mod tests {
         assert!(index.len() <= INDEX_BUDGET);
         assert!(tree.join("connectors/github/SKILL.md").is_file());
         assert!(first.written.contains(&format!("{DIRECTORY}/connectors")));
-        let none = mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        let none = mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         assert!(!tree.join("connectors").exists());
         assert!(none.written.contains(&format!("{DIRECTORY}/connectors")));
         let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
@@ -685,7 +729,7 @@ mod tests {
         let own = host.path().join(DIRECTORY).join("skills");
         std::fs::create_dir_all(&own).unwrap();
         std::fs::write(own.join("mine.md"), "x").unwrap();
-        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         assert!(own.join("mine.md").is_file());
     }
 
@@ -696,7 +740,7 @@ mod tests {
         std::fs::create_dir_all(host.path().join(".branchyard")).unwrap();
         std::os::unix::fs::symlink(outside.path(), host.path().join(DIRECTORY)).unwrap();
         let skills = staged(host.path());
-        assert!(mount(host.path(), Path::new("/g"), &skills, &[], None, None).is_err());
+        assert!(mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).is_err());
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
@@ -784,6 +828,7 @@ mod tests {
             Path::new("/g"),
             &skills,
             &[],
+            &[],
             Some(&grant),
             None,
         )
@@ -829,6 +874,7 @@ mod tests {
                 Path::new("/g"),
                 &skills,
                 &[],
+                &[],
                 leaf.as_ref(),
                 None,
             )
@@ -843,6 +889,7 @@ mod tests {
             Path::new("/g"),
             &skills,
             &[],
+            &[],
             Some(&grant),
             None,
         )
@@ -853,12 +900,13 @@ mod tests {
             Path::new("/g"),
             &skills,
             &[],
+            &[],
             Some(&grant),
             None,
         )
         .unwrap();
         assert!(again.written.is_empty(), "{:?}", again.written);
-        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         assert!(
             !tree.join("helpers/INDEX.md").exists(),
             "the next turn is a leaf"
@@ -874,6 +922,7 @@ mod tests {
             host.path(),
             Path::new("/g"),
             &skills,
+            &[],
             &[],
             Some(&grant),
             None,
@@ -893,7 +942,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&staged).unwrap(), *text, "{name}");
         }
         // A leaf's next turn drops them.
-        mount(host.path(), Path::new("/g"), &skills, &[], None, None).unwrap();
+        mount(host.path(), Path::new("/g"), &skills, &[], &[], None, None).unwrap();
         for (name, _) in references {
             assert!(!tree
                 .join(DELEGATE_REFERENCES)
@@ -916,5 +965,126 @@ mod tests {
         );
         assert!(render_helpers(&envelope(&["codex"], 1, 2))
             .contains("at most 1 helper at once, 2 levels deep"));
+    }
+
+    /// R2: the index names the chosen skills and counts the mounted ones in
+    /// its overflow line, which stays within the budget whatever is mounted,
+    /// and a chosen skill the budget cut joins the count.
+    #[test]
+    fn the_index_names_the_chosen_skills_and_counts_the_mounted_ones() {
+        let host = tempfile::tempdir().unwrap();
+        let all = crate::capabilities::stage(host.path(), None, None, None).unwrap();
+        let (chosen, mounted): (Vec<Tool>, Vec<Tool>) = all
+            .listed()
+            .into_iter()
+            .partition(|t| t.id == "find-tools" || t.id == "docx");
+        let mounted_count = mounted.len();
+        let first = mount(
+            host.path(),
+            Path::new("/g"),
+            &chosen,
+            &mounted,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let tree = host.path().join(DIRECTORY);
+        let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
+        assert!(index.len() <= INDEX_BUDGET);
+        assert!(index.contains("- docx: Create, inspect"), "{index}");
+        assert!(index.contains("- find-tools:"), "{index}");
+        assert!(
+            !index.contains("- pptx"),
+            "a mounted skill is counted, not named: {index}"
+        );
+        assert!(
+            index.contains(&format!(
+                "- ...{mounted_count} more: `bin/tools search WORDS`\n"
+            )),
+            "{index}"
+        );
+        // Mounted skills are in the tree, so the script finds them, below a chosen one of equal match.
+        assert!(tree.join("skills/pptx/SKILL.md").is_file());
+        let output = std::process::Command::new("python3")
+            .arg(tree.join("bin/tools"))
+            .args(["search", "pptx", "slides"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(said.contains("skill      pptx"), "{said}");
+        // Nothing mounted: no overflow line, as before R2.
+        mount(host.path(), Path::new("/g"), &chosen, &[], &[], None, None).unwrap();
+        let index = std::fs::read_to_string(tree.join("INDEX.md")).unwrap();
+        assert!(!index.contains("more:"), "{index}");
+        assert!(!first.written.is_empty());
+        // Many mounted and many chosen: the budget holds, and the count carries the cut.
+        let many: Vec<Tool> = (0..600)
+            .map(|n| tool(&format!("skill-{n:03}"), &"word ".repeat(60), "x"))
+            .collect();
+        let text = render_index(&many, 2_000, &[], false);
+        assert!(text.len() <= INDEX_BUDGET, "{}", text.len());
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("- ..."))
+            .expect("an overflow line");
+        let counted: usize = line
+            .trim_start_matches("- ...")
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(counted > 2_000, "{line}");
+        let named = text.lines().filter(|l| l.starts_with("- skill-")).count();
+        assert_eq!(named + counted, 600 + 2_000);
+    }
+
+    /// A model-surface test: the harness's own skills directory is context
+    /// it reads whole, so it holds the chosen skills and none of the mounted
+    /// ones, whatever the tree stages.
+    #[test]
+    fn the_native_skills_directory_holds_the_chosen_skills_only() {
+        let home = tempfile::tempdir().unwrap();
+        let all = crate::capabilities::stage(home.path(), None, None, None).unwrap();
+        let (chosen, mounted): (Vec<Tool>, Vec<Tool>) =
+            all.listed().into_iter().partition(|t| t.id == "docx");
+        assert!(mounted.len() > 10);
+        link_native(home.path(), "claude-code", &chosen).unwrap();
+        let native = home.path().join(".claude/skills");
+        let mut names: Vec<String> = std::fs::read_dir(&native)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["docx"]);
+        assert!(home
+            .path()
+            .join(DIRECTORY)
+            .parent()
+            .unwrap()
+            .join("capabilities/pptx/SKILL.md")
+            .is_file());
+        // A later turn that chooses another set relinks to exactly that set.
+        let (next, _): (Vec<Tool>, Vec<Tool>) = all
+            .listed()
+            .into_iter()
+            .partition(|t| t.id == "pptx" || t.id == "artifact-tools");
+        let changed = link_native(home.path(), "claude-code", &next).unwrap();
+        assert_eq!(
+            changed,
+            [
+                ".claude/skills/artifact-tools",
+                ".claude/skills/docx",
+                ".claude/skills/pptx"
+            ]
+        );
+        let mut names: Vec<String> = std::fs::read_dir(&native)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["artifact-tools", "pptx"]);
     }
 }

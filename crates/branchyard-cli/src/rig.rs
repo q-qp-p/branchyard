@@ -1895,8 +1895,10 @@ fn provision(
         model: seat.model.clone(),
         effort: seat.effort,
         telemetry: seat.telemetry.clone(),
-        // A rig's seats stage every built-in skill.
+        // A rig's seats stage every built-in skill, and a local rig has no
+        // policy to narrow what they may mount.
         skills: None,
+        allowed_skills: None,
     }
 }
 

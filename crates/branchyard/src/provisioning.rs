@@ -358,6 +358,10 @@ pub(crate) struct Standing<'a> {
     /// path ([`crate::toolstore::for_turn`]): built-in skills in it are
     /// linked, not copied.
     pub store: Option<&'a crate::toolstore::ToolStore>,
+    /// Whether every allowed built-in skill is staged, chosen or not
+    /// ([`crate::providers::ProviderKind::mounts_ready_skills`]); else the
+    /// chosen ones alone, as in a home that is copied into a sandbox.
+    pub mount_ready: bool,
 }
 
 /// Plan and apply the turn's provisioning. A failure is the turn's failure
@@ -383,6 +387,7 @@ pub(crate) fn prepare(
         manifest,
         manifest_written,
         store,
+        mount_ready,
     } = standing;
     let spec = record.provision.clone().unwrap_or_default();
     let (workspace, home) = placement::guest_paths(record);
@@ -409,21 +414,28 @@ pub(crate) fn prepare(
         &capability_home,
         repository,
         user_skills,
-        spec.skills.as_deref(),
+        crate::capabilities::Choice {
+            chosen: spec.skills.as_deref(),
+            allowed: spec.allowed_skills.as_deref(),
+            mount_ready,
+        },
         store,
     )?;
     let granted_connectors = connectors.map(|c| c.connectors.clone()).unwrap_or_default();
     let tools = crate::tooltree::mount(
         &capability_home,
         capability_guest,
-        &capabilities.listed,
+        &capabilities.chosen,
+        &capabilities.mounted,
         &granted_connectors,
         record.grant.as_ref().map(|g| &g.envelope),
         // A provider that controls the guest filesystem also exposes the tree at /tools.
         crate::providers::of(record.provider.as_ref()).tools_root(),
     )?;
+    // The harness's own skills directory is context it reads whole: the
+    // chosen skills go there, and none of the merely mounted ones.
     let native_links = match record.home.as_deref() {
-        Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.listed)?,
+        Some(home) => crate::tooltree::link_native(home, profile.harness, &capabilities.chosen)?,
         None => Vec::new(),
     };
     let skill_set = crate::skills::skill_set(capabilities.built_in, skills, user_skills);

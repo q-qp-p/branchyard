@@ -676,3 +676,41 @@ fn a_sandboxed_turn_records_its_image_and_a_receipt_of_another_digest_fails_befo
         assert_deleted(&bin, kind);
     }
 }
+
+/// R2: a provider that copies the home into its sandbox stays chosen-only.
+/// A container turn that chooses `docx` carries `docx` and what it needs
+/// and no other built-in skill, its index counts nothing, and its manifest
+/// mounts only those two.
+#[test]
+fn a_copied_home_stays_chosen_only() {
+    let (_serial, f, bin, mut options) = fixture(Native::Container);
+    options.provision = Some(Provisioning {
+        skills: Some(vec!["docx".into()]),
+        ..Provisioning::default()
+    });
+    let branch = f
+        .yard
+        .task(
+            "SH ls \"$HOME/.branchyard/capabilities\" > caps.txt; \
+             cp \"$BRANCHYARD_TOOLS/INDEX.md\" index.txt",
+        )
+        .options(options)
+        .name("chosen-only")
+        .run()
+        .unwrap();
+    assert_eq!(branch.info().status, BranchStatus::Ready);
+    let caps = fs::read_to_string(branch.info().worktree.join("caps.txt")).unwrap();
+    let staged: Vec<&str> = caps
+        .lines()
+        .filter(|l| !["INDEX.md", "topics", "upstream.lock.json"].contains(l))
+        .collect();
+    assert_eq!(staged, ["artifact-tools", "docx"], "{caps}");
+    let index = fs::read_to_string(branch.info().worktree.join("index.txt")).unwrap();
+    assert!(index.contains("- docx:"), "{index}");
+    assert!(!index.contains("more:"), "nothing is counted: {index}");
+    let manifest = branch.manifest().unwrap().unwrap();
+    let mut mounted: Vec<&str> = manifest.mounted.iter().map(|s| s.id.as_str()).collect();
+    mounted.sort_unstable();
+    assert_eq!(mounted, ["artifact-tools", "docx"]);
+    assert_deleted(&bin, Native::Container);
+}

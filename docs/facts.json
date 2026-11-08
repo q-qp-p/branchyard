@@ -496,6 +496,35 @@
       "help": "Connector gateway call latency in operations this process ran, by connector and decision."
     },
     {
+      "name": "branchyard_skill_searches_total",
+      "exposed": "branchyard_skill_searches_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [
+        "kind"
+      ],
+      "help": "Searches of the tool tree (tools search) in turns this process ran, by the kind searched (all, skill, reference, connector, operation, helper)."
+    },
+    {
+      "name": "branchyard_skill_opens_total",
+      "exposed": "branchyard_skill_opens_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [
+        "source",
+        "level"
+      ],
+      "help": "Skills, references, connectors, operations and helpers opened (tools show) in turns this process ran, by source (built_in, repository, user, connector, helper) and level (1 to 3)."
+    },
+    {
+      "name": "branchyard_skill_search_unopened_total",
+      "exposed": "branchyard_skill_search_unopened_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [],
+      "help": "Searches of the tool tree followed by no open before the turn ended, in turns this process ran."
+    },
+    {
       "name": "branchyard_model_calls_total",
       "exposed": "branchyard_model_calls_total",
       "type": "counter",

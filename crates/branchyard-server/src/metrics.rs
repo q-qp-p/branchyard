@@ -206,6 +206,15 @@ pub const USAGE_COST: &str = "branchyard_usage_cost_usd_total";
 pub const TOOL_DURATION: &str = "branchyard_tool_call_duration_seconds";
 /// A connector gateway call's recorded latency.
 pub const CONNECTOR_DURATION: &str = "branchyard_connector_call_duration_seconds";
+/// Searches of the tool tree turns ran (`tools search`), by the `--kind`
+/// they were narrowed to (`all` for none).
+pub const SKILL_SEARCHES: &str = "branchyard_skill_searches_total";
+/// Skills, references, connectors, operations and helpers turns opened
+/// (`tools show`), by source and level.
+pub const SKILL_OPENS: &str = "branchyard_skill_opens_total";
+/// Searches followed by no open before the turn ended: the misses the
+/// skill-discovery eval looks at.
+pub const SKILL_SEARCH_UNOPENED: &str = "branchyard_skill_search_unopened_total";
 
 /// Every family this server exposes, in the order it is written.
 pub const FAMILIES: &[Family] = &[
@@ -358,6 +367,24 @@ pub const FAMILIES: &[Family] = &[
         "s",
         "Connector gateway call latency in operations this process ran, by connector and decision.",
         CALL_SECONDS,
+    ),
+    family(
+        SKILL_SEARCHES,
+        Kind::Counter,
+        "",
+        "Searches of the tool tree (tools search) in turns this process ran, by the kind searched (all, skill, reference, connector, operation, helper).",
+    ),
+    family(
+        SKILL_OPENS,
+        Kind::Counter,
+        "",
+        "Skills, references, connectors, operations and helpers opened (tools show) in turns this process ran, by source (built_in, repository, user, connector, helper) and level (1 to 3).",
+    ),
+    family(
+        SKILL_SEARCH_UNOPENED,
+        Kind::Counter,
+        "",
+        "Searches of the tool tree followed by no open before the turn ended, in turns this process ran.",
     ),
     family(
         MODEL_CALLS,
@@ -571,6 +598,8 @@ pub fn label_order(name: &str) -> &'static [&'static str] {
         TOOL_DURATION => &["harness", "tool"],
         COST => &["tenant", "harness"],
         CONNECTOR_CALLS | CONNECTOR_DURATION => &["connector", "decision"],
+        SKILL_SEARCHES => &["kind"],
+        SKILL_OPENS => &["source", "level"],
         MODEL_CALLS => &["model", "decision"],
         MODEL_TOKENS => &["model", "kind"],
         MODEL_COST => &["model"],

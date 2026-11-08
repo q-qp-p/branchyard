@@ -315,6 +315,11 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             "knowledge": activity,
             "text": activity.describe(),
         }),
+        Activity::Skill(activity) => json!({
+            "activity": "skill",
+            "skill": activity,
+            "text": activity.describe(),
+        }),
         Activity::Plan(activity) => json!({
             "activity": "plan",
             "plan": activity,

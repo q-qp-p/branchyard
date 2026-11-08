@@ -146,7 +146,7 @@ A session resolves what it was admitted with once, and every turn of it runs on 
 | `grants` | The connector grant, after the person's ceiling |
 | `skills` | `all`, or `{"chosen": [ids]}` |
 | `connectors` | Each granted connector's id and the packager's `Bundle.hash` as `digest` (empty if the gateway did not serve it), and `content`, the BLAKE3 hash of its package's files from the [tool store](tools-model.md#4-one-turn-remotely-lifecycle-and-delivery) index when the store had the entry |
-| `skill_digests` | The BLAKE3 hash of each built-in skill staged for the session (`id`, `digest`), the digest in its tool-store path; absent from a manifest resolved before they were recorded |
+| `mounted` | Every skill the session's tool tree mounts, chosen or not (`id`, `digest`, and `source` for a `repository:` or `user:` entry; a built-in entry carries none): a built-in skill's digest is the one in its tool-store path, the others' is `skillset::digest` ([skill registry, section 4](skill-registry.md#4-identity-the-manifest)); absent from a manifest resolved before they were recorded, and read from `skill_digests`, the field's name before R2 |
 | `helpers` | The delegation envelope; absent when the session may not delegate |
 | `models`, `network` | The model globs it may call and its network policy, as the token carries them |
 | `policy_version` | The tenant's [policy version](server.md#tool-policy) at admission, `0` without a server |

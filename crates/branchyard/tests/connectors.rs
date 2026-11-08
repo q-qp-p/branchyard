@@ -1356,7 +1356,7 @@ fn a_skill_this_host_holds_in_other_files_fails_the_turn_naming_both_digests() {
         .unwrap();
     assert_ran(&branch);
     let admitted = manifest_of(&branch);
-    assert!(!admitted.skill_digests.is_empty());
+    assert!(!admitted.mounted.is_empty());
     // The same turn again: nothing differs, and the store is not rehashed
     // to find out (the unit tests count that); it runs.
     let again = resend(&branch, "SH echo marker=two", TaskOptions::default());
@@ -1364,7 +1364,7 @@ fn a_skill_this_host_holds_in_other_files_fails_the_turn_naming_both_digests() {
 
     // A store entry edited in place.
     let docx = admitted
-        .skill_digests
+        .mounted
         .iter()
         .find(|s| s.id == "docx")
         .unwrap()
@@ -1381,7 +1381,7 @@ fn a_skill_this_host_holds_in_other_files_fails_the_turn_naming_both_digests() {
     // A build that embeds another docx than the manifest admitted: the
     // record says a digest this build does not hold.
     common::edit_record(&f.root, "skilled", |record| {
-        let digests = record["manifest"]["skill_digests"].as_array_mut().unwrap();
+        let digests = record["manifest"]["mounted"].as_array_mut().unwrap();
         for skill in digests.iter_mut().filter(|s| s["id"] == "docx") {
             skill["digest"] = "feedface".into();
         }

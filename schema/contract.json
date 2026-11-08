@@ -1267,6 +1267,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -3190,6 +3200,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -7368,6 +7388,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -8322,6 +8352,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -15067,6 +15107,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -16625,6 +16675,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -17996,6 +18056,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -31065,6 +31135,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -39269,6 +39349,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -43491,6 +43584,139 @@
             }
           ],
           "description": "How a turn's egress policy was applied."
+        },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
         },
         "Adoption": {
           "type": "object",
@@ -45337,6 +45563,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -49559,6 +49798,139 @@
             }
           ],
           "description": "How a turn's egress policy was applied."
+        },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
         },
         "Adoption": {
           "type": "object",
@@ -58258,6 +58630,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -62481,6 +62866,139 @@
           ],
           "description": "How a turn's egress policy was applied."
         },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
+        },
         "Adoption": {
           "type": "object",
           "properties": {
@@ -66663,6 +67181,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -68897,6 +69425,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -71150,6 +71688,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -73399,6 +73947,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -75990,6 +76548,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -78364,6 +78932,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -80596,6 +81174,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -82841,6 +83429,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."

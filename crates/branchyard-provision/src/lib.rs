@@ -194,6 +194,14 @@ pub struct Provisioning {
     /// [`built_in`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+    /// The built-in skills the caller's tool policy allows, by id, which
+    /// are the ones a turn may *mount* beside the chosen ones where
+    /// linking is free (`docs/skill-registry.md`, R2): a server sets it
+    /// from the policy's `skills` part when the policy has one. Unset:
+    /// every built-in skill is allowed. A chosen skill outside it is
+    /// refused at admission, never here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_skills: Option<Vec<String>>,
 }
 
 impl Provisioning {
