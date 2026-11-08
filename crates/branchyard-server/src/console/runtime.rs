@@ -723,21 +723,7 @@ fn chosen_tools(
     // The built-in skills the policy allows, which a turn may mount beside
     // the chosen ones where linking is free (docs/skill-registry.md, R2);
     // unset when the policy has no skills part, which allows them all.
-    let allowed: Option<Vec<String>> = match resolved.store.skills.is_some() {
-        true => {
-            let catalogue =
-                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
-            Some(
-                catalogue
-                    .skills
-                    .iter()
-                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
-                    .map(|s| s.id.clone())
-                    .collect(),
-            )
-        }
-        false => None,
-    };
+    let allowed = allowed_skills(&resolved.store)?;
     match &provision.skills {
         Some(asked) => {
             branchyard_provision::built_in::check(asked).map_err(|why| {
@@ -833,6 +819,28 @@ fn chosen_tools(
         "helpers": helpers,
     });
     Ok(Chosen { delegation, view })
+}
+
+/// The built-in skills `store` allows, by id: what a turn may mount beside
+/// the chosen ones where linking is free. Unset when the policy has no
+/// skills part, which allows them all. Admission records it; every later
+/// turn computes it again from the policy as it then stands
+/// ([`super::execution`], `claim_policy`) and the engine narrows to it.
+pub(super) fn allowed_skills(
+    store: &branchyard_client::workspace_api::ToolPolicy,
+) -> Result<Option<Vec<String>>, ApiError> {
+    if store.skills.is_none() {
+        return Ok(None);
+    }
+    let catalogue = branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+    Ok(Some(
+        catalogue
+            .skills
+            .iter()
+            .filter(|s| super::tools::skill_usable(&catalogue, store, &s.id))
+            .map(|s| s.id.clone())
+            .collect(),
+    ))
 }
 
 fn review_candidate(

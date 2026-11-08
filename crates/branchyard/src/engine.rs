@@ -739,7 +739,16 @@ fn run(
         deadline.map(|at| deadline_capped(now_ms(), at.saturating_duration_since(Instant::now())));
     // One scope: the person's ceiling over what the branch asked for,
     // which its connectors, models, network and token all follow.
-    let (scoped, narrowed) = crate::access::scoped(turn.yard, record);
+    let (mut scoped, narrowed) = crate::access::scoped(turn.yard, record);
+    // The skills the policy allows as of this call narrow what the branch
+    // was admitted with (`TaskOptions::allowed_skills`), for the manifest and
+    // for what the turn mounts.
+    if turn.options.allowed_skills.is_some() {
+        scoped
+            .provision
+            .get_or_insert_with(Default::default)
+            .narrow_allowed_skills(turn.options.allowed_skills.as_deref());
+    }
     if let Some(narrowed) = narrowed {
         recorder.record(Activity::Access(Box::new(narrowed)))?;
     }
@@ -965,6 +974,7 @@ fn run(
             user_skills: user_skills.as_ref(),
             manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
             manifest_written,
+            allowed_skills: turn.options.allowed_skills.as_deref(),
             store: tool_store.as_deref(),
             mount_ready: crate::providers::of(record.provider.as_ref())
                 .mounts_ready_skills(turn.yard),

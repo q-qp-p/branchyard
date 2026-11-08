@@ -939,6 +939,18 @@ async fn a_claimed_start_is_checked_again_when_the_policy_moved_since_admission(
     let sid = kept["session_id"].as_str().unwrap();
     let manifest = repo.yard.branch(sid).unwrap().manifest().unwrap().unwrap();
     assert_eq!(manifest.policy_version, 2);
+    // What the turn mounts follows the policy as it now stands: the session
+    // was admitted with docx and pptx allowed, and pptx is no longer mounted.
+    assert!(manifest.mounted_skill("docx").is_some());
+    assert!(
+        manifest.mounted_skill("pptx").is_none(),
+        "a skill the policy withdrew is not mounted: {:?}",
+        manifest
+            .mounted
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>()
+    );
     // The console shows the manifest's digest on the session.
     let (status, detail) = fixture
         .json(

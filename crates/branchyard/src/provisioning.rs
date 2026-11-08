@@ -358,6 +358,10 @@ pub(crate) struct Standing<'a> {
     /// Whether this turn wrote the manifest file (it is rewritten only when
     /// it changed), so `provisioned.files` names it only then.
     pub manifest_written: bool,
+    /// The skills the policy allows as of this call
+    /// ([`crate::TaskOptions::allowed_skills`]), which narrow the record's
+    /// own set for this turn.
+    pub allowed_skills: Option<&'a [String]>,
     /// The shared tool store, when the turn's harness sees it at its own
     /// path ([`crate::toolstore::for_turn`]): built-in skills in it are
     /// linked, not copied.
@@ -390,10 +394,12 @@ pub(crate) fn prepare(
         user_skills,
         manifest,
         manifest_written,
+        allowed_skills,
         store,
         mount_ready,
     } = standing;
-    let spec = record.provision.clone().unwrap_or_default();
+    let mut spec = record.provision.clone().unwrap_or_default();
+    spec.narrow_allowed_skills(allowed_skills);
     let (workspace, home) = placement::guest_paths(record);
     let manifest_guest = format!(
         "{}/{}",

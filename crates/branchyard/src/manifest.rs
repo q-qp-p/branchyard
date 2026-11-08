@@ -225,8 +225,17 @@ impl TurnManifest {
     /// version and the time are not. The repository's and the person's own
     /// skills are: a person who trusts another set, or edits their own
     /// folder, chose other tools, so their entries count with their digests
-    /// ([`ManifestSkill`]).
+    /// ([`ManifestSkill`]). Which built-in skills are mounted (their ids,
+    /// not their digests) counts too: a policy narrowed since the manifest
+    /// was written mounts fewer, and that is other tools.
     fn tools(&self) -> Value {
+        let mut built_in: Vec<&str> = self
+            .mounted
+            .iter()
+            .filter(|skill| skill.source == Source::BuiltIn)
+            .map(|skill| skill.id.as_str())
+            .collect();
+        built_in.sort_unstable();
         let custom: Vec<&ManifestSkill> = self
             .mounted
             .iter()
@@ -237,6 +246,7 @@ impl TurnManifest {
             "grants": self.grants,
             "skills": self.skills,
             "custom": custom,
+            "built_in": built_in,
             "helpers": self.helpers,
             "models": self.models,
             "network": self.network,
@@ -500,7 +510,16 @@ mod tests {
         // the repository's, is the person's choice of tools.
         let mut built_in = manifest();
         built_in.mounted.push(ManifestSkill::built_in("docx", "d1"));
-        assert!(m.same_tools(&built_in));
+        let mut rebuilt = built_in.clone();
+        rebuilt.mounted[0].digest = "d2".into();
+        assert!(built_in.same_tools(&rebuilt), "a new digest is the world's");
+        // Which built-in skills are mounted is a change of tools: a policy
+        // narrowed since mounts fewer.
+        assert!(!m.same_tools(&built_in));
+        let mut fewer = built_in.clone();
+        fewer.mounted.clear();
+        assert!(!built_in.same_tools(&fewer));
+        assert!(m.same_tools(&fewer));
         let mut mine = manifest();
         mine.mounted.push(ManifestSkill {
             id: "user:memory-parser".into(),

@@ -172,6 +172,7 @@ impl Live {
             workspace: None,
             actor: None,
             policy_version: None,
+            allowed_skills: None,
             trigger: None,
             // A local harness inherits this process's environment,
             // `TRACEPARENT` included.

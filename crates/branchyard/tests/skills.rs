@@ -470,6 +470,61 @@ fn an_untrusted_memory_bundle_is_withheld_with_its_reason_until_trusted() {
     ));
 }
 
+/// The skills a turn mounts follow the policy as it stands for that turn:
+/// a branch admitted with no limit mounts every built-in skill, and the next
+/// send, which carries the narrowed set a server computed from the current
+/// policy, mounts only that, in the staged tree and in the manifest.
+#[test]
+fn a_policy_narrowed_after_admission_mounts_fewer_skills_the_next_turn() {
+    let f = Fixture::new();
+    let ls = "SH ls \"$HOME/.branchyard/capabilities\" > caps.txt\nWRITE a.txt=1";
+    let options = TaskOptions {
+        isolated: true,
+        provision: Some(Provisioning {
+            skills: Some(vec!["docx".into()]),
+            ..Provisioning::default()
+        }),
+        ..allowed(&f)
+    };
+    let branch = f
+        .yard
+        .task(ls)
+        .options(options.clone())
+        .name("narrowed")
+        .run()
+        .unwrap();
+    let worktree = branch.info().worktree.clone();
+    let caps = fs::read_to_string(worktree.join("caps.txt")).unwrap();
+    assert!(caps.lines().any(|l| l == "pptx"), "{caps}");
+    let first = branch.manifest().unwrap().unwrap();
+    assert!(first.mounted_skill("pptx").is_some());
+
+    let narrowed = TaskOptions {
+        allowed_skills: Some(vec!["docx".into()]),
+        ..options
+    };
+    let again = branch
+        .send(
+            "SH ls \"$HOME/.branchyard/capabilities/pptx\" > pptx2.txt 2>&1\nWRITE b.txt=2",
+            narrowed,
+        )
+        .unwrap();
+    let second = again.manifest().unwrap().unwrap();
+    assert!(
+        second.mounted_skill("pptx").is_none(),
+        "{:?}",
+        second
+            .mounted
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(second.mounted_skill("docx").is_some());
+    // Nothing of the dropped skill is left in the tree.
+    let pptx = fs::read_to_string(worktree.join("pptx2.txt")).unwrap();
+    assert!(!pptx.contains("SKILL.md"), "{pptx}");
+}
+
 /// R2: a local turn mounts every ready skill and names only the chosen
 /// ones. With `docx` chosen, the tree stages every built-in skill, the
 /// trusted repository set and the person's folder; `INDEX.md` names `docx`

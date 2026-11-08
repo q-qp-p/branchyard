@@ -156,7 +156,7 @@ pub(crate) fn execute(
                     }
                     None => crate::work::task_options(app, &repo, &request)?,
                 };
-                options.policy_version = Some(claim_policy(app, &caller, &session)?);
+                claim_policy(app, &caller, &session, &mut options)?;
                 options.join_task = Some(text(&workspace.body, "task_id")?.into());
                 options.actor = Some(branchyard::connectors::Actor {
                     subject: caller.0.connector_subject(),
@@ -193,7 +193,7 @@ pub(crate) fn execute(
                     ));
                 }
                 let mut options = crate::work::send_options(app, &repo, &request)?;
-                options.policy_version = Some(claim_policy(app, &caller, &session)?);
+                claim_policy(app, &caller, &session, &mut options)?;
                 let branch = repo
                     .yard
                     .branch(text(&session.body, "branch")?)
@@ -306,7 +306,25 @@ pub(crate) fn execute(
 /// allows less than the admitting one refuses `policy_changed` and asks
 /// for re-admission ([`super::policy::readmit`]); one that allows more
 /// changes nothing.
-fn claim_policy(app: &App, caller: &Caller, session: &Record) -> Result<u64, ApiError> {
+fn claim_policy(
+    app: &App,
+    caller: &Caller,
+    session: &Record,
+    options: &mut branchyard::TaskOptions,
+) -> Result<(), ApiError> {
+    let now = claim_version(app, caller, session, options)?;
+    options.policy_version = Some(now);
+    Ok(())
+}
+
+/// [`claim_policy`]'s check; the version, and with it the skills the
+/// policy allows as it stands (`options.allowed_skills`) when it moved.
+fn claim_version(
+    app: &App,
+    caller: &Caller,
+    session: &Record,
+    options: &mut branchyard::TaskOptions,
+) -> Result<u64, ApiError> {
     let now = super::policy::current_version(app, caller.tenant())?;
     let tools = &session.body["tools"];
     let own = super::policy::Ceiling::of_this_server(app, caller);
@@ -317,6 +335,9 @@ fn claim_policy(app: &App, caller: &Caller, session: &Record) -> Result<u64, Api
     }
     let stored = super::policy::resolved(app, caller)?.store;
     super::policy::check_tools(&stored, &ceiling, tools)?;
+    // The skills a turn mounts follow the policy as it stands now, not as it
+    // was at admission: the engine narrows the session's set to this.
+    options.allowed_skills = super::runtime::allowed_skills(&stored)?;
     for _ in 0..8 {
         let current = get(app, Collection::Sessions, &session.id)?;
         let mut body = current.body.clone();

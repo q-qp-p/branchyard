@@ -1972,6 +1972,13 @@ pub struct TaskOptions {
     /// tools against the policy) updates it. `None`: no server, or no
     /// change. See `docs/connectors.md#the-turn-manifest`.
     pub policy_version: Option<u64>,
+    /// The built-in skills the policy allows as it stands for this call,
+    /// by id: a server that re-checked the session's tools sets it. Each
+    /// turn narrows the branch's stored
+    /// [`Provisioning::allowed_skills`] to it ([`Provisioning::narrow_allowed_skills`]),
+    /// so a policy narrowed after admission mounts fewer skills the next
+    /// turn; it never widens them. `None`: no word, the stored set stands.
+    pub allowed_skills: Option<Vec<String>>,
     /// The server trigger run that started a new task, recorded on it
     /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
     /// Read only when a branch starts a new task.

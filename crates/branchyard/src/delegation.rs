@@ -3497,6 +3497,7 @@ impl Local {
         if model.is_some() || provision.is_some() {
             provision.get_or_insert_with(Default::default).model = model;
         }
+        keep_within_parent_skills(&mut provision, caller.provision.as_ref());
         // Connectors: what the request asks for, else its seat's, else the
         // parent's; always within the parent's grant.
         let parent_grant = caller
@@ -5491,6 +5492,20 @@ pub(crate) fn dispatch(local: &Local, tool: &str, arguments: Value) -> Result<Va
     }
 }
 
+/// The skills a child may mount are never more than its parent's: a seat
+/// that sets none inherits the parent's set rather than every built-in
+/// skill, and one that sets its own keeps what both allow.
+fn keep_within_parent_skills(
+    provision: &mut Option<crate::Provisioning>,
+    parent: Option<&crate::Provisioning>,
+) {
+    if let Some(allowed) = parent.and_then(|p| p.allowed_skills.as_deref()) {
+        provision
+            .get_or_insert_with(Default::default)
+            .narrow_allowed_skills(Some(allowed));
+    }
+}
+
 /// A child's model: what its spawn asks for, else its seat's, else its
 /// parent's when it runs its parent's harness (another harness's model
 /// would mean nothing to it), else none, its harness's default. `seat` is
@@ -6355,6 +6370,35 @@ Checks on the merged result: \
     }
 
     /// A child naming no model keeps its parent's on its parent's harness
+    #[test]
+    fn a_seated_child_mounts_no_more_skills_than_its_parent_may() {
+        let ids = |ids: &[&str]| Some(ids.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        let parent = crate::Provisioning {
+            allowed_skills: ids(&["docx"]),
+            ..crate::Provisioning::default()
+        };
+        // A seat with provisioning of its own and no allow list (the usual
+        // seat) used to mount every built-in skill.
+        let mut seated = Some(crate::Provisioning::default());
+        keep_within_parent_skills(&mut seated, Some(&parent));
+        assert_eq!(seated.unwrap().allowed_skills, ids(&["docx"]));
+        // No seat provisioning: the child gets the parent's set.
+        let mut none = None;
+        keep_within_parent_skills(&mut none, Some(&parent));
+        assert_eq!(none.unwrap().allowed_skills, ids(&["docx"]));
+        // A seat naming more keeps what both allow.
+        let mut wider = Some(crate::Provisioning {
+            allowed_skills: ids(&["docx", "pptx"]),
+            ..crate::Provisioning::default()
+        });
+        keep_within_parent_skills(&mut wider, Some(&parent));
+        assert_eq!(wider.unwrap().allowed_skills, ids(&["docx"]));
+        // A parent that is not limited limits nobody.
+        let mut free = None;
+        keep_within_parent_skills(&mut free, Some(&crate::Provisioning::default()));
+        assert_eq!(free, None);
+    }
+
     /// only: a goose-acp child of a parent run with a model gets none, and
     /// so is not refused, while a model its spawn asks for still is.
     #[test]
