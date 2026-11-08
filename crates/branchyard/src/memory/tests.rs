@@ -917,3 +917,178 @@ fn a_contributor_on_a_fetched_pull_request_ref_is_not_a_member() {
     assert!(members.contains(&"bob".to_owned()), "{members:?}");
     assert!(!members.contains(&"drive-by".to_owned()), "{members:?}");
 }
+
+/// A yard on a scratch repository with one commit.
+fn scratch_yard(name: &str) -> (branchyard_testkit::Scratch, crate::Yard) {
+    let scratch = branchyard_testkit::Scratch::new(name);
+    let root = scratch.path().to_path_buf();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+            "-c",
+            "user.name=Ann",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(&root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    let yard = crate::Yard::open(&root).unwrap();
+    (scratch, yard)
+}
+
+fn proposal(scope: &Scope, title: &str) -> super::store::NewMemoryRecord {
+    super::store::NewMemoryRecord {
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: title.into(),
+        body: format!("Body of {title}."),
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        provenance: Vec::new(),
+        note: None,
+        now_ms: 1,
+    }
+}
+
+fn new_memory(title: &str) -> super::NewMemory {
+    super::NewMemory {
+        title: title.into(),
+        body: "Body.".into(),
+        kind: MemoryKind::Rule,
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        topic: None,
+        by: "ana".into(),
+        now_ms: 1,
+        evidence: Vec::new(),
+    }
+}
+
+#[test]
+fn writers_at_once_lose_no_memory_and_share_no_slug() {
+    let (_scratch, yard) = scratch_yard("library-writers");
+    let library = super::Library::team(yard.root());
+    let threads: Vec<_> = (0..6)
+        .map(|n| {
+            let library = super::Library::team(yard.root());
+            std::thread::spawn(move || {
+                (0..3)
+                    .map(|_| library.add(new_memory("Same title")).unwrap().memory.id)
+                    .chain(std::iter::once(
+                        library
+                            .add(new_memory(&format!("Own title {n}")))
+                            .unwrap()
+                            .memory
+                            .id,
+                    ))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut ids: Vec<String> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    ids.sort();
+    let before = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), before, "a slug was given twice");
+    let held: Vec<String> = library.read().unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(held.len(), 24, "{held:?}");
+}
+
+#[test]
+fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
+    let (_scratch, yard) = scratch_yard("approvals");
+    let scope = yard.memory_scope("local");
+    let store = yard.store();
+    let memory = store.memory();
+    // Two rows with one title: their files must not share a slug.
+    let a = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let b = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let racers: Vec<_> = [a, b]
+        .into_iter()
+        .map(|id| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(id, "ana", None).unwrap())
+        })
+        .collect();
+    let approved: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    let paths: Vec<_> = approved
+        .iter()
+        .map(|a| a.record.published.clone().unwrap().path)
+        .collect();
+    assert_ne!(paths[0], paths[1], "{paths:?}");
+    let library = super::Library::team(yard.root());
+    assert_eq!(library.read().unwrap().len(), 2);
+    // Two approvals of the same row: one wins, the other fails and takes
+    // back only its own file.
+    let c = memory.propose(&proposal(&scope, "Keep notes short")).unwrap();
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(c, "ana", None))
+        })
+        .collect();
+    let results: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    let winner = results.into_iter().find_map(Result::ok).unwrap();
+    let slug = winner
+        .record
+        .published
+        .unwrap()
+        .path
+        .trim_start_matches("references/")
+        .trim_end_matches(".md")
+        .to_owned();
+    let held = library.read().unwrap();
+    assert_eq!(held.len(), 3, "{held:?}");
+    assert!(held.iter().any(|m| m.id == slug), "the winner's file is gone");
+}
+
+#[test]
+fn an_edit_whose_row_swap_loses_leaves_the_file_as_it_was() {
+    let (_scratch, yard) = scratch_yard("edit-loses");
+    let scope = yard.memory_scope("local");
+    let id = yard
+        .store()
+        .memory()
+        .propose(&proposal(&scope, "Run fmt"))
+        .unwrap();
+    let approved = yard.approve_memory(id, "ana", None).unwrap();
+    let current = approved.record;
+    let library = super::Library::team(yard.root());
+    let before = library.read().unwrap();
+    let mut changed = current.clone();
+    changed.title = "Run cargo fmt".into();
+    let edit = super::review::MemoryRecordEdit {
+        title: Some("Run cargo fmt".into()),
+        ..Default::default()
+    };
+    // Someone rejects the row between the file's rewrite and the swap.
+    let error = super::review::edit_row(&yard, id, &current, changed, &edit, "ana", None, || {
+        let decided = yard
+            .store()
+            .memory()
+            .decide(
+                id,
+                MemoryStatus::Approved,
+                &super::store::Decision {
+                    status: MemoryStatus::Rejected,
+                    by: "bob".into(),
+                    now_ms: 5,
+                    note: None,
+                    published: None,
+                },
+            )
+            .unwrap();
+        assert!(decided);
+    })
+    .unwrap_err();
+    assert!(matches!(error, crate::Error::State(_)), "{error}");
+    assert_eq!(library.read().unwrap(), before, "the file was left edited");
+}

@@ -129,7 +129,12 @@ pub(crate) fn approve(
     let library = library_for(yard, &record.scope, person_dir)?;
     let observations = yard.store().memory().observations(&record.provenance)?;
     let now = now_ms();
-    let written = library.add(NewMemory {
+    // The library is held from the write to the row's decision: another
+    // approval cannot rewrite the topic between them, and the file taken
+    // back when the row was decided meanwhile is this approval's own (its
+    // slug was made unique under the lock), never the winner's.
+    let held = library.lock()?;
+    let written = held.add(NewMemory {
         title: record.title.clone(),
         body: record.body.clone(),
         kind: record.kind,
@@ -141,8 +146,8 @@ pub(crate) fn approve(
         evidence: evidence_lines(&observations),
     })?;
     let skill = format!("{}{}", super::PREFIX, written.memory.topic);
-    let digest = library
-        .export(None)?
+    let digest = held
+        .export()?
         .into_iter()
         .find(|b| {
             b.files
@@ -170,7 +175,7 @@ pub(crate) fn approve(
     if !decided {
         branchyard_support::best_effort(
             "take back the bundle file of a memory decided meanwhile",
-            library.remove(&written.memory.id),
+            held.remove(&written.memory.id),
         );
         return Err(Error::State(format!(
             "memory #{id} was decided by someone else meanwhile; read it again"
@@ -247,10 +252,33 @@ pub(crate) fn edit(
         record.task_kinds = task_kinds.clone();
     }
     check_record(&record)?;
-    if let Some(published) = &current.published {
+    edit_row(yard, id, &current, record, edit, by, person_dir, || {})
+}
+
+/// [`edit`] after the checks. `between` runs after the file is rewritten
+/// and before the row's swap (a test decides the row there).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn edit_row(
+    yard: &Yard,
+    id: u64,
+    current: &MemoryRecord,
+    mut record: MemoryRecord,
+    edit: &MemoryRecordEdit,
+    by: &str,
+    person_dir: Option<&Path>,
+    between: impl FnOnce(),
+) -> Result<MemoryRecord, Error> {
+    let mut restore: Option<super::Memory> = None;
+    let mut held = None;
+    let library = match current.published.as_ref().and_then(published_slug) {
+        Some(_) => Some(library_for(yard, &record.scope, person_dir)?),
+        None => None,
+    };
+    if let (Some(published), Some(library)) = (&current.published, &library) {
         if let Some(slug) = published_slug(published) {
-            let library = library_for(yard, &record.scope, person_dir)?;
-            let written = library.edit(
+            let lock = library.lock()?;
+            let before = lock.get(&slug)?;
+            let written = lock.edit(
                 &slug,
                 MemoryEdit {
                     title: edit.title.clone(),
@@ -268,9 +296,34 @@ pub(crate) fn edit(
             });
             record.decided_by = Some(by.to_owned());
             record.decided_ms = Some(now_ms());
+            restore = Some(before);
+            held = Some(lock);
         }
     }
-    match yard.store().memory().put_memory(&record, current.status)? {
+    between();
+    let swapped = yard.store().memory().put_memory(&record, current.status);
+    if !matches!(swapped, Ok(true)) {
+        // The row did not change, so the file must not either.
+        if let (Some(lock), Some(before)) = (&held, &restore) {
+            branchyard_support::best_effort(
+                "put back the bundle file of a memory whose row did not change",
+                lock.edit(
+                    &before.id,
+                    MemoryEdit {
+                        title: Some(before.title.clone()),
+                        body: Some(before.body.clone()),
+                        kind: Some(before.kind),
+                        paths: Some(before.paths.clone()),
+                        task_kinds: Some(before.task_kinds.clone()),
+                        by: before.approved_by.clone(),
+                        now_ms: before.approved_ms,
+                    },
+                ),
+            );
+        }
+    }
+    drop(held);
+    match swapped? {
         true => get(yard, id),
         false => Err(Error::State(format!(
             "memory #{id} changed while it was being edited; try again"
