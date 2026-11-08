@@ -239,7 +239,7 @@ fn every_kind_is_derived_from_its_events_and_the_skip_list_holds() {
                 ObservationKind::CheckFailed,
                 &format!(
                     "check `cargo test` failed\n{}",
-                    (6..=45)
+                    (1..=45)
                         .map(|n| format!("line {n}"))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -751,4 +751,46 @@ fn a_cut_body_counts_observations_not_lines() {
     assert_eq!(result.proposals.len(), 1);
     let body = &result.proposals[0].body;
     assert!(body.ends_with("- ...and 2 more"), "{}", &body[body.len() - 60..]);
+}
+
+#[test]
+fn a_failed_checks_output_is_scrubbed_before_it_is_cut_to_its_last_lines() {
+    // A multi-line secret whose first lines fall before the cut: the lines
+    // that remain in the tail are still removed, and the tail is the last
+    // forty.
+    let value = "PRIVATE KEY BEGIN\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nKgwggSkAgEAAoIBAQC7VJTUt9Us8cKj\nZm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFi\nPRIVATE KEY END";
+    let ordinary = |n: u32| format!("line {n} of ordinary compiler output, long enough to matter");
+    let mut output: Vec<String> = (1..=3).map(ordinary).collect();
+    output.extend(value.lines().map(str::to_owned));
+    output.extend((4..=60).map(ordinary));
+    // The value's later lines come again inside the last forty.
+    let inside = output.len() - 38;
+    output.splice(inside..inside, value.lines().skip(2).map(str::to_owned));
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::PullRequest(Box::new(
+            PullRequestActivity::Checked(CheckRun {
+                commit: "abc".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                passed: false,
+                timed_out: false,
+                output_tail: output.join("\n"),
+            }),
+        ))),
+    ]);
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let ctx = context(1, &members, &visibility);
+    let drafts = derive(&events, &ctx);
+    assert_eq!(drafts.len(), 1);
+    let scrubber = Scrubber::new(&[value.to_owned()], &[]);
+    let draft = drafts.into_iter().next().unwrap();
+    let (text, _) = scrubber.scrub(&draft.text).unwrap();
+    let stored = draft.into_observation(&ctx, text, Vec::new()).text;
+    assert!(stored.starts_with("check `cargo test` failed\n"), "{stored}");
+    assert_eq!(stored.lines().count(), 41, "{stored}");
+    for part in value.lines().filter(|l| l.len() > 8) {
+        assert!(!stored.contains(part), "{part} kept in {stored}");
+    }
+    assert!(stored.ends_with("line 60 of ordinary compiler output, long enough to matter"));
 }

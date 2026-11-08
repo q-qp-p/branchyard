@@ -315,6 +315,11 @@ pub struct Draft {
     pub author: Option<Author>,
     /// The `seq` of each event it came from, within the incarnation.
     pub seqs: Vec<u64>,
+    /// Keep only the first line and this many of the last lines of the
+    /// text, once it is scrubbed: a check's output is cut after the
+    /// scrubber saw all of it, so a secret that spans the cut is still
+    /// removed whole.
+    pub tail_lines: Option<usize>,
 }
 
 impl Draft {
@@ -325,6 +330,7 @@ impl Draft {
             paths: Vec::new(),
             author: None,
             seqs: vec![seq],
+            tail_lines: None,
         }
     }
 
@@ -351,7 +357,10 @@ impl Draft {
                 .collect(),
             visibility: ctx.visibility.clone(),
             kind: self.kind,
-            text: cut(&text),
+            text: cut(&match self.tail_lines {
+                Some(keep) => keep_tail(&text, keep),
+                None => text,
+            }),
             paths: self.paths,
             task_kind: ctx.task_kind,
             harness: ctx.harness.to_owned(),
@@ -362,6 +371,20 @@ impl Draft {
         }
     }
 }
+
+/// The first line of `text` and its last `keep` further lines.
+fn keep_tail(text: &str, keep: usize) -> String {
+    let (head, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let lines: Vec<&str> = rest.lines().collect();
+    let from = lines.len().saturating_sub(keep);
+    std::iter::once(head)
+        .chain(lines[from..].iter().copied())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// How many lines of a failed check's output an observation keeps.
+const CHECK_TAIL_LINES: usize = 40;
 
 /// `text` cut to [`TEXT_MAX`] characters at a line when it can.
 fn cut(text: &str) -> String {
@@ -467,25 +490,23 @@ pub fn derive(events: &[(u64, RecordedEvent)], ctx: &Context<'_>) -> Vec<Draft> 
             Activity::PullRequest(activity) => {
                 if let PullRequestActivity::Checked(check) = activity.as_ref() {
                     if !check.passed {
-                        let tail = check
-                            .output_tail
-                            .lines()
-                            .rev()
-                            .take(40)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect::<Vec<_>>()
-                            .join("\n");
                         let what = match check.timed_out {
                             true => "timed out",
                             false => "failed",
                         };
-                        drafts.push(Draft::new(
+                        // The whole output goes to the scrubber; the cut
+                        // to its last lines follows it.
+                        let mut draft = Draft::new(
                             ObservationKind::CheckFailed,
-                            format!("check `{}` {what}\n{tail}", check.argv.join(" ")),
+                            format!(
+                                "check `{}` {what}\n{}",
+                                check.argv.join(" "),
+                                check.output_tail
+                            ),
                             seq,
-                        ));
+                        );
+                        draft.tail_lines = Some(CHECK_TAIL_LINES);
+                        drafts.push(draft);
                     }
                 }
             }
@@ -598,6 +619,7 @@ pub fn derive(events: &[(u64, RecordedEvent)], ctx: &Context<'_>) -> Vec<Draft> 
                 paths: Vec::new(),
                 author: None,
                 seqs,
+                tail_lines: None,
             });
         }
     }
@@ -645,6 +667,7 @@ fn corrections(
                         paths: item.path.iter().cloned().collect(),
                         author: item.author.as_deref().map(|a| author(a, ctx.members)),
                         seqs,
+                        tail_lines: None,
                     });
                 }
                 FeedbackKind::Check => drafts.push(Draft {
@@ -653,6 +676,7 @@ fn corrections(
                     paths: Vec::new(),
                     author: None,
                     seqs,
+                    tail_lines: None,
                 }),
             }
         }
@@ -669,6 +693,7 @@ fn corrections(
                     paths: path.into_iter().collect(),
                     author: None,
                     seqs: vec![seq],
+                    tail_lines: None,
                 });
             }
         }
@@ -684,6 +709,7 @@ fn corrections(
                     paths: vec![path],
                     author: None,
                     seqs: vec![seq],
+                    tail_lines: None,
                 });
             }
         }
