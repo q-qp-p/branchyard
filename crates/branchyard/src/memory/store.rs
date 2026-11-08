@@ -40,16 +40,26 @@ pub enum Scope {
 impl Scope {
     /// The scope as the `memory_watermarks` and `memory_runs` tables key
     /// it: `repo:<tenant>:<repo>` or `person:<tenant>:<subject>[:<repo>]`.
+    /// A component holding `:` or `%` is written with `%3A` and `%25`, so
+    /// two scopes never share a key (a tenant `a:b` with subject `c` and a
+    /// tenant `a` with subject `b:c` once did).
     pub fn key(&self) -> String {
         match self {
-            Scope::Repo { tenant, repo } => format!("repo:{tenant}:{repo}"),
+            Scope::Repo { tenant, repo } => {
+                format!("repo:{}:{}", escape(tenant), escape(repo))
+            }
             Scope::Person {
                 tenant,
                 subject,
                 repo,
             } => match repo {
-                Some(repo) => format!("person:{tenant}:{subject}:{repo}"),
-                None => format!("person:{tenant}:{subject}"),
+                Some(repo) => format!(
+                    "person:{}:{}:{}",
+                    escape(tenant),
+                    escape(subject),
+                    escape(repo)
+                ),
+                None => format!("person:{}:{}", escape(tenant), escape(subject)),
             },
         }
     }
@@ -61,19 +71,28 @@ impl Scope {
         match kind {
             "repo" => {
                 let (tenant, repo) = rest.split_once(':').ok_or_else(bad)?;
+                if repo.contains(':') {
+                    return Err(bad());
+                }
                 Ok(Scope::Repo {
-                    tenant: tenant.to_owned(),
-                    repo: repo.to_owned(),
+                    tenant: unescape(tenant).ok_or_else(bad)?,
+                    repo: unescape(repo).ok_or_else(bad)?,
                 })
             }
             "person" => {
-                let mut parts = rest.splitn(3, ':');
+                let mut parts = rest.split(':');
                 let tenant = parts.next().ok_or_else(bad)?;
                 let subject = parts.next().ok_or_else(bad)?;
+                let repo = parts.next();
+                if parts.next().is_some() {
+                    return Err(bad());
+                }
                 Ok(Scope::Person {
-                    tenant: tenant.to_owned(),
-                    subject: subject.to_owned(),
-                    repo: parts.next().map(str::to_owned),
+                    tenant: unescape(tenant).ok_or_else(bad)?,
+                    subject: unescape(subject).ok_or_else(bad)?,
+                    repo: repo
+                        .map(|repo| unescape(repo).ok_or_else(bad))
+                        .transpose()?,
                 })
             }
             _ => Err(bad()),
@@ -110,6 +129,32 @@ impl Scope {
             Scope::Person { subject, .. } => format!("{subject}'s memory"),
         }
     }
+}
+
+/// `component` with `%` and `:` escaped, for a scope key.
+fn escape(component: &str) -> String {
+    component.replace('%', "%25").replace(':', "%3A")
+}
+
+/// [`escape`] undone; `None` for a component with a stray `%`.
+fn unescape(component: &str) -> Option<String> {
+    let mut out = String::with_capacity(component.len());
+    let mut rest = component;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix("%25") {
+            out.push('%');
+            rest = after;
+        } else if let Some(after) = tail.strip_prefix("%3A") {
+            out.push(':');
+            rest = after;
+        } else {
+            return None;
+        }
+    }
+    out.push_str(rest);
+    Some(out)
 }
 
 impl fmt::Display for Scope {
@@ -590,6 +635,30 @@ mod tests {
             repo: None,
         };
         assert_eq!(Scope::parse_key("person:local:ana").unwrap(), bare);
+        // A component with a colon or a percent sign keeps its scope's key
+        // its own: these two once shared `person:a:b:c`.
+        let first = Scope::Person {
+            tenant: "a:b".into(),
+            subject: "c".into(),
+            repo: None,
+        };
+        let second = Scope::Person {
+            tenant: "a".into(),
+            subject: "b".into(),
+            repo: Some("c".into()),
+        };
+        assert_ne!(first.key(), second.key());
+        let odd = Scope::Person {
+            tenant: "a:b%c".into(),
+            subject: "s%3A".into(),
+            repo: Some("r:1".into()),
+        };
+        assert_eq!(odd.key(), "person:a%3Ab%25c:s%253A:r%3A1");
+        for scope in [&first, &second, &odd] {
+            assert_eq!(&Scope::parse_key(&scope.key()).unwrap(), scope);
+        }
+        assert!(Scope::parse_key("repo:a:b:c").is_err());
+        assert!(Scope::parse_key("repo:a%:b").is_err());
         assert!(Scope::parse_key("team:x").is_err());
         assert!(Scope::parse_key("repo:acme").is_err());
         assert_eq!(repo.describe(), "the team's memory of app");
