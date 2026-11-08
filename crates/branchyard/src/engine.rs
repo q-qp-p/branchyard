@@ -369,6 +369,9 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
     // The turn's secret values, kept here for the memory scrubber once the
     // turn has ended; this process is the one that holds them.
     let mut secret_values: Vec<String> = Vec::new();
+    // Whether this turn submitted its prompt: only a turn that was driven
+    // holds its secret values, so only it is derived at its end.
+    let mut driven_turn = false;
     let result = (|| {
         turn.yard
             .admit_provider(record.provider.as_ref(), turn.options)?;
@@ -425,6 +428,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
             graph::unbind(turn.yard, &record);
             let mut driven = driven?;
             secret_values = std::mem::take(&mut driven.secret_values);
+            driven_turn = driven.submitted;
             let park_input = crate::wake::ParkInput::new(&bounds.budget, &driven.held_on);
             conclude(
                 turn.yard,
@@ -494,8 +498,12 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         crate::contract::settled(turn.yard, &fence.branch, turn.options.observer.clone());
         // The turn's memory observations, derived from its events and
         // scrubbed of its secret values (`docs/memory.md`, section 2).
+        // A turn that never ran (cancelled or over budget before it
+        // started, or set up and failed) holds no secret values: deriving
+        // the branch's last turn again from its log without them would
+        // store the text the first derivation scrubbed.
         if let Ok(branch) = &result {
-            if branch.info.turns > 0 {
+            if driven_turn && branch.info.turns > 0 {
                 crate::memory::observe::on_turn_end(
                     turn.yard,
                     &fence.branch,

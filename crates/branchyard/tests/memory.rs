@@ -660,6 +660,76 @@ mod engine {
         assert_eq!(all[0].text, all[2].text);
     }
 
+    /// Options that run the fake agent as the `codex-acp` profile with an
+    /// API key read from `var`: the turn holds a secret value to scrub.
+    fn with_secret(f: &Fixture, var: &str, value: &str) -> branchyard::TaskOptions {
+        std::env::set_var(var, value);
+        branchyard::TaskOptions {
+            harness: Some("codex-acp".into()),
+            isolated: true,
+            provision: Some(branchyard::Provisioning {
+                secrets: vec![branchyard::SecretSource::parse(&format!("OPENAI_API_KEY={var}"))
+                    .unwrap()],
+                ..branchyard::Provisioning::default()
+            }),
+            ..f.options()
+        }
+    }
+
+    #[test]
+    fn a_turn_that_never_ran_derives_nothing_so_no_secret_is_stored() {
+        let f = Fixture::new();
+        let secret = "sk-memtest-0123456789abcdefABCDEF";
+        let options = with_secret(&f, "BY_TEST_MEMORY_SECRET_ONE", secret);
+        let branch = f
+            .yard
+            .task("Add notes WRITE notes.txt=1")
+            .options(options.clone())
+            .run()
+            .unwrap();
+        let sent = branch
+            .send(
+                &format!("Always keep the token {secret} out of the notes footer\nSH false\nSH false"),
+                options.clone(),
+            )
+            .unwrap();
+        let holds = |f: &Fixture| {
+            f.yard
+                .observations(&f.yard.memory_scope("local"), 0, 100)
+                .unwrap()
+        };
+        let before = holds(&f);
+        assert!(!before.is_empty(), "turn 2 was observed");
+        assert!(
+            before.iter().all(|o| !o.text.contains(secret)),
+            "{before:?}"
+        );
+        // Turn 3 is refused before it starts (over its turn budget): it
+        // holds no secret values and must not derive turn 2 again from
+        // the log without them.
+        let over = branch
+            .send(
+                "Anything",
+                branchyard::TaskOptions {
+                    budget: branchyard::Budget::default().turns(2),
+                    ..options
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(over.info().status, branchyard::BranchStatus::BudgetExceeded { .. }),
+            "{:?}",
+            over.info().status
+        );
+        assert_eq!(over.info().name, sent.info().name);
+        let after = holds(&f);
+        assert!(
+            after.iter().all(|o| !o.text.contains(secret)),
+            "an unscrubbed observation: {after:?}"
+        );
+        assert_eq!(after.len(), before.len(), "{after:?}");
+    }
+
     #[test]
     fn two_consolidations_propose_once_then_record_evidence_and_a_rejection_sticks() {
         let f = Fixture::new();
