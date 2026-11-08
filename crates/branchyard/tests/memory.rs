@@ -554,3 +554,128 @@ mod symlinks {
         );
     }
 }
+
+/// Observations through real turns of the fake agent (docs/memory.md,
+/// section 2): a correction and a repeated command observed at the turn's
+/// end and stored once per turn, capture off, a recreated branch a new
+/// incarnation, a private yard feeding one person's scope.
+mod engine {
+    use branchyard::memory::Visibility;
+    use branchyard::{MemorySettings, ObservationKind};
+
+    use crate::common::Fixture;
+
+    const REVIEW: &str = "File: notes.txt\nLine: 1\nUser comment: \"Always end notes with a \
+                          summary line, and date it\"";
+
+    fn kinds(f: &Fixture, since: u64) -> Vec<(ObservationKind, String, String, u32)> {
+        f.yard
+            .observations(&f.yard.memory_scope("local"), since, 100)
+            .unwrap()
+            .into_iter()
+            .map(|o| (o.kind, o.text.clone(), o.branch.clone(), o.turn))
+            .collect()
+    }
+
+    #[test]
+    fn a_turns_end_derives_its_observations_once_and_a_recreated_branch_is_new() {
+        let f = Fixture::new();
+        let branch = f.task("Add notes WRITE notes.txt=1").run().unwrap();
+        assert!(
+            kinds(&f, 0).is_empty(),
+            "the first turn is the task: {:?}",
+            kinds(&f, 0)
+        );
+        let sent = branch
+            .send(&format!("{REVIEW}\nSH false\nSH false"), f.options())
+            .unwrap();
+        let observed = kinds(&f, 0);
+        assert_eq!(
+            observed,
+            [
+                (
+                    ObservationKind::Correction,
+                    "[review] Always end notes with a summary line, and date it".to_owned(),
+                    sent.info().name.clone(),
+                    2
+                ),
+                (
+                    ObservationKind::RepeatedCommand,
+                    "false (2 times)".to_owned(),
+                    sent.info().name.clone(),
+                    2
+                ),
+            ],
+            "{observed:?}"
+        );
+        let first = f
+            .yard
+            .observations(&f.yard.memory_scope("local"), 0, 10)
+            .unwrap();
+        assert_eq!(first[0].paths, ["notes.txt"]);
+        assert_eq!(first[0].harness, "gemini-cli");
+        assert_eq!(first[0].incarnation, first[0].events[0].incarnation);
+        assert!(first[0].author.is_none(), "a review comment has no author");
+        // The same turn derived again (a settle replayed) yields the same
+        // set.
+        let again = f.yard.observe_turn(&sent.info().name, 2, &[]).unwrap();
+        assert_eq!(
+            again,
+            first.iter().map(|o| o.id).collect::<Vec<_>>(),
+            "idempotent per turn"
+        );
+        // Capture off: a turn derives nothing.
+        f.yard.use_memory(MemorySettings {
+            capture: false,
+            ..MemorySettings::default()
+        });
+        branch
+            .send("Keep every note short WRITE notes.txt=3", f.options())
+            .unwrap();
+        assert_eq!(kinds(&f, 0).len(), 2);
+        f.yard.use_memory(MemorySettings::default());
+        // A branch removed and recreated is a new incarnation: a new source
+        // for the same correction, and the old observations keep their text.
+        let name = sent.info().name.clone();
+        f.yard.remove(&name).unwrap();
+        let recreated = f
+            .task("Add notes WRITE notes.txt=1")
+            .name(&name)
+            .run()
+            .unwrap();
+        recreated.send(REVIEW, f.options()).unwrap();
+        let all = f
+            .yard
+            .observations(&f.yard.memory_scope("local"), 0, 10)
+            .unwrap();
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_ne!(all[0].incarnation, all[2].incarnation);
+        assert_eq!(all[0].text, all[2].text);
+    }
+
+    #[test]
+    fn a_private_session_feeds_one_persons_scope() {
+        let f = Fixture::new();
+        f.yard.use_memory(MemorySettings {
+            visibility: Visibility::Private {
+                subject: "ana".into(),
+            },
+            ..MemorySettings::default()
+        });
+        for name in ["one", "two"] {
+            let branch = f
+                .task("Add notes WRITE notes.txt=1")
+                .name(name)
+                .run()
+                .unwrap();
+            branch.send(REVIEW, f.options()).unwrap();
+        }
+        let team = f.yard.memory_scope("local");
+        let mine = f.yard.person_memory_scope("local", "ana");
+        assert!(f.yard.observations(&team, 0, 10).unwrap().is_empty());
+        let private = f.yard.observations(&mine, 0, 10).unwrap();
+        assert_eq!(private.len(), 2);
+        assert_eq!(private[0].visibility.subject(), Some("ana"));
+        assert!(private.iter().all(|o| o.tenant == "local"));
+    }
+}

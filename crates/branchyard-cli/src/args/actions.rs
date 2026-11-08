@@ -958,6 +958,19 @@ pub enum MemoryAction {
         #[arg(long)]
         mine: bool,
     },
+    /// The scrubbed observations a scope holds, oldest first (for the curious and the tests)
+    #[command(hide = true)]
+    Observations {
+        /// Your own scope's
+        #[arg(long)]
+        mine: bool,
+        /// Only observations with an id above this
+        #[arg(long, value_name = "ID", default_value_t = 0)]
+        since: u64,
+        /// At most this many
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        limit: usize,
+    },
     /// Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
     Edit {
         /// Its slug

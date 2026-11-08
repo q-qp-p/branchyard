@@ -1,5 +1,6 @@
 //! `by memory add|list|show|edit|remove|export`: memory as a reviewed skill
-//! (docs/memory.md, section 1).
+//! (docs/memory.md, section 1); and, hidden, `observations`: what each
+//! turn's end derived (section 2).
 //!
 //! A memory is one Markdown file in the bundle of its topic,
 //! `memory-<topic>/references/<slug>.md`, beside a `SKILL.md` and a
@@ -20,8 +21,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use branchyard::memory::observe::LOCAL_TENANT;
 use branchyard::memory::{self, Audience, Library, Memory, MemoryEdit, MemoryKind, NewMemory};
-use branchyard::TaskKind;
+use branchyard::{Observation, TaskKind};
 use serde_json::{json, Value};
 
 use crate::args::MemoryAction;
@@ -145,6 +147,9 @@ fn run(target: &Target, action: &MemoryAction, json: bool) -> Outcome {
             ))
         }
         MemoryAction::Export { out, mine } => export(out.as_deref(), *mine, json),
+        MemoryAction::Observations { mine, since, limit } => {
+            observations(*mine, *since, *limit, json)
+        }
     }
 }
 
@@ -532,4 +537,63 @@ pub(crate) fn draft_path(root: &Path, slug: &str, text: &str) -> PathBuf {
             _ => return path,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Observations: what each turn's end derived (docs/memory.md, section 2),
+// read where they are stored.
+
+/// `by memory observations`: the scope's observations, oldest first.
+fn observations(mine: bool, since: u64, limit: usize, json: bool) -> Outcome {
+    let yard = commands::open()?;
+    let scope = match mine {
+        true => yard.person_memory_scope(LOCAL_TENANT, &person()),
+        false => yard.memory_scope(LOCAL_TENANT),
+    };
+    let observations = yard.observations(&scope, since, limit)?;
+    if json {
+        return print(&format!("{}\n", commands::to_json(&observations)));
+    }
+    match observations.is_empty() {
+        true => print("no observations\n"),
+        false => print(
+            &observations
+                .iter()
+                .map(observation_line)
+                .collect::<String>(),
+        ),
+    }
+}
+
+/// One observation's line.
+fn observation_line(observation: &Observation) -> String {
+    let author = match &observation.author {
+        Some(author) => format!(
+            " by {} ({})",
+            author.name,
+            match author.association {
+                branchyard::memory::Association::Member => "member",
+                branchyard::memory::Association::External => "external",
+            }
+        ),
+        None => String::new(),
+    };
+    let text: String = observation
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = match text.chars().count() > 120 {
+        true => format!("{}…", text.chars().take(119).collect::<String>()),
+        false => text,
+    };
+    format!(
+        "  o{:<5} {} turn {} {}{}: {}\n",
+        observation.id,
+        observation.branch,
+        observation.turn,
+        observation.kind.as_str(),
+        author,
+        text
+    )
 }

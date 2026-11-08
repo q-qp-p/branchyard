@@ -921,6 +921,9 @@ pub(crate) fn configure_yard(config: &Config, name: &str, yard: &Yard) -> Result
             bucket: tools.store_bucket.clone(),
         });
     }
+    // Memory observations at each turn's end, consolidation and its
+    // approvers (docs/memory.md); the server's principals are members.
+    yard.use_memory(config.memory.settings(&config.principals));
     // The model gateway its branches' turns may use, and each
     // principal's ceiling (docs/model-gateway.md).
     if let Some(gateway) =

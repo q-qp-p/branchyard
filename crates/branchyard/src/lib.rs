@@ -315,7 +315,8 @@ pub use map_input::{
     TemplateContext,
 };
 pub use memory::{
-    Memory, MemoryDraft, MemoryEdit, MemoryKind, NewMemory, BODY_MAX as MEMORY_BODY_MAX,
+    Memory, MemoryDraft, MemoryEdit, MemoryKind, MemorySettings, NewMemory, NewObservation,
+    Observation, ObservationKind, Scope as MemoryScope, BODY_MAX as MEMORY_BODY_MAX,
     TITLE_MAX as MEMORY_TITLE_MAX,
 };
 pub use obligations::{Obligation, ObligationKind};
@@ -1344,6 +1345,68 @@ impl Yard {
         projection::lock(&self.hub.knowledge)
             .clone()
             .unwrap_or_default()
+    }
+
+    /// How this yard (and its clones) captures memory observations and
+    /// consolidates them; see `docs/memory.md`. Replaces the settings set
+    /// before; without a call, [`MemorySettings::default`].
+    pub fn use_memory(&self, settings: MemorySettings) {
+        *projection::lock(&self.hub.memory) = Some(Arc::new(settings));
+    }
+
+    /// The settings [`Yard::use_memory`] set, or the defaults.
+    pub fn memory_settings(&self) -> Arc<MemorySettings> {
+        projection::lock(&self.hub.memory)
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// The team's memory scope of this repository on `tenant`
+    /// ([`memory::observe::LOCAL_TENANT`] without a server).
+    pub fn memory_scope(&self, tenant: &str) -> MemoryScope {
+        MemoryScope::Repo {
+            tenant: tenant.to_owned(),
+            repo: self.store.label(),
+        }
+    }
+
+    /// One person's memory scope on `tenant`.
+    pub fn person_memory_scope(&self, tenant: &str, subject: &str) -> MemoryScope {
+        MemoryScope::Person {
+            tenant: tenant.to_owned(),
+            subject: subject.to_owned(),
+            repo: None,
+        }
+    }
+
+    /// Derive, scrub and store the observations of `branch`'s turn `turn`
+    /// now, with `secrets` the values to scrub: what the engine does at
+    /// every turn's end. Idempotent per turn; returns the observation ids.
+    pub fn observe_turn(
+        &self,
+        branch: &str,
+        turn: u32,
+        secrets: &[String],
+    ) -> Result<Vec<u64>, Error> {
+        let incarnation = memory::observe::incarnation_of(self, branch)?;
+        Ok(memory::observe::observe_turn(self, branch, incarnation, turn, secrets)?.ids)
+    }
+
+    /// The observations of `scope` with an id above `since`, oldest
+    /// first, at most `limit`; for `by memory observations` and the tests.
+    pub fn observations(
+        &self,
+        scope: &MemoryScope,
+        since: u64,
+        limit: usize,
+    ) -> Result<Vec<Observation>, Error> {
+        self.store.memory().observations_since(scope, since, limit)
+    }
+
+    /// The scopes with observations no consolidation has read yet: what a
+    /// dispatcher consolidates (M3).
+    pub fn memory_scopes_due(&self) -> Result<Vec<MemoryScope>, Error> {
+        self.store.memory().scopes_with_observations()
     }
 
     /// The repository's knowledge entries, or those of `status`, by id.

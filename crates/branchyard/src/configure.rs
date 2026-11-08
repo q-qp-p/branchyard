@@ -30,8 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{
-    self, Connectors, DistillerConfig, Effective, KnowledgeConfig, Microsandbox, ModelsConfig,
-    PermissionsMode, ProjectConfig, ProviderKind,
+    self, Connectors, DistillerConfig, Effective, KnowledgeConfig, MemoryConfig, Microsandbox,
+    ModelsConfig, PermissionsMode, ProjectConfig, ProviderKind,
 };
 use crate::connectors::{self, AnvilPackager};
 use crate::effects::ApprovalSettings;
@@ -147,6 +147,10 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
         true => None,
         false => Some(knowledge_settings(&config.knowledge)?),
     };
+    let memory = match config.memory.is_empty() {
+        true => None,
+        false => Some(memory_settings(&config.memory)),
+    };
     let options = task_options(config)?;
     let kinds = message_kinds(yard, &config.messaging)?;
     if let Some(host) = host {
@@ -170,6 +174,9 @@ fn apply(yard: &Yard, config: &ProjectConfig) -> Result<(), Error> {
     }
     if let Some(knowledge) = knowledge {
         yard.use_knowledge(knowledge);
+    }
+    if let Some(memory) = memory {
+        yard.use_memory(memory);
     }
     yard.use_max_running(config.usage.max_running.clone());
     for spec in kinds {
@@ -513,6 +520,29 @@ pub fn knowledge_settings(config: &KnowledgeConfig) -> Result<KnowledgeSettings,
         distill_on,
         distiller: config.distiller.as_ref().map(distiller).transpose()?,
     })
+}
+
+/// The settings `[memory]` describes; see `docs/memory.md`. The cron is
+/// checked where it runs (a server's dispatcher).
+pub fn memory_settings(config: &MemoryConfig) -> crate::MemorySettings {
+    let defaults = crate::MemorySettings::default();
+    crate::MemorySettings {
+        capture: config.capture.unwrap_or(defaults.capture),
+        external_authors: config.external_authors.unwrap_or(defaults.external_authors),
+        members: config.members.clone(),
+        visibility: defaults.visibility,
+        consolidate: config
+            .consolidate
+            .clone()
+            .filter(|cron| !cron.trim().is_empty()),
+        keep_observations_days: config
+            .keep_observations_days
+            .unwrap_or(defaults.keep_observations_days),
+        max_candidates: config
+            .max_candidates
+            .map_or(defaults.max_candidates, |n| n as usize),
+        approvers: config.approvers.clone(),
+    }
 }
 
 // `[defaults]` and what a new task takes
@@ -1211,6 +1241,37 @@ distiller = { harness = "claude-code", model = "small" }
         };
         let error = knowledge_settings(&bad).unwrap_err().to_string();
         assert!(error.starts_with("knowledge.distill_on: "), "{error}");
+    }
+
+    #[test]
+    fn memory_settings_follow_the_table_and_default_the_rest() {
+        let config = parsed(
+            r#"
+[memory]
+capture = false
+external_authors = true
+members = ["drive-by", "ann@example.com"]
+consolidate = "0 3 * * *"
+keep_observations_days = 30
+max_candidates = 5
+approvers = ["group:maintainers", "ana"]
+"#,
+        );
+        let settings = memory_settings(&config.memory);
+        assert!(!settings.capture);
+        assert!(settings.external_authors);
+        assert_eq!(settings.members, ["drive-by", "ann@example.com"]);
+        assert_eq!(settings.consolidate.as_deref(), Some("0 3 * * *"));
+        assert_eq!(settings.keep_observations_days, 30);
+        assert_eq!(settings.max_candidates, 5);
+        assert_eq!(settings.approvers, ["group:maintainers", "ana"]);
+        assert_eq!(settings.visibility, crate::memory::Visibility::Shared);
+        let empty = memory_settings(&MemoryConfig {
+            consolidate: Some(String::new()),
+            ..MemoryConfig::default()
+        });
+        assert_eq!(empty, crate::MemorySettings::default());
+        assert!(MemoryConfig::default().is_empty());
     }
 
     /// `effects_sandbox_host` is this host's address for a sandbox, bound

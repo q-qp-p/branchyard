@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+Memory observations (`docs/memory.md`, slice M2). At every turn's end the
+engine that ran it derives small typed observations from the turn's events
+alone (a correction sent after the task, a review or pull-request comment with
+its author and whether they are a member, a failed check with the tail of its
+output, a denied tool, a goal's missing items, a judge's reasons, a rejected
+plan, an escalation, the branch's outcome, a shell command repeated in one
+turn), scrubs them with the harness log's scrubber extended to free text (every
+exact secret value the turn was given, in its base64 and URL-encoded forms too,
+then the secret shapes, URL queries and non-member emails; one that is more
+than a quarter secrets is dropped with a warning) and stores them once per turn
+under a key that holds the tenant, the private subject, the branch, its
+incarnation, the turn and the text (`memory_observations`; `by_` on
+PostgreSQL). A turn that recovery settles derives nothing. `[memory]` in
+`branchyard.toml` and `memory` in the server's configuration carry `capture`,
+`external_authors`, `members` and the keys consolidation (M3) will read;
+`Yard::use_memory`, `observe_turn`, `observations`, `memory_scope`,
+`person_memory_scope`, `memory_scopes_due`, and the hidden `by memory
+observations`. Hermetic, 8 November 2026: the fake ACP agent, SQLite, and the
+PostgreSQL conformance case `memory_observations`, run on a local PostgreSQL 16
+and in CI's postgres job. Not done: a live run; consolidation and review (M3);
+a session's visibility, which no session carries yet.
+
 Four workflow skills for a session that runs Branchyard as the person or
 meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
 (when to fan out, harness choice, a result contract, `by fan`, `by compare`,

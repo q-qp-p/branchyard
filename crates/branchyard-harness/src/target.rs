@@ -21,9 +21,352 @@
 //!   command is a commit id and is kept.
 //! - A URL given as a path (`uri`) goes through the same URL scrubbing, and
 //!   a file path loses a `?query`.
+//!
+//! The same scrubber works on free text ([`scrub_values`], [`scrub_shapes`]):
+//! what memory's observations run at a turn's end (`docs/memory.md`,
+//! section 2), before anything derived from a turn is stored. It removes
+//! exact values a caller names, then the shapes above plus JWTs, PEM blocks
+//! and `Bearer` credentials, cuts URLs at their query, and replaces email
+//! addresses that are not a member's, counting each removal by
+//! [`ScrubKind`] and never keeping the value.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// What the text scrubber replaces a secret with ([`REDACTED`] for a
+/// value, this for an email address).
+pub const EMAIL: &str = "<email>";
+
+/// The shortest exact value [`scrub_values`] removes: a shorter one would
+/// shred ordinary words.
+pub const VALUE_MIN: usize = 4;
+
+/// What the text scrubber removed, by kind; never the value.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrubKind {
+    /// An exact secret value the caller named, or one of its encodings.
+    Value,
+    /// A well-known token shape: `AKIA…`, `ghp_…`, `sk-…`, `xox…`, an AWS
+    /// secret access key.
+    Token,
+    /// A JSON Web Token.
+    Jwt,
+    /// A PEM block, from `-----BEGIN` to `-----END`.
+    Pem,
+    /// The credential after `Bearer` or `Basic`.
+    Bearer,
+    /// The value of a secret-named assignment or header (`password=…`,
+    /// `api_key: …`).
+    Assignment,
+    /// A 32-plus-character hex or base64 run after a key-like word.
+    KeyedRun,
+    /// A URL's userinfo, or its query and fragment.
+    Url,
+    /// An email address that is not a member's.
+    Email,
+}
+
+/// Text after the scrubber, with what it removed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scrubbed {
+    /// The text, with each secret replaced.
+    pub text: String,
+    /// One entry per removal, by kind.
+    pub removed: Vec<ScrubKind>,
+    /// How many characters of the input were replaced.
+    pub chars_removed: usize,
+}
+
+impl Scrubbed {
+    fn unchanged(text: &str) -> Scrubbed {
+        Scrubbed {
+            text: text.to_owned(),
+            ..Scrubbed::default()
+        }
+    }
+}
+
+/// `text` with every occurrence of each of `values` (at least
+/// [`VALUE_MIN`] characters; shorter ones are skipped) replaced by
+/// [`REDACTED`]. Longer values go first, so a value that contains another
+/// is removed whole. The caller passes the encodings it wants removed too
+/// (base64, URL-encoded): this function knows nothing of them.
+pub fn scrub_values(text: &str, values: &[String]) -> Scrubbed {
+    let mut wanted: Vec<&str> = values
+        .iter()
+        .map(String::as_str)
+        .filter(|v| v.chars().count() >= VALUE_MIN)
+        .collect();
+    wanted.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    wanted.dedup();
+    let mut out = Scrubbed::unchanged(text);
+    for value in wanted {
+        let mut rest = out.text.as_str();
+        let mut rebuilt = String::with_capacity(out.text.len());
+        let mut found = 0usize;
+        while let Some(at) = rest.find(value) {
+            rebuilt.push_str(&rest[..at]);
+            rebuilt.push_str(REDACTED);
+            rest = &rest[at + value.len()..];
+            found += 1;
+        }
+        if found == 0 {
+            continue;
+        }
+        rebuilt.push_str(rest);
+        out.chars_removed += found * value.chars().count();
+        out.removed
+            .extend(std::iter::repeat_n(ScrubKind::Value, found));
+        out.text = rebuilt;
+    }
+    out
+}
+
+/// `text` with every secret shape removed: PEM blocks, JWTs, well-known
+/// token shapes, `Bearer` and `Basic` credentials, the values of
+/// secret-named assignments and headers, 32-plus-character hex or base64
+/// runs after a key-like word, URL userinfo and query strings, and email
+/// addresses that are not one of `members` (compared without case). A 40
+/// or 64 character hex word on its own is a commit id and is kept.
+pub fn scrub_shapes(text: &str, members: &[String]) -> Scrubbed {
+    let mut out = scrub_pem(text);
+    let lowered: Vec<String> = members.iter().map(|m| m.to_ascii_lowercase()).collect();
+    let mut rebuilt = String::with_capacity(out.text.len());
+    let mut previous: Option<String> = None;
+    let mut hide_next: Option<ScrubKind> = None;
+    for piece in split_keeping_whitespace(&out.text) {
+        if piece.chars().all(char::is_whitespace) {
+            rebuilt.push_str(piece);
+            continue;
+        }
+        let (lead, core, tail) = trim_punctuation(piece);
+        let lower = core.to_ascii_lowercase();
+        let replaced: Option<(String, ScrubKind)> = if let Some(kind) = hide_next.take() {
+            if matches!(lower.as_str(), "bearer" | "basic") {
+                hide_next = Some(ScrubKind::Bearer);
+                None
+            } else {
+                Some((REDACTED.to_owned(), kind))
+            }
+        } else if matches!(lower.as_str(), "bearer" | "basic") {
+            hide_next = Some(ScrubKind::Bearer);
+            None
+        } else if core.contains("://") {
+            cut_url(core).map(|url| (url, ScrubKind::Url))
+        } else if let Some(cut) = secret_assignment(core) {
+            Some((cut, ScrubKind::Assignment))
+        } else if jwt_shaped(core) {
+            Some((REDACTED.to_owned(), ScrubKind::Jwt))
+        } else if prefixed_token(core) || aws_secret_shaped(core) {
+            Some((REDACTED.to_owned(), ScrubKind::Token))
+        } else if long_run(core) && previous.as_deref().is_some_and(key_like) {
+            Some((REDACTED.to_owned(), ScrubKind::KeyedRun))
+        } else if let Some(email) = email_shaped(core) {
+            match lowered.iter().any(|m| m == &email.to_ascii_lowercase()) {
+                true => None,
+                false => Some((EMAIL.to_owned(), ScrubKind::Email)),
+            }
+        } else {
+            None
+        };
+        // `password:` as its own word hides the next word.
+        if replaced.is_none() && hide_next.is_none() {
+            if let Some(name) = core.strip_suffix(':').or_else(|| core.strip_suffix('=')) {
+                if !name.is_empty() && secret_name(name) && !name.contains("://") {
+                    hide_next = Some(ScrubKind::Assignment);
+                }
+            }
+        }
+        match replaced {
+            Some((value, kind)) => {
+                out.removed.push(kind);
+                let kept = value
+                    .replace(REDACTED, "")
+                    .replace(EMAIL, "")
+                    .chars()
+                    .count();
+                out.chars_removed += core.chars().count().saturating_sub(kept);
+                rebuilt.push_str(lead);
+                rebuilt.push_str(&value);
+                rebuilt.push_str(tail);
+            }
+            None => rebuilt.push_str(piece),
+        }
+        previous = Some(lower);
+    }
+    out.text = rebuilt;
+    out
+}
+
+/// `text` split into runs of whitespace and runs of anything else, in
+/// order, so joining the pieces gives `text` back.
+fn split_keeping_whitespace(text: &str) -> Vec<&str> {
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    let mut in_space: Option<bool> = None;
+    for (at, c) in text.char_indices() {
+        let space = c.is_whitespace();
+        if in_space.is_some_and(|was| was != space) {
+            pieces.push(&text[start..at]);
+            start = at;
+        }
+        in_space = Some(space);
+    }
+    if start < text.len() {
+        pieces.push(&text[start..]);
+    }
+    pieces
+}
+
+/// `piece` as its wrapping punctuation, its core and its trailing
+/// punctuation. `password:` and `token=` keep their last character, so the
+/// core is judged with it.
+fn trim_punctuation(piece: &str) -> (&str, &str, &str) {
+    let opening = |c: char| matches!(c, '(' | '[' | '{' | '<' | '"' | '\'' | '`' | '*' | '_');
+    let closing = |c: char| {
+        matches!(
+            c,
+            ')' | ']'
+                | '}'
+                | '>'
+                | '"'
+                | '\''
+                | '`'
+                | ','
+                | ';'
+                | '.'
+                | ':'
+                | '!'
+                | '?'
+                | '*'
+                | '_'
+        )
+    };
+    let start = piece.len() - piece.trim_start_matches(opening).len();
+    let rest = &piece[start..];
+    let mut core_len = rest.trim_end_matches(closing).len();
+    if core_len + 1 == rest.len() && rest.ends_with([':', '=']) {
+        core_len = rest.len();
+    }
+    if core_len == 0 {
+        return ("", piece, "");
+    }
+    (&piece[..start], &rest[..core_len], &rest[core_len..])
+}
+
+/// A PEM block, `-----BEGIN …-----` to `-----END …-----`, replaced whole;
+/// one with no end runs to the end of the text.
+fn scrub_pem(text: &str) -> Scrubbed {
+    const BEGIN: &str = "-----BEGIN";
+    const END: &str = "-----END";
+    let mut out = Scrubbed::default();
+    let mut rest = text;
+    while let Some(at) = rest.find(BEGIN) {
+        out.text.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let stop = after
+            .find(END)
+            .and_then(|e| {
+                let tail = &after[e + END.len()..];
+                tail.find("-----")
+                    .map(|d| e + END.len() + d + "-----".len())
+            })
+            .unwrap_or(after.len());
+        out.text.push_str(REDACTED);
+        out.removed.push(ScrubKind::Pem);
+        out.chars_removed += after[..stop].chars().count();
+        rest = &after[stop..];
+    }
+    out.text.push_str(rest);
+    out
+}
+
+/// A URL with its userinfo removed and its query and fragment cut; `None`
+/// when nothing had to change.
+fn cut_url(word: &str) -> Option<String> {
+    let without_credentials = url_credentials(word).unwrap_or_else(|| word.to_owned());
+    let cut = match without_credentials.find(['?', '#']) {
+        Some(at) => without_credentials[..at].to_owned(),
+        None => without_credentials,
+    };
+    (cut != word).then_some(cut)
+}
+
+/// `name=value` or `name:value` whose name is secret-like, with the value
+/// replaced; `None` otherwise.
+fn secret_assignment(word: &str) -> Option<String> {
+    let at = word.find(['=', ':'])?;
+    let (name, value) = (&word[..at], &word[at + 1..]);
+    let is_name = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if !is_name || value.is_empty() || !secret_name(name) {
+        return None;
+    }
+    Some(format!("{name}{}{REDACTED}", &word[at..=at]))
+}
+
+/// A JSON Web Token: three base64url segments, the first a JSON header.
+fn jwt_shaped(word: &str) -> bool {
+    let mut parts = word.split('.');
+    let (Some(header), Some(payload), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let base64url = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    };
+    header.starts_with("eyJ") && base64url(header) && base64url(payload) && base64url(signature)
+}
+
+/// A word that starts with a well-known token prefix and is long enough.
+fn prefixed_token(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+    TOKEN_PREFIXES
+        .iter()
+        .any(|prefix| word.starts_with(prefix) && word.len() >= prefix.len() + 8)
+}
+
+/// A 32-plus-character hex or base64 run with a digit and a letter.
+fn long_run(word: &str) -> bool {
+    word.len() >= 32
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '/' | '='))
+        && word.chars().any(|c| c.is_ascii_digit())
+        && word.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// Whether the word before a run makes it a key: it names a secret.
+fn key_like(previous: &str) -> bool {
+    let previous = previous.trim_end_matches([':', '=']);
+    secret_name(previous)
+}
+
+/// The email address `word` is, when it is one: a local part, `@`, a
+/// domain with a dot and a letters-only last label.
+fn email_shaped(word: &str) -> Option<&str> {
+    let (local, domain) = word.split_once('@')?;
+    let local_ok = !local.is_empty()
+        && local
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-'));
+    let labels: Vec<&str> = domain.split('.').collect();
+    let domain_ok = labels.len() >= 2
+        && labels
+            .iter()
+            .all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && labels
+            .last()
+            .is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()));
+    (local_ok && domain_ok).then_some(word)
+}
 
 /// The most characters of a command a target keeps.
 pub const COMMAND_MAX: usize = 120;
@@ -1058,5 +1401,140 @@ mod tests {
             Some("report.csv")
         );
         assert_eq!(path("?token=abc", "/w"), None);
+    }
+
+    #[test]
+    fn exact_values_are_removed_whole_longest_first_and_short_ones_skipped() {
+        let values = vec!["hunter2".to_owned(), "hunter22".to_owned(), "ab".to_owned()];
+        let out = scrub_values("pw hunter22 then hunter2, ab stays", &values);
+        assert_eq!(out.text, "pw [redacted] then [redacted], ab stays");
+        assert_eq!(out.removed, [ScrubKind::Value, ScrubKind::Value]);
+        assert_eq!(out.chars_removed, 15);
+        let none = scrub_values("nothing here", &values);
+        assert_eq!(none.text, "nothing here");
+        assert!(none.removed.is_empty() && none.chars_removed == 0);
+    }
+
+    #[test]
+    fn each_text_shape_is_scrubbed_and_counted_by_kind() {
+        let members = vec!["ann@example.com".to_owned()];
+        let cases: Vec<(String, &str, ScrubKind)> = vec![
+            (
+                "set AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE first".into(),
+                "set AWS_ACCESS_KEY_ID=[redacted] first",
+                ScrubKind::Assignment,
+            ),
+            (
+                "the key (AKIAIOSFODNN7EXAMPLE) leaked".into(),
+                "the key ([redacted]) leaked",
+                ScrubKind::Token,
+            ),
+            (
+                "use ghp_abcdefghijklmnopqrstuvwxyz012345 here".into(),
+                "use [redacted] here",
+                ScrubKind::Token,
+            ),
+            (
+                "sk-abcdefghijklmnop please".into(),
+                "[redacted] please",
+                ScrubKind::Token,
+            ),
+            (
+                "slack xoxb-123456789012-abcdefghij".into(),
+                "slack [redacted]",
+                ScrubKind::Token,
+            ),
+            (
+                format!("secret {AWS_SECRET} ok"),
+                "secret [redacted] ok",
+                ScrubKind::Token,
+            ),
+            (
+                "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl end".into(),
+                "jwt [redacted] end",
+                ScrubKind::Jwt,
+            ),
+            (
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIE\nAAA\n-----END RSA PRIVATE KEY-----\nafter"
+                    .into(),
+                "[redacted]\nafter",
+                ScrubKind::Pem,
+            ),
+            (
+                "Authorization: Bearer abc.def-ghi then".into(),
+                "Authorization: Bearer [redacted] then",
+                ScrubKind::Bearer,
+            ),
+            (
+                "curl -H 'Authorization: Basic dTpw' x".into(),
+                "curl -H 'Authorization: Basic [redacted]' x",
+                ScrubKind::Bearer,
+            ),
+            (
+                "login with password=hunter2, then".into(),
+                "login with password=[redacted], then",
+                ScrubKind::Assignment,
+            ),
+            (
+                "api_key: abc123 and more".into(),
+                "api_key: [redacted] and more",
+                ScrubKind::Assignment,
+            ),
+            (
+                "token=0123456789abcdef0123456789abcdef0123".into(),
+                "token=[redacted]",
+                ScrubKind::Assignment,
+            ),
+            (
+                "the secret 0123456789abcdef0123456789abcdef01 was".into(),
+                "the secret [redacted] was",
+                ScrubKind::KeyedRun,
+            ),
+            (
+                "see https://u:p@h/x?token=abc#frag now".into(),
+                "see https://[redacted]@h/x now",
+                ScrubKind::Url,
+            ),
+            (
+                "see https://h/x?page=2 now".into(),
+                "see https://h/x now",
+                ScrubKind::Url,
+            ),
+            (
+                "ask bob@example.com about it".into(),
+                "ask <email> about it",
+                ScrubKind::Email,
+            ),
+        ];
+        for (raw, want, kind) in cases {
+            let out = scrub_shapes(&raw, &members);
+            assert_eq!(out.text, want, "{raw}");
+            assert_eq!(out.removed, [kind], "{raw}");
+            assert!(out.chars_removed > 0, "{raw}");
+        }
+    }
+
+    #[test]
+    fn ordinary_text_members_and_commit_ids_are_kept() {
+        let members = vec!["Ann@Example.com".to_owned()];
+        let kept = [
+            "Run cargo fmt before you finish.".to_owned(),
+            format!("see commit {SHA} on main"),
+            "ask ann@example.com, who wrote it".to_owned(),
+            "the parser's tests live next to it (crates/parser/tests)".to_owned(),
+            "https://github.com/o/r/pull/4 has the review".to_owned(),
+            "not an email: foo@bar".to_owned(),
+            "a long word abcdefghijklmnopqrstuvwxyz0123456789 stays without a key before it"
+                .to_owned(),
+        ];
+        for text in kept {
+            let out = scrub_shapes(&text, &members);
+            assert_eq!(out.text, text);
+            assert!(out.removed.is_empty(), "{text}: {:?}", out.removed);
+            assert_eq!(out.chars_removed, 0);
+        }
+        let pem = scrub_shapes("-----BEGIN CERTIFICATE-----\nAAA", &[]);
+        assert_eq!(pem.text, "[redacted]");
+        assert_eq!(pem.removed, [ScrubKind::Pem]);
     }
 }

@@ -566,6 +566,44 @@ fn a_personal_memory_is_staged_for_the_branches_the_person_starts() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
+/// The review correction two branches are sent after their task.
+const REVIEW: &str = "File: notes.txt\nLine: 1\nUser comment: \"Always end notes with a summary \
+                      line, and date it\"";
+
+#[test]
+fn turns_leave_scrubbed_observations_that_the_hidden_listing_shows() {
+    let repo = Repo::new();
+    for name in ["one", "two"] {
+        let out = repo.by_agent(&["run", "Add notes WRITE notes.txt=1", "--name", name]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let out = repo.by_agent(&["send", name, REVIEW]);
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    let observations = repo.json(&["memory", "observations", "--json"]);
+    let listed = observations.as_array().unwrap();
+    assert_eq!(listed.len(), 2, "{observations}");
+    assert_eq!(listed[0]["kind"], "correction");
+    assert_eq!(listed[0]["branch"], "one");
+    assert_eq!(listed[0]["turn"], 2);
+    assert_eq!(listed[0]["visibility"], "shared");
+    assert_eq!(listed[0]["paths"], serde_json::json!(["notes.txt"]));
+    assert!(listed[0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("[review] Always end notes"));
+    let text = stdout(&repo.ok(&["memory", "observations"]));
+    assert!(text.contains("one turn 2 correction:"), "{text}");
+    assert!(text.contains("two turn 2 correction:"), "{text}");
+    let since = listed[0]["id"].as_u64().unwrap().to_string();
+    let rest = repo.json(&["memory", "observations", "--since", &since, "--json"]);
+    assert_eq!(rest.as_array().unwrap().len(), 1);
+    // A private scope holds nothing: no session was private.
+    assert_eq!(
+        stdout(&repo.ok(&["memory", "observations", "--mine"])),
+        "no observations\n"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn add_refuses_a_symlinked_bundle_directory_and_touches_nothing_outside_it() {

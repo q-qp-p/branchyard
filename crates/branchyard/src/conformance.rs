@@ -10,6 +10,8 @@ use crate::effects::EffectBackend;
 use crate::fleet::{BranchOutcome, OutcomeBackend, OutcomeRecord, TaskKind};
 use crate::graph::GraphBackend;
 use crate::knowledge::KnowledgeBackend;
+use crate::memory::store::{MemoryBackend, Scope};
+use crate::memory::{EventRef, NewObservation, ObservationKind, Visibility};
 use crate::models::UsageBackend;
 use crate::state::{
     Acquired, Backend, Begun, Fence, Owner, PoolBackend, PortBackend, ProcessRow, Record,
@@ -64,6 +66,10 @@ pub(crate) struct Opened {
     pub timers: Arc<dyn TimerBackend>,
     /// [`Opened::again`], as [`TimerBackend`].
     pub again_timers: Box<dyn Fn() -> Arc<dyn TimerBackend> + Send + Sync>,
+    /// The same backend, as [`MemoryBackend`].
+    pub memory: Arc<dyn MemoryBackend>,
+    /// [`Opened::again`], as [`MemoryBackend`].
+    pub again_memory: Box<dyn Fn() -> Arc<dyn MemoryBackend> + Send + Sync>,
     /// Runs SQL on the store's own database, behind the backend's back: to
     /// plant rows no backend writes (see [`corrupt`]).
     pub raw: Box<dyn Fn(&str)>,
@@ -127,6 +133,10 @@ pub(crate) fn sqlite(name: &str) -> Opened {
         let dir = dir.clone();
         move || Arc::new(crate::sqlite::Sqlite::open(&dir).unwrap()) as Arc<dyn TimerBackend>
     };
+    let open_memory = {
+        let dir = dir.clone();
+        move || Arc::new(crate::sqlite::Sqlite::open(&dir).unwrap()) as Arc<dyn MemoryBackend>
+    };
     let raw = {
         let dir = dir.clone();
         move |sql: &str| {
@@ -144,6 +154,8 @@ pub(crate) fn sqlite(name: &str) -> Opened {
         again_effects: Box::new(open_effects),
         timers: shared.clone(),
         again_timers: Box::new(open_timers),
+        memory: shared.clone(),
+        again_memory: Box::new(open_memory),
         pool: shared.clone(),
         again_pool: Box::new(open_pool),
         usage: shared.clone(),
@@ -234,6 +246,11 @@ pub(crate) fn postgres_at(url: String, name: &str) -> Opened {
         let scope = scope.clone();
         move || Arc::new(crate::pg::Postgres::open(&url, &scope).unwrap()) as Arc<dyn TimerBackend>
     };
+    let open_memory = {
+        let url = url.clone();
+        let scope = scope.clone();
+        move || Arc::new(crate::pg::Postgres::open(&url, &scope).unwrap()) as Arc<dyn MemoryBackend>
+    };
     let raw = {
         let url = url.clone();
         move |sql: &str| {
@@ -251,6 +268,8 @@ pub(crate) fn postgres_at(url: String, name: &str) -> Opened {
         again_effects: Box::new(open_effects),
         timers: shared.clone(),
         again_timers: Box::new(open_timers),
+        memory: shared.clone(),
+        again_memory: Box::new(open_memory),
         pool: shared.clone(),
         again_pool: Box::new(open_pool),
         usage: shared.clone(),
@@ -2790,6 +2809,150 @@ pub(crate) fn knowledge(s: Opened) {
     assert_eq!(store.knowledge(b.id).unwrap(), None);
 }
 
+/// An observation for the memory cases, of the repository `repo` labels (the
+/// store's own label, as the engine records it).
+fn observation(
+    repo: &str,
+    tenant: &str,
+    subject: Option<&str>,
+    branch: &str,
+    turn: u32,
+    text: &str,
+    at_ms: u64,
+) -> NewObservation {
+    NewObservation {
+        tenant: tenant.into(),
+        repo: repo.into(),
+        branch: branch.into(),
+        incarnation: 1,
+        turn,
+        events: vec![EventRef {
+            incarnation: 1,
+            seq: u64::from(turn) * 10,
+        }],
+        visibility: match subject {
+            None => Visibility::Shared,
+            Some(subject) => Visibility::Private {
+                subject: subject.into(),
+            },
+        },
+        kind: ObservationKind::Correction,
+        text: text.into(),
+        paths: vec!["src/**".into()],
+        task_kind: Some(TaskKind::Bugfix),
+        harness: "fake".into(),
+        model: None,
+        author: None,
+        at_ms,
+        scrubbed: Vec::new(),
+    }
+}
+
+fn repo_scope(repo: &str, tenant: &str) -> Scope {
+    Scope::Repo {
+        tenant: tenant.into(),
+        repo: repo.into(),
+    }
+}
+
+fn person_scope(tenant: &str, subject: &str) -> Scope {
+    Scope::Person {
+        tenant: tenant.into(),
+        subject: subject.into(),
+        repo: None,
+    }
+}
+
+/// Memory observations: stored once by key (a turn settled twice yields
+/// one set, a new incarnation a new one), read per scope above a watermark
+/// in id order with a limit, two tenants on one repository kept apart, a
+/// private observation read by its person's scope alone, and the scopes
+/// with observations listed.
+pub(crate) fn memory_observations(s: Opened) {
+    let store = &s.memory;
+    let repo = s.backend.label();
+    let acme = repo_scope(&repo, "acme");
+    let globex = repo_scope(&repo, "globex");
+    assert!(store.observations_since(&acme, 0, 10).unwrap().is_empty());
+    let first = store
+        .observe(&[
+            observation(&repo, "acme", None, "fix", 1, "Run fmt", 10),
+            observation(&repo, "globex", None, "fix", 1, "Run fmt", 10),
+            observation(&repo, "acme", Some("ana"), "fix", 1, "Keep notes", 11),
+        ])
+        .unwrap();
+    assert_eq!(first.len(), 3);
+    assert!(
+        first[0] >= 1 && first[1] > first[0] && first[2] > first[1],
+        "{first:?}"
+    );
+    // The same turn settled twice: the same ids, nothing new.
+    let again = (s.again_memory)();
+    let twice = again
+        .observe(&[
+            observation(&repo, "acme", None, "fix", 1, "Run fmt", 99),
+            observation(&repo, "globex", None, "fix", 1, "Run fmt", 99),
+        ])
+        .unwrap();
+    assert_eq!(twice, first[..2]);
+    // A recreated branch (a new incarnation) is a new source.
+    let mut recreated = observation(&repo, "acme", None, "fix", 1, "Run fmt", 12);
+    recreated.incarnation = 2;
+    recreated.events[0].incarnation = 2;
+    let third = store.observe(&[recreated]).unwrap();
+    assert_eq!(third.len(), 1);
+    assert!(third[0] > first[2]);
+    // Each tenant's scope reads its own; the person's reads the private one.
+    let mine: Vec<u64> = store
+        .observations_since(&acme, 0, 10)
+        .unwrap()
+        .iter()
+        .map(|o| o.id)
+        .collect();
+    assert_eq!(mine, [first[0], third[0]]);
+    let theirs = again.observations_since(&globex, 0, 10).unwrap();
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0].id, first[1]);
+    assert_eq!(theirs[0].tenant, "globex");
+    assert_eq!(
+        theirs[0].events,
+        [EventRef {
+            incarnation: 1,
+            seq: 10
+        }]
+    );
+    let private = store
+        .observations_since(&person_scope("acme", "ana"), 0, 10)
+        .unwrap();
+    assert_eq!(private.len(), 1);
+    assert_eq!(private[0].text, "Keep notes");
+    assert_eq!(private[0].visibility.subject(), Some("ana"));
+    assert!(store
+        .observations_since(&person_scope("acme", "bob"), 0, 10)
+        .unwrap()
+        .is_empty());
+    // Above a watermark, in id order, bounded.
+    assert_eq!(
+        store
+            .observations_since(&acme, first[0], 10)
+            .unwrap()
+            .iter()
+            .map(|o| o.id)
+            .collect::<Vec<_>>(),
+        [third[0]]
+    );
+    assert_eq!(store.observations_since(&acme, 0, 1).unwrap().len(), 1);
+    // Every scope with observations above its watermark (0, before any
+    // consolidation): each tenant's, and the person's.
+    let due = store.scopes_with_observations().unwrap();
+    assert_eq!(due.len(), 3, "{due:?}");
+    assert!(due
+        .iter()
+        .any(|sc| sc.tenant() == "globex" && sc.subject().is_none()));
+    assert!(due.iter().any(|sc| sc.subject() == Some("ana")));
+    assert_eq!(store.watermark(&acme).unwrap(), 0);
+}
+
 /// Warm pool slots: inserted once by id, listed per place oldest first,
 /// changed only from the state expected, claimed by exactly one of several
 /// engines racing for a ready one and never ready again, deleted by id, and
@@ -3271,7 +3434,8 @@ macro_rules! suite {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
             concurrent_appends, contended_feed, races, storage, artifact_capture, messages, message_logs, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
-            outcomes, knowledge, pools, usage, effects, timers, clock, limits, corrupt);
+            outcomes, knowledge, memory_observations, pools, usage, effects, timers, clock,
+            limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {
         $(

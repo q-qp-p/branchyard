@@ -774,7 +774,7 @@ const CONTINUATIONS: &[&str] = &[
 ];
 
 /// A person's text, without an inbox block or a rewind's summary.
-fn own_text(prompt: &str) -> &str {
+pub(crate) fn own_text(prompt: &str) -> &str {
     let mut text = prompt;
     if let Some(at) = text.rfind("\n\n## Your task now\n") {
         text = &text[at + "\n\n## Your task now\n".len()..];
@@ -787,7 +787,7 @@ fn own_text(prompt: &str) -> &str {
     text.trim()
 }
 
-fn worth_proposing(text: &str) -> bool {
+pub(crate) fn worth_proposing(text: &str) -> bool {
     let plain = text.trim().trim_end_matches(['.', '!']).to_lowercase();
     text.chars().count() >= TEXT_MIN && !CONTINUATIONS.contains(&plain.as_str())
 }
@@ -838,7 +838,7 @@ fn structured_feedback(feedback: &Feedback) -> Vec<(Option<String>, String)> {
 // with the record never reaches them for that prompt.
 
 /// `by review`'s comments in `text`: (file, comment).
-fn review_comments(text: &str) -> Vec<(String, String)> {
+pub(crate) fn review_comments(text: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();
     let mut file = None;
     for line in text.lines() {
@@ -865,7 +865,7 @@ fn review_comments(text: &str) -> Vec<(String, String)> {
 
 /// The review feedback in a `by pr --watch` prompt: (path, comment). CI
 /// failures are not corrections and are left out.
-fn pull_request_feedback(text: &str) -> Vec<(Option<String>, String)> {
+pub(crate) fn pull_request_feedback(text: &str) -> Vec<(Option<String>, String)> {
     let mut items: Vec<String> = Vec::new();
     for line in text.lines().skip(1) {
         let numbered = line

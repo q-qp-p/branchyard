@@ -327,6 +327,24 @@ CREATE TABLE IF NOT EXISTS timers (
     PRIMARY KEY (kind, key)
 );
 CREATE INDEX IF NOT EXISTS timers_due ON timers (kind, due_ms);
+CREATE TABLE IF NOT EXISTS memory_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    tenant TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    subject TEXT,
+    branch TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    turn INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    at_ms INTEGER NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_observations_scope ON memory_observations (tenant, subject, id);
+CREATE TABLE IF NOT EXISTS memory_watermarks (
+    scope TEXT PRIMARY KEY,
+    watermark INTEGER NOT NULL
+);
 ";
 
 #[derive(Debug)]
@@ -1286,6 +1304,21 @@ impl Backend for Sqlite {
 
     fn clock_ms(&self) -> Result<u64, Error> {
         Ok(now_ms())
+    }
+
+    fn incarnation(&self, name: &str) -> Result<Option<i64>, Error> {
+        self.query(|conn| incarnation(conn, name))
+    }
+
+    fn label(&self) -> String {
+        // `<root>/.branchyard/state.db`: the repository directory's name.
+        self.path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "repository".to_owned())
     }
 
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
@@ -3832,6 +3865,142 @@ impl crate::knowledge::KnowledgeBackend for Sqlite {
                 .map_err(|e| db("knowledge", e))?;
             Ok(changed == 1)
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Memory: observations and their watermarks (`crate::memory::store`).
+// Rows are JSON bodies beside the columns they are filtered by.
+
+use crate::memory::store::{self as memory_store, MemoryBackend, Scope};
+use crate::memory::{NewObservation, Observation};
+
+const OBSERVATION_COLUMNS: &str = "id, body";
+
+fn observation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<(i64, String)> {
+    Ok((r.get(0)?, r.get(1)?))
+}
+
+fn observation_from((id, body): (i64, String)) -> Result<Observation, Error> {
+    Ok(Observation {
+        id: from_db("id", id)?,
+        body: decode("observation", &body)?,
+    })
+}
+
+impl MemoryBackend for Sqlite {
+    fn observe(&self, obs: &[NewObservation]) -> Result<Vec<u64>, Error> {
+        self.tx(true, |tx| {
+            let mut ids = Vec::with_capacity(obs.len());
+            for observation in obs {
+                let key = observation.key();
+                tx.execute(
+                    "INSERT OR IGNORE INTO memory_observations (key, tenant, repo, subject, \
+                     branch, incarnation, turn, kind, at_ms, body) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        key,
+                        observation.tenant,
+                        observation.repo,
+                        observation.visibility.subject(),
+                        observation.branch,
+                        observation.incarnation,
+                        i64::from(observation.turn),
+                        observation.kind.as_str(),
+                        to_db("at_ms", observation.at_ms)?,
+                        encode("observation", observation)?
+                    ],
+                )
+                .map_err(|e| db("observation", e))?;
+                let id: i64 = tx
+                    .query_row(
+                        "SELECT id FROM memory_observations WHERE key = ?1",
+                        params![key],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| db("observation", e))?;
+                ids.push(from_db("id", id)?);
+            }
+            Ok(ids)
+        })
+    }
+
+    fn observations_since(
+        &self,
+        scope: &Scope,
+        watermark: u64,
+        limit: usize,
+    ) -> Result<Vec<Observation>, Error> {
+        let (tenant, subject, repo) = memory_store::scope_filter(scope);
+        let rows = self.query(|conn| {
+            let e = |error| db("observation", error);
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT {OBSERVATION_COLUMNS} FROM memory_observations WHERE tenant = ?1 \
+                     AND ((?2 IS NULL AND subject IS NULL) OR subject = ?2) \
+                     AND (?3 IS NULL OR repo = ?3) AND id > ?4 ORDER BY id LIMIT ?5"
+                ))
+                .map_err(e)?;
+            let rows = statement
+                .query_map(
+                    params![
+                        tenant,
+                        subject,
+                        repo,
+                        to_db("watermark", watermark)?,
+                        to_db_usize("limit", limit)?
+                    ],
+                    observation_row,
+                )
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        rows.into_iter().map(observation_from).collect()
+    }
+
+    fn watermark(&self, scope: &Scope) -> Result<u64, Error> {
+        let found: Option<i64> = self.query(|conn| {
+            conn.query_row(
+                "SELECT watermark FROM memory_watermarks WHERE scope = ?1",
+                params![scope.key()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| db("watermark", e))
+        })?;
+        Ok(from_db_opt("watermark", found)?.unwrap_or(0))
+    }
+
+    fn scopes_with_observations(&self) -> Result<Vec<Scope>, Error> {
+        let rows: Vec<(String, String, Option<String>, i64)> = self.query(|conn| {
+            let e = |error| db("observation", error);
+            let mut statement = conn
+                .prepare(
+                    "SELECT tenant, repo, subject, MAX(id) FROM memory_observations \
+                     GROUP BY tenant, repo, subject ORDER BY tenant, repo, subject",
+                )
+                .map_err(e)?;
+            let rows = statement
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        let mut scopes = Vec::new();
+        for (tenant, repo, subject, max_id) in rows {
+            let scope = match subject {
+                None => Scope::Repo { tenant, repo },
+                Some(subject) => Scope::Person {
+                    tenant,
+                    subject,
+                    repo: None,
+                },
+            };
+            if MemoryBackend::watermark(self, &scope)? < from_db("id", max_id)? {
+                scopes.push(scope);
+            }
+        }
+        scopes.dedup();
+        Ok(scopes)
     }
 }
 

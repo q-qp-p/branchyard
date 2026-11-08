@@ -1221,6 +1221,23 @@ A memory is a skill a team or a person writes down, found by search instead of p
 | Export the bundles as the writer produces them from what is stored | `Library::export`, `memory::bundles` (`Bundle`) | `memory export [--out DIR] [--mine] [--json]` | no; refused | no | no | allowed |
 | Copy a skill into your own skills folder (`~/.config/branchyard/skills/NAME`), under its frontmatter's name or `--name`; remove one | none (files) | `skills add PATH [--name NAME] [--json]`, `skills remove NAME [--json]`; `skills ls` lists the folder under `user`, with what is withheld by name | no; refused | no | no | refused with `denied`: what a turn may see is decided by people |
 
+## Added with memory observations
+
+Slice M2 of [memory](memory.md): each turn's end derives scrubbed observations from its events, stored per scope for the consolidation M3 adds. Observations have no routes: they are read where they are stored.
+
+| Operation | SDK | by | by --remote | HTTP | client | delegation |
+|---|---|---|---|---|---|---|
+| Observations of a scope, oldest first (derived at every turn's end; scrubbed of the turn's secret values and the secret shapes; `[memory] capture = false` turns it off) | `Yard::observe_turn(branch, turn, &secrets)`, `observations(&scope, since, limit)`, `memory_scope(tenant)`, `person_memory_scope(tenant, subject)`, `memory_scopes_due` | `memory observations [--mine] [--since N] [--limit N] [--json]` (hidden) | no: refused with `usage` | n/a | no | allowed: reading |
+| Settings | `Yard::use_memory(MemorySettings)`, `memory_settings` | `[memory]` in `branchyard.toml`: `capture`, `external_authors`, `members`, `consolidate`, `keep_observations_days`, `max_candidates`, `approvers` (the last four read for M3) | the server's `memory` section (the same keys), applied to every served repository, its principals members | n/a | n/a | n/a |
+
+| Surface | Before | Now |
+|---|---|---|
+| `branchyard_harness::target` | the tool-call target scrubber alone | also `scrub_values`, `scrub_shapes`, `ScrubKind`, `Scrubbed`, `EMAIL`, `VALUE_MIN`: the same scrubber over free text, exact values first (the caller passes the encodings), then shapes, JWTs, PEM blocks, `Bearer`, secret-named assignments, keyed hex and base64 runs, URL queries and non-member emails, each removal counted by kind |
+| `branchyard::memory` | the bundle writer and `Library` (M1) | also `observe` (`Observation`, `NewObservation`, `ObservationKind`, `EventRef`, `Visibility`, `Author`, `Association`, `derive`, `turn_events`), `scrub` (`Scrubber`), `store` (`Scope`, the observation backend); `MemorySettings`; re-exported `Observation`, `NewObservation`, `ObservationKind`, `MemoryScope` |
+| Stores | `knowledge` / `by_knowledge` | add `memory_observations` and `memory_watermarks` (`by_` on PostgreSQL, keyed by `repo`), every row with its tenant and private subject; `Backend::incarnation(name)` and `label()`; conformance case `memory_observations` on both |
+| Server configuration | | `memory` (`capture`, `external_authors`, `members`, `consolidate`, `keep_observations_days`, `max_candidates`, `approvers`), checked at load (the cron must parse); `schema/server.config.json` |
+| `branchyard.toml` | `[knowledge]` | `[memory]` with the same keys as the server's section; `schema/branchyard.config.json` |
+
 | Surface | Before | Now |
 |---|---|---|
 | `branchyard::skills::Source` (`repository`, `built_in`, `user`), `SkillEntry::source` | `Layer` with `Repository` and `BuiltIn`; `SkillEntry::layer` | `Source`, with `User` declared after the two that existed (the set digest sorts by declaration order, so recorded digests hold); the field serializes as `layer` still; `Source::precedence` (repository, then user, then built-in), `root`, `skillset::label`, `USER_ROOT` |

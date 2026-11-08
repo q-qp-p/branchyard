@@ -462,6 +462,39 @@ const STEPS: &[(&str, &str)] = &[
         "by_timers_due",
         "CREATE INDEX IF NOT EXISTS by_timers_due ON by_timers (repo, kind, due_ms)",
     ),
+    // Memory (`crate::memory::store`): observations, rows, watermarks and
+    // consolidation runs, every row keyed by repo and tenant.
+    (
+        "by_memory_observations",
+        "CREATE TABLE IF NOT EXISTS by_memory_observations (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            repo TEXT NOT NULL,
+            key TEXT NOT NULL,
+            tenant TEXT NOT NULL,
+            subject TEXT,
+            branch TEXT NOT NULL,
+            incarnation BIGINT NOT NULL,
+            turn BIGINT NOT NULL,
+            kind TEXT NOT NULL,
+            at_ms BIGINT NOT NULL,
+            body TEXT NOT NULL,
+            UNIQUE (repo, key)
+        )",
+    ),
+    (
+        "by_memory_observations_scope",
+        "CREATE INDEX IF NOT EXISTS by_memory_observations_scope ON by_memory_observations \
+         (repo, tenant, subject, id)",
+    ),
+    (
+        "by_memory_watermarks",
+        "CREATE TABLE IF NOT EXISTS by_memory_watermarks (
+            repo TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            watermark BIGINT NOT NULL,
+            PRIMARY KEY (repo, scope)
+        )",
+    ),
 ];
 
 fn steer_row(r: &Row) -> Result<SteerRow, Error> {
@@ -1668,6 +1701,20 @@ impl Backend for Postgres {
     fn clock_ms(&self) -> Result<u64, Error> {
         let row = self.query(|client| client.query_one(CLOCK_SQL, &[]))?;
         Ok(from_db("clock_ms", row.get(0))?)
+    }
+
+    fn incarnation(&self, name: &str) -> Result<Option<i64>, Error> {
+        let row = self.query(|c| {
+            c.query_opt(
+                "SELECT incarnation FROM by_branches WHERE repo = $1 AND name = $2",
+                &[&self.repo, &name],
+            )
+        })?;
+        Ok(row.map(|r| r.get(0)))
+    }
+
+    fn label(&self) -> String {
+        self.repo.clone()
     }
 
     fn leases(&self) -> Result<Vec<LeaseRow>, Error> {
@@ -4274,6 +4321,125 @@ impl crate::knowledge::KnowledgeBackend for Postgres {
                 .map_err(db("knowledge"))?;
             Ok(changed == 1)
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Memory: observations and their watermarks (`crate::memory::store`), the
+// SQLite implementation's mirror: JSON bodies beside the columns the rows
+// are filtered by, every table keyed by `repo`.
+
+use crate::memory::store::{self as memory_store, MemoryBackend, Scope};
+use crate::memory::{NewObservation, Observation};
+
+fn pg_observation(r: &Row) -> Result<Observation, Error> {
+    Ok(Observation {
+        id: from_db("id", r.get::<_, i64>(0))?,
+        body: decode("observation", &r.get::<_, String>(1))?,
+    })
+}
+
+impl MemoryBackend for Postgres {
+    fn observe(&self, obs: &[NewObservation]) -> Result<Vec<u64>, Error> {
+        self.tx(true, |tx| {
+            let mut ids = Vec::with_capacity(obs.len());
+            for observation in obs {
+                let key = observation.key();
+                tx.execute(
+                    "INSERT INTO by_memory_observations (repo, key, tenant, subject, branch, \
+                     incarnation, turn, kind, at_ms, body) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                     ON CONFLICT (repo, key) DO NOTHING",
+                    &[
+                        &self.repo,
+                        &key,
+                        &observation.tenant,
+                        &observation.visibility.subject(),
+                        &observation.branch,
+                        &observation.incarnation,
+                        &i64::from(observation.turn),
+                        &observation.kind.as_str(),
+                        &to_db("at_ms", observation.at_ms)?,
+                        &encode("observation", observation)?,
+                    ],
+                )
+                .map_err(db("observation"))?;
+                let id: i64 = tx
+                    .query_one(
+                        "SELECT id FROM by_memory_observations WHERE repo = $1 AND key = $2",
+                        &[&self.repo, &key],
+                    )
+                    .map_err(db("observation"))?
+                    .get(0);
+                ids.push(from_db("id", id)?);
+            }
+            Ok(ids)
+        })
+    }
+
+    fn observations_since(
+        &self,
+        scope: &Scope,
+        watermark: u64,
+        limit: usize,
+    ) -> Result<Vec<Observation>, Error> {
+        let (tenant, subject, repo) = memory_store::scope_filter(scope);
+        let watermark = to_db("watermark", watermark)?;
+        let limit = to_db_usize("limit", limit)?;
+        // The table's `repo` is this store's label, which is what an
+        // observation records too; a scope that names another repository
+        // reads nothing here, as on SQLite.
+        let rows = self.query(|client| {
+            client.query(
+                "SELECT id, body FROM by_memory_observations WHERE repo = $1 AND tenant = $2 \
+                 AND (($3::text IS NULL AND subject IS NULL) OR subject = $3) \
+                 AND ($6::text IS NULL OR repo = $6) AND id > $4 ORDER BY id LIMIT $5",
+                &[&self.repo, &tenant, &subject, &watermark, &limit, &repo],
+            )
+        })?;
+        rows.iter().map(pg_observation).collect()
+    }
+
+    fn watermark(&self, scope: &Scope) -> Result<u64, Error> {
+        let key = scope.key();
+        let row = self.query(|client| {
+            client.query_opt(
+                "SELECT watermark FROM by_memory_watermarks WHERE repo = $1 AND scope = $2",
+                &[&self.repo, &key],
+            )
+        })?;
+        Ok(from_db_opt("watermark", row.map(|r| r.get::<_, i64>(0)))?.unwrap_or(0))
+    }
+
+    fn scopes_with_observations(&self) -> Result<Vec<Scope>, Error> {
+        let rows = self.query(|client| {
+            client.query(
+                "SELECT tenant, subject, MAX(id) FROM by_memory_observations WHERE repo = $1 \
+                 GROUP BY tenant, subject ORDER BY tenant, subject",
+                &[&self.repo],
+            )
+        })?;
+        let mut scopes = Vec::new();
+        for row in &rows {
+            let tenant: String = row.get(0);
+            let subject: Option<String> = row.get(1);
+            let max_id: i64 = row.get(2);
+            let scope = match subject {
+                None => Scope::Repo {
+                    tenant,
+                    repo: self.repo.clone(),
+                },
+                Some(subject) => Scope::Person {
+                    tenant,
+                    subject,
+                    repo: None,
+                },
+            };
+            if MemoryBackend::watermark(self, &scope)? < from_db("id", max_id)? {
+                scopes.push(scope);
+            }
+        }
+        Ok(scopes)
     }
 }
 

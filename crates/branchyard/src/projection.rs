@@ -190,6 +190,8 @@ pub(crate) struct Hub {
     pub mirrors: Mutex<Vec<branchyard_provision::network::HostRule>>,
     /// Set by [`crate::Yard::use_knowledge`].
     pub knowledge: Mutex<Option<Arc<crate::KnowledgeSettings>>>,
+    /// Set by [`crate::Yard::use_memory`].
+    pub memory: Mutex<Option<Arc<crate::MemorySettings>>>,
     /// Set by [`crate::Yard::use_models`].
     pub models: Mutex<Option<Arc<crate::models::Gateway>>>,
     /// Set by [`crate::Yard::use_ceilings`].
@@ -229,6 +231,7 @@ impl Default for Hub {
             image_labels: Default::default(),
             mirrors: Default::default(),
             knowledge: Default::default(),
+            memory: Default::default(),
             models: Default::default(),
             ceilings: Default::default(),
             services: Default::default(),

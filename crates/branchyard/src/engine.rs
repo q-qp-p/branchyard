@@ -191,6 +191,10 @@ pub(crate) struct Driven {
     /// during it), and those spawned since. Its branch is woken for those
     /// that settled ([`crate::wake::park`]).
     pub held_on: Vec<String>,
+    /// The exact values of the turn's secrets, for the memory scrubber at
+    /// the turn's end; taken out before the turn is concluded, never
+    /// journaled.
+    pub secret_values: Vec<String>,
 }
 
 /// A running turn's spend: the branch's spend when the turn started, or
@@ -361,6 +365,9 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
             &crate::plan::policy_for(&record, &turn.options.policy),
         ),
     };
+    // The turn's secret values, kept here for the memory scrubber once the
+    // turn has ended; this process is the one that holds them.
+    let mut secret_values: Vec<String> = Vec::new();
     let result = (|| {
         turn.yard
             .admit_provider(record.provider.as_ref(), turn.options)?;
@@ -415,7 +422,8 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         } else {
             let driven = drive(&mut recorder, &turn, &mut record, &bounds, &lease);
             graph::unbind(turn.yard, &record);
-            let driven = driven?;
+            let mut driven = driven?;
+            secret_values = std::mem::take(&mut driven.secret_values);
             let park_input = crate::wake::ParkInput::new(&bounds.budget, &driven.held_on);
             conclude(
                 turn.yard,
@@ -483,6 +491,19 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         // A child that owed its parent a result and gave none is noted in
         // the parent's log.
         crate::contract::settled(turn.yard, &fence.branch, turn.options.observer.clone());
+        // The turn's memory observations, derived from its events and
+        // scrubbed of its secret values (`docs/memory.md`, section 2).
+        if let Ok(branch) = &result {
+            if branch.info.turns > 0 {
+                crate::memory::observe::on_turn_end(
+                    turn.yard,
+                    &fence.branch,
+                    fence.incarnation,
+                    branch.info.turns,
+                    &secret_values,
+                );
+            }
+        }
         if matches!(&result, Ok(b) if b.info.status == BranchStatus::Ready) {
             crate::knowledge::on_end(
                 turn.yard,
@@ -652,6 +673,7 @@ fn run(
         metered: None,
         live_cost: None,
         held_on: Vec::new(),
+        secret_values: Vec::new(),
     };
     // Revoked when this function returns, after the harness and its
     // sandbox are gone. A local harness runs the delegation tools itself;
@@ -934,6 +956,7 @@ fn run(
             return Ok(driven);
         }
     };
+    driven.secret_values.clone_from(&provisioned.secret_values);
     // Declared before the session so a sandbox outlives it. The turn's
     // provisioning is recorded once the sandbox exists, so its activity
     // names the placement the turn ran in.
