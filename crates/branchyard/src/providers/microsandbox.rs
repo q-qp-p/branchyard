@@ -123,6 +123,13 @@ impl ProviderKind for SandboxOptions {
         store_to_mount(yard).is_some()
     }
 
+    /// The guest reads the home where the engine writes it (a virtiofs
+    /// mount, not a copy), so an unchosen skill costs nothing to mount
+    /// whether or not the store is there.
+    fn mounts_ready_skills(&self, _yard: &Yard) -> bool {
+        true
+    }
+
     fn destroy(&self, yard: &Yard, sandbox: &str) -> Result<String, String> {
         let said = destroy_orphan(microsandbox(yard, self), sandbox);
         match said.starts_with("could not") {

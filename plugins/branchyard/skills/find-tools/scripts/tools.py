@@ -12,14 +12,23 @@ another. Standard library only.
 
 Every document is built from the tree when a command runs; nothing is written beside a skill.
 A skill is one document (its id, frontmatter `keywords`, its description and its headings,
-weighted as FIELD_WEIGHTS says) and each of its `references/*.md` is another (the skill's and the
-file's name, its first heading, the content words of its body), so a search can land on one
-reference without the skill. A reference adds nothing to the corpus statistics, so the references
-a tree carries never reorder the tools among themselves. Ids are
+weighted as FIELD_WEIGHTS says) and each of its `references/*.md` is another (the words of the
+skill's and the file's name, its first heading, the content words of its body), so a search can
+land on one reference without the skill. A reference is indexed by what it says: its name's
+English function words (STOPWORDS), code fences, link targets and the lines that only say where
+the text came from (PROVENANCE: `Source:`, `License:`, a memory's `Approved by` and `Evidence:`)
+are not indexed. A reference adds nothing to the corpus statistics, so the references a tree
+carries never reorder the tools among themselves. Ids are
 `[kind:][source:]name[/references/FILE.md]`: `pptx`, `repository:tone`,
-`pptx/references/layouts.md`, `skill:pptx`. A tool `INDEX.md` lists (chosen for the turn) scores
-CHOSEN times one it does not, and a reference is scored on its words alone; `--plain` ranks by
-BM25 alone.
+`pptx/references/layouts.md`, `skill:pptx`. A tool (a skill, connector, operation or helper)
+scores TOOL times a reference of equal match, so a skill is read before one of its references;
+a tool `INDEX.md` lists (chosen for the turn) scores CHOSEN times one the tree holds and the index
+only counts (`- ...N more`: mounted, not chosen); `--plain` ranks by BM25 alone.
+
+Each `search` and `show` appends one JSON line to `.branchyard/turn/skills.jsonl` beside the
+tree (in a sandbox, under `$HOME`), 0600, which the engine reads at the turn's end into the
+branch's record as `skill` events: the query's term count and the ids found, never its words;
+the id, kind, level and size of what was shown. A log that cannot be written is not an error.
 
 A connector package with a `search.json` (Anvil's operation search index, which `anvil
 package harness` writes; docs/anvil-contract-v2.md item 3) is read from it, and strictly: a malformed one is refused
@@ -40,6 +49,7 @@ import math
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -50,9 +60,14 @@ SNIPPET = 110
 #: docs/skill-eval.md records the measurements behind the numbers). A connector, operation or helper
 #: document has its id (counted as `id`) and one `text`.
 FIELD_WEIGHTS = {"id": 4, "keywords": 3, "description": 1, "headings": 1, "title": 1, "body": 1}
-#: The score of a chosen tool (a skill or connector `INDEX.md` lists, the connector's operations, or a
-#: helper) is multiplied by this unless `--plain`; a reference is scored on its words alone.
-CHOSEN = 1.5
+#: Every tool's score (a skill, a connector and its operations, a helper) is multiplied by this unless
+#: `--plain`; a reference is scored on its words alone, so a tool of equal match is read before its
+#: reference (docs/skill-registry.md, section 3; measured in docs/skill-eval.md).
+TOOL = 1.5
+#: A chosen tool's score (one `INDEX.md` names: what the person picked for the turn) is multiplied by
+#: this too, over one the tree only mounts. 1.0 as measured for R2: every value above it put a chosen
+#: skill above one of its own references that a scenario expects, and lowered no miss.
+CHOSEN = 1.0
 #: The most characters of a document's first paragraph that are shown as its summary.
 SUMMARY_CAP = 600
 #: English function words left out of a reference's indexed body, so a paragraph is found by what it
@@ -118,6 +133,7 @@ STOPWORDS = frozenset(
     ]
 )
 REFERENCES = "references"
+PROVENANCE = ("Source:", "License:", "Approved by ", "Evidence:")
 KINDS = ("skill", "reference", "connector", "operation", "helper")
 OP_ID = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+")
 HEADING_OP = re.compile(r"^#{2,5}\s+`?(" + OP_ID.pattern + r")`?\s*(?:[-:—]\s*(.*))?$")
@@ -251,11 +267,16 @@ def summary_of(text: str) -> str:
     return summary if len(summary) <= SUMMARY_CAP else summary[: SUMMARY_CAP - 3].rstrip() + "..."
 
 
+def plain_words(text: str) -> str:
+    """The words of a name or a title without STOPWORDS: what it names."""
+    return " ".join(word for word in tokens(text) if word not in STOPWORDS)
+
+
 def content_words(text: str) -> str:
     """The words of a reference's body worth indexing: what it says, without code fences, link targets,
     the lines that only cite where the text came from (`Source:`, `License:`) and STOPWORDS."""
     body = re.sub(r"```.*?```", " ", body_of(text), flags=re.S)
-    body = "\n".join(line for line in body.split("\n") if not line.startswith(("Source:", "License:")))
+    body = "\n".join(line for line in body.split("\n") if not line.startswith(PROVENANCE))
     body = re.sub(r"\(https?://[^)\s]*\)|https?://\S+", " ", body)
     return " ".join(word for word in tokens(body) if word not in STOPWORDS)
 
@@ -325,7 +346,7 @@ def reference_docs(skill_dir: Path, label: str, name: str) -> list[Doc]:
         # A reference that carries frontmatter (a vendored skill) says what it is for there.
         summary = frontmatter(text).get("description") or summary_of(text)
         ident = f"{label}/{REFERENCES}/{file.name}"
-        fields = (("id", f"{name} {file.stem}"), ("title", title), ("body", content_words(text)))
+        fields = (("id", plain_words(f"{name} {file.stem}")), ("title", title), ("body", content_words(text)))
         description = f"{title}. {summary}" if summary else title
         docs.append(Doc("reference", ident, description, file, f"{title} {summary}", fields=fields, skill=label))
     return docs
@@ -602,8 +623,9 @@ def bag(doc: Doc) -> list[str]:
 
 
 def chosen_tools(root: Path) -> frozenset[str]:
-    """The skills and connectors `INDEX.md` lists: what was chosen for the turn. Behind an overflow line
-    (`- ...N more`) the list is cut, not the choice, so every tool in the tree counts as chosen (`*`)."""
+    """The skills and connectors `INDEX.md` lists by name: what was chosen for the turn. The tools its
+    overflow line counts (`- ...N more: bin/tools search WORDS`) are in the tree and findable, but mounted,
+    not chosen: a skill the person did not pick, or one the index had no room to name."""
     listed: set[str] = set()
     inside = False
     for line in read(root / "INDEX.md").split("\n"):
@@ -612,9 +634,8 @@ def chosen_tools(root: Path) -> frozenset[str]:
             continue
         if inside and line.startswith("- "):
             name = line[2:].split(":", 1)[0].strip()
-            if name.startswith("..."):
-                return frozenset({"*"})
-            listed.add(name)
+            if not name.startswith("..."):
+                listed.add(name)
     return frozenset(listed)
 
 
@@ -623,13 +644,14 @@ def is_chosen(doc: Doc, chosen: frozenset[str]) -> bool:
     reference, which is scored on its words alone so a tool of equal match is read first."""
     if doc.kind == "reference":
         return False
-    if doc.kind == "helper" or "*" in chosen:
+    if doc.kind == "helper":
         return True
     return (doc.connector or doc.id) in chosen
 
 
-def rank(docs: list[Doc], words: list[str], chosen: frozenset[str] = frozenset()) -> list[tuple[float, Doc]]:
-    """BM25 of the words against each document's weighted fields; a chosen tool's score times CHOSEN.
+def rank(docs: list[Doc], words: list[str], chosen: frozenset[str] | None = None) -> list[tuple[float, Doc]]:
+    """BM25 of the words against each document's weighted fields; then, unless `chosen` is None (`--plain`),
+    a tool's score times TOOL and a chosen tool's times CHOSEN as well.
 
     The corpus statistics (term rarity, average length) are those of the tools: skills, connectors,
     operations and helpers. A reference is scored against them and adds nothing to them, so the
@@ -652,8 +674,11 @@ def rank(docs: list[Doc], words: list[str], chosen: frozenset[str] = frozenset()
             idf = math.log(1 + (len(tools) - holding + 0.5) / (holding + 0.5))
             score += idf * frequency * (K1 + 1) / (frequency + K1 * (1 - B + B * len(terms) / average))
         if score > 0:
-            if chosen and is_chosen(doc, chosen):
-                score *= CHOSEN
+            if chosen is not None:
+                if doc.kind != "reference":
+                    score *= TOOL
+                if is_chosen(doc, chosen):
+                    score *= CHOSEN
             scored.append((score, doc))
     scored.sort(key=lambda pair: (-pair[0], pair[1].kind, pair[1].id))
     return scored
@@ -664,6 +689,42 @@ def line(doc: Doc) -> str:
         doc.description if len(doc.description) <= SNIPPET else doc.description[: SNIPPET - 3].rstrip() + "..."
     )
     return f"{doc.kind:<10} {doc.id}" + (f": {description}" if description else "")
+
+
+#: The progressive-disclosure level `show` reads a document at (docs/skill-registry.md, section 3): a
+#: skill's SKILL.md is level 2, one of its references level 3, and a connector, operation or helper is
+#: a line of the tree's own, level 1.
+LEVELS = {"skill": 2, "reference": 3, "connector": 1, "operation": 1, "helper": 1}
+#: Where the turn's skill log sits, relative to the home: beside the tree's own `.branchyard/tools`.
+SKILLS_LOG = ".branchyard/turn/skills.jsonl"
+
+
+def log_path(root: Path) -> Path | None:
+    """Where a search or show is noted for the engine: `.branchyard/turn/skills.jsonl` beside a tree that
+    sits in a home's `.branchyard/tools`; under `$HOME` for a tree a sandbox exposes elsewhere
+    (BRANCHYARD_TOOLS set); nowhere for any other tree (a test's, a copy somebody is reading)."""
+    if root.parent.name == ".branchyard":
+        return root.parent / "turn" / "skills.jsonl"
+    home = os.environ.get("HOME")
+    if os.environ.get("BRANCHYARD_TOOLS") and home:
+        return Path(home) / SKILLS_LOG
+    return None
+
+
+def note(root: Path, record: dict[str, Any]) -> None:
+    """Append `record`, with the time, to the turn's skill log, 0600. Best effort: the command's answer
+    does not depend on the log, so a log that cannot be written is left alone."""
+    path = log_path(root)
+    if path is None:
+        return
+    record = {"at_ms": int(time.time() * 1000), **record}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as log:
+            log.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except OSError:
+        return
 
 
 def report(refused: list[str]) -> int:
@@ -679,7 +740,17 @@ def search(root: Path, words: list[str], limit: int, kind: str | None, plain: bo
     if not docs:
         print(f"nothing to search: {root} holds no skills, connectors or helpers", file=sys.stderr)
         return report(refused) or 1
-    hits = rank(docs, words, frozenset() if plain else chosen_tools(root))[:limit]
+    hits = rank(docs, words, None if plain else chosen_tools(root))[:limit]
+    note(
+        root,
+        {
+            "action": "searched",
+            "terms": len(set(tokens(" ".join(words)))),
+            "results": [f"{doc.kind}:{doc.id}" for _, doc in hits],
+            "kind": kind,
+            "plain": plain,
+        },
+    )
     if not hits:
         print(f"no tool matches {' '.join(words)!r}; read {root / 'INDEX.md'} for the whole list", file=sys.stderr)
         return report(refused) or 1
@@ -713,9 +784,20 @@ def show(root: Path, ident: str) -> int:
         hint = f"; closest: {', '.join(near)}" if near else ""
         print(f"no tool {ident!r} here{hint}", file=sys.stderr)
         return report(refused) or 1
+    shown = read(doc.path) if doc.kind in ("skill", "reference") and doc.path is not None else ""
+    note(
+        root,
+        {
+            "action": "opened",
+            "id": doc.id,
+            "kind": doc.kind,
+            "level": LEVELS[doc.kind],
+            "bytes": len(shown.encode("utf-8")),
+        },
+    )
     if doc.kind in ("skill", "reference") and doc.path is not None:
         print(f"# {doc.path}\n")
-        print(read(doc.path).rstrip())
+        print(shown.rstrip())
     elif doc.kind == "connector":
         print(f"connector {doc.id}: {doc.description}".rstrip())
         print(
@@ -798,7 +880,7 @@ def main(argv: list[str] | None = None) -> int:
     finder.add_argument("words", nargs="+")
     finder.add_argument("--limit", type=int, default=8)
     finder.add_argument("--kind", choices=list(KINDS))
-    finder.add_argument("--plain", action="store_true", help="BM25 alone: no extra weight for a chosen tool")
+    finder.add_argument("--plain", action="store_true", help="BM25 alone: no extra weight for a tool over a reference")
     shower = sub.add_parser("show", help="print one tool: a skill, SKILL/references/FILE.md, a connector, CONNECTOR.OP")
     shower.add_argument("id")
     schemer = sub.add_parser("schema", help="print one operation's input schema")

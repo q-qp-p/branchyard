@@ -619,3 +619,178 @@ fn add_refuses_a_symlink_in_the_source_bundle_and_keeps_the_installed_skill() {
     );
     assert!(!folder.join("tone/references/link.md").exists());
 }
+
+/// R2's registry commands: `list` with every source and state, `search`
+/// through the turn's own ranker, `show` with references, `index` writing
+/// the tree a turn would mount, and `usage` from a turn's `skill` events;
+/// `usage` and `index` refused inside a harness.
+#[test]
+fn list_search_show_index_and_usage_read_the_registry() {
+    let repo = Repo::with_skill();
+    let tone = skill_dir(&repo, "tone", TONE);
+    repo.ok(&["skills", "add", tone.to_str().unwrap()]);
+
+    // Before trust: the repository's skill is available, not ready.
+    let listed = repo.json(&["skills", "list", "--json"]);
+    let rows = listed["skills"].as_array().unwrap();
+    let find = |label: &str| {
+        rows.iter()
+            .find(|r| r["label"] == label)
+            .unwrap_or_else(|| panic!("no {label} in {listed}"))
+    };
+    assert_eq!(find("pptx")["state"], "ready");
+    assert_eq!(find("pptx")["source"], "built_in");
+    assert_eq!(find("repository:style-guide")["state"], "available");
+    assert!(find("repository:style-guide")["reason"]
+        .as_str()
+        .unwrap()
+        .contains("by skills trust"));
+    assert_eq!(find("user:tone")["state"], "ready");
+    assert_eq!(find("user:tone")["description"], "Keep the tone dry.");
+    let text = stdout(&repo.ok(&["skills", "list", "--source", "user"]));
+    assert!(text.contains("user:tone"), "{text}");
+    assert!(!text.contains("pptx"), "{text}");
+    let text = stdout(&repo.ok(&["skills", "list", "--state", "available"]));
+    assert!(text.contains("repository:style-guide"), "{text}");
+    assert!(!text.contains("user:tone"), "{text}");
+
+    repo.ok(&["skills", "trust"]);
+    let listed = repo.json(&["skills", "list", "--state", "ready", "--json"]);
+    assert!(listed["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["label"] == "repository:style-guide"));
+
+    // Search runs the turn's own ranker over the tree a turn would mount.
+    let found = repo.json(&["skills", "search", "prose", "team", "writes", "--json"]);
+    let hits = found["hits"].as_array().unwrap();
+    assert!(
+        hits.iter().any(|h| h["id"] == "repository:style-guide"),
+        "{found}"
+    );
+    assert!(found["mounted"].as_u64().unwrap() > 19, "{found}");
+    let text = stdout(&repo.ok(&["skills", "search", "word", "document"]));
+    assert!(text.starts_with("skill      docx: "), "{text}");
+    let out = repo.by(&["skills", "search", "qzxvwk", "--json"]);
+    assert!(!out.status.success());
+    assert_eq!(envelope(&out)["kind"], "unknown_skill");
+
+    // Show: the entry, and with --references its level-3 documents.
+    let shown = repo.json(&["skills", "show", "calculate", "--references", "--json"]);
+    assert_eq!(shown["source"], "built_in");
+    assert_eq!(shown["state"], "ready");
+    assert!(shown["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r.as_str().unwrap().starts_with("references/")));
+    let text = stdout(&repo.ok(&["skills", "show", "user:tone", "--references"]));
+    assert!(text.contains("source       user\n"), "{text}");
+    assert!(text.contains("references   1 file"), "{text}");
+    assert!(text.contains("  references/words.md\n"), "{text}");
+    let out = repo.by(&["skills", "show", "nope"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("no skill nope here"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Index: the tree, with only find-tools named and the rest counted.
+    let out_dir = repo.dir.join("tree");
+    let index = repo.json(&[
+        "skills",
+        "index",
+        "--out",
+        out_dir.to_str().unwrap(),
+        "--skill",
+        "find-tools",
+        "--json",
+    ]);
+    assert_eq!(index["chosen"], serde_json::json!(["find-tools"]));
+    let mounted = index["mounted"].as_array().unwrap();
+    assert!(
+        mounted.iter().any(|m| m == "repository:style-guide"),
+        "{index}"
+    );
+    assert!(mounted.iter().any(|m| m == "user:tone"), "{index}");
+    assert!(mounted.iter().any(|m| m == "pptx"), "{index}");
+    let tree = PathBuf::from(index["tree"].as_str().unwrap());
+    let text = fs::read_to_string(tree.join("INDEX.md")).unwrap();
+    assert!(text.contains("- find-tools:"), "{text}");
+    assert!(
+        text.contains(&format!("- ...{} more:", mounted.len())),
+        "{text}"
+    );
+    assert!(tree.join("bin/tools").is_file());
+    assert!(tree
+        .join("skills/repository/style-guide/SKILL.md")
+        .is_file());
+    let out = repo.by(&[
+        "skills",
+        "index",
+        "--out",
+        out_dir.to_str().unwrap(),
+        "--skill",
+        "nope",
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("not a built-in skill"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Usage: a turn that searched and opened through its tree.
+    let search = "python3 $BRANCHYARD_ROOT/.branchyard/capabilities/*/.branchyard/tools/bin/tools";
+    let prompt = format!("SH {search} search word document\nSH {search} show docx\nSH {search} search qzxvwk\nWRITE u.txt=1");
+    let out = repo.by_agent(&["run", &prompt, "--name", "used"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let usage = repo.json(&["skills", "usage", "--json"]);
+    assert_eq!(usage["searches"], 2, "{usage}");
+    assert_eq!(usage["opens"], 1, "{usage}");
+    assert_eq!(
+        usage["searches_unopened"], 1,
+        "the last search had no open: {usage}"
+    );
+    assert_eq!(usage["skills"][0]["id"], "docx", "{usage}");
+    assert_eq!(usage["skills"][0]["opened"], 1);
+    assert_eq!(usage["skills"][0]["found"], 1);
+    let text = stdout(&repo.ok(&["skills", "usage", "--since", "1d"]));
+    assert!(
+        text.starts_with(
+            "2 searches (1 with no open after), 1 open, 0 script runs in the last 1d\n"
+        ),
+        "{text}"
+    );
+    let log = stdout(&repo.ok(&["log", "used"]));
+    assert!(log.contains("skill search (2 terms) → docx"), "{log}");
+    assert!(log.contains("skill opened docx (level 2, "), "{log}");
+    let json = repo.json(&["log", "used", "--json"]);
+    let skill_events: Vec<&Value> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["activity"] == "skill")
+        .collect();
+    assert_eq!(skill_events.len(), 3, "{json}");
+    assert_eq!(skill_events[0]["skill"]["type"], "searched");
+    assert_eq!(skill_events[1]["skill"]["type"], "opened");
+    assert_eq!(skill_events[1]["skill"]["level"], 2);
+    assert_eq!(skill_events[1]["skill"]["source"], "built_in");
+    assert_eq!(skill_events[1]["skill"]["digest"], find("docx")["digest"]);
+
+    // A harness on a branch may read the registry, not the record or a tree of its own.
+    for refused in [
+        vec!["skills", "usage"],
+        // hygiene-allow: tmp refused before anything is written there
+        vec!["skills", "index", "--out", "/tmp/nowhere"],
+    ] {
+        let out = repo.in_harness("used", &refused);
+        assert!(!out.status.success(), "{refused:?}");
+        assert!(stderr(&out).contains("cannot"), "{}", stderr(&out));
+    }
+    let out = repo.in_harness("used", &["skills", "list", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+}

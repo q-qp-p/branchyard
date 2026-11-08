@@ -28,6 +28,51 @@ loopback collector. Not done: a real collector, Jaeger or Tempo; spans for the
 Substrate provider's actions; a live span for a connector call ingested after
 its turn ended; `by trace --remote`.
 
+Mounted, not chosen (skill registry, slice R2): where the harness reads the
+tool tree where the engine writes it (a local harness, Microsandbox) or links
+the shared tool store, a turn stages every ready skill, chosen or not: every
+built-in skill the policy allows (`Provisioning::allowed_skills`, set by the
+server from the policy), the repository's trusted set and the person's own
+folder. `INDEX.md` names only the chosen skills and counts the rest in its
+overflow line (`- ...N more: bin/tools search WORDS`), so an unchosen skill
+costs a directory entry and one number and `tools search` finds it; the
+harness's own skills directory links the chosen skills only. A container,
+Substrate and a recipe machine, which copy the home in, stay chosen-only. The
+manifest's `skill_digests` became `mounted` (read under either name): every
+mounted skill with its digest and, for a `repository:` or `user:` entry, its
+source; a mounted repository or user skill that is gone or hashes to another
+digest fails the turn `bundle_mismatch` by name. What a turn did with its
+skills is recorded: `tools search` and `tools show` note one JSON line each in
+the home's `.branchyard/turn/skills.jsonl` (the term count and the ids found,
+never the query's words), the engine ingests it when the harness exits as
+`skill` events with the manifest's digests, and a script run under a staged
+skill's `scripts/` is an event of its own; `by log` shows them, and three
+metrics count them (`branchyard_skill_searches_total`,
+`branchyard_skill_opens_total`, `branchyard_skill_search_unopened_total`). New
+commands: `by skills list [--source S] [--state S]`, `by skills search
+WORDS... [--plain] [--limit N]` (the turn's own ranker over the tree a turn
+here would mount), `by skills show ID [--references]`, `by skills index --out
+DIR [--skill NAME]...` (that tree, for `tools/skill_eval.py rank --tree`) and
+`by skills usage [--since WINDOW]`; an unknown id is `unknown_skill` (exit 2).
+See [skill registry](docs/skill-registry.md) and [tools model, section
+3](docs/tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted).
+
+The ranker in a turn's tool tree (`bin/tools search`) indexes a reference by
+what it says: the words of its name without English function words (the slug
+`cut-a-release-with-the-release-script-then-tag` no longer matches a prompt's
+`a`, `with`, `the` and `then` four times each), and its provenance lines
+(`Source:`, `License:`, a memory's `Approved by` and `Evidence:`) are not
+indexed. The 1.5 factor is now on every tool over a reference of equal match
+(`TOOL`), with the factor on a chosen tool over a mounted one (`CHOSEN`) at
+1.0 as measured; a tool the index's overflow line only counts is mounted, not
+chosen. Hermetic result, 7 November 2026 (`tools/skill_eval.py rank`, no
+model): every scenario ranks exactly as before over its own tree; with every
+memory bundle in one tree, top-3 95.7% to 98.6% and MRR 0.798 to 0.825, five of
+the six scenarios M1 found lower are back where they were; with only
+`find-tools` chosen and everything else mounted the ranks are the all-chosen
+tree's. `rank --chosen NAME,NAME` and a scenario's `mounted = "ready"` measure
+that tree. See [ranking without a model](docs/skill-eval.md#ranking-without-a-model).
+
 Four workflow skills for a session that runs Branchyard as the person or
 meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
 (when to fan out, harness choice, a result contract, `by fan`, `by compare`,

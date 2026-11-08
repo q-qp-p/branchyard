@@ -144,6 +144,19 @@ pub(crate) trait ProviderKind {
         !self.sandboxed()
     }
 
+    /// Whether a turn under this provider mounts every ready skill, chosen
+    /// or not (`docs/skill-registry.md`, R2): where the harness reads the
+    /// tree where the engine writes it (a local harness; Microsandbox's
+    /// live mount of the home) or links the shared store (an Agent Sandbox
+    /// with a bucket), an unchosen skill costs a directory entry. Where the
+    /// home is copied in for the turn (a container, Substrate, a recipe
+    /// machine) it would cost its files every turn, so the turn stays
+    /// chosen-only until a fetch exists (R5). Defaults to
+    /// [`ProviderKind::sees_store`].
+    fn mounts_ready_skills(&self, yard: &Yard) -> bool {
+        self.sees_store(yard)
+    }
+
     /// Where the guest also sees the tool tree (`docs/tools-model.md`), when
     /// this provider controls the guest filesystem: `/tools`, as a read-only
     /// mount of the host's tree or a copy made after the home. A guest then

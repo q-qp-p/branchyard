@@ -1681,6 +1681,65 @@ fn skills_actions_parse_with_json_anywhere() {
     assert_eq!(skills("skills untrust"), (false, SkillsAction::Untrust));
     assert!(err("skills").contains("Usage"));
     assert!(err("skills trust b").contains("unexpected argument"));
+    // The registry's commands (docs/skill-registry.md, R2).
+    assert_eq!(
+        skills("skills list --source user --state ready --json"),
+        (
+            true,
+            SkillsAction::List {
+                source: Some("user".into()),
+                state: Some("ready".into()),
+            }
+        )
+    );
+    assert!(err("skills list --source nowhere").contains("invalid value"));
+    assert_eq!(
+        skills("skills search fill a pdf form --plain --limit 3"),
+        (
+            false,
+            SkillsAction::Search {
+                words: vec!["fill".into(), "a".into(), "pdf".into(), "form".into()],
+                plain: true,
+                limit: 3,
+            }
+        )
+    );
+    assert!(err("skills search").contains("required"));
+    assert_eq!(
+        skills("skills show pptx --references"),
+        (
+            false,
+            SkillsAction::Show {
+                id: "pptx".into(),
+                references: true,
+            }
+        )
+    );
+    assert_eq!(
+        skills("skills usage --since 7d"),
+        (
+            false,
+            SkillsAction::Usage {
+                since: Some(std::time::Duration::from_secs(7 * 24 * 3600)),
+            }
+        )
+    );
+    assert!(err("skills usage --since 0s").contains("longer than zero"));
+    // hygiene-allow: tmp a value clap parses; nothing is written there
+    let out = "/tmp/t";
+    assert_eq!(
+        skills(&format!(
+            "skills index --out {out} --skill find-tools --skill docx"
+        )),
+        (
+            false,
+            SkillsAction::Index {
+                out: out.into(),
+                skills: vec!["find-tools".into(), "docx".into()],
+            }
+        )
+    );
+    assert!(err("skills index").contains("--out"));
 }
 
 #[test]

@@ -1860,6 +1860,79 @@ by skills remove [OPTIONS] <NAME>
 |---|---|
 | `<NAME>` | Its name, as `by skills ls` lists it under user |
 
+### `by skills list`
+
+Every skill a turn started here may see, with its source, digest and state
+
+The built-in skills (ready), the repository's at HEAD (ready once trusted, else available with the reason) and your own (ready, or withheld by name). A turn mounts every ready skill where linking is free and names the chosen ones in its index (docs/skill-registry.md).
+
+```text
+by skills list [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--source <SOURCE>` | Only this source: built_in, repository or user (one of `built_in`, `repository`, `user`) |
+| `--state <STATE>` | Only this state: ready or available (one of `ready`, `available`) |
+
+### `by skills search`
+
+Rank the skills a turn here could find against WORDS, with the turn's own ranker
+
+Writes the tree a turn would mount (every ready skill) to a scratch directory and runs its `bin/tools search`, so the answer is what a harness would get.
+
+```text
+by skills search [OPTIONS] <WORDS>...
+```
+
+| Option | What it does |
+|---|---|
+| `<WORDS>...` | The query |
+| `--plain` | BM25 alone: no extra weight for a tool over a reference |
+| `--limit <N>` | At most this many results (default `8`) |
+
+### `by skills show`
+
+One skill's entry: source, digest, state, size; --references lists its references
+
+```text
+by skills show [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` | The skill as the tree names it: pptx, repository:style, user:memory-parser |
+| `--references` | List its `references/*.md`, the documents a search can land on |
+
+### `by skills usage`
+
+Searches and opens by skill, from every branch's record
+
+A local measure from the `skill` events turns record: how often each skill was found, shown or had a script run, and how many searches no open followed.
+
+```text
+by skills usage [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--since <WINDOW>` | Only events in this window: 30m, 12h, 7d, 30d |
+
+### `by skills index`
+
+Write the tool tree a turn started here would mount, without running a turn
+
+Under DIR as the turn's home: DIR/.branchyard/tools holds INDEX.md and bin/tools, with every ready skill staged; `--skill` names the chosen ones (default: every built-in skill). For `python3 tools/skill_eval.py rank --tree` and `sizes --tree`.
+
+```text
+by skills index [OPTIONS] --out <DIR>
+```
+
+| Option | What it does |
+|---|---|
+| `--out <DIR>` | Where to write the tree |
+| `--skill <NAME>` | A built-in skill to name in INDEX.md as chosen; the rest are counted. Repeatable |
+
 ## `by tools`
 
 The shared tool store: publish it, pull it

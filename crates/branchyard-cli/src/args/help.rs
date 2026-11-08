@@ -317,11 +317,18 @@ Examples:
   by skills ls fix-the-flaky-test --json
   by skills add ./my-skill
   by skills remove my-skill
+  by skills list --state ready
+  by skills search fill in a pdf form
+  by skills show pptx --references
+  by skills usage --since 7d
+  by skills index --out /tmp/tree --skill find-tools
 
 A repository's skills are .agents/skills/<name>/SKILL.md, read from the commit
 a new branch starts at. New branches withhold them until you trust the set,
 and again after it changes. Your own skills are ~/.config/branchyard/skills/<name>/,
-staged for the branches you start as user:<name>; see docs/knowledge-skills.md.";
+staged for the branches you start as user:<name>; see docs/knowledge-skills.md.
+A turn mounts every ready skill where linking is free and names only the chosen
+ones in its index; the rest are found by search (docs/skill-registry.md).";
 
 pub(crate) const MEMORY_EXAMPLES: &str = "\
 Examples:

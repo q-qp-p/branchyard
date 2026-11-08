@@ -730,10 +730,22 @@ fn only_a_provider_that_sees_the_store_at_its_path_is_given_links_to_it() {
         assert!(!sees(&sandbox(name)), "{name} before a store is set");
     }
 
+    // Where every ready skill is mounted (R2): a local harness and
+    // Microsandbox read the tree in place whether or not there is a store;
+    // the providers that copy the home in stay chosen-only until they link
+    // one (an Agent Sandbox with a bucket), or until a fetch exists.
+    let mounts = |provider: &Provider| of(Some(provider)).mounts_ready_skills(&f.yard);
+    assert!(of(None).mounts_ready_skills(&f.yard));
+    assert!(mounts(&sandbox("microsandbox")), "the home is a live mount");
+    for name in ["substrate", "recipe", "container", "agent_sandbox"] {
+        assert!(!mounts(&sandbox(name)), "{name} copies the home in");
+    }
+
     f.yard.use_tool_store(ToolStore::new(store.path()));
     assert!(sees(&sandbox("microsandbox")));
     for name in ["substrate", "recipe", "container", "agent_sandbox"] {
         assert!(!sees(&sandbox(name)), "{name} without a bucket or a mount");
+        assert!(!mounts(&sandbox(name)), "{name} with a store it cannot see");
     }
 
     // The mount is read-only, at the same path, and only for a store that
@@ -937,7 +949,12 @@ fn a_sandbox_that_holds_its_own_credentials_gives_the_harness_loopback_and_no_to
                 ..crate::Provisioning::default()
             });
             let scopes = crate::access::TokenScopes::default();
-            let manifest = crate::manifest::settle(&fixture.yard, &record, &scopes, Some(0), false);
+            let sources = crate::manifest::Sources {
+                repository: &crate::skills::ForTurn::Nothing,
+                user: None,
+            };
+            let manifest =
+                crate::manifest::settle(&fixture.yard, &record, &scopes, Some(0), false, sources);
             let prepared =
                 crate::connectors::prepare(&fixture.yard, &record, None, &scopes, Some(&manifest))
                     .unwrap()

@@ -22,7 +22,41 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::connectors::GrantEntry;
+use crate::skills::{ForTurn, Source, UserSet};
 use crate::{Envelope, Error, Yard};
+
+/// The repository's and the person's skills a turn stages, read for the
+/// turn ([`crate::skills::for_turn`], [`crate::skills::user_for_turn`]),
+/// which the manifest records beside the built-in ones.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sources<'a> {
+    /// What the branch stages from its repository.
+    pub repository: &'a ForTurn,
+    /// The person's own skills; `None` for a branch created without a
+    /// folder.
+    pub user: Option<&'a UserSet>,
+}
+
+impl Sources<'_> {
+    /// The manifest entries of both sources: the repository's staged
+    /// skills (none when withheld), then the person's.
+    pub fn entries(&self) -> Vec<ManifestSkill> {
+        let repository = match self.repository {
+            ForTurn::Staged(set) => set.entries(),
+            ForTurn::Nothing | ForTurn::Withheld(_) => Vec::new(),
+        };
+        let user = self.user.map(UserSet::entries).unwrap_or_default();
+        repository
+            .into_iter()
+            .chain(user)
+            .map(|entry| ManifestSkill {
+                id: entry.label(),
+                digest: entry.digest,
+                source: entry.source,
+            })
+            .collect()
+    }
+}
 
 /// The manifest file, relative to the harness's home.
 pub const MANIFEST_FILE: &str = ".branchyard/manifest.json";
@@ -69,15 +103,34 @@ pub struct ManifestConnector {
     pub content: Option<String>,
 }
 
-/// One built-in skill the session was given, and the content hash of its
-/// files on the host that admitted it.
+/// One skill the session's tool tree mounts, chosen or not, and the content
+/// hash of its files as the host that admitted it read them
+/// (`docs/skill-registry.md`, section 4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSkill {
-    /// The skill's name.
+    /// The skill's id as the tree names it: a built-in skill's name, or
+    /// `repository:<name>` and `user:<name>` for the other sources.
     pub id: String,
-    /// [`crate::toolstore::skill_digest`]: BLAKE3 over the skill's files,
-    /// the digest in its tool-store path (`skills/<name>@<digest>`).
+    /// [`crate::toolstore::skill_digest`] for a built-in skill (the digest
+    /// in its tool-store path, `skills/<name>@<digest>`), and
+    /// [`skillset::digest`](branchyard_provision::skillset::digest) for the
+    /// rest: both BLAKE3 over the skill's files.
     pub digest: String,
+    /// Where it came from. Absent in a manifest resolved before R2, when
+    /// every entry was a built-in skill, and written only for the rest.
+    #[serde(default, skip_serializing_if = "Source::is_built_in")]
+    pub source: Source,
+}
+
+impl ManifestSkill {
+    /// The entry for a built-in skill.
+    pub fn built_in(id: impl Into<String>, digest: impl Into<String>) -> ManifestSkill {
+        ManifestSkill {
+            id: id.into(),
+            digest: digest.into(),
+            source: Source::BuiltIn,
+        }
+    }
 }
 
 /// The sandbox image a session was admitted with (docs/images.md).
@@ -112,13 +165,20 @@ pub struct TurnManifest {
     /// The bundle behind each granted connector.
     #[serde(default)]
     pub connectors: Vec<ManifestConnector>,
-    /// The digest of each built-in skill staged for the session. A turn
-    /// that holds a skill with another digest, or links a store entry whose
-    /// files hash to another, fails `bundle_mismatch`
-    /// ([`crate::bundles`]). Empty in a manifest resolved before skills
-    /// were recorded, which checks nothing.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub skill_digests: Vec<ManifestSkill>,
+    /// Every skill the session's tool tree mounts, chosen or not, with its
+    /// digest: the built-in skills staged (every allowed one where linking
+    /// is free, else the chosen ones), the repository's trusted skills and
+    /// the person's own (`docs/skill-registry.md`, section 4). A turn that
+    /// holds a skill with another digest, or links a store entry whose files
+    /// hash to another, fails `bundle_mismatch` ([`crate::bundles`]). Empty
+    /// in a manifest resolved before skills were recorded, which checks
+    /// nothing. Read from `skill_digests`, the field's name before R2.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "skill_digests"
+    )]
+    pub mounted: Vec<ManifestSkill>,
     /// The sandbox image of a sandboxed session: absent for a local
     /// harness, a recipe's machine and a Substrate actor, which name none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,16 +221,36 @@ impl TurnManifest {
 
     /// What the person chose, as against what the world resolved around it:
     /// a change here is a change of tools, which resolves the manifest
-    /// again. Bundle digests, the policy version and the time are not.
+    /// again. Bundle digests, the built-in skills' digests, the policy
+    /// version and the time are not. The repository's and the person's own
+    /// skills are: a person who trusts another set, or edits their own
+    /// folder, chose other tools, so their entries count with their digests
+    /// ([`ManifestSkill`]).
     fn tools(&self) -> Value {
+        let custom: Vec<&ManifestSkill> = self
+            .mounted
+            .iter()
+            .filter(|skill| skill.source != Source::BuiltIn)
+            .collect();
         serde_json::json!({
             "actor": self.actor,
             "grants": self.grants,
             "skills": self.skills,
+            "custom": custom,
             "helpers": self.helpers,
             "models": self.models,
             "network": self.network,
         })
+    }
+
+    /// The entries of `source` in [`TurnManifest::mounted`].
+    pub fn mounted_from(&self, source: Source) -> impl Iterator<Item = &ManifestSkill> {
+        self.mounted.iter().filter(move |s| s.source == source)
+    }
+
+    /// The mounted entry named `id`, as the tool tree names it.
+    pub fn mounted_skill(&self, id: &str) -> Option<&ManifestSkill> {
+        self.mounted.iter().find(|s| s.id == id)
     }
 
     /// The same tools as `other`.
@@ -219,16 +299,18 @@ fn canonical(value: &Value) -> String {
 /// `resumed` is a turn that wakes the branch's kept (paused) sandbox: the
 /// manifest is resolved again whatever it holds, so a tool deselected or
 /// disallowed while the sandbox slept is gone and the bundles are those
-/// this host serves now (`docs/tools-model.md`, step 7).
+/// this host serves now (`docs/tools-model.md`, step 7). `sources` are the
+/// repository's and the person's skills as this turn read them.
 pub(crate) fn settle(
     yard: &Yard,
     record: &crate::state::Record,
     scopes: &crate::access::TokenScopes,
     policy_version: Option<u64>,
     resumed: bool,
+    sources: Sources<'_>,
 ) -> TurnManifest {
     let stored = record.manifest.as_ref();
-    let mut fresh = resolve(yard, record, scopes, policy_version.unwrap_or(0));
+    let mut fresh = resolve(yard, record, scopes, policy_version.unwrap_or(0), sources);
     if resumed {
         if policy_version.is_none() {
             fresh.policy_version = stored.map_or(0, |s| s.policy_version);
@@ -259,8 +341,21 @@ fn resolve(
     record: &crate::state::Record,
     scopes: &crate::access::TokenScopes,
     policy_version: u64,
+    sources: Sources<'_>,
 ) -> TurnManifest {
     let spec = record.provision.as_ref();
+    // The built-in skills the turn stages: every allowed one where the
+    // provider mounts them all, else the chosen ones (`crate::capabilities`).
+    let choice = crate::capabilities::Choice {
+        chosen: spec.and_then(|p| p.skills.as_deref()),
+        allowed: spec.and_then(|p| p.allowed_skills.as_deref()),
+        mount_ready: crate::providers::of(record.provider.as_ref()).mounts_ready_skills(yard),
+    };
+    let mut mounted = choice
+        .staged()
+        .and_then(|staged| crate::bundles::skill_digests(staged.as_ref()))
+        .unwrap_or_default();
+    mounted.extend(sources.entries());
     let gateway = yard.connectors();
     let actor = match &record.actor {
         Some(actor) => ManifestActor {
@@ -329,8 +424,7 @@ fn resolve(
             None => ManifestSkills::All,
         },
         connectors,
-        skill_digests: crate::bundles::skill_digests(spec.and_then(|p| p.skills.as_deref()))
-            .unwrap_or_default(),
+        mounted,
         image: crate::providers::of(record.provider.as_ref())
             .image()
             .map(|reference| {
@@ -362,7 +456,7 @@ mod tests {
                 digest: "h1".into(),
                 content: None,
             }],
-            skill_digests: Vec::new(),
+            mounted: Vec::new(),
             image: None,
             helpers: None,
             models: Some(vec!["claude-*".into()]),
@@ -402,6 +496,65 @@ mod tests {
         let mut grants = manifest();
         grants.grants = vec![GrantEntry::parse("github:write").unwrap()];
         assert!(!m.same_tools(&grants));
+        // A built-in skill's digest is the world's; the person's own skill, or
+        // the repository's, is the person's choice of tools.
+        let mut built_in = manifest();
+        built_in.mounted.push(ManifestSkill::built_in("docx", "d1"));
+        assert!(m.same_tools(&built_in));
+        let mut mine = manifest();
+        mine.mounted.push(ManifestSkill {
+            id: "user:memory-parser".into(),
+            digest: "u1".into(),
+            source: Source::User,
+        });
+        assert!(!m.same_tools(&mine));
+        let mut edited = mine.clone();
+        edited.mounted[0].digest = "u2".into();
+        assert!(!mine.same_tools(&edited), "an edited folder is other tools");
+        let mut repository = manifest();
+        repository.mounted.push(ManifestSkill {
+            id: "repository:style".into(),
+            digest: "r1".into(),
+            source: Source::Repository,
+        });
+        assert!(!m.same_tools(&repository));
+        assert_eq!(mine.mounted_from(Source::User).count(), 1);
+        assert_eq!(mine.mounted_from(Source::BuiltIn).count(), 0);
+        assert_eq!(
+            mine.mounted_skill("user:memory-parser").unwrap().digest,
+            "u1"
+        );
+    }
+
+    /// A manifest stored before R2 named the field `skill_digests` and gave
+    /// no source; it reads back as built-in entries of `mounted`, and a
+    /// built-in entry is still written without a source.
+    #[test]
+    fn mounted_reads_the_old_field_and_writes_a_source_for_the_other_sources_only() {
+        let old = serde_json::json!({
+            "version": 1,
+            "actor": {"subject": "s", "tenant": "t"},
+            "skills": "all",
+            "skill_digests": [{"id": "docx", "digest": "d1"}],
+            "policy_version": 0,
+            "created_at_ms": 1
+        });
+        let read: TurnManifest = serde_json::from_value(old).unwrap();
+        assert_eq!(read.mounted, [ManifestSkill::built_in("docx", "d1")]);
+        let mut m = manifest();
+        m.mounted = vec![
+            ManifestSkill::built_in("docx", "d1"),
+            ManifestSkill {
+                id: "repository:style".into(),
+                digest: "r1".into(),
+                source: Source::Repository,
+            },
+        ];
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(text.contains(r#""mounted":[{"id":"docx","digest":"d1"},{"id":"repository:style","digest":"r1","source":"repository"}]"#), "{text}");
+        assert!(!text.contains("skill_digests"));
+        let back: TurnManifest = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, m);
     }
 
     #[test]

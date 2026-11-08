@@ -666,6 +666,9 @@ async fn a_start_with_tools_expands_and_is_refused_beyond_policy() {
     );
     assert_eq!(chosen.body["tools"]["connectors"][0]["mode"], "read");
     assert_eq!(chosen.body["tools"]["skills"], json!(["docx"]));
+    // The policy's skills travel with the session as the set a turn may
+    // mount beside the chosen ones (docs/skill-registry.md, R2).
+    assert_eq!(chosen.body["tools"]["allowed_skills"], json!(["docx"]));
     assert_eq!(
         chosen.body["tools"]["helpers"]["harnesses"],
         json!(["claude-code-acp"])

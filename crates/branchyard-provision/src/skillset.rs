@@ -69,9 +69,22 @@ pub enum Source {
     User,
 }
 
+impl Default for Source {
+    /// Built in: the source of every entry recorded before the field was.
+    fn default() -> Self {
+        Source::BuiltIn
+    }
+}
+
 impl Source {
     /// Every source, in precedence order: the one that wins a name first.
     pub const ALL: [Source; 3] = [Source::Repository, Source::User, Source::BuiltIn];
+
+    /// Whether this is the built-in source, for a field written only for
+    /// the rest.
+    pub fn is_built_in(&self) -> bool {
+        *self == Source::BuiltIn
+    }
 
     /// The source as serialized: `repository`, `built_in`, `user`.
     pub fn as_str(self) -> &'static str {

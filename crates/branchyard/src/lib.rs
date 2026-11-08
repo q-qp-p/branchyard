@@ -165,6 +165,7 @@ mod pull_request;
 pub mod qualified;
 mod record;
 mod recover;
+pub mod registry;
 pub mod reported;
 mod review;
 mod run;
@@ -173,6 +174,7 @@ mod schema_parity;
 pub mod scope;
 mod seats;
 pub mod services;
+pub mod skill_activity;
 pub mod skills;
 mod snapshots;
 mod spotlight;
@@ -343,6 +345,7 @@ pub use reported::{Reported, ReportedState, StatusReport};
 pub use review::ReviewSpec;
 pub use seats::{Seat, Seats};
 use serde::{Deserialize, Serialize};
+pub use skill_activity::SkillActivity;
 pub use skills::{BranchSkills, SkillGate, SkillSet, WithheldSkills};
 pub use snapshots::{
     Placed, SandboxConsistency, SandboxEvent, SandboxKeep, SandboxOrigin, SandboxScope,
@@ -3261,6 +3264,13 @@ pub enum Activity {
     /// destination the egress proxy allowed or denied. See
     /// [`EgressActivity`] and `docs/egress.md`.
     Egress(Box<EgressActivity>),
+    /// What the turn did with its skills: a search of its tool tree (the
+    /// term count and the ids found, never the words), a skill, reference,
+    /// connector or helper shown, a staged skill's script run. A local
+    /// measure for `by skills usage` and the skill-discovery eval, never an
+    /// input to ranking. See [`SkillActivity`] and
+    /// `docs/skill-registry.md`.
+    Skill(Box<SkillActivity>),
     /// The branch was made from a harness session that already existed on
     /// this machine (`by adopt`); its next turn resumes that session.
     Adopted(Box<Adoption>),

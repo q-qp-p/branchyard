@@ -124,7 +124,7 @@ Off by default. Turn them on with `--metrics` (on the server's own listener), `-
 
 The metrics token (at least 16 characters) reads `/metrics` and nothing else: it is not a credential for the API. A `by worker`, which has no listener, can serve metrics with `--metrics-addr`. With an OTLP metrics endpoint set the same instruments are also pushed every `OTEL_METRIC_EXPORT_INTERVAL` (60 s); the gauges read from the store are read for each push, at most once every 2 seconds.
 
-The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`). Every family is declared once, in [`metrics.rs`](../crates/branchyard-server/src/metrics.rs), with its type, unit and help, and written even before it has samples. Labels are written in the order the table gives. The catalogue below is generated from those declarations (`python3 tools/docs_facts.py --write`), <!-- fact:metrics.count -->56<!-- /fact --> families:
+The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`). Every family is declared once, in [`metrics.rs`](../crates/branchyard-server/src/metrics.rs), with its type, unit and help, and written even before it has samples. Labels are written in the order the table gives. The catalogue below is generated from those declarations (`python3 tools/docs_facts.py --write`), <!-- fact:metrics.count -->59<!-- /fact --> families:
 
 <!-- fact:metrics.table -->
 
@@ -155,6 +155,9 @@ The format is Prometheus text exposition 0.0.4 (`text/plain; version=0.0.4`). Ev
 | `branchyard_cost_usd_total` | counter |  | `tenant`, `harness` | Harness-reported cost, in USD, of operations this process ran, by tenant and harness. |
 | `branchyard_connector_calls_total` | counter |  | `connector`, `decision` | Connector gateway calls in operations this process ran, by connector and decision. |
 | `branchyard_connector_call_duration_seconds` | histogram | `s` | `connector`, `decision` | Connector gateway call latency in operations this process ran, by connector and decision. |
+| `branchyard_skill_searches_total` | counter |  | `kind` | Searches of the tool tree (tools search) in turns this process ran, by the kind searched (all, skill, reference, connector, operation, helper). |
+| `branchyard_skill_opens_total` | counter |  | `source`, `level` | Skills, references, connectors, operations and helpers opened (tools show) in turns this process ran, by source (built_in, repository, user, connector, helper) and level (1 to 3). |
+| `branchyard_skill_search_unopened_total` | counter |  | none | Searches of the tool tree followed by no open before the turn ended, in turns this process ran. |
 | `branchyard_model_calls_total` | counter |  | `model`, `decision` | Model gateway calls in operations this process ran, by model and decision. |
 | `branchyard_model_tokens_total` | counter |  | `model`, `kind` | Tokens of model gateway calls in operations this process ran, by model and kind (input, output, cache_read, cache_write). |
 | `branchyard_model_cost_usd_total` | counter |  | `model` | Metered cost, in USD, of model gateway calls in operations this process ran, by model. |
