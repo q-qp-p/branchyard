@@ -107,6 +107,11 @@ fn an_endpoint_receives_the_document_over_otlp_http() {
         "OTEL_EXPORTER_OTLP_HEADERS",
         "x-api-key=s3cret%2Bkey,x-tenant=acme",
     );
+    // The headers are credentials for the configured collector: they go
+    // only to that endpoint.
+    repo.set_env("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.url());
+    // That endpoint would also receive the process's own live export.
+    repo.set_env("OTEL_SDK_DISABLED", "true");
     assert!(repo
         .by_agent(&["run", "say hi", "--name", "sent"])
         .status
@@ -126,6 +131,23 @@ fn an_endpoint_receives_the_document_over_otlp_http() {
     assert_eq!(request.header("x-tenant"), Some("acme"));
     let posted: Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(posted, repo.json(&["trace", "sent", "--json"]));
+    collector.finish();
+}
+
+#[test]
+fn an_endpoint_that_is_not_the_configured_collector_gets_no_headers() {
+    let collector = MockHttp::start(|_| Response::new(200, b"{}".to_vec()));
+    let mut repo = branchyard_testkit::repo!();
+    repo.set_env("OTEL_EXPORTER_OTLP_HEADERS", "x-api-key=s3cret");
+    repo.set_env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.invalid");
+    repo.set_env("OTEL_SDK_DISABLED", "true");
+    assert!(repo
+        .by_agent(&["run", "say hi", "--name", "other"])
+        .status
+        .success());
+    repo.ok(&["trace", "other", "--endpoint", &collector.url()]);
+    let requests = collector.await_requests(1);
+    assert_eq!(requests[0].header("x-api-key"), None);
     collector.finish();
 }
 
