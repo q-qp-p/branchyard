@@ -993,6 +993,7 @@ pub fn ingest(yard: &Yard) -> Result<usize, Error> {
         }
         if let Some((branch, at_ms, call)) = parse_line(&line, gateway.branch_scope.as_deref()) {
             if store.read(&branch).is_ok() {
+                crate::live_trace::connector_call(&branch, at_ms, &call);
                 let event = RecordedEvent {
                     at_ms,
                     activity: Activity::ConnectorCall(Box::new(call)),

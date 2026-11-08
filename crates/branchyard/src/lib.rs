@@ -136,6 +136,7 @@ mod judge;
 mod knowledge;
 mod land;
 mod lifecycle;
+pub mod live_trace;
 mod liveness;
 mod lock;
 pub mod manifest;
@@ -164,6 +165,7 @@ mod pull_request;
 pub mod qualified;
 mod record;
 mod recover;
+pub mod registry;
 pub mod reported;
 mod review;
 mod run;
@@ -172,6 +174,7 @@ mod schema_parity;
 pub mod scope;
 mod seats;
 pub mod services;
+pub mod skill_activity;
 pub mod skills;
 mod snapshots;
 mod spotlight;
@@ -183,12 +186,14 @@ mod steer;
 mod storage;
 #[doc(hidden)]
 pub mod store_codec;
+mod store_trace;
 mod tarball;
 pub mod tasks;
 mod timeline;
 mod timers;
 pub mod toolstore;
 mod tooltree;
+pub mod trace_export;
 pub mod up;
 mod wake;
 mod workspace;
@@ -314,8 +319,11 @@ pub use map_input::{
     parse_items as parse_map_items, render as render_map_prompt, ItemFormat, MapItem,
     TemplateContext,
 };
+pub use memory::review::{Approved as MemoryApproved, MemoryRecordEdit};
 pub use memory::{
-    Memory, MemoryDraft, MemoryEdit, MemoryKind, NewMemory, BODY_MAX as MEMORY_BODY_MAX,
+    Consolidated, Memory, MemoryActivity, MemoryDraft, MemoryEdit, MemoryFilter, MemoryKind,
+    MemoryRecord, MemorySettings, MemoryStatus, NewMemory, NewObservation, Observation,
+    ObservationKind, RunRow as MemoryRun, Scope as MemoryScope, BODY_MAX as MEMORY_BODY_MAX,
     TITLE_MAX as MEMORY_TITLE_MAX,
 };
 pub use obligations::{Obligation, ObligationKind};
@@ -340,6 +348,7 @@ pub use reported::{Reported, ReportedState, StatusReport};
 pub use review::ReviewSpec;
 pub use seats::{Seat, Seats};
 use serde::{Deserialize, Serialize};
+pub use skill_activity::SkillActivity;
 pub use skills::{BranchSkills, SkillGate, SkillSet, WithheldSkills};
 pub use snapshots::{
     Placed, SandboxConsistency, SandboxEvent, SandboxKeep, SandboxOrigin, SandboxScope,
@@ -1346,6 +1355,167 @@ impl Yard {
             .unwrap_or_default()
     }
 
+    /// How this yard (and its clones) captures memory observations and
+    /// consolidates them; see `docs/memory.md`. Replaces the settings set
+    /// before; without a call, [`MemorySettings::default`].
+    pub fn use_memory(&self, settings: MemorySettings) {
+        *projection::lock(&self.hub.memory) = Some(Arc::new(settings));
+    }
+
+    /// The settings [`Yard::use_memory`] set, or the defaults.
+    pub fn memory_settings(&self) -> Arc<MemorySettings> {
+        projection::lock(&self.hub.memory)
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// The team's memory scope of this repository on `tenant`
+    /// ([`memory::observe::LOCAL_TENANT`] without a server).
+    pub fn memory_scope(&self, tenant: &str) -> MemoryScope {
+        MemoryScope::Repo {
+            tenant: tenant.to_owned(),
+            repo: self.store.label(),
+        }
+    }
+
+    /// One person's memory scope on `tenant`.
+    pub fn person_memory_scope(&self, tenant: &str, subject: &str) -> MemoryScope {
+        MemoryScope::Person {
+            tenant: tenant.to_owned(),
+            subject: subject.to_owned(),
+            repo: None,
+        }
+    }
+
+    /// Derive, scrub and store the observations of `branch`'s turn `turn`
+    /// now, with `secrets` the values to scrub: what the engine does at
+    /// every turn's end. Idempotent per turn; returns the observation ids.
+    pub fn observe_turn(
+        &self,
+        branch: &str,
+        turn: u32,
+        secrets: &[String],
+    ) -> Result<Vec<u64>, Error> {
+        let incarnation = memory::observe::incarnation_of(self, branch)?;
+        Ok(memory::observe::observe_turn(self, branch, incarnation, turn, secrets, None)?.ids)
+    }
+
+    /// The observations of `scope` with an id above `since`, oldest
+    /// first, at most `limit`; for `by memory observations` and the tests.
+    pub fn observations(
+        &self,
+        scope: &MemoryScope,
+        since: u64,
+        limit: usize,
+    ) -> Result<Vec<Observation>, Error> {
+        self.store.memory().observations_since(scope, since, limit)
+    }
+
+    /// Memory rows matching `filter`, by id.
+    pub fn memory_records(&self, filter: &MemoryFilter) -> Result<Vec<MemoryRecord>, Error> {
+        memory::review::list(self, filter)
+    }
+
+    /// One memory row.
+    pub fn memory_record(&self, id: u64) -> Result<MemoryRecord, Error> {
+        memory::review::get(self, id)
+    }
+
+    /// The observations a memory row's provenance names.
+    pub fn memory_evidence(&self, id: u64) -> Result<Vec<Observation>, Error> {
+        memory::review::evidence(self, id)
+    }
+
+    /// Approve memory row `id` as `by`: it is written into its scope's
+    /// bundle (`.agents/skills/` of the checkout for the team's;
+    /// `person_dir`, the subject's skills folder, for a person's) and
+    /// marked approved. A person's memory is approved only by its subject.
+    pub fn approve_memory(
+        &self,
+        id: u64,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryApproved, Error> {
+        memory::review::approve(self, id, by, person_dir)
+    }
+
+    /// Reject memory row `id` as `by`, with `reason`; the rejection sticks
+    /// against new evidence.
+    pub fn reject_memory(
+        &self,
+        id: u64,
+        by: &str,
+        reason: Option<&str>,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::reject(self, id, by, reason)
+    }
+
+    /// Change memory row `id`; an approved memory's file is rewritten too.
+    pub fn edit_memory_record(
+        &self,
+        id: u64,
+        edit: &MemoryRecordEdit,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::edit(self, id, edit, by, person_dir)
+    }
+
+    /// Offer a person's memory `id` to the team: a new proposed row in
+    /// `repo`; the original stays.
+    pub fn promote_memory(
+        &self,
+        id: u64,
+        by: &str,
+        repo: MemoryScope,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::promote(self, id, by, repo)
+    }
+
+    /// Fold memory row `from` into `into`: provenance union, `seen` summed;
+    /// `from` is deleted. For two proposals that say one thing.
+    pub fn merge_memory(&self, into: u64, from: u64) -> Result<MemoryRecord, Error> {
+        self.store.memory().merge(into, from)?;
+        memory::review::get(self, into)
+    }
+
+    /// Delete memory row `id` and its bundle file, recording it without the
+    /// text on the branches it came from.
+    pub fn forget_memory(
+        &self,
+        id: u64,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryRecord, Error> {
+        Ok(memory::review::forget(self, id, by, person_dir)?.memory)
+    }
+
+    /// Run one deterministic consolidation of `scope` now, as `by`; see
+    /// `docs/memory.md`, section 4. Nothing is approved.
+    pub fn consolidate_memory(
+        &self,
+        scope: &MemoryScope,
+        by: &str,
+        trigger: &str,
+    ) -> Result<Consolidated, Error> {
+        memory::consolidate::consolidate(self, scope, by, trigger)
+    }
+
+    /// The scopes with observations no consolidation has read yet.
+    pub fn memory_scopes_due(&self) -> Result<Vec<MemoryScope>, Error> {
+        memory::consolidate::due_scopes(self)
+    }
+
+    /// Consolidation runs, newest first, at most `limit`; of `scope` when
+    /// given.
+    pub fn memory_runs(
+        &self,
+        scope: Option<&MemoryScope>,
+        limit: usize,
+    ) -> Result<Vec<MemoryRun>, Error> {
+        self.store.memory().runs(scope, limit)
+    }
+
     /// The repository's knowledge entries, or those of `status`, by id.
     pub fn knowledge(&self, status: Option<KnowledgeStatus>) -> Result<Vec<KnowledgeEntry>, Error> {
         knowledge::list(self, status)
@@ -1802,6 +1972,13 @@ pub struct TaskOptions {
     /// tools against the policy) updates it. `None`: no server, or no
     /// change. See `docs/connectors.md#the-turn-manifest`.
     pub policy_version: Option<u64>,
+    /// The built-in skills the policy allows as it stands for this call,
+    /// by id: a server that re-checked the session's tools sets it. Each
+    /// turn narrows the branch's stored
+    /// [`Provisioning::allowed_skills`] to it ([`Provisioning::narrow_allowed_skills`]),
+    /// so a policy narrowed after admission mounts fewer skills the next
+    /// turn; it never widens them. `None`: no word, the stored set stands.
+    pub allowed_skills: Option<Vec<String>>,
     /// The server trigger run that started a new task, recorded on it
     /// ([`tasks::Task::trigger`]); a server sets it when a trigger fires.
     /// Read only when a branch starts a new task.
@@ -3192,6 +3369,15 @@ pub enum Activity {
     /// Activity was observed after [`Activity::Stalled`]; the branch is no
     /// longer stalled.
     Resumed,
+    /// The turn that just began is traced live: its spans are exported as
+    /// the events are recorded, under this W3C `traceparent`. Recorded right
+    /// after the turn's [`Activity::Prompt`] by the process that traces it,
+    /// so a reader in any process (a server writing spans after the fact)
+    /// knows the turn is already traced and writes no second set.
+    Traced {
+        /// The turn span's `traceparent`.
+        traceparent: String,
+    },
     /// A harness-to-harness message was sent or delivered; see
     /// [`crate::inbox`]. Recorded on both the sending and the receiving
     /// branch's event log.
@@ -3258,12 +3444,23 @@ pub enum Activity {
     /// destination the egress proxy allowed or denied. See
     /// [`EgressActivity`] and `docs/egress.md`.
     Egress(Box<EgressActivity>),
+    /// What the turn did with its skills: a search of its tool tree (the
+    /// term count and the ids found, never the words), a skill, reference,
+    /// connector or helper shown, a staged skill's script run. A local
+    /// measure for `by skills usage` and the skill-discovery eval, never an
+    /// input to ranking. See [`SkillActivity`] and
+    /// `docs/skill-registry.md`.
+    Skill(Box<SkillActivity>),
     /// The branch was made from a harness session that already existed on
     /// this machine (`by adopt`); its next turn resumes that session.
     Adopted(Box<Adoption>),
     /// Repository knowledge: the branch was distilled into proposed
     /// entries. See [`KnowledgeActivity`] and `docs/knowledge.md`.
     Knowledge(Box<KnowledgeActivity>),
+    /// Memory: a consolidation consumed this branch's observations, or a
+    /// memory they fed was forgotten. See [`memory::MemoryActivity`] and
+    /// `docs/memory.md`.
+    Memory(Box<memory::MemoryActivity>),
     /// Plan approval: planning, a proposed plan, its approval, rejection or
     /// escalation. See [`PlanActivity`] and `docs/plans-and-goals.md`.
     Plan(Box<PlanActivity>),

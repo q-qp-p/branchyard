@@ -1267,6 +1267,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -3190,6 +3200,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -6773,6 +6793,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -7368,6 +7418,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -8322,6 +8382,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -8991,6 +9061,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -14382,6 +14482,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -15067,6 +15197,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -16625,6 +16765,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -17996,6 +18146,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -31065,6 +31225,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -39032,6 +39202,28 @@
             {
               "type": "object",
               "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
                 }
@@ -39269,6 +39461,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -39291,6 +39496,19 @@
               ],
               "additionalProperties": false,
               "description": "Repository knowledge: the branch was distilled into proposed\nentries. See [`KnowledgeActivity`] and `docs/knowledge.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
             },
             {
               "type": "object",
@@ -43492,6 +43710,139 @@
           ],
           "description": "How a turn's egress policy was applied."
         },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
+        },
         "Adoption": {
           "type": "object",
           "properties": {
@@ -43594,6 +43945,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [
@@ -45100,6 +45610,28 @@
             {
               "type": "object",
               "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
                 }
@@ -45337,6 +45869,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -45359,6 +45904,19 @@
               ],
               "additionalProperties": false,
               "description": "Repository knowledge: the branch was distilled into proposed\nentries. See [`KnowledgeActivity`] and `docs/knowledge.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
             },
             {
               "type": "object",
@@ -49560,6 +50118,139 @@
           ],
           "description": "How a turn's egress policy was applied."
         },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
+        },
         "Adoption": {
           "type": "object",
           "properties": {
@@ -49662,6 +50353,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [
@@ -58021,6 +58871,28 @@
             {
               "type": "object",
               "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
                 }
@@ -58258,6 +59130,19 @@
             {
               "type": "object",
               "properties": {
+                "skill": {
+                  "$ref": "#/$defs/SkillActivity"
+                }
+              },
+              "required": [
+                "skill"
+              ],
+              "additionalProperties": false,
+              "description": "What the turn did with its skills: a search of its tool tree (the\nterm count and the ids found, never the words), a skill, reference,\nconnector or helper shown, a staged skill's script run. A local\nmeasure for `by skills usage` and the skill-discovery eval, never an\ninput to ranking. See [`SkillActivity`] and\n`docs/skill-registry.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "adopted": {
                   "$ref": "#/$defs/Adoption"
                 }
@@ -58280,6 +59165,19 @@
               ],
               "additionalProperties": false,
               "description": "Repository knowledge: the branch was distilled into proposed\nentries. See [`KnowledgeActivity`] and `docs/knowledge.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
             },
             {
               "type": "object",
@@ -62481,6 +63379,139 @@
           ],
           "description": "How a turn's egress policy was applied."
         },
+        "SkillActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "terms": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Distinct terms in the query."
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The ids shown, in rank order."
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The `--kind` the search was narrowed to, when it was."
+                },
+                "plain": {
+                  "type": "boolean",
+                  "description": "Whether it ranked by BM25 alone (`--plain`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "searched"
+                }
+              },
+              "required": [
+                "type",
+                "terms",
+                "results"
+              ],
+              "description": "`tools search` ran: the query's term count and the ids it ranked\nfirst (`kind:id`), never the words."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The id as the tree names it (`pptx`, `pptx/references/layouts.md`,\n`github.issues.list`)."
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "The mounted skill's digest from the manifest, a connector's bundle\nhash, or empty when the manifest names neither (a helper)."
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/Source"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The skill's source, for a skill or one of its references."
+                },
+                "kind": {
+                  "type": "string",
+                  "description": "`skill`, `reference`, `connector`, `operation` or `helper`."
+                },
+                "level": {
+                  "type": "integer",
+                  "format": "uint8",
+                  "minimum": 0,
+                  "maximum": 255,
+                  "description": "1 for a connector, operation or helper line, 2 for a skill's\n`SKILL.md`, 3 for one reference."
+                },
+                "fetched": {
+                  "type": "boolean",
+                  "description": "Whether the body was fetched for this open (R5); always false\nwhere the body is staged or linked."
+                },
+                "bytes": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "Bytes printed."
+                },
+                "fetch_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "How long a fetch took (R5); absent without one."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "opened"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "kind",
+                "level",
+                "bytes"
+              ],
+              "description": "A skill, reference, connector, operation or helper was shown\n(`tools show`): the progressive-disclosure level read, and the bytes\nprinted."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The skill's id as the tree names it."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The script's path in the skill (`scripts/run.py`)."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "invoked"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "path"
+              ],
+              "description": "A script of a staged skill ran: the harness's `tool_started` named a\npath under it."
+            }
+          ],
+          "description": "What a turn did with a skill, recorded as [`Activity::Skill`].\nSerialized as an object tagged by `type`."
+        },
         "Adoption": {
           "type": "object",
           "properties": {
@@ -62583,6 +63614,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [
@@ -66663,6 +67853,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -68897,6 +70097,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -71150,6 +72360,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -73399,6 +74619,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -75990,6 +77220,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -78364,6 +79604,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -80596,6 +81846,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."
@@ -82841,6 +84101,16 @@
                 "type": "string"
               },
               "description": "The built-in skills to stage, by id (`docx`, `pptx`, ...), each\nwith the skills it needs; the skill index lists only those. Unset:\nevery built-in skill. Guidance, not access: it changes what the\nharness is told about, not what its policy allows. See\n[`built_in`]."
+            },
+            "allowed_skills": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "The built-in skills the caller's tool policy allows, by id, which\nare the ones a turn may *mount* beside the chosen ones where\nlinking is free (`docs/skill-registry.md`, R2): a server sets it\nfrom the policy's `skills` part when the policy has one. Unset:\nevery built-in skill is allowed. A chosen skill outside it is\nrefused at admission, never here."
             }
           },
           "description": "What a task asks to have provisioned. Stored with the branch, so it\nholds where secrets come from, never their values; every turn resolves\nthem again."

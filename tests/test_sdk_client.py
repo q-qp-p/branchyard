@@ -2623,6 +2623,61 @@ class Knowledge(ServerCase):
         ):
             self.assertEqual(len(self.requests(method, path)[0][2]["idempotency-key"]), 32, path)
 
+    MEMORY: ClassVar[dict] = {
+        "id": 12,
+        "scope": {"scope": "repo", "tenant": "default", "repo": "app"},
+        "kind": "rule",
+        "title": "Always end notes with a summary line",
+        "body": "- one turn 2: [review] Always end notes with a summary line",
+        "paths": ["notes.txt"],
+        "task_kinds": [],
+        "status": "proposed",
+        "provenance": [1, 2],
+        "seen": 1,
+        "first_seen_ms": 1,
+        "last_seen_ms": 1,
+    }
+
+    def test_memory_rows_are_listed_decided_edited_promoted_forgotten_and_consolidated(self):
+        row = self.MEMORY
+        self.fake.answer("GET", f"{REPO}/memory", (200, {"memories": [row]}))
+        self.fake.answer("GET", f"{REPO}/memory/12", (200, row))
+        self.fake.answer("GET", f"{REPO}/memory/12/evidence", (200, {"memory": row, "observations": [{"id": 1}]}))
+        self.fake.answer("POST", f"{REPO}/memory/12/approve", (200, dict(row, status="approved")))
+        self.fake.answer("POST", f"{REPO}/memory/12/reject", (200, dict(row, status="rejected", note="stale")))
+        self.fake.answer("POST", f"{REPO}/memory/12/edit", (200, dict(row, title="new")))
+        self.fake.answer("POST", f"{REPO}/memory/12/promote", (200, dict(row, id=13)))
+        self.fake.answer("DELETE", f"{REPO}/memory/12", (200, row))
+        consolidated = {"run": {"id": 1, "outcome": "proposed"}, "proposed": [row], "knowledge": [], "lost_race": False}
+        self.fake.answer("POST", f"{REPO}/memory/consolidate", (200, consolidated), (200, consolidated))
+        self.fake.answer("GET", f"{REPO}/memory/runs", (200, {"runs": [{"id": 1, "outcome": "proposed"}]}))
+
+        self.assertEqual([m.id for m in self.app.memories(scope="mine", status="proposed")], [12])
+        self.assertEqual(self.requests("GET", f"{REPO}/memory")[0][1], f"{REPO}/memory?scope=mine&status=proposed")
+        self.assertEqual(self.app.memory(12).paths, ["notes.txt"])
+        self.assertEqual(self.app.memory_evidence(12).observations, [{"id": 1}])
+        self.assertEqual(self.app.approve_memory(12).status, "approved")
+        self.assertEqual(self.app.reject_memory(12, reason="stale").note, "stale")
+        self.assertEqual(self.app.edit_memory(12, title="new", paths=[]).title, "new")
+        self.assertEqual(self.app.promote_memory(12).id, 13)
+        self.assertEqual(self.app.forget_memory(12).id, 12)
+        self.assertEqual(self.app.consolidate_memory().proposed[0]["id"], 12)
+        self.assertEqual(self.app.consolidate_memory(scope="mine").lost_race, False)
+        self.assertEqual([r["id"] for r in self.app.memory_runs()], [1])
+        self.assertEqual(self.requests("POST", f"{REPO}/memory/12/approve")[0][3], {})
+        self.assertEqual(self.requests("POST", f"{REPO}/memory/12/reject")[0][3], {"reason": "stale"})
+        # An empty list clears the paths, so it is sent; an absent field is not.
+        self.assertEqual(self.requests("POST", f"{REPO}/memory/12/edit")[0][3], {"title": "new", "paths": []})
+        first, second = (r[3] for r in self.requests("POST", f"{REPO}/memory/consolidate"))
+        self.assertEqual((first, second), ({}, {"scope": "mine"}))
+        for method, path in (
+            ("POST", f"{REPO}/memory/12/approve"),
+            ("POST", f"{REPO}/memory/12/edit"),
+            ("POST", f"{REPO}/memory/12/promote"),
+            ("POST", f"{REPO}/memory/consolidate"),
+        ):
+            self.assertEqual(len(self.requests(method, path)[0][2]["idempotency-key"]), 32, path)
+
     def test_an_unknown_entry_is_not_found_and_a_bad_scope_is_invalid(self):
         self.fake.answer("GET", f"{REPO}/knowledge/9", (404, _error("unknown_knowledge", "no knowledge entry 9")))
         self.fake.answer("POST", f"{REPO}/knowledge", (422, _error("unsupported", "not a usable path glob")))
@@ -3928,6 +3983,15 @@ COVERED: dict[str, list[Callable[[bc.Client, bc.Repo], Any]]] = {
     "/v1/repos/{repo}/knowledge/{id}/edit": [lambda _c, r: r.edit_knowledge(1, text="x")],
     "/v1/repos/{repo}/knowledge/{id}/reject": [lambda _c, r: r.reject_knowledge(1)],
     "/v1/repos/{repo}/branches/{branch}/distill": [lambda _c, r: r.distill("b")],
+    "/v1/repos/{repo}/memory": [lambda _c, r: r.memories()],
+    "/v1/repos/{repo}/memory/consolidate": [lambda _c, r: r.consolidate_memory()],
+    "/v1/repos/{repo}/memory/runs": [lambda _c, r: r.memory_runs()],
+    "/v1/repos/{repo}/memory/{id}": [lambda _c, r: r.memory(12), lambda _c, r: r.forget_memory(12)],
+    "/v1/repos/{repo}/memory/{id}/approve": [lambda _c, r: r.approve_memory(12)],
+    "/v1/repos/{repo}/memory/{id}/edit": [lambda _c, r: r.edit_memory(12, title="x")],
+    "/v1/repos/{repo}/memory/{id}/evidence": [lambda _c, r: r.memory_evidence(12)],
+    "/v1/repos/{repo}/memory/{id}/promote": [lambda _c, r: r.promote_memory(12)],
+    "/v1/repos/{repo}/memory/{id}/reject": [lambda _c, r: r.reject_memory(12)],
     "/v1/repos/{repo}/effects/reconcile": [lambda _c, r: r.reconcile_effects()],
     "/v1/repos/{repo}/branches/{branch}/undo": [lambda _c, r: r.undo_plan("b"), lambda _c, r: r.undo("b")],
     "/v1/repos/{repo}/branches/{branch}/scratch/{name}/lock": [lambda _c, r: r.lock_scratch("b", "s")],

@@ -83,3 +83,39 @@ pub fn record(span: Finished) -> Option<String> {
     started.end_with_timestamp(at(span.end_ms.max(span.start_ms)));
     traceparent_of(&Context::new().with_remote_span_context(context))
 }
+
+/// Give the crates below the binaries ([`branchyard_support::trace`]) the
+/// SDK's three operations: adopt a `traceparent`, read a span's, and write a
+/// finished span.
+pub(crate) fn install_hooks() {
+    branchyard_support::trace::set_hooks(branchyard_support::trace::Hooks {
+        adopt: crate::propagation::adopt,
+        traceparent: crate::propagation::span_traceparent,
+        record: record_support,
+    });
+}
+
+fn record_support(span: &branchyard_support::trace::Finished) -> Option<String> {
+    use branchyard_support::trace::Value;
+    record(Finished {
+        name: span.name.clone(),
+        parent: span.parent.clone(),
+        kind: match span.kind {
+            "client" => Kind::Client,
+            "server" => Kind::Server,
+            _ => Kind::Internal,
+        },
+        start_ms: span.start_ms,
+        end_ms: span.end_ms,
+        attributes: span
+            .attributes
+            .iter()
+            .map(|(key, value)| match value {
+                Value::Str(v) => KeyValue::new(*key, v.clone()),
+                Value::Int(v) => KeyValue::new(*key, *v),
+                Value::Bool(v) => KeyValue::new(*key, *v),
+            })
+            .collect(),
+        error: span.error.clone(),
+    })
+}

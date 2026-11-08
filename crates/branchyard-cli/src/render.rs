@@ -658,6 +658,8 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             "stalled: no harness activity for its stall window",
         ),
         Activity::Resumed => style.paint(Tone::Cyan, "resumed: activity seen again"),
+        // A marker for readers of the log, not an event of the turn.
+        Activity::Traced { .. } => return None,
         Activity::Workspace(report) => workspace_line(report, style),
         Activity::Adopted(adoption) => style.paint(
             Tone::Cyan,
@@ -715,6 +717,8 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
             &activity.describe(),
         ),
         Activity::Knowledge(activity) => style.paint(Tone::Cyan, &activity.describe()),
+        Activity::Skill(activity) => style.paint(Tone::Dim, &activity.describe()),
+        Activity::Memory(activity) => style.paint(Tone::Cyan, &activity.describe()),
         Activity::Plan(activity) => style.paint(
             match activity.as_ref() {
                 branchyard::PlanActivity::Proposed(_)

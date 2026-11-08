@@ -191,6 +191,13 @@ pub(crate) struct Driven {
     /// during it), and those spawned since. Its branch is woken for those
     /// that settled ([`crate::wake::park`]).
     pub held_on: Vec<String>,
+    /// The exact values of the turn's secrets, for the memory scrubber at
+    /// the turn's end; taken out before the turn is concluded, never
+    /// journaled.
+    pub secret_values: Vec<String>,
+    /// The branch's newest event `seq` when the turn's prompt was about to
+    /// be recorded: where the memory derivation starts reading.
+    pub turn_from: Option<u64>,
 }
 
 /// A running turn's spend: the branch's spend when the turn started, or
@@ -352,6 +359,7 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
     // cost it left; this turn starts from that figure.
     record.metered_from = None;
     let mut recorder = Recorder::fenced(&store, &fence, turn.options.observer.clone());
+    recorder.trace_live(&record.info.harness, turn.options.trace_parent.as_deref());
     let bounds = Bounds {
         budget: delegation::effective_budget(&record, &turn.options.budget),
         // A branch writing its plan runs read-only, whatever the caller
@@ -361,6 +369,13 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
             &crate::plan::policy_for(&record, &turn.options.policy),
         ),
     };
+    // The turn's secret values, kept here for the memory scrubber once the
+    // turn has ended; this process is the one that holds them.
+    let mut secret_values: Vec<String> = Vec::new();
+    // Whether this turn submitted its prompt: only a turn that was driven
+    // holds its secret values, so only it is derived at its end.
+    let mut driven_turn = false;
+    let mut turn_from: Option<u64> = None;
     let result = (|| {
         turn.yard
             .admit_provider(record.provider.as_ref(), turn.options)?;
@@ -415,7 +430,10 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         } else {
             let driven = drive(&mut recorder, &turn, &mut record, &bounds, &lease);
             graph::unbind(turn.yard, &record);
-            let driven = driven?;
+            let mut driven = driven?;
+            secret_values = std::mem::take(&mut driven.secret_values);
+            driven_turn = driven.submitted;
+            turn_from = driven.turn_from;
             let park_input = crate::wake::ParkInput::new(&bounds.budget, &driven.held_on);
             conclude(
                 turn.yard,
@@ -483,6 +501,24 @@ fn execute_turn(turn: Turn<'_>, lease: Lease) -> Result<Branch, Error> {
         // A child that owed its parent a result and gave none is noted in
         // the parent's log.
         crate::contract::settled(turn.yard, &fence.branch, turn.options.observer.clone());
+        // The turn's memory observations, derived from its events and
+        // scrubbed of its secret values (`docs/memory.md`, section 2).
+        // A turn that never ran (cancelled or over budget before it
+        // started, or set up and failed) holds no secret values: deriving
+        // the branch's last turn again from its log without them would
+        // store the text the first derivation scrubbed.
+        if let Ok(branch) = &result {
+            if driven_turn && branch.info.turns > 0 {
+                crate::memory::observe::on_turn_end(
+                    turn.yard,
+                    &fence.branch,
+                    fence.incarnation,
+                    branch.info.turns,
+                    &secret_values,
+                    turn_from,
+                );
+            }
+        }
         if matches!(&result, Ok(b) if b.info.status == BranchStatus::Ready) {
             crate::knowledge::on_end(
                 turn.yard,
@@ -652,7 +688,24 @@ fn run(
         metered: None,
         live_cost: None,
         held_on: Vec::new(),
+        secret_values: Vec::new(),
+        turn_from: None,
     };
+    // A skill log an earlier turn left (it returned before the ingest
+    // below) is never this turn's: removed before anything of this turn
+    // can write one.
+    let stale_home = match &record.home {
+        Some(home) => Ok(home.clone()),
+        None => crate::capabilities::local_home(store.dir(), &record.info.name),
+    };
+    if let Some(home) =
+        branchyard_support::best_effort("find the home to clear a stale skill log", stale_home)
+    {
+        branchyard_support::best_effort(
+            "clear a stale skill log",
+            crate::skill_activity::clear(&home),
+        );
+    }
     // Revoked when this function returns, after the harness and its
     // sandbox are gone. A local harness runs the delegation tools itself;
     // a sandboxed one is served them over HTTP from this host, below, when
@@ -701,7 +754,16 @@ fn run(
         deadline.map(|at| deadline_capped(now_ms(), at.saturating_duration_since(Instant::now())));
     // One scope: the person's ceiling over what the branch asked for,
     // which its connectors, models, network and token all follow.
-    let (scoped, narrowed) = crate::access::scoped(turn.yard, record);
+    let (mut scoped, narrowed) = crate::access::scoped(turn.yard, record);
+    // The skills the policy allows as of this call narrow what the branch
+    // was admitted with (`TaskOptions::allowed_skills`), for the manifest and
+    // for what the turn mounts.
+    if turn.options.allowed_skills.is_some() {
+        scoped
+            .provision
+            .get_or_insert_with(Default::default)
+            .narrow_allowed_skills(turn.options.allowed_skills.as_deref());
+    }
     if let Some(narrowed) = narrowed {
         recorder.record(Activity::Access(Box::new(narrowed)))?;
     }
@@ -713,12 +775,26 @@ fn run(
     // the person deselected or the policy withdrew while it slept is gone,
     // and the bundles are the ones this host serves now.
     let waking = crate::placement::wakes_kept_sandbox(turn.yard, record, fence);
+    // The repository skills fixed for the branch, read again from their
+    // commit: never from the worktree its turns change. The person's own
+    // skills, read again from their folder each turn: they are pinned by
+    // nothing, so the manifest and the record keep each digest.
+    let skills = crate::skills::for_turn(turn.yard.root(), record.skills.as_ref());
+    let user_skills = record
+        .user_skills
+        .as_deref()
+        .map(|dir| crate::skills::user_for_turn(dir, &skills));
+    let sources = crate::manifest::Sources {
+        repository: &skills,
+        user: user_skills.as_ref(),
+    };
     let manifest = crate::manifest::settle(
         turn.yard,
         &scoped,
         &scopes,
         turn.options.policy_version,
         waking,
+        sources,
     );
     if record.manifest.as_ref() != Some(&manifest) {
         record.manifest = Some(manifest.clone());
@@ -739,7 +815,9 @@ fn run(
     // with (`crate::bundles`); a connector's bundle is held to the manifest
     // below, where it is linked or copied. Before anything starts.
     let tool_store = crate::toolstore::for_turn(turn.yard, record);
-    if let Err(mismatch) = crate::bundles::verify_skills(&manifest, tool_store.as_deref()) {
+    if let Err(mismatch) = crate::bundles::verify_skills(&manifest, tool_store.as_deref())
+        .and_then(|()| crate::bundles::verify_custom(&manifest, sources))
+    {
         recorder.record(Activity::Warning(mismatch.to_string()))?;
         driven.end = End::failed(mismatch.to_string());
         return Ok(driven);
@@ -899,15 +977,6 @@ fn run(
     }
     // What its parent assigned it: the paths it owns, the shared brief.
     let assignment = crate::assignment::for_turn(turn.yard, record);
-    // The repository skills fixed for the branch, read again from their
-    // commit: never from the worktree its turns change.
-    let skills = crate::skills::for_turn(turn.yard.root(), record.skills.as_ref());
-    // The person's own skills, read again from their folder each turn:
-    // they are pinned by nothing, so the record keeps each digest.
-    let user_skills = record
-        .user_skills
-        .as_deref()
-        .map(|dir| crate::skills::user_for_turn(dir, &skills));
     let provisioned = match crate::provisioning::prepare(
         record,
         turn.profile,
@@ -920,7 +989,10 @@ fn run(
             user_skills: user_skills.as_ref(),
             manifest: record.home.as_ref().map(|_| manifest_digest.as_str()),
             manifest_written,
+            allowed_skills: turn.options.allowed_skills.as_deref(),
             store: tool_store.as_deref(),
+            mount_ready: crate::providers::of(record.provider.as_ref())
+                .mounts_ready_skills(turn.yard),
         },
         crate::provisioning::Access {
             policy: &bounds.policy,
@@ -934,6 +1006,7 @@ fn run(
             return Ok(driven);
         }
     };
+    driven.secret_values.clone_from(&provisioned.secret_values);
     // Declared before the session so a sandbox outlives it. The turn's
     // provisioning is recorded once the sandbox exists, so its activity
     // names the placement the turn ran in.
@@ -1684,6 +1757,16 @@ fn run(
         // Liveness only: it moves the stall clock and is not recorded.
         if recorded(&event) {
             recorder.record(Activity::Harness(event.clone()))?;
+            // A staged skill's script run, from the call's target.
+            if let Event::ToolStarted {
+                target: Some(target),
+                ..
+            } = &event
+            {
+                if let Some(invoked) = crate::skill_activity::invoked(target) {
+                    recorder.record(invoked.into())?;
+                }
+            }
             steering.event(recorder, &store, fence, &event)?;
         }
         last_activity = Instant::now();
@@ -1722,6 +1805,7 @@ fn run(
                 for note in submission.expiry_notes(fence.turn) {
                     recorder.record(Activity::Warning(note))?;
                 }
+                driven.turn_from = Some(store.backend().event_count(&record.info.name)?);
                 recorder.record(Activity::Prompt(submission.prompt.clone()))?;
                 // Observers can apply a durable cancellation intent at this last
                 // boundary. Do not send a model prompt after that cancellation.
@@ -2015,6 +2099,30 @@ fn run(
     // cost is the branch's.
     if let Some(gateway) = model_gateway {
         driven.metered = Some(gateway.finish());
+    }
+    // What the turn did with its skills, from the log the `tools` script
+    // kept in the home (`crate::skill_activity`): read once the harness is
+    // gone, recorded, and removed. A home this host cannot read (a copied
+    // one) has no log here, and records nothing.
+    let skills_home = match &record.home {
+        Some(home) => Ok(home.clone()),
+        None => crate::capabilities::local_home(store.dir(), &record.info.name),
+    };
+    let ingested = skills_home.and_then(|home| {
+        crate::skill_activity::ingest(&home, &manifest).map_err(|e| e.to_string())
+    });
+    match ingested {
+        Ok(ingested) => {
+            for activity in ingested.activities {
+                recorder.record(activity.into())?;
+            }
+            for warning in ingested.warnings {
+                recorder.record(Activity::Warning(warning))?;
+            }
+        }
+        Err(error) => recorder.record(Activity::Warning(format!(
+            "the turn's skill log could not be read: {error}"
+        )))?,
     }
     Ok(driven)
 }

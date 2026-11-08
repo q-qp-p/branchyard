@@ -24,11 +24,13 @@ pub mod conformance;
 pub mod exec;
 pub mod fake;
 mod provider;
+mod traced;
 
 pub use provider::{
     Checkpoint, ExecSpec, ExitStatus, Launch, Mount, Process, ProviderError, Resources,
     SandboxInfo, SandboxProvider, SandboxSpec,
 };
+pub use traced::{traced, ACTION_FAMILY};
 
 /// What a snapshot captures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

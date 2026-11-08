@@ -27,6 +27,14 @@
 //! A [`MemoryDraft`] is a long correction the knowledge extractor set aside for a
 //! person to read and add (`docs/knowledge.md`): a file in a worktree,
 //! never a bundle.
+//!
+//! What feeds the bundles without a person writing each memory by hand
+//! (`docs/memory.md`, sections 2 to 5): [`observe`] derives scrubbed
+//! observations from each turn's events, [`store`] keeps them with the
+//! proposed memory rows and the consolidation runs, [`consolidate`] turns
+//! clusters of observations into proposals, and [`review`] is what a
+//! person does with a proposal: approve (which writes the bundle through
+//! the [`Library`]), reject, edit, promote, forget.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -36,6 +44,68 @@ use branchyard_provision::skillset::{self, Skill};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, TaskKind};
+
+pub mod consolidate;
+pub mod observe;
+pub mod review;
+pub mod scrub;
+pub mod store;
+
+pub use consolidate::{Consolidated, MemoryActivity};
+pub use observe::{
+    Association, Author, EventRef, NewObservation, Observation, ObservationKind, Visibility,
+};
+pub use store::{
+    Decision, MemoryFilter, MemoryRecord, MemoryStatus, NewMemoryRecord, Published, Run, RunCounts,
+    RunRow, Scope,
+};
+
+/// How a yard captures observations and consolidates them; see
+/// [`crate::Yard::use_memory`] and `[memory]` in `docs/memory.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemorySettings {
+    /// Derive observations at each turn's end. Default on.
+    pub capture: bool,
+    /// Corrections by non-members become candidates. Default off.
+    pub external_authors: bool,
+    /// Names (forge logins, git names or emails) that count as members
+    /// besides the repository's committers.
+    pub members: Vec<String>,
+    /// The visibility every observation this yard derives takes. Default
+    /// shared.
+    pub visibility: Visibility,
+    /// A cron expression for the dispatcher's consolidation job on a
+    /// server; `None` for only `by memory consolidate`.
+    pub consolidate: Option<String>,
+    /// Observations older than this are deleted at the next consolidation.
+    pub keep_observations_days: u32,
+    /// The most candidates one consolidation proposes per scope.
+    pub max_candidates: usize,
+    /// Who may approve `Repo` memories on a server, besides `admin`:
+    /// principal names and `group:<name>` entries. Empty: `admin` alone.
+    pub approvers: Vec<String>,
+}
+
+impl Default for MemorySettings {
+    fn default() -> MemorySettings {
+        MemorySettings {
+            capture: true,
+            external_authors: false,
+            members: Vec::new(),
+            visibility: Visibility::Shared,
+            consolidate: None,
+            keep_observations_days: DEFAULT_KEEP_DAYS,
+            max_candidates: DEFAULT_MAX_CANDIDATES,
+            approvers: Vec::new(),
+        }
+    }
+}
+
+/// Default `[memory] keep_observations_days`.
+pub const DEFAULT_KEEP_DAYS: u32 = 90;
+
+/// Default `[memory] max_candidates`.
+pub const DEFAULT_MAX_CANDIDATES: usize = 20;
 
 /// The manifest's schema.
 pub const SCHEMA: &str = "branchyard.memory-bundle/v1";
@@ -630,6 +700,40 @@ pub struct Library {
     audience: Audience,
 }
 
+/// A [`Library`] held under its lock; see [`Library::lock`].
+#[derive(Debug)]
+pub struct LibraryLock<'a> {
+    library: &'a Library,
+    _file: std::fs::File,
+}
+
+impl LibraryLock<'_> {
+    /// [`Library::add`], under this lock.
+    pub fn add(&self, new: NewMemory) -> Result<Written, Error> {
+        self.library.add_unlocked(new)
+    }
+
+    /// [`Library::edit`], under this lock.
+    pub fn edit(&self, id: &str, edit: MemoryEdit) -> Result<Written, Error> {
+        self.library.edit_unlocked(id, edit)
+    }
+
+    /// [`Library::remove`], under this lock.
+    pub fn remove(&self, id: &str) -> Result<Memory, Error> {
+        self.library.remove_unlocked(id)
+    }
+
+    /// [`Library::get`], under this lock.
+    pub fn get(&self, id: &str) -> Result<Memory, Error> {
+        self.library.get(id)
+    }
+
+    /// [`Library::export`] without writing, under this lock.
+    pub fn export(&self) -> Result<Vec<Bundle>, Error> {
+        self.library.export(None)
+    }
+}
+
 /// What [`Library::add`] and [`Library::edit`] wrote.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
@@ -740,9 +844,47 @@ impl Library {
             .ok_or_else(|| Error::UnknownMemory(id.to_owned()))
     }
 
+    /// Take the library's lock: an exclusive advisory lock, shared by every
+    /// process that writes this directory, held until the guard is
+    /// dropped. A write reads the whole library and rewrites its topic, so
+    /// two writers at once (two approvals, or the server's route beside
+    /// `by memory add`) would otherwise each rewrite from what they read
+    /// and lose the other's memory, or pick the same slug. The guard's
+    /// methods are the writes without taking the lock again, for a caller
+    /// that must do more under it (approve checks the row after writing).
+    pub fn lock(&self) -> Result<LibraryLock<'_>, Error> {
+        use std::io::Write as _;
+        let digest = blake3::hash(self.dir.to_string_lossy().as_bytes()).to_hex();
+        let path = std::env::temp_dir().join(format!("branchyard-memory-{}.lock", &digest[..24]));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| Error::State(format!("open the memory lock {}: {e}", path.display())))?;
+        file.lock()
+            .map_err(|e| Error::State(format!("lock {}: {e}", path.display())))?;
+        // Whose directory it guards, for whoever looks at the file.
+        branchyard_support::best_effort(
+            "note the directory a memory lock guards",
+            file.set_len(0)
+                .and_then(|()| writeln!(file, "{}", self.dir.display())),
+        );
+        Ok(LibraryLock {
+            library: self,
+            _file: file,
+        })
+    }
+
     /// Add `new`, approved by `new.by` now, and rewrite its topic's bundles.
-    /// The slug is the title's, made unique in the library.
+    /// The slug is the title's, made unique in the library. Under the
+    /// library's lock.
     pub fn add(&self, new: NewMemory) -> Result<Written, Error> {
+        self.lock()?.add(new)
+    }
+
+    fn add_unlocked(&self, new: NewMemory) -> Result<Written, Error> {
         let all = self.read()?;
         let topic = match &new.topic {
             Some(topic) => topic.clone(),
@@ -780,8 +922,12 @@ impl Library {
     }
 
     /// Change the memory `id` as `edit` says and rewrite its topic's
-    /// bundles; the edit is the new approval.
+    /// bundles; the edit is the new approval. Under the library's lock.
     pub fn edit(&self, id: &str, edit: MemoryEdit) -> Result<Written, Error> {
+        self.lock()?.edit(id, edit)
+    }
+
+    fn edit_unlocked(&self, id: &str, edit: MemoryEdit) -> Result<Written, Error> {
         let all = self.read()?;
         let Some(found) = all.iter().find(|m| m.id == id) else {
             return Err(Error::UnknownMemory(id.to_owned()));
@@ -816,8 +962,12 @@ impl Library {
     }
 
     /// Remove the memory `id` and rewrite its topic's bundles; a topic left
-    /// empty loses its bundle directory.
+    /// empty loses its bundle directory. Under the library's lock.
     pub fn remove(&self, id: &str) -> Result<Memory, Error> {
+        self.lock()?.remove(id)
+    }
+
+    fn remove_unlocked(&self, id: &str) -> Result<Memory, Error> {
         let all = self.read()?;
         let Some(found) = all.iter().find(|m| m.id == id).cloned() else {
             return Err(Error::UnknownMemory(id.to_owned()));
@@ -1177,7 +1327,10 @@ pub fn parse_draft(text: &str) -> Result<DraftFile, Error> {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod bundle_tests {
     use super::*;
 
     fn memory(topic: &str, id: &str, kind: MemoryKind) -> Memory {

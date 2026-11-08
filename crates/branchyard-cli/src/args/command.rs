@@ -511,6 +511,33 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Export a branch's trajectory as an OpenTelemetry trace, from its event log
+    ///
+    /// Rebuilds the branch's turns, tool calls, permission waits, steers, stalls, connector
+    /// calls and delegations as spans, with ids derived from the log (the same log always
+    /// gives the same trace), so a run that is over can be loaded into Jaeger or Tempo.
+    /// Tool targets are the bounded, scrubbed ones in the log; tool inputs are never
+    /// exported. Prints a tree; --json prints the OTLP/JSON document, --otlp FILE writes
+    /// it, --endpoint URL posts it to a collector's /v1/traces.
+    #[command(display_order = 210)]
+    Trace {
+        /// The branch whose trajectory to export; `by ls` lists them
+        branch: String,
+        /// Include the branches delegated under it, as children of the delegations that
+        /// started them
+        #[arg(long)]
+        subtree: bool,
+        /// Print the OTLP/JSON document instead of the tree
+        #[arg(long, conflicts_with_all = ["otlp", "endpoint"])]
+        json: bool,
+        /// Write the OTLP/JSON document to FILE
+        #[arg(long, value_name = "FILE", conflicts_with = "endpoint")]
+        otlp: Option<std::path::PathBuf>,
+        /// POST the OTLP/JSON document to a collector (OTLP/HTTP; /v1/traces is added when
+        /// the URL does not end with it)
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
+    },
     /// Show one branch
     #[command(display_order = 201)]
     Show {

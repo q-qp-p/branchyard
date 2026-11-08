@@ -332,6 +332,51 @@ fn an_operation_is_traced_from_admission_to_its_turns() {
     server.stop();
 }
 
+/// The engine traces a served turn live, and the after-the-fact pass that
+/// writes spans from the recorded events for a turn it has no live data for
+/// does not write a second set for it: one `turn` span and one span per
+/// tool call, whatever wrote them.
+#[test]
+fn a_live_turn_is_not_traced_a_second_time_from_its_events() {
+    let capture = capture().unwrap();
+    let f = Fixture::new();
+    let server = Server::start(f.config());
+    let client = server.client();
+    let trace = new_key();
+    let incoming = format!("00-{trace}-00f067aa0ba902b8-01");
+    let (status, _, answer) = raw(
+        server.addr,
+        &post(
+            "/v1/repos/app/tasks",
+            Some(TOKEN),
+            &format!("traceparent: {incoming}\r\n"),
+            &serde_json::to_string(&task("SH echo traced-once", "once")).unwrap(),
+        ),
+    );
+    assert_eq!(status, 202, "{answer}");
+    let id = json(&answer)["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        await_operation(&client, &id).state,
+        OperationState::Succeeded
+    );
+    let spans = capture.trace(&trace);
+    let turns: Vec<_> = spans.iter().filter(|s| s.name == "turn").collect();
+    assert_eq!(turns.len(), 1, "{spans:#?}");
+    assert_eq!(turns[0].attributes["by.live"], "true");
+    let operation = spans
+        .iter()
+        .find(|s| s.name == "operation task")
+        .unwrap_or_else(|| panic!("no operation span in {spans:#?}"));
+    assert_eq!(turns[0].parent_id.as_ref(), Some(&operation.span_id));
+    let tools: Vec<_> = spans
+        .iter()
+        .filter(|s| s.name.starts_with("tool "))
+        .collect();
+    assert_eq!(tools.len(), 1, "{spans:#?}");
+    assert_eq!(tools[0].parent_id.as_ref(), Some(&turns[0].span_id));
+    server.stop();
+}
+
 /// The golden metrics the OpenTelemetry rebuild adds, over real HTTP: the
 /// request rate by route template, refused requests by error code, an
 /// operation's duration, and the turn as a GenAI client operation. Label

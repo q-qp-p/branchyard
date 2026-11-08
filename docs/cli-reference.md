@@ -1492,7 +1492,7 @@ by knowledge reject [OPTIONS] <ID>...
 
 | Option | What it does |
 |---|---|
-| `<ID>...` | Entry numbers, as `by knowledge review` lists them |
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them Entry numbers, as `by knowledge review` lists them |
 | `--reason <TEXT>` | Why |
 
 ### `by knowledge edit`
@@ -1600,7 +1600,9 @@ by memory add [OPTIONS]
 
 ### `by memory list`
 
-Every memory of the repository's bundles and your own, by topic
+Every memory of the repository's bundles and your own, by topic, then the proposed rows
+
+With --status, the rows of that status alone (proposed, approved, rejected): what consolidation proposed and people decided, by number.
 
 ```text
 by memory list [OPTIONS]
@@ -1609,10 +1611,11 @@ by memory list [OPTIONS]
 | Option | What it does |
 |---|---|
 | `--mine` | Only your own |
+| `--status <STATUS>` | Rows of this status: proposed, approved or rejected |
 
 ### `by memory show`
 
-One memory, whole
+One memory, whole: a slug for a bundle's file, a number (12 or #12) for a row
 
 ```text
 by memory show [OPTIONS] <SLUG>
@@ -1620,12 +1623,104 @@ by memory show [OPTIONS] <SLUG>
 
 | Option | What it does |
 |---|---|
-| `<SLUG>` | Its slug, as `by memory list` shows it |
-| `--mine` | Look only in your own skills folder |
+| `<SLUG>` | Its slug, as `by memory list` shows it, or a row's number |
+| `--mine` | Look only in your own skills folder, or your own rows |
+| `--evidence` | With a row: each observation it came from, its branch, turn, kind and author |
+
+### `by memory review`
+
+Walk the proposed rows: a approve, r reject, e edit then approve, p promote, s skip, q quit
+
+```text
+by memory review [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own rows instead of the team's |
+| `--editor <EDITOR>` | The editor for edits (default: $VISUAL, then $EDITOR) |
+
+### `by memory approve`
+
+Approve proposed rows and write each into its bundle
+
+The team's rows go under .agents/skills, yours in your skills folder.
+
+```text
+by memory approve [OPTIONS] <ID>...
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them |
+
+### `by memory reject`
+
+Reject proposed rows; the rejection sticks against new evidence
+
+```text
+by memory reject [OPTIONS] <ID>...
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them |
+| `--reason <TEXT>` | Why |
+
+### `by memory promote`
+
+Offer one of your own rows to the team: a new proposed row; yours stays
+
+```text
+by memory promote [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` | The number of one of your own rows |
+
+### `by memory forget`
+
+Delete a row and its bundle file; the branches it came from record it, without the text
+
+```text
+by memory forget [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` | The number of the row to delete |
+
+### `by memory consolidate`
+
+Run one deterministic consolidation now: cluster the new observations, propose rows
+
+```text
+by memory consolidate [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own observations (a private session's) instead of the team's |
+
+### `by memory runs`
+
+Consolidation runs, newest first, with their counts and outcomes
+
+```text
+by memory runs [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own scope's runs |
+| `--limit <N>` | At most this many (default `20`) |
 
 ### `by memory edit`
 
 Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+
+A slug edits a bundle's file; a row number edits the row, and its file once approved.
 
 ```text
 by memory edit [OPTIONS] <SLUG>
@@ -1633,7 +1728,7 @@ by memory edit [OPTIONS] <SLUG>
 
 | Option | What it does |
 |---|---|
-| `<SLUG>` | Its slug |
+| `<SLUG>` | Its slug, or a row's number |
 | `--title <TEXT>` | A new title |
 | `--body-file <FILE>` | A new body, read from this file |
 | `--kind <KIND>` | A new kind: rule, procedure, fact or pitfall |
@@ -1859,6 +1954,79 @@ by skills remove [OPTIONS] <NAME>
 | Option | What it does |
 |---|---|
 | `<NAME>` | Its name, as `by skills ls` lists it under user |
+
+### `by skills list`
+
+Every skill a turn started here may see, with its source, digest and state
+
+The built-in skills (ready), the repository's at HEAD (ready once trusted, else available with the reason) and your own (ready, or withheld by name). A turn mounts every ready skill where linking is free and names the chosen ones in its index (docs/skill-registry.md).
+
+```text
+by skills list [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--source <SOURCE>` | Only this source: built_in, repository or user (one of `built_in`, `repository`, `user`) |
+| `--state <STATE>` | Only this state: ready or available (one of `ready`, `available`) |
+
+### `by skills search`
+
+Rank the skills a turn here could find against WORDS, with the turn's own ranker
+
+Writes the tree a turn would mount (every ready skill) to a scratch directory and runs its `bin/tools search`, so the answer is what a harness would get.
+
+```text
+by skills search [OPTIONS] <WORDS>...
+```
+
+| Option | What it does |
+|---|---|
+| `<WORDS>...` | The query |
+| `--plain` | BM25 alone: no extra weight for a tool over a reference |
+| `--limit <N>` | At most this many results (default `8`) |
+
+### `by skills show`
+
+One skill's entry: source, digest, state, size; --references lists its references
+
+```text
+by skills show [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` | The skill as the tree names it: pptx, repository:style, user:memory-parser |
+| `--references` | List its `references/*.md`, the documents a search can land on |
+
+### `by skills usage`
+
+Searches and opens by skill, from every branch's record
+
+A local measure from the `skill` events turns record: how often each skill was found, shown or had a script run, and how many searches no open followed.
+
+```text
+by skills usage [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--since <WINDOW>` | Only events in this window: 30m, 12h, 7d, 30d |
+
+### `by skills index`
+
+Write the tool tree a turn started here would mount, without running a turn
+
+Under DIR as the turn's home: DIR/.branchyard/tools holds INDEX.md and bin/tools, with every ready skill staged; `--skill` names the chosen ones (default: every built-in skill). For `python3 tools/skill_eval.py rank --tree` and `sizes --tree`.
+
+```text
+by skills index [OPTIONS] --out <DIR>
+```
+
+| Option | What it does |
+|---|---|
+| `--out <DIR>` | Where to write the tree |
+| `--skill <NAME>` | A built-in skill to name in INDEX.md as chosen; the rest are counted. Repeatable |
 
 ## `by tools`
 
@@ -2184,6 +2352,24 @@ by startup report [OPTIONS]
 |---|---|
 | `--provider <NAME>` | Only this provider (`local`, `microsandbox`, `container`, `agent_sandbox`, `substrate`, ...) |
 | `--since <DURATION>` | Only startups recorded within this long, such as 30m or 7d |
+
+## `by trace`
+
+Export a branch's trajectory as an OpenTelemetry trace, from its event log
+
+Rebuilds the branch's turns, tool calls, permission waits, steers, stalls, connector calls and delegations as spans, with ids derived from the log (the same log always gives the same trace), so a run that is over can be loaded into Jaeger or Tempo. Tool targets are the bounded, scrubbed ones in the log; tool inputs are never exported. Prints a tree; --json prints the OTLP/JSON document, --otlp FILE writes it, --endpoint URL posts it to a collector's /v1/traces.
+
+```text
+by trace [OPTIONS] <BRANCH>
+```
+
+| Option | What it does |
+|---|---|
+| `<BRANCH>` | The branch whose trajectory to export; `by ls` lists them |
+| `--subtree` | Include the branches delegated under it, as children of the delegations that started them |
+| `--json` | Print the OTLP/JSON document instead of the tree |
+| `--otlp <FILE>` | Write the OTLP/JSON document to FILE |
+| `--endpoint <URL>` | POST the OTLP/JSON document to a collector (OTLP/HTTP; /v1/traces is added when the URL does not end with it) |
 
 ## `by handoff`
 

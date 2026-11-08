@@ -194,12 +194,33 @@ pub struct Provisioning {
     /// [`built_in`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+    /// The built-in skills the caller's tool policy allows, by id, which
+    /// are the ones a turn may *mount* beside the chosen ones where
+    /// linking is free (`docs/skill-registry.md`, R2): a server sets it
+    /// from the policy's `skills` part when the policy has one. Unset:
+    /// every built-in skill is allowed. A chosen skill outside it is
+    /// refused at admission, never here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_skills: Option<Vec<String>>,
 }
 
 impl Provisioning {
     /// Whether nothing is asked for.
     pub fn is_empty(&self) -> bool {
         self == &Provisioning::default()
+    }
+
+    /// Narrow [`Provisioning::allowed_skills`] to `also`: the skills a
+    /// caller or the policy as it stands now allows. `None` for either
+    /// side means every built-in skill, so `None` with `None` stays
+    /// unlimited and one side alone is the limit; two sets keep what both
+    /// list. It never widens.
+    pub fn narrow_allowed_skills(&mut self, also: Option<&[String]>) {
+        let Some(also) = also else { return };
+        self.allowed_skills = Some(match self.allowed_skills.take() {
+            None => also.to_vec(),
+            Some(own) => own.into_iter().filter(|id| also.contains(id)).collect(),
+        });
     }
 }
 
@@ -1384,6 +1405,22 @@ pub(crate) fn json_text(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrowing_the_allowed_skills_never_widens_them() {
+        let ids = |ids: &[&str]| Some(ids.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        let mut spec = Provisioning::default();
+        spec.narrow_allowed_skills(None);
+        assert_eq!(spec.allowed_skills, None, "nothing limits it");
+        spec.narrow_allowed_skills(ids(&["docx", "pptx"]).as_deref());
+        assert_eq!(spec.allowed_skills, ids(&["docx", "pptx"]));
+        spec.narrow_allowed_skills(ids(&["pptx", "xlsx"]).as_deref());
+        assert_eq!(spec.allowed_skills, ids(&["pptx"]), "both must list it");
+        spec.narrow_allowed_skills(None);
+        assert_eq!(spec.allowed_skills, ids(&["pptx"]), "no word keeps the set");
+        spec.narrow_allowed_skills(Some(&[]));
+        assert_eq!(spec.allowed_skills, Some(Vec::new()));
+    }
 
     #[test]
     fn session_patch_requires_a_setting_and_rejects_provisioning_fields() {

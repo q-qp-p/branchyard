@@ -148,6 +148,10 @@
       "$ref": "#/$defs/KnowledgeConfig",
       "description": "Repository knowledge (docs/knowledge.md): whether adopted entries\nare given to harnesses and within what budget, when branches are\ndistilled into proposals, and by which distiller."
     },
+    "memory": {
+      "$ref": "#/$defs/MemoryConfig",
+      "description": "Memory (docs/memory.md): whether each turn's end derives\nobservations, whose corrections become candidates, how long\nobservations are kept, how many candidates a consolidation\nproposes, the consolidation schedule a server runs, and who may\napprove the team's memory there."
+    },
     "models": {
       "$ref": "#/$defs/ModelsConfig",
       "description": "The model gateway (docs/model-gateway.md): its backends, routes,\nbudgets and prices, and the models a new branch may call through it\nwhen `--model-gateway` gives none."
@@ -1780,6 +1784,66 @@
         "harness"
       ],
       "description": "`distiller = { harness = \"claude-code\", model = \"small\" }`."
+    },
+    "MemoryConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capture": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Derive scrubbed observations at each turn's end. Default true."
+        },
+        "external_authors": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Corrections by people who are not members (the repository's\ncommitters, a server's principals, `members`) become candidates.\nDefault false."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names (forge logins, git names or emails) that count as members\nbesides the repository's committers."
+        },
+        "consolidate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A five-field cron expression, in UTC, for the consolidation job a\n`by serve` or `by worker` dispatcher runs; unset or `\"\"` for only\n`by memory consolidate`. Locally it is never run on a schedule."
+        },
+        "keep_observations_days": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "Observations older than this are deleted at the next consolidation\nunless a memory's provenance names them. Default 90."
+        },
+        "max_candidates": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1,
+          "description": "The most candidates one consolidation proposes per scope. Default 20."
+        },
+        "approvers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Who may approve the team's memory on a server besides `admin`:\nprincipal names and `group:<name>` entries. Locally whoever runs\n`by memory approve` decides."
+        }
+      },
+      "description": "`[memory]`; see docs/memory.md."
     },
     "ModelsConfig": {
       "type": "object",

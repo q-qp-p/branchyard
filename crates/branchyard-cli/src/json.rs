@@ -242,6 +242,10 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
             "since_ms": since_ms,
         }),
         Activity::Resumed => json!({ "activity": "resumed" }),
+        Activity::Traced { traceparent } => json!({
+            "activity": "traced",
+            "traceparent": traceparent,
+        }),
         Activity::Message(m) => json!({ "activity": "message", "message": m }),
         Activity::MessagesDelivered { ids, via } => json!({
             "activity": "messages_delivered",
@@ -313,6 +317,16 @@ pub fn recorded(recorded: &RecordedEvent) -> Value {
         Activity::Knowledge(activity) => json!({
             "activity": "knowledge",
             "knowledge": activity,
+            "text": activity.describe(),
+        }),
+        Activity::Skill(activity) => json!({
+            "activity": "skill",
+            "skill": activity,
+            "text": activity.describe(),
+        }),
+        Activity::Memory(activity) => json!({
+            "activity": "memory",
+            "memory": activity,
             "text": activity.describe(),
         }),
         Activity::Plan(activity) => json!({

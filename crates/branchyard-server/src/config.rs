@@ -943,6 +943,9 @@ pub struct Config {
     /// The shared tool store its turns link skills and connector packages
     /// from (docs/tools-model.md). `None`: every turn copies.
     pub tools: Option<ToolsConfig>,
+    /// Memory capture and consolidation for every served repository
+    /// (docs/memory.md).
+    pub memory: MemoryConfig,
     /// The model gateway (docs/model-gateway.md), as `[models]` in
     /// branchyard.toml says it. `None`: off.
     pub models: Option<branchyard_setup::config::ModelsConfig>,
@@ -1087,6 +1090,87 @@ pub struct ToolsConfig {
     /// The Cloud Storage bucket (`BUCKET` or `BUCKET/PREFIX`) that mirrors
     /// the store, which a GKE Agent Sandbox mounts read-only.
     pub store_bucket: Option<String>,
+}
+
+/// `memory` in the configuration file: how served repositories capture
+/// observations and consolidate them, and who approves the team's memory
+/// (`docs/memory.md`). Mirrors `[memory]` of `branchyard.toml`, which a
+/// server does not read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct MemoryConfig {
+    /// Derive scrubbed observations at each turn's end. Default true.
+    #[serde(default)]
+    pub capture: Option<bool>,
+    /// Corrections by people who are not members become candidates.
+    /// Default false.
+    #[serde(default)]
+    pub external_authors: Option<bool>,
+    /// Names that count as members besides each repository's committers and
+    /// this server's principals.
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// A five-field cron expression, in UTC, for the consolidation job the
+    /// dispatcher runs over every served repository; unset for only
+    /// `by memory consolidate`.
+    #[serde(default)]
+    pub consolidate: Option<String>,
+    /// Observations older than this are deleted at the next consolidation.
+    /// Default 90.
+    #[serde(default)]
+    pub keep_observations_days: Option<u32>,
+    /// The most candidates one consolidation proposes per scope. Default 20.
+    #[serde(default)]
+    pub max_candidates: Option<u32>,
+    /// Who may approve the team's memory besides `admin`: principal names
+    /// and `group:<name>` entries.
+    #[serde(default)]
+    pub approvers: Vec<String>,
+}
+
+impl MemoryConfig {
+    /// The engine's settings these describe, with the server's principals
+    /// as members.
+    pub fn settings(&self, principals: &BTreeMap<String, Principal>) -> branchyard::MemorySettings {
+        let defaults = branchyard::MemorySettings::default();
+        let mut members = self.members.clone();
+        members.extend(principals.keys().cloned());
+        members.sort();
+        members.dedup();
+        branchyard::MemorySettings {
+            capture: self.capture.unwrap_or(defaults.capture),
+            external_authors: self.external_authors.unwrap_or(defaults.external_authors),
+            members,
+            visibility: defaults.visibility,
+            consolidate: self
+                .consolidate
+                .clone()
+                .filter(|cron| !cron.trim().is_empty()),
+            keep_observations_days: self
+                .keep_observations_days
+                .unwrap_or(defaults.keep_observations_days),
+            max_candidates: self
+                .max_candidates
+                .map_or(defaults.max_candidates, |n| n as usize),
+            approvers: self.approvers.clone(),
+        }
+    }
+
+    /// Refuse what cannot work: a cron that does not parse, a zero.
+    pub fn check(&self) -> Result<(), String> {
+        if let Some(cron) = self.consolidate.as_deref().filter(|c| !c.trim().is_empty()) {
+            crate::triggers::cron::Cron::parse(cron, "UTC")
+                .map_err(|e| format!("memory.consolidate: {e}"))?;
+        }
+        if self.keep_observations_days == Some(0) {
+            return Err("memory.keep_observations_days must be at least 1".into());
+        }
+        if self.max_candidates == Some(0) {
+            return Err("memory.max_candidates must be at least 1".into());
+        }
+        Ok(())
+    }
 }
 
 /// `connectors` in the configuration file: the connector gateway.
@@ -1291,6 +1375,7 @@ impl Config {
             webhook_insecure: false,
             connectors: None,
             tools: None,
+            memory: MemoryConfig::default(),
             models: None,
             ceilings: BTreeMap::new(),
             approvals: branchyard::effects::ApprovalSettings::default(),
@@ -2042,6 +2127,11 @@ pub(crate) struct FileConfig {
     /// The shared tool store (docs/tools-model.md): where it is, and the
     /// bucket that mirrors it.
     tools: Option<FileTools>,
+    /// Memory (docs/memory.md): observation capture, the consolidation
+    /// schedule and who approves the team's memory, for every served
+    /// repository.
+    #[serde(default)]
+    memory: MemoryConfig,
     /// The model gateway (docs/model-gateway.md): backends, routes,
     /// budgets and prices, as `[models]` in branchyard.toml. A backend's
     /// `key` names an entry of `secrets`, else a variable of this server.
@@ -2534,6 +2624,8 @@ pub struct Partial {
     pub connectors: Option<ConnectorsConfig>,
     /// `tools`, its relative store path resolved.
     pub tools: Option<ToolsConfig>,
+    /// `memory`, checked.
+    pub memory: MemoryConfig,
     pub models: Option<branchyard_setup::config::ModelsConfig>,
     pub ceilings: BTreeMap<String, branchyard::Ceiling>,
     pub approvals: branchyard::effects::ApprovalSettings,
@@ -2888,6 +2980,12 @@ pub fn load_file(path: &Path) -> Result<Partial, String> {
             store: resolve(t.store),
             store_bucket: t.store_bucket,
         }),
+        memory: {
+            file.memory
+                .check()
+                .map_err(|e| format!("config {}: {e}", path.display()))?;
+            file.memory
+        },
         models: match file.models {
             Some(models) => {
                 models

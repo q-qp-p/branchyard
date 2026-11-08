@@ -213,6 +213,7 @@ pub enum KnowledgeAction {
     },
     /// Reject entries: they are not used, and the same text is not proposed again
     Reject {
+        /// Row numbers, as `by memory list --status proposed` shows them
         #[arg(required = true, value_name = "ID")]
         /// Entry numbers, as `by knowledge review` lists them
         ids: Vec<u64>,
@@ -905,6 +906,65 @@ pub enum SkillsAction {
         /// Its name, as `by skills ls` lists it under user
         name: String,
     },
+    /// Every skill a turn started here may see, with its source, digest and state
+    ///
+    /// The built-in skills (ready), the repository's at HEAD (ready once trusted, else
+    /// available with the reason) and your own (ready, or withheld by name). A turn mounts
+    /// every ready skill where linking is free and names the chosen ones in its index
+    /// (docs/skill-registry.md).
+    List {
+        /// Only this source: built_in, repository or user
+        #[arg(long, value_name = "SOURCE", value_parser = ["built_in", "repository", "user"])]
+        source: Option<String>,
+        /// Only this state: ready or available
+        #[arg(long, value_name = "STATE", value_parser = ["ready", "available"])]
+        state: Option<String>,
+    },
+    /// Rank the skills a turn here could find against WORDS, with the turn's own ranker
+    ///
+    /// Writes the tree a turn would mount (every ready skill) to a scratch directory and
+    /// runs its `bin/tools search`, so the answer is what a harness would get.
+    Search {
+        /// The query
+        #[arg(required = true, value_name = "WORDS")]
+        words: Vec<String>,
+        /// BM25 alone: no extra weight for a tool over a reference
+        #[arg(long)]
+        plain: bool,
+        /// At most this many results
+        #[arg(long, default_value_t = 8, value_name = "N")]
+        limit: usize,
+    },
+    /// One skill's entry: source, digest, state, size; --references lists its references
+    Show {
+        /// The skill as the tree names it: pptx, repository:style, user:memory-parser
+        id: String,
+        /// List its `references/*.md`, the documents a search can land on
+        #[arg(long)]
+        references: bool,
+    },
+    /// Searches and opens by skill, from every branch's record
+    ///
+    /// A local measure from the `skill` events turns record: how often each skill was
+    /// found, shown or had a script run, and how many searches no open followed.
+    Usage {
+        /// Only events in this window: 30m, 12h, 7d, 30d
+        #[arg(long, value_name = "WINDOW", value_parser = since_window)]
+        since: Option<std::time::Duration>,
+    },
+    /// Write the tool tree a turn started here would mount, without running a turn
+    ///
+    /// Under DIR as the turn's home: DIR/.branchyard/tools holds INDEX.md and bin/tools, with
+    /// every ready skill staged; `--skill` names the chosen ones (default: every built-in
+    /// skill). For `python3 tools/skill_eval.py rank --tree` and `sizes --tree`.
+    Index {
+        /// Where to write the tree
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        /// A built-in skill to name in INDEX.md as chosen; the rest are counted. Repeatable
+        #[arg(long = "skill", value_name = "NAME")]
+        skills: Vec<String>,
+    },
 }
 
 /// `by memory`'s actions; see docs/memory.md.
@@ -944,23 +1004,100 @@ pub enum MemoryAction {
         #[arg(long)]
         mine: bool,
     },
-    /// Every memory of the repository's bundles and your own, by topic
+    /// Every memory of the repository's bundles and your own, by topic, then the proposed rows
+    ///
+    /// With --status, the rows of that status alone (proposed, approved, rejected): what
+    /// consolidation proposed and people decided, by number.
     List {
         /// Only your own
         #[arg(long)]
         mine: bool,
+        /// Rows of this status: proposed, approved or rejected
+        #[arg(long, value_name = "STATUS", value_parser = memory_status)]
+        status: Option<branchyard::MemoryStatus>,
     },
-    /// One memory, whole
+    /// One memory, whole: a slug for a bundle's file, a number (12 or #12) for a row
     Show {
-        /// Its slug, as `by memory list` shows it
+        /// Its slug, as `by memory list` shows it, or a row's number
         slug: String,
-        /// Look only in your own skills folder
+        /// Look only in your own skills folder, or your own rows
+        #[arg(long)]
+        mine: bool,
+        /// With a row: each observation it came from, its branch, turn, kind and author
+        #[arg(long)]
+        evidence: bool,
+    },
+    /// Walk the proposed rows: a approve, r reject, e edit then approve, p promote, s skip, q quit
+    Review {
+        /// Your own rows instead of the team's
+        #[arg(long)]
+        mine: bool,
+        /// The editor for edits (default: $VISUAL, then $EDITOR)
+        #[arg(long, value_name = "EDITOR")]
+        editor: Option<String>,
+    },
+    /// Approve proposed rows and write each into its bundle
+    ///
+    /// The team's rows go under .agents/skills, yours in your skills folder.
+    Approve {
+        /// Row numbers, as `by memory list --status proposed` shows them
+        #[arg(required = true, value_name = "ID", value_parser = memory_id)]
+        ids: Vec<u64>,
+    },
+    /// Reject proposed rows; the rejection sticks against new evidence
+    Reject {
+        /// Row numbers, as `by memory list --status proposed` shows them
+        #[arg(required = true, value_name = "ID", value_parser = memory_id)]
+        ids: Vec<u64>,
+        /// Why
+        #[arg(long, value_name = "TEXT")]
+        reason: Option<String>,
+    },
+    /// Offer one of your own rows to the team: a new proposed row; yours stays
+    Promote {
+        /// The number of one of your own rows
+        #[arg(value_name = "ID", value_parser = memory_id)]
+        id: u64,
+    },
+    /// Delete a row and its bundle file; the branches it came from record it, without the text
+    Forget {
+        /// The number of the row to delete
+        #[arg(value_name = "ID", value_parser = memory_id)]
+        id: u64,
+    },
+    /// Run one deterministic consolidation now: cluster the new observations, propose rows
+    Consolidate {
+        /// Your own observations (a private session's) instead of the team's
         #[arg(long)]
         mine: bool,
     },
+    /// Consolidation runs, newest first, with their counts and outcomes
+    Runs {
+        /// Your own scope's runs
+        #[arg(long)]
+        mine: bool,
+        /// At most this many
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        limit: usize,
+    },
+    /// The scrubbed observations a scope holds, oldest first (for the curious and the tests)
+    #[command(hide = true)]
+    Observations {
+        /// Your own scope's
+        #[arg(long)]
+        mine: bool,
+        /// Only observations with an id above this
+        #[arg(long, value_name = "ID", default_value_t = 0)]
+        since: u64,
+        /// At most this many
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        limit: usize,
+    },
     /// Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+    ///
+    /// A slug edits a bundle's file; a row number edits the row, and its file once approved.
     Edit {
-        /// Its slug
+        /// Its slug, or a row's number
         slug: String,
         /// A new title
         #[arg(long, value_name = "TEXT", value_parser = non_blank)]
@@ -1003,6 +1140,18 @@ pub enum MemoryAction {
 /// A `--kind` for `by memory`: rule, procedure, fact or pitfall.
 pub(crate) fn memory_kind(text: &str) -> Result<branchyard::MemoryKind, String> {
     text.parse().map_err(|e: branchyard::Error| e.to_string())
+}
+
+/// A `--status` for `by memory list`: proposed, approved or rejected.
+pub(crate) fn memory_status(text: &str) -> Result<branchyard::MemoryStatus, String> {
+    text.parse().map_err(|e: branchyard::Error| e.to_string())
+}
+
+/// A memory row's number: `12` or `#12`.
+pub(crate) fn memory_id(text: &str) -> Result<u64, String> {
+    text.trim_start_matches('#')
+        .parse()
+        .map_err(|_| format!("{text:?} is not a memory row number such as 12 or #12"))
 }
 
 /// `by workspace ...`; see docs/workspace.md.

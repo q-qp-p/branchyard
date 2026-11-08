@@ -116,6 +116,7 @@ pub(crate) const KINDS: &[(&str, Exit)] = &[
     ("unknown_message", Exit::Usage),
     ("unknown_knowledge", Exit::Usage),
     ("unknown_memory", Exit::Usage),
+    ("unknown_skill", Exit::Usage),
     ("invalid_memory", Exit::Usage),
     ("unknown_repo", Exit::Usage),
     ("unknown_operation", Exit::Usage),

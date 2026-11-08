@@ -120,6 +120,37 @@ impl From<io::Error> for GitError {
     }
 }
 
+/// The metric family hot git operations are observed in. The server
+/// declares it (`branchyard_server::metrics::GIT_OPERATION`); a test there
+/// checks the two names are one string.
+pub const OPERATION_FAMILY: &str = "branchyard_git_operation_duration_seconds";
+
+/// The operation of a git invocation that is on a branch's hot path:
+/// `worktree_add`, `commit` (a candidate), `merge`, `rebase` or `push`;
+/// `None` for any other (reads, status, ref updates), which are not
+/// spanned.
+pub fn hot_operation(args: &[String]) -> Option<&'static str> {
+    let mut rest = args.iter().map(String::as_str);
+    // Leading `-c key=value` pairs and flags come before the subcommand.
+    let subcommand = loop {
+        match rest.next()? {
+            "-c" | "-C" => {
+                rest.next();
+            }
+            flag if flag.starts_with('-') => {}
+            other => break other,
+        }
+    };
+    match subcommand {
+        "worktree" => (rest.next() == Some("add")).then_some("worktree_add"),
+        "commit" | "commit-tree" => Some("commit"),
+        "merge" | "merge-tree" => Some("merge"),
+        "rebase" => Some("rebase"),
+        "push" => Some("push"),
+        _ => None,
+    }
+}
+
 /// A git invocation rooted at one directory.
 pub struct Git {
     cmd: Command,
@@ -179,8 +210,44 @@ impl Git {
         self
     }
 
-    /// Runs git and returns its output whatever the exit status.
-    pub fn output(mut self) -> Result<(Output, Vec<String>), GitError> {
+    /// Runs git and returns its output whatever the exit status. The
+    /// operations on a branch's hot path (see [`hot_operation`]) are a span
+    /// and an observation in `branchyard_git_operation_duration_seconds`;
+    /// the span names the operation, never its arguments.
+    pub fn output(self) -> Result<(Output, Vec<String>), GitError> {
+        let Some(operation) = hot_operation(&self.args) else {
+            return self.execute();
+        };
+        let timer = branchyard_support::trace::Timer::start(
+            OPERATION_FAMILY,
+            vec![("operation", operation.to_owned())],
+        );
+        let span = branchyard_support::trace_span!(
+            "git",
+            "otel.name" = format!("git {operation}"),
+            "by.git.operation" = operation,
+            "otel.status_description" = branchyard_support::trace::tracing::field::Empty,
+        );
+        let result = span.in_scope(|| self.execute());
+        let ok = match &result {
+            Ok((out, _)) => out.status.success(),
+            Err(_) => false,
+        };
+        if !ok {
+            span.record(
+                "otel.status_description",
+                match &result {
+                    Ok((out, _)) => format!("git exited with {}", out.status),
+                    Err(error) => error.to_string().chars().take(200).collect(),
+                }
+                .as_str(),
+            );
+        }
+        timer.finish(ok);
+        result
+    }
+
+    fn execute(mut self) -> Result<(Output, Vec<String>), GitError> {
         let Some(input) = self.input.take() else {
             let out = self.cmd.output().map_err(GitError::Spawn)?;
             return Ok((out, self.args));
@@ -391,4 +458,39 @@ pub(crate) fn worktrees(dir: &Path) -> Result<Vec<WorktreeEntry>, GitError> {
 /// or `None` when HEAD is detached.
 pub fn current_branch(dir: &Path) -> Result<Option<String>, GitError> {
     crate::repo::current_branch_in(dir)
+}
+
+#[cfg(test)]
+mod hot_operation_tests {
+    use super::hot_operation;
+
+    fn op(args: &[&str]) -> Option<&'static str> {
+        hot_operation(&args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn only_the_hot_operations_are_named() {
+        assert_eq!(
+            op(&["worktree", "add", "--quiet", "-b", "x"]),
+            Some("worktree_add")
+        );
+        assert_eq!(op(&["worktree", "remove", "--force"]), None);
+        assert_eq!(
+            op(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "m"]),
+            Some("commit")
+        );
+        assert_eq!(op(&["commit-tree", "HEAD^{tree}"]), Some("commit"));
+        assert_eq!(op(&["merge", "--no-ff", "b"]), Some("merge"));
+        assert_eq!(op(&["merge-tree", "--write-tree", "a", "b"]), Some("merge"));
+        assert_eq!(op(&["rebase", "--onto", "a", "b"]), Some("rebase"));
+        assert_eq!(op(&["push", "origin", "x"]), Some("push"));
+        for quiet in [
+            &["status", "--porcelain"][..],
+            &["rev-parse", "HEAD"],
+            &["worktree"],
+            &[],
+        ] {
+            assert_eq!(op(quiet), None, "{quiet:?}");
+        }
+    }
 }

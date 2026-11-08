@@ -28,7 +28,6 @@ pub mod spans;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -70,25 +69,33 @@ pub struct Config {
 /// in a trace. Every other span stays a log-correlation span only, so a
 /// request, a poll or a library's internal span does not become a trace of
 /// its own.
-pub const TRACE_TARGET: &str = "branchyard_trace";
+pub const TRACE_TARGET: &str = branchyard_support::trace::TARGET;
 
 /// Whether the OpenTelemetry layer takes the span or event described by
-/// `meta`: spans of [`TRACE_TARGET`], never events.
+/// `meta`: spans of [`TRACE_TARGET`], and the per-query store spans when the
+/// operator asked for them; never events.
 pub(crate) fn bridged(meta: &tracing::Metadata<'_>) -> bool {
-    meta.is_span() && meta.target() == TRACE_TARGET
+    meta.is_span()
+        && (meta.target() == TRACE_TARGET
+            || (meta.target() == branchyard_support::trace::STORE_TARGET
+                && branchyard_support::trace::store_spans()))
 }
-
-static SPANS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Whether finished spans go anywhere in this process: an exporter is
 /// configured, or a test captures them. When false, building a span after
 /// the fact (see [`spans::record`]) is wasted work.
 pub fn spans_enabled() -> bool {
-    SPANS_ENABLED.load(Ordering::Relaxed)
+    branchyard_support::trace::enabled()
 }
 
 pub(crate) fn set_spans_enabled(on: bool) {
-    SPANS_ENABLED.store(on, Ordering::Relaxed);
+    if on {
+        spans::install_hooks();
+        branchyard_support::trace::set_store_spans(
+            std::env::var("BRANCHYARD_TRACE_STORE").is_ok_and(|v| v == "1" || v == "true"),
+        );
+    }
+    branchyard_support::trace::set_enabled(on);
 }
 
 /// The meter provider of a process and the reader that renders it as

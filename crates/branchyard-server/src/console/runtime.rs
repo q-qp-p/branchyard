@@ -720,6 +720,10 @@ fn chosen_tools(
     if let Some(skills) = skills {
         provision.skills = Some(skills);
     }
+    // The built-in skills the policy allows, which a turn may mount beside
+    // the chosen ones where linking is free (docs/skill-registry.md, R2);
+    // unset when the policy has no skills part, which allows them all.
+    let allowed = allowed_skills(&resolved.store)?;
     match &provision.skills {
         Some(asked) => {
             branchyard_provision::built_in::check(asked).map_err(|why| {
@@ -738,20 +742,9 @@ fn chosen_tools(
             }
         }
         // No choice means every built-in skill the policy allows.
-        None if resolved.store.skills.is_some() => {
-            let catalogue =
-                branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
-            provision.skills = Some(
-                catalogue
-                    .skills
-                    .iter()
-                    .filter(|s| super::tools::skill_usable(&catalogue, &resolved.store, &s.id))
-                    .map(|s| s.id.clone())
-                    .collect(),
-            );
-        }
-        None => {}
+        None => provision.skills = allowed.clone(),
     }
+    provision.allowed_skills = allowed;
     let helpers: Option<branchyard_client::workspace_api::Helpers> = field("helpers")
         .map(serde_json::from_value)
         .transpose()
@@ -819,9 +812,35 @@ fn chosen_tools(
             "account": e.account,
         })).collect::<Vec<_>>(),
         "skills": provision.skills,
+        // The built-in skills the policy allows, which a turn mounts beside the
+        // chosen ones where linking is free (docs/skill-registry.md, R2); absent
+        // without a skills policy, when every built-in skill is allowed.
+        "allowed_skills": provision.allowed_skills,
         "helpers": helpers,
     });
     Ok(Chosen { delegation, view })
+}
+
+/// The built-in skills `store` allows, by id: what a turn may mount beside
+/// the chosen ones where linking is free. Unset when the policy has no
+/// skills part, which allows them all. Admission records it; every later
+/// turn computes it again from the policy as it then stands
+/// ([`super::execution`], `claim_policy`) and the engine narrows to it.
+pub(super) fn allowed_skills(
+    store: &branchyard_client::workspace_api::ToolPolicy,
+) -> Result<Option<Vec<String>>, ApiError> {
+    if store.skills.is_none() {
+        return Ok(None);
+    }
+    let catalogue = branchyard_provision::built_in::catalogue().map_err(ApiError::internal)?;
+    Ok(Some(
+        catalogue
+            .skills
+            .iter()
+            .filter(|s| super::tools::skill_usable(&catalogue, store, &s.id))
+            .map(|s| s.id.clone())
+            .collect(),
+    ))
 }
 
 fn review_candidate(

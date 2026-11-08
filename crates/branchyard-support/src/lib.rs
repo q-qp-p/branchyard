@@ -38,6 +38,7 @@ mod process;
 pub mod rng;
 mod threads;
 pub mod time;
+pub mod trace;
 
 #[cfg(feature = "testing")]
 pub mod testing;

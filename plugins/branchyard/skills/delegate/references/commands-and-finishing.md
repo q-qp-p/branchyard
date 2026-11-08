@@ -49,6 +49,7 @@ by spawn --prompt-file "$TMPDIR/port-task.md" --name port --budget-usd 0.50   # 
 by children
 by inspect parser-flake
 by events parser-flake --cursor 0
+by trace parser-flake --subtree  # its turns, tool calls and children as a span tree
 by spawn "Add a regression test for issue 42" --name issue-42 --budget-usd 0.30 --wait
 # Ask for the answer as JSON, in a shape (see "Asking for a result" below)
 by spawn "List the files that call parse_opts" --name callers \

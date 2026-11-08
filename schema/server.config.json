@@ -281,6 +281,10 @@
         }
       ]
     },
+    "memory": {
+      "description": "Memory (docs/memory.md): observation capture, the consolidation\nschedule and who approves the team's memory, for every served\nrepository.",
+      "$ref": "#/$defs/MemoryConfig"
+    },
     "models": {
       "description": "The model gateway (docs/model-gateway.md): backends, routes,\nbudgets and prices, as `[models]` in branchyard.toml. A backend's\n`key` names an entry of `secrets`, else a variable of this server.",
       "anyOf": [
@@ -2093,6 +2097,73 @@
       "required": [
         "store"
       ]
+    },
+    "MemoryConfig": {
+      "description": "`memory` in the configuration file: how served repositories capture\nobservations and consolidate them, and who approves the team's memory\n(`docs/memory.md`). Mirrors `[memory]` of `branchyard.toml`, which a\nserver does not read.",
+      "type": "object",
+      "properties": {
+        "capture": {
+          "description": "Derive scrubbed observations at each turn's end. Default true.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "external_authors": {
+          "description": "Corrections by people who are not members become candidates.\nDefault false.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "members": {
+          "description": "Names that count as members besides each repository's committers and\nthis server's principals.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "consolidate": {
+          "description": "A five-field cron expression, in UTC, for the consolidation job the\ndispatcher runs over every served repository; unset for only\n`by memory consolidate`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "keep_observations_days": {
+          "description": "Observations older than this are deleted at the next consolidation.\nDefault 90.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "max_candidates": {
+          "description": "The most candidates one consolidation proposes per scope. Default 20.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "approvers": {
+          "description": "Who may approve the team's memory besides `admin`: principal names\nand `group:<name>` entries.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
     },
     "ModelsConfig": {
       "description": "`[models]`.",

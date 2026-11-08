@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use crate::live_trace::LiveTrace;
 use crate::state::{Fence, Lease, Record, Store};
 use crate::{Activity, BranchEvent, Error, FeedEvent, FeedPage, Observer, Page, RecordedEvent};
 use branchyard_support::time::now_ms;
@@ -18,6 +19,8 @@ pub(crate) struct Recorder {
     /// The turn's lease; appends fail once it is lost.
     fence: Option<Fence>,
     observer: Option<Observer>,
+    /// The turn's live spans, when the turn is traced.
+    live: Option<LiveTrace>,
 }
 
 impl Recorder {
@@ -28,6 +31,7 @@ impl Recorder {
             branch: branch.to_owned(),
             fence: None,
             observer,
+            live: None,
         })
     }
 
@@ -38,6 +42,17 @@ impl Recorder {
             branch: fence.branch.clone(),
             fence: Some(fence.clone()),
             observer,
+            live: None,
+        }
+    }
+
+    /// Open live spans for the turn this recorder writes, run by
+    /// `harness`, a child of `parent` (the operation's `traceparent`) or of
+    /// the span in scope. Nothing is built unless the process exports
+    /// spans.
+    pub fn trace_live(&mut self, harness: &str, parent: Option<&str>) {
+        if branchyard_support::trace::enabled() {
+            self.live = Some(LiveTrace::new(&self.branch, harness, parent));
         }
     }
 
@@ -55,6 +70,15 @@ impl Recorder {
         };
         self.store
             .append(&self.branch, &entry, self.fence.as_ref())?;
+        if let Some(live) = &mut self.live {
+            live.observe(&entry.activity);
+        }
+        // A prompt that opened a live turn span is marked in the log, so no
+        // reader in another process traces the turn again.
+        let traced = match entry.activity {
+            Activity::Prompt(_) => self.live.as_ref().and_then(LiveTrace::traceparent),
+            _ => None,
+        };
         if let Some(observer) = &self.observer {
             observe(
                 observer,
@@ -63,6 +87,9 @@ impl Recorder {
                     activity: entry.activity,
                 },
             );
+        }
+        if let Some(traceparent) = traced {
+            self.record(Activity::Traced { traceparent })?;
         }
         Ok(entry.at_ms)
     }
@@ -87,6 +114,9 @@ impl Recorder {
             activity: Activity::Status(record.info.status.clone()),
         };
         lease.finish(Some(record), Some(&entry))?;
+        if let Some(live) = &mut self.live {
+            live.observe(&entry.activity);
+        }
         if let Some(observer) = &self.observer {
             observe(
                 observer,

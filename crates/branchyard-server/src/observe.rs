@@ -39,14 +39,32 @@ impl Observability {
     /// installed, when `init` ran), so `GET /metrics` and an OTLP push read
     /// the same instruments.
     pub fn from_env() -> Observability {
-        Observability {
+        let observability = Observability {
             metrics: Arc::new(Metrics::new(
                 branchyard_telemetry::Meters::process_or_isolated(),
             )),
             branches: Arc::new(BranchTraces::default()),
-        }
+        };
+        observability.take_durations();
+        observability
+    }
+
+    /// Make this the registry the sandbox and `git` timers report to
+    /// ([`branchyard_support::trace::Timer`]); the first one in a process
+    /// keeps it.
+    pub fn take_durations(&self) {
+        // A second registry in one process is a test's own.
+        let _first = DURATIONS.set(self.metrics.clone()).is_ok();
+        branchyard_support::trace::set_duration_sink(|family, pairs, seconds| {
+            if let Some(metrics) = DURATIONS.get() {
+                metrics.observe(family, pairs, seconds);
+            }
+        });
     }
 }
+
+/// The registry durations from timers below the server are recorded in.
+static DURATIONS: std::sync::OnceLock<Arc<Metrics>> = std::sync::OnceLock::new();
 
 /// A turn in progress in the events being read.
 struct Turn {
@@ -54,9 +72,16 @@ struct Turn {
     start_ms: u64,
     saw_event: bool,
     tool: Option<Tool>,
+    /// The turn's log carries `Activity::Traced` (see
+    /// `branchyard::live_trace`): a process traced it while it ran, and its
+    /// spans are not written again here.
+    live: bool,
     /// Spans inside the turn, written with the turn's span as their parent
     /// once it is known.
     children: Vec<Finished>,
+    /// Searches of the tool tree since the last open: the misses, when the
+    /// turn ends with them.
+    searches_unopened: u64,
 }
 
 struct Tool {
@@ -107,6 +132,20 @@ pub fn tool_label(name: &str) -> &'static str {
 
 /// The `kind` (or `state`) tag of a serde-tagged value, such as a turn's
 /// outcome.
+/// A skill event's `kind` as a metric label: one of the closed set the
+/// engine accepts from a guest, `all` for an unnarrowed search, else `other`
+/// (an event an older or hostile log recorded), so no series is a guest's.
+fn closed_kind(kind: &str) -> &'static str {
+    if kind == "all" {
+        return "all";
+    }
+    branchyard::skill_activity::KINDS
+        .iter()
+        .find(|known| **known == kind)
+        .copied()
+        .unwrap_or("other")
+}
+
 fn tag(value: &impl serde::Serialize, key: &str) -> String {
     serde_json::to_value(value)
         .ok()
@@ -149,7 +188,7 @@ pub fn record_events(
             &[("harness", harness), ("tool", tool_label(&tool.name))],
             at.saturating_sub(tool.start_ms) as f64 / 1000.0,
         );
-        if traced.is_some() {
+        if traced.is_some() && !turn.live {
             turn.children.push(Finished {
                 name: format!("tool {}", tool.name),
                 parent: None,
@@ -167,6 +206,9 @@ pub fn record_events(
     };
     let write_turn = |turn: Turn, branch: &str, harness: &str, at: u64, outcome: &str| {
         let Some(parent) = traced else { return };
+        if turn.live {
+            return;
+        }
         let mut attributes = vec![
             KeyValue::new("by.branch", branch.to_owned()),
             KeyValue::new("by.harness", harness.to_owned()),
@@ -199,6 +241,13 @@ pub fn record_events(
             metrics::TURNS_ENDED,
             &[("harness", harness), ("outcome", outcome)],
         );
+        if turn.searches_unopened > 0 {
+            metrics.add(
+                metrics::SKILL_SEARCH_UNOPENED,
+                &[],
+                turn.searches_unopened as f64,
+            );
+        }
         let seconds = at.saturating_sub(turn.start_ms) as f64 / 1000.0;
         metrics.observe(metrics::TURN_DURATION, &[("harness", harness)], seconds);
         let mut genai = vec![
@@ -245,9 +294,18 @@ pub fn record_events(
                         start_ms: at,
                         saw_event: false,
                         tool: None,
+                        live: false,
                         children: Vec::new(),
+                        searches_unopened: 0,
                     },
                 );
+            }
+            // The turn's spans were exported live, by this process or
+            // another: none are written from the log.
+            Activity::Traced { .. } => {
+                if let Some(open) = turns.get_mut(branch) {
+                    open.live = true;
+                }
             }
             Activity::Harness(Event::TurnAccepted { turn, .. }) => {
                 if let Some(open) = turns.get_mut(branch) {
@@ -365,6 +423,40 @@ pub fn record_events(
                     }
                 }
             }
+            // What the turn did with its skills: labels from closed sets
+            // (`closed_kind`, `Source`) and the level, never an id and never
+            // a guest's text (docs/skill-registry.md, 7).
+            Activity::Skill(activity) => match activity.as_ref() {
+                branchyard::SkillActivity::Searched { kind, .. } => {
+                    metrics.inc(
+                        metrics::SKILL_SEARCHES,
+                        &[("kind", closed_kind(kind.as_deref().unwrap_or("all")))],
+                    );
+                    if let Some(turn) = turns.get_mut(branch) {
+                        turn.searches_unopened += 1;
+                    }
+                }
+                branchyard::SkillActivity::Opened {
+                    source,
+                    kind,
+                    level,
+                    ..
+                } => {
+                    let source = match source {
+                        Some(source) => source.as_str(),
+                        None if kind == "operation" => "connector",
+                        None => closed_kind(kind),
+                    };
+                    metrics.inc(
+                        metrics::SKILL_OPENS,
+                        &[("source", source), ("level", &level.to_string())],
+                    );
+                    if let Some(turn) = turns.get_mut(branch) {
+                        turn.searches_unopened = 0;
+                    }
+                }
+                branchyard::SkillActivity::Invoked { .. } => {}
+            },
             Activity::ConnectorCall(call) => {
                 let pairs = [
                     ("connector", call.connector.as_str()),
@@ -392,6 +484,7 @@ pub fn record_events(
                             .then(|| call.reason.clone().unwrap_or(call.decision.clone())),
                     };
                     match turns.get_mut(branch) {
+                        Some(turn) if turn.live => {}
                         Some(turn) => turn.children.push(span),
                         None => {
                             let mut span = span;
@@ -806,6 +899,83 @@ mod tests {
             ),
             entry(6, "a", 2_000, Activity::ConnectorCall(Box::new(call))),
             entry(7, "a", 2_100, Activity::ConnectorCall(Box::new(denied))),
+            // The turn searched its tool tree twice and opened one result;
+            // the search after the open had none (R2's local measure).
+            entry(
+                7,
+                "a",
+                2_200,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 3,
+                    results: vec!["skill:pptx".into()],
+                    kind: None,
+                    plain: false,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_300,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Opened {
+                    id: "pptx/references/layouts.md".into(),
+                    digest: "d".into(),
+                    source: Some(branchyard::skills::Source::BuiltIn),
+                    kind: "reference".into(),
+                    level: 3,
+                    fetched: false,
+                    bytes: 4_120,
+                    fetch_ms: None,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_400,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 1,
+                    results: Vec::new(),
+                    kind: Some("reference".into()),
+                    plain: true,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_500,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Opened {
+                    id: "github.issues.list".into(),
+                    digest: "bundle".into(),
+                    source: None,
+                    kind: "operation".into(),
+                    level: 1,
+                    fetched: false,
+                    bytes: 0,
+                    fetch_ms: None,
+                })),
+            ),
+            entry(
+                7,
+                "a",
+                2_600,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 2,
+                    results: Vec::new(),
+                    kind: None,
+                    plain: false,
+                })),
+            ),
+            // A guest's own kind label: one series, not its text.
+            entry(
+                7,
+                "a",
+                2_650,
+                Activity::Skill(Box::new(branchyard::SkillActivity::Searched {
+                    terms: 1,
+                    results: Vec::new(),
+                    kind: Some("x".repeat(500)),
+                    plain: false,
+                })),
+            ),
             // A running total: 100/10 tokens, then 150/30; counted as
             // 100/10 and then the growth, 50/20.
             entry(8, "a", 3_000, usage(true, 100, 10, 0.5)),
@@ -903,6 +1073,34 @@ mod tests {
             ),
             1.0
         );
+        // Skill searches by kind, opens by source and level, and the one
+        // search the turn ended without opening anything after.
+        assert_eq!(counter(m, metrics::SKILL_SEARCHES, &[("kind", "all")]), 2.0);
+        assert_eq!(
+            counter(m, metrics::SKILL_SEARCHES, &[("kind", "reference")]),
+            1.0
+        );
+        assert_eq!(
+            counter(
+                m,
+                metrics::SKILL_OPENS,
+                &[("source", "built_in"), ("level", "3")]
+            ),
+            1.0
+        );
+        assert_eq!(
+            counter(
+                m,
+                metrics::SKILL_OPENS,
+                &[("source", "connector"), ("level", "1")]
+            ),
+            1.0
+        );
+        assert_eq!(
+            counter(m, metrics::SKILL_SEARCHES, &[("kind", "other")]),
+            1.0
+        );
+        assert_eq!(counter(m, metrics::SKILL_SEARCH_UNOPENED, &[]), 2.0);
         assert_eq!(
             m.distribution(
                 metrics::CONNECTOR_DURATION,
@@ -1007,6 +1205,57 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_marked_traced_in_its_log_is_not_written_again_by_any_process() {
+        let capture = capture().unwrap();
+        let observability = Observability::default();
+        let turn = |branch: &str, marked: bool, id: u64| {
+            let mut entries = vec![entry(id, branch, 1_000, Activity::Prompt("p".into()))];
+            if marked {
+                entries.push(entry(
+                    id + 1,
+                    branch,
+                    1_001,
+                    Activity::Traced {
+                        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                            .into(),
+                    },
+                ));
+            }
+            entries.push(entry(
+                id + 2,
+                branch,
+                2_000,
+                Activity::Harness(Event::TurnEnded {
+                    turn: 1,
+                    outcome: TurnOutcome::Completed,
+                }),
+            ));
+            entries
+        };
+        let trace = branchyard_client::new_key();
+        let parent = format!("00-{trace}-b7ad6b7169203331-01");
+        let branches: BTreeSet<String> = ["marked".to_owned(), "plain".to_owned()].into();
+        let mut entries = turn("marked", true, 1);
+        entries.extend(turn("plain", false, 10));
+        // This process holds no memory of the "marked" turn: the marker is in
+        // its log, written by whichever process traced it.
+        record_events(
+            &observability,
+            &branches,
+            &|_| "pi".into(),
+            &entries,
+            Some(&parent),
+        );
+        let written: Vec<_> = capture
+            .trace(&trace)
+            .into_iter()
+            .filter(|s| s.name == "turn")
+            .map(|s| s.attributes.get("by.branch").cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(written, ["plain"], "only the untraced turn is written");
+    }
+
+    #[test]
     fn cost_counts_what_each_branch_spent_during_the_operation() {
         let metrics = Metrics::default();
         let stored: StoredOperation = serde_json::from_value(serde_json::json!({
@@ -1063,5 +1312,50 @@ mod tests {
             counter(&metrics, metrics::TURN_STALLS, &[("harness", "pi")]),
             0.0
         );
+    }
+
+    #[test]
+    fn sandbox_and_hot_git_durations_reach_the_registry_under_the_declared_names() {
+        // The crates that time the work name the families themselves; the
+        // server declares them. They are one string.
+        assert_eq!(metrics::SANDBOX_ACTION, branchyard_sandbox::ACTION_FAMILY);
+        assert_eq!(
+            metrics::GIT_OPERATION,
+            branchyard_workspace::git::OPERATION_FAMILY
+        );
+        let observability = Observability::default();
+        observability.take_durations();
+        // The first registry in the process keeps the sink; another test
+        // in this binary may have taken it, so read that one.
+        let registry = DURATIONS.get().unwrap();
+        branchyard_support::trace::Timer::start(
+            branchyard_sandbox::ACTION_FAMILY,
+            vec![
+                ("provider", "microsandbox".to_owned()),
+                ("action", "ensure".to_owned()),
+            ],
+        )
+        .finish(true);
+        let sandbox = [
+            ("provider", "microsandbox"),
+            ("action", "ensure"),
+            ("result", "ok"),
+        ];
+        assert!(registry.distribution(metrics::SANDBOX_ACTION, &sandbox).0 >= 1);
+        // A hot operation that fails (no path given) is observed with its
+        // result; one that is not hot is not observed at all.
+        let here = std::path::Path::new(".");
+        branchyard_workspace::Git::new(here)
+            .args(["worktree", "add"])
+            .output()
+            .unwrap();
+        branchyard_workspace::Git::new(here)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .output()
+            .unwrap();
+        let hot = [("operation", "worktree_add"), ("result", "error")];
+        assert!(registry.distribution(metrics::GIT_OPERATION, &hot).0 >= 1);
+        let rendered = registry.render().unwrap();
+        assert!(!rendered.contains("rev_parse"), "{rendered}");
     }
 }

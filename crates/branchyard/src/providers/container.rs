@@ -70,7 +70,7 @@ impl ProviderKind for ContainerOptions {
     fn recover(&self, yard: &Yard, record: &Record, sandbox: &str) -> Option<String> {
         Some(native::recover(self, yard, record, sandbox))
     }
-    fn open(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, yard: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         let config = branchyard_container::Config {
             runtime: self.runtime,
             network: self.network,

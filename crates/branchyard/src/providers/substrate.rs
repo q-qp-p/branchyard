@@ -93,7 +93,7 @@ impl ProviderKind for SubstrateOptions {
         Some(recover_actor(yard, record, self, sandbox))
     }
 
-    fn open(&self, _: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
+    fn open_untraced(&self, _: &Yard) -> Result<Arc<dyn SandboxProvider>, String> {
         substrate_signed(self).map(|p| Arc::new(p) as Arc<dyn SandboxProvider>)
     }
 

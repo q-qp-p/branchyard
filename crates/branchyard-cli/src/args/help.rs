@@ -317,11 +317,18 @@ Examples:
   by skills ls fix-the-flaky-test --json
   by skills add ./my-skill
   by skills remove my-skill
+  by skills list --state ready
+  by skills search fill in a pdf form
+  by skills show pptx --references
+  by skills usage --since 7d
+  by skills index --out /tmp/tree --skill find-tools
 
 A repository's skills are .agents/skills/<name>/SKILL.md, read from the commit
 a new branch starts at. New branches withhold them until you trust the set,
 and again after it changes. Your own skills are ~/.config/branchyard/skills/<name>/,
-staged for the branches you start as user:<name>; see docs/knowledge-skills.md.";
+staged for the branches you start as user:<name>; see docs/knowledge-skills.md.
+A turn mounts every ready skill where linking is free and names only the chosen
+ones in its index; the rest are found by search (docs/skill-registry.md).";
 
 pub(crate) const MEMORY_EXAMPLES: &str = "\
 Examples:
@@ -332,11 +339,17 @@ Examples:
   by memory list
   by memory show run-the-parser-benches-with-the-1-mb-fixture
   by memory export --out /tmp/bundles
+  by memory consolidate          # cluster the new observations into proposed rows
+  by memory review               # approve, reject, edit, promote or skip each proposed row
+  by memory show 12 --evidence   # a row and the observations it came from
+  by memory runs
 
 A memory is references/<slug>.md in the bundle .agents/skills/memory-<topic>/,
 beside a SKILL.md and memory.json the writer rewrites; commit it and open the
 pull request, and turns find it after by skills trust. With --mine it goes to
-your own skills folder, approved by you at once. See docs/memory.md.";
+your own skills folder, approved by you at once. Each turn's end derives
+scrubbed observations; `consolidate` proposes rows from clusters of them, and
+`approve` writes a row into its bundle. See docs/memory.md.";
 
 pub(crate) const ENV_EXAMPLES: &str = "\
 Examples:

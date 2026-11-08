@@ -206,6 +206,24 @@ pub const USAGE_COST: &str = "branchyard_usage_cost_usd_total";
 pub const TOOL_DURATION: &str = "branchyard_tool_call_duration_seconds";
 /// A connector gateway call's recorded latency.
 pub const CONNECTOR_DURATION: &str = "branchyard_connector_call_duration_seconds";
+/// Searches of the tool tree turns ran (`tools search`), by the `--kind`
+/// they were narrowed to (`all` for none).
+pub const SKILL_SEARCHES: &str = "branchyard_skill_searches_total";
+/// Skills, references, connectors, operations and helpers turns opened
+/// (`tools show`), by source and level.
+pub const SKILL_OPENS: &str = "branchyard_skill_opens_total";
+/// Searches followed by no open before the turn ended: the misses the
+/// skill-discovery eval looks at.
+pub const SKILL_SEARCH_UNOPENED: &str = "branchyard_skill_search_unopened_total";
+
+/// Time a sandbox provider's action took.
+pub const SANDBOX_ACTION: &str = "branchyard_sandbox_action_duration_seconds";
+// The sandbox crate times its actions under the same name; a test below
+// checks the two are one string.
+/// Time a git operation on a hot path took.
+pub const GIT_OPERATION: &str = "branchyard_git_operation_duration_seconds";
+// The workspace crate times git under the same name; a test below checks
+// the two are one string.
 
 /// Every family this server exposes, in the order it is written.
 pub const FAMILIES: &[Family] = &[
@@ -358,6 +376,24 @@ pub const FAMILIES: &[Family] = &[
         "s",
         "Connector gateway call latency in operations this process ran, by connector and decision.",
         CALL_SECONDS,
+    ),
+    family(
+        SKILL_SEARCHES,
+        Kind::Counter,
+        "",
+        "Searches of the tool tree (tools search) in turns this process ran, by the kind searched (all, skill, reference, connector, operation, helper).",
+    ),
+    family(
+        SKILL_OPENS,
+        Kind::Counter,
+        "",
+        "Skills, references, connectors, operations and helpers opened (tools show) in turns this process ran, by source (built_in, repository, user, connector, helper) and level (1 to 3).",
+    ),
+    family(
+        SKILL_SEARCH_UNOPENED,
+        Kind::Counter,
+        "",
+        "Searches of the tool tree followed by no open before the turn ended, in turns this process ran.",
     ),
     family(
         MODEL_CALLS,
@@ -533,6 +569,18 @@ pub const FAMILIES: &[Family] = &[
         "",
         "API requests refused, by the error code in the response.",
     ),
+    histogram(
+        SANDBOX_ACTION,
+        "s",
+        "Time a sandbox provider's action took in turns this process ran, by provider, action (ensure, exec, checkpoint, restore, branch, pause, resume, stop, destroy) and result (ok, error).",
+        CALL_SECONDS,
+    ),
+    histogram(
+        GIT_OPERATION,
+        "s",
+        "Time a git operation on a hot path took in this process, by operation (worktree_add, commit, merge, rebase, push) and result (ok, error).",
+        CALL_SECONDS,
+    ),
 ];
 
 fn declared(name: &str) -> Option<&'static Family> {
@@ -571,6 +619,8 @@ pub fn label_order(name: &str) -> &'static [&'static str] {
         TOOL_DURATION => &["harness", "tool"],
         COST => &["tenant", "harness"],
         CONNECTOR_CALLS | CONNECTOR_DURATION => &["connector", "decision"],
+        SKILL_SEARCHES => &["kind"],
+        SKILL_OPENS => &["source", "level"],
         MODEL_CALLS => &["model", "decision"],
         MODEL_TOKENS => &["model", "kind"],
         MODEL_COST => &["model"],
@@ -587,6 +637,8 @@ pub fn label_order(name: &str) -> &'static [&'static str] {
         HTTP_DURATION => &["http.route", "http.request.method", "status_class"],
         HTTP_ACTIVE => &["http.request.method"],
         API_ERRORS => &["code"],
+        SANDBOX_ACTION => &["provider", "action", "result"],
+        GIT_OPERATION => &["operation", "result"],
         _ => &[],
     }
 }

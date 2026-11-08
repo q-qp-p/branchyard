@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 149,
+    "route_count": 158,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -171,6 +171,15 @@
       "/v1/repos/{repo}/maps",
       "/v1/repos/{repo}/maps/{name}",
       "/v1/repos/{repo}/maps/{name}/resume",
+      "/v1/repos/{repo}/memory",
+      "/v1/repos/{repo}/memory/consolidate",
+      "/v1/repos/{repo}/memory/runs",
+      "/v1/repos/{repo}/memory/{id}",
+      "/v1/repos/{repo}/memory/{id}/approve",
+      "/v1/repos/{repo}/memory/{id}/edit",
+      "/v1/repos/{repo}/memory/{id}/evidence",
+      "/v1/repos/{repo}/memory/{id}/promote",
+      "/v1/repos/{repo}/memory/{id}/reject",
       "/v1/repos/{repo}/operations",
       "/v1/repos/{repo}/scratch/{name}/lock",
       "/v1/repos/{repo}/task-records",
@@ -496,6 +505,35 @@
       "help": "Connector gateway call latency in operations this process ran, by connector and decision."
     },
     {
+      "name": "branchyard_skill_searches_total",
+      "exposed": "branchyard_skill_searches_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [
+        "kind"
+      ],
+      "help": "Searches of the tool tree (tools search) in turns this process ran, by the kind searched (all, skill, reference, connector, operation, helper)."
+    },
+    {
+      "name": "branchyard_skill_opens_total",
+      "exposed": "branchyard_skill_opens_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [
+        "source",
+        "level"
+      ],
+      "help": "Skills, references, connectors, operations and helpers opened (tools show) in turns this process ran, by source (built_in, repository, user, connector, helper) and level (1 to 3)."
+    },
+    {
+      "name": "branchyard_skill_search_unopened_total",
+      "exposed": "branchyard_skill_search_unopened_total",
+      "type": "counter",
+      "unit": "",
+      "labels": [],
+      "help": "Searches of the tool tree followed by no open before the turn ended, in turns this process ran."
+    },
+    {
       "name": "branchyard_model_calls_total",
       "exposed": "branchyard_model_calls_total",
       "type": "counter",
@@ -796,6 +834,29 @@
         "code"
       ],
       "help": "API requests refused, by the error code in the response."
+    },
+    {
+      "name": "branchyard_sandbox_action_duration_seconds",
+      "exposed": "branchyard_sandbox_action_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "labels": [
+        "provider",
+        "action",
+        "result"
+      ],
+      "help": "Time a sandbox provider's action took in turns this process ran, by provider, action (ensure, exec, checkpoint, restore, branch, pause, resume, stop, destroy) and result (ok, error)."
+    },
+    {
+      "name": "branchyard_git_operation_duration_seconds",
+      "exposed": "branchyard_git_operation_duration_seconds",
+      "type": "histogram",
+      "unit": "s",
+      "labels": [
+        "operation",
+        "result"
+      ],
+      "help": "Time a git operation on a hot path took in this process, by operation (worktree_add, commit, merge, rebase, push) and result (ok, error)."
     }
   ],
   "runtime": {
@@ -1122,6 +1183,7 @@
           "unknown_message",
           "unknown_operation",
           "unknown_repo",
+          "unknown_skill",
           "unknown_trigger",
           "usage"
         ]

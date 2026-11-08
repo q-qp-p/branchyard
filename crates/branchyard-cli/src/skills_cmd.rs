@@ -22,6 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
+use branchyard::registry::{self, SkillRecord, SkillState};
 use branchyard::skills::{self, Found, RepositorySet, UserSet, REPOSITORY_SKILLS};
 use branchyard::skills::{SkillEntry, Source};
 use branchyard::{BranchSkills, SkillGate, Yard};
@@ -183,7 +184,322 @@ pub fn main(target: &Target, action: &SkillsAction, json: bool) -> Outcome {
         SkillsAction::Untrust => untrust(json),
         SkillsAction::Add { path, name } => add(path, name.as_deref(), json),
         SkillsAction::Remove { name } => remove(name, json),
+        SkillsAction::List { source, state } => list(source.as_deref(), state.as_deref(), json),
+        SkillsAction::Search {
+            words,
+            plain,
+            limit,
+        } => search(words, *plain, *limit, json),
+        SkillsAction::Show { id, references } => show(id, *references, json),
+        SkillsAction::Usage { since } => usage(*since, json),
+        SkillsAction::Index { out, skills } => index(out, skills, json),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The registry (docs/skill-registry.md, R2): list, search, show, usage, index.
+// ---------------------------------------------------------------------------
+
+/// The skills a turn started here may see: the repository's set at HEAD
+/// with whether a turn would mount it, and the person's own folder read
+/// as a turn reads it.
+struct Here {
+    root: PathBuf,
+    repository: Option<(RepositorySet, Option<String>)>,
+    user: UserSet,
+}
+
+impl Here {
+    fn read() -> Result<Here, Failure> {
+        let yard = commands::open()?;
+        let root = workspace_cmd::canonical(yard.root());
+        let repository = match at_head(&root)? {
+            AtHead::Nothing => None,
+            AtHead::Refused(reason) => {
+                eprintln!("by: the repository's skills at HEAD are refused: {reason}");
+                None
+            }
+            AtHead::Skills { set, trust } => {
+                let withheld = match trust {
+                    Trust::Trusted => None,
+                    Trust::Untrusted => Some(
+                        "you have not trusted this repository's skills; review them with by \
+                         skills ls, then run by skills trust"
+                            .to_owned(),
+                    ),
+                    Trust::Changed { trusted } => Some(format!(
+                        "changed since you trusted set {}; review them, then by skills trust",
+                        short(&trusted)
+                    )),
+                };
+                Some((set, withheld))
+            }
+        };
+        let user = registry::user_skills(
+            &user_skills_dir(),
+            repository
+                .as_ref()
+                .map(|(set, withheld)| registry::RepositorySkills {
+                    set,
+                    withheld: withheld.as_deref(),
+                }),
+        );
+        Ok(Here {
+            root,
+            repository,
+            user,
+        })
+    }
+
+    fn repository(&self) -> Option<registry::RepositorySkills<'_>> {
+        self.repository
+            .as_ref()
+            .map(|(set, withheld)| registry::RepositorySkills {
+                set,
+                withheld: withheld.as_deref(),
+            })
+    }
+
+    /// The trusted set, which a turn stages; `None` for one it withholds.
+    fn staged(&self) -> Option<&RepositorySet> {
+        match &self.repository {
+            Some((set, None)) => Some(set),
+            _ => None,
+        }
+    }
+
+    fn records(&self) -> Result<Vec<SkillRecord>, Failure> {
+        Ok(registry::records(self.repository(), Some(&self.user))?)
+    }
+
+    /// The tree a turn here would mount, under a scratch home, with `chosen`
+    /// named (`None`: every built-in skill).
+    fn tree(&self, out: &Path, chosen: Option<&[String]>) -> Result<registry::Index, Failure> {
+        registry::write_index(out, chosen, self.staged(), Some(&self.user)).map_err(|e| match e {
+            branchyard::Error::State(why) if why.contains("is not a built-in skill") => {
+                Report::usage(why)
+                    .next("by skills list --source built_in names the built-in skills")
+                    .into()
+            }
+            other => other.into(),
+        })
+    }
+}
+
+/// `by skills list [--source S] [--state S]`.
+fn list(source: Option<&str>, state: Option<&str>, json: bool) -> Outcome {
+    let here = Here::read()?;
+    let records: Vec<SkillRecord> = here
+        .records()?
+        .into_iter()
+        .filter(|r| source.is_none_or(|s| r.source.as_str() == s))
+        .filter(|r| state.is_none_or(|s| r.state.as_str() == s))
+        .collect();
+    if json {
+        return print(&to_json(&json!({
+            "root": here.root,
+            "skills": records,
+        })));
+    }
+    let width = records
+        .iter()
+        .map(|r| r.label.len())
+        .max()
+        .unwrap_or(5)
+        .max(5);
+    let mut text = format!(
+        "{:<width$}  {:<10}  {:<9}  {:<12}  description\n",
+        "skill", "source", "state", "digest"
+    );
+    for r in &records {
+        text.push_str(&format!(
+            "{:<width$}  {:<10}  {:<9}  {:<12}  {}\n",
+            r.label,
+            r.source.as_str(),
+            r.state.as_str(),
+            short(&r.digest),
+            r.description
+        ));
+        if let Some(reason) = &r.reason {
+            text.push_str(&format!("{:<width$}  {reason}\n", ""));
+        }
+    }
+    let ready = records
+        .iter()
+        .filter(|r| r.state == SkillState::Ready)
+        .count();
+    text.push_str(&format!(
+        "{} ready of {}: a turn started here mounts the ready skills where linking is free and \
+         names the chosen ones in its index; the rest are found by search\n",
+        ready,
+        plural(records.len(), "skill")
+    ));
+    print(&text)
+}
+
+/// `by skills search WORDS... [--plain] [--limit N]`.
+fn search(words: &[String], plain: bool, limit: usize, json: bool) -> Outcome {
+    let here = Here::read()?;
+    // The tree `search` ranks over: a fresh private directory (0700, a name
+    // nothing else holds), removed when it drops.
+    let scratch = tempfile::Builder::new()
+        .prefix("by-skills-search-")
+        .tempdir()
+        .map_err(|e| {
+            Report::new("io", format!("could not make a scratch directory: {e}"))
+                .next("check the temporary directory's permissions")
+        })?;
+    let index = here.tree(scratch.path(), None)?;
+    let hits = registry::search(&index.tree, words, limit, plain)?;
+    if hits.is_empty() {
+        return Err(Report::new(
+            "unknown_skill",
+            format!(
+                "no skill, reference or helper matches {:?} among the {} a turn here mounts",
+                words.join(" "),
+                plural(index.chosen.len() + index.mounted.len(), "skill")
+            ),
+        )
+        .next("by skills list")
+        .into());
+    }
+    if json {
+        return print(&to_json(&json!({
+            "words": words,
+            "plain": plain,
+            "mounted": index.chosen.len() + index.mounted.len(),
+            "hits": hits,
+        })));
+    }
+    let mut text = String::new();
+    for hit in &hits {
+        text.push_str(&format!("{:<10} {}", hit.kind, hit.id));
+        if !hit.description.is_empty() {
+            text.push_str(&format!(": {}", hit.description));
+        }
+        text.push('\n');
+    }
+    print(&text)
+}
+
+/// `by skills show ID [--references]`.
+fn show(id: &str, references: bool, json: bool) -> Outcome {
+    let here = Here::read()?;
+    let record = here
+        .records()?
+        .into_iter()
+        .find(|r| r.label == id || r.label.strip_prefix("skill:") == Some(id))
+        .ok_or_else(|| {
+            Report::new("unknown_skill", format!("no skill {id} here"))
+                .next("by skills list names them as a tree does: pptx, repository:NAME, user:NAME")
+        })?;
+    if json {
+        let mut value = serde_json::to_value(&record).unwrap_or_default();
+        if let Some(object) = value.as_object_mut().filter(|_| !references) {
+            object.remove("references");
+        }
+        return print(&to_json(&value));
+    }
+    let mut text = format!(
+        "skill        {}\nsource       {}\nstate        {}\ndigest       {}\ndescription  {}\nfiles        {} ({} bytes)\n",
+        record.label,
+        record.source.as_str(),
+        record.state.as_str(),
+        record.digest,
+        record.description,
+        record.files,
+        record.size
+    );
+    if let Some(reason) = &record.reason {
+        text.push_str(&format!("reason       {reason}\n"));
+    }
+    if references {
+        match record.references.is_empty() {
+            true => text.push_str("references   none\n"),
+            false => {
+                text.push_str(&format!(
+                    "references   {} (bin/tools show {}/references/FILE.md prints one)\n",
+                    plural(record.references.len(), "file"),
+                    record.label
+                ));
+                for reference in &record.references {
+                    text.push_str(&format!("  {reference}\n"));
+                }
+            }
+        }
+    }
+    print(&text)
+}
+
+/// `by skills usage [--since WINDOW]`.
+fn usage(since: Option<std::time::Duration>, json: bool) -> Outcome {
+    refuse_in_harness("read the record of every branch's skill use")?;
+    let yard = commands::open()?;
+    let since_ms = since.map(|window| {
+        branchyard_support::time::now_ms()
+            .saturating_sub(u64::try_from(window.as_millis()).unwrap_or(u64::MAX))
+    });
+    let usage = registry::usage(&yard, since_ms)?;
+    if json {
+        return print(&to_json(&serde_json::to_value(&usage).unwrap_or_default()));
+    }
+    let mut text = format!(
+        "{} ({} with no open after), {}, {}{}\n",
+        match usage.searches {
+            1 => "1 search".to_owned(),
+            n => format!("{n} searches"),
+        },
+        usage.searches_unopened,
+        plural(usize::try_from(usage.opens).unwrap_or(usize::MAX), "open"),
+        plural(
+            usize::try_from(usage.invocations).unwrap_or(usize::MAX),
+            "script run"
+        ),
+        match since {
+            Some(window) => format!(
+                " in the last {}",
+                branchyard_support::time::human_duration(window)
+            ),
+            None => String::new(),
+        }
+    );
+    if !usage.skills.is_empty() {
+        let width = usage
+            .skills
+            .iter()
+            .map(|s| s.id.len())
+            .max()
+            .unwrap_or(5)
+            .max(5);
+        text.push_str(&format!(
+            "{:<width$}  {:>5}  {:>6}  {:>7}\n",
+            "skill", "found", "opened", "scripts"
+        ));
+        for skill in &usage.skills {
+            text.push_str(&format!(
+                "{:<width$}  {:>5}  {:>6}  {:>7}\n",
+                skill.id, skill.found, skill.opened, skill.invoked
+            ));
+        }
+    }
+    print(&text)
+}
+
+/// `by skills index --out DIR [--skill NAME]...`.
+fn index(out: &Path, chosen: &[String], json: bool) -> Outcome {
+    refuse_in_harness("write a tool tree outside its turn")?;
+    let here = Here::read()?;
+    let index = here.tree(out, (!chosen.is_empty()).then_some(chosen))?;
+    if json {
+        return print(&to_json(&serde_json::to_value(&index).unwrap_or_default()));
+    }
+    print(&format!(
+        "wrote {}: {} named in INDEX.md, {} mounted and counted\nrank it: python3 tools/skill_eval.py rank --tree {}\n",
+        index.tree.display(),
+        plural(index.chosen.len(), "chosen skill"),
+        index.mounted.len(),
+        index.tree.display()
+    ))
 }
 
 /// `by skills add PATH [--name NAME]`: copy the skill directory into your

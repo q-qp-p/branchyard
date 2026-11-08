@@ -20,7 +20,8 @@ use std::path::PathBuf;
 
 use branchyard::skills::Source;
 use branchyard::{
-    Activity, Envelope, MemoryKind, NewMemory, Policy, SkillGate, SkillSet, Spawn, TaskOptions,
+    Activity, Envelope, MemoryKind, NewMemory, Policy, Provisioning, SkillActivity, SkillGate,
+    SkillSet, Spawn, TaskOptions,
 };
 use common::{fake_agent, Fixture};
 
@@ -467,4 +468,308 @@ fn an_untrusted_memory_bundle_is_withheld_with_its_reason_until_trusted() {
         "- [repository:memory-parser](../../repository/memory-parser/SKILL.md): What this team \
          learned about parser: 1 procedure; found by search, approved by people."
     ));
+}
+
+/// The skills a turn mounts follow the policy as it stands for that turn:
+/// a branch admitted with no limit mounts every built-in skill, and the next
+/// send, which carries the narrowed set a server computed from the current
+/// policy, mounts only that, in the staged tree and in the manifest.
+#[test]
+fn a_policy_narrowed_after_admission_mounts_fewer_skills_the_next_turn() {
+    let f = Fixture::new();
+    let ls = "SH ls \"$HOME/.branchyard/capabilities\" > caps.txt\nWRITE a.txt=1";
+    let options = TaskOptions {
+        isolated: true,
+        provision: Some(Provisioning {
+            skills: Some(vec!["docx".into()]),
+            ..Provisioning::default()
+        }),
+        ..allowed(&f)
+    };
+    let branch = f
+        .yard
+        .task(ls)
+        .options(options.clone())
+        .name("narrowed")
+        .run()
+        .unwrap();
+    let worktree = branch.info().worktree.clone();
+    let caps = fs::read_to_string(worktree.join("caps.txt")).unwrap();
+    assert!(caps.lines().any(|l| l == "pptx"), "{caps}");
+    let first = branch.manifest().unwrap().unwrap();
+    assert!(first.mounted_skill("pptx").is_some());
+
+    let narrowed = TaskOptions {
+        allowed_skills: Some(vec!["docx".into()]),
+        ..options
+    };
+    let again = branch
+        .send(
+            "SH ls \"$HOME/.branchyard/capabilities/pptx\" > pptx2.txt 2>&1\nWRITE b.txt=2",
+            narrowed,
+        )
+        .unwrap();
+    let second = again.manifest().unwrap().unwrap();
+    assert!(
+        second.mounted_skill("pptx").is_none(),
+        "{:?}",
+        second
+            .mounted
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(second.mounted_skill("docx").is_some());
+    // Nothing of the dropped skill is left in the tree.
+    let pptx = fs::read_to_string(worktree.join("pptx2.txt")).unwrap();
+    assert!(!pptx.contains("SKILL.md"), "{pptx}");
+}
+
+/// R2: a local turn mounts every ready skill and names only the chosen
+/// ones. With `docx` chosen, the tree stages every built-in skill, the
+/// trusted repository set and the person's folder; `INDEX.md` names `docx`
+/// and what it needs and counts the rest; the manifest's `mounted` lists
+/// every entry with its source and digest; and what the fake agent did with
+/// `bin/tools` comes back as `skill` events with the manifest's digests,
+/// after which the guest's log is gone. A person's edit to their own skill
+/// resolves the manifest again; a stored manifest naming another digest for
+/// the repository's skill fails the turn before the harness.
+#[test]
+fn a_turn_mounts_every_ready_skill_names_the_chosen_ones_and_records_what_it_searched() {
+    let f = Fixture::new();
+    commit_skill(&f, "style-guide", ORIGINAL);
+    let folder = f.dir.join("home/.config/branchyard/skills");
+    user_skill(
+        &folder,
+        "memory-parser",
+        "What you learned about the parser.",
+    );
+    let tools = "python3 \"$HOME/.branchyard/tools/bin/tools\"";
+    let prompt = format!(
+        "SH {tools} search word document\n\
+         SH {tools} show pptx\n\
+         SH {tools} show repository:style-guide\n\
+         SH {tools} show user:memory-parser\n\
+         SH printf %s \"$(cat \"$HOME/.branchyard/tools/INDEX.md\")\" > index.txt\n\
+         SH ls \"$HOME/.branchyard/capabilities\" > caps.txt\n\
+         WRITE a.txt=1"
+    );
+    let options = TaskOptions {
+        isolated: true,
+        user_skills: Some(folder.clone()),
+        provision: Some(Provisioning {
+            skills: Some(vec!["docx".into()]),
+            ..Provisioning::default()
+        }),
+        ..allowed(&f)
+    };
+    let branch = f
+        .yard
+        .task(&prompt)
+        .options(options.clone())
+        .name("mounted")
+        .run()
+        .unwrap();
+    assert!(
+        matches!(branch.info().status, branchyard::BranchStatus::Ready),
+        "{:?}",
+        branch.info().status
+    );
+    let worktree = branch.info().worktree.clone();
+    let index = fs::read_to_string(worktree.join("index.txt")).unwrap();
+    assert!(index.contains("- docx:"), "{index}");
+    assert!(
+        index.contains("- artifact-tools:"),
+        "docx needs it: {index}"
+    );
+    assert!(!index.contains("- pptx"), "mounted, not named: {index}");
+    assert!(!index.contains("repository:style-guide"), "{index}");
+    let caps = fs::read_to_string(worktree.join("caps.txt")).unwrap();
+    for staged in ["docx", "pptx", "find-tools", "repository", "user"] {
+        assert!(caps.lines().any(|l| l == staged), "{staged} in {caps}");
+    }
+    let mounted_count = caps
+        .lines()
+        .filter(|l| {
+            ![
+                "docx",
+                "artifact-tools",
+                "INDEX.md",
+                "topics",
+                "upstream.lock.json",
+                "repository",
+                "user",
+            ]
+            .contains(l)
+        })
+        .count()
+        + 2;
+    assert!(
+        index.contains(&format!(
+            "- ...{mounted_count} more: `bin/tools search WORDS`"
+        )),
+        "{mounted_count} mounted: {index}"
+    );
+
+    // The manifest names every mounted skill with its source and digest.
+    let manifest = branch.manifest().unwrap().expect("a manifest");
+    assert_eq!(
+        manifest.skills,
+        branchyard::manifest::ManifestSkills::Chosen(vec!["docx".into()])
+    );
+    let pptx = manifest.mounted_skill("pptx").expect("pptx is mounted");
+    assert_eq!(pptx.source, Source::BuiltIn);
+    let style = manifest
+        .mounted_skill("repository:style-guide")
+        .expect("the repository's skill is mounted");
+    assert_eq!(style.source, Source::Repository);
+    let mine = manifest
+        .mounted_skill("user:memory-parser")
+        .expect("the person's skill is mounted");
+    assert_eq!(mine.source, Source::User);
+    let (skills, _) = turns(&f, "mounted").remove(0);
+    assert_eq!(skills.entries.len(), manifest.mounted.len());
+    for entry in &skills.entries {
+        let recorded = manifest.mounted_skill(&entry.label()).unwrap();
+        assert_eq!(recorded.source, entry.source, "{}", entry.label());
+        // A built-in skill's manifest digest is the tool store's framing of
+        // its files; the record's is the skill set's. The other sources
+        // record one digest in both places.
+        match entry.source {
+            Source::BuiltIn => assert_eq!(recorded.digest.len(), 64),
+            _ => assert_eq!(recorded.digest, entry.digest, "{}", entry.label()),
+        }
+    }
+
+    // What the agent did with the tree, as events, with the manifest's digests.
+    let events = branch.events().unwrap();
+    let skill_events: Vec<&SkillActivity> = events
+        .iter()
+        .filter_map(|e| match &e.activity {
+            Activity::Skill(activity) => Some(activity.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(skill_events.len(), 4, "{skill_events:?}");
+    match skill_events[0] {
+        SkillActivity::Searched {
+            terms,
+            results,
+            kind,
+            plain,
+        } => {
+            assert_eq!(*terms, 2);
+            assert_eq!(results[0], "skill:docx", "{results:?}");
+            assert_eq!((kind.as_deref(), *plain), (None, false));
+        }
+        other => panic!("{other:?}"),
+    }
+    let opened: Vec<(&str, &str, Option<Source>, u8)> = skill_events[1..]
+        .iter()
+        .map(|a| match a {
+            SkillActivity::Opened {
+                id,
+                digest,
+                source,
+                level,
+                ..
+            } => (id.as_str(), digest.as_str(), *source, *level),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        [
+            ("pptx", pptx.digest.as_str(), Some(Source::BuiltIn), 2),
+            (
+                "repository:style-guide",
+                style.digest.as_str(),
+                Some(Source::Repository),
+                2
+            ),
+            (
+                "user:memory-parser",
+                mine.digest.as_str(),
+                Some(Source::User),
+                2
+            ),
+        ]
+    );
+    let home = PathBuf::from(
+        common::stored_record(&f.root, "mounted")["home"]
+            .as_str()
+            .unwrap(),
+    );
+    assert!(
+        !home.join(".branchyard/turn/skills.jsonl").exists(),
+        "read once"
+    );
+    assert!(
+        !home.join(".claude").exists(),
+        "no native directory for this harness"
+    );
+    assert!(
+        skill_events[0]
+            .describe()
+            .starts_with("skill search (2 terms) → docx"),
+        "{}",
+        skill_events[0].describe()
+    );
+    assert!(
+        skill_events[1]
+            .describe()
+            .starts_with("skill opened pptx (level 2, "),
+        "{}",
+        skill_events[1].describe()
+    );
+
+    // The person edits their own skill: other tools, so a new manifest, and the turn runs.
+    user_skill(
+        &folder,
+        "memory-parser",
+        "What you learned about the parser, revised.",
+    );
+    let again = branch.send("WRITE b.txt=2", options.clone()).unwrap();
+    assert!(
+        matches!(again.info().status, branchyard::BranchStatus::Ready),
+        "{:?}",
+        again.info().status
+    );
+    let revised = again.manifest().unwrap().unwrap();
+    assert_ne!(revised.digest(), manifest.digest());
+    assert_ne!(
+        revised.mounted_skill("user:memory-parser").unwrap().digest,
+        mine.digest
+    );
+    assert!(!revised.same_tools(&manifest));
+    // A stored manifest that names another digest for the repository's
+    // skill than the commit holds is a stored record of other tools: the
+    // next turn resolves the manifest again from the commit and runs; the
+    // mismatch check holds a turn to the manifest resolved for it
+    // (`bundles::verify_custom`), never to a stale one.
+    common::edit_record(&f.root, "mounted", |record| {
+        for skill in record["manifest"]["mounted"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .filter(|s| s["id"] == "repository:style-guide")
+        {
+            skill["digest"] = "feedface".into();
+        }
+    });
+    let third = again.send("WRITE c.txt=3", options).unwrap();
+    assert!(
+        matches!(third.info().status, branchyard::BranchStatus::Ready),
+        "{:?}",
+        third.info().status
+    );
+    let resolved = third.manifest().unwrap().unwrap();
+    assert_eq!(
+        resolved
+            .mounted_skill("repository:style-guide")
+            .unwrap()
+            .digest,
+        style.digest,
+        "the commit's digest, not the edited record's"
+    );
 }

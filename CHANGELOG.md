@@ -2,6 +2,122 @@
 
 ## Unreleased
 
+Observability phase 2 (`docs/observability.md`). A turn is traced live: the
+engine's recorder opens a `turn` span at the prompt and closes it at the turn's
+end, with the OpenTelemetry GenAI attributes (`gen_ai.operation.name`,
+`gen_ai.agent.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens` and
+`output_tokens`, `error.type`), and under it `tool` spans carrying the bounded,
+scrubbed tool target (never an input), `permission wait`, `steer` and `stall`
+spans; a branch's `spawn`, `apply_graph` and `delegate` are `delegation` spans
+that the children's turns run under, whichever thread they run on. The
+after-the-fact spans from the event log stay as the fallback for a turn the
+engine did not trace live, and a turn is never traced by both. `by trace BRANCH
+[--subtree] [--json | --otlp FILE | --endpoint URL]` rebuilds a branch's
+trajectory from its log as an OTLP trace, with ids derived from the log (the
+same log, the same trace), for Jaeger or Tempo. The engine's own work has spans
+too: sandbox provider actions with the provider kind, hot git operations
+(`worktree_add`, `commit`, `merge`, `rebase`, `push`), connector token requests,
+the messaging pipeline's observe stage under the message's `traceparent`, and,
+with `BRANCHYARD_TRACE_STORE=1`, one span per store call inside a trace. Two
+metric families, `branchyard_sandbox_action_duration_seconds` and
+`branchyard_git_operation_duration_seconds`; no existing name moved. With
+telemetry off no span is built (tested with a counting subscriber). A delegated
+child's harness now gets the `TRACEPARENT` of its delegation when spans are
+exported. Hermetic: the fake ACP agent, `FakeProvider`, in-memory capture and a
+loopback collector. Not done: a real collector, Jaeger or Tempo; spans for the
+Substrate provider's actions; a live span for a connector call ingested after
+its turn ended; `by trace --remote`.
+
+Mounted, not chosen (skill registry, slice R2): where the harness reads the
+tool tree where the engine writes it (a local harness, Microsandbox) or links
+the shared tool store, a turn stages every ready skill, chosen or not: every
+built-in skill the policy allows (`Provisioning::allowed_skills`, set by the
+server from the policy), the repository's trusted set and the person's own
+folder. `INDEX.md` names only the chosen skills and counts the rest in its
+overflow line (`- ...N more: bin/tools search WORDS`), so an unchosen skill
+costs a directory entry and one number and `tools search` finds it; the
+harness's own skills directory links the chosen skills only. A container,
+Substrate and a recipe machine, which copy the home in, stay chosen-only. The
+manifest's `skill_digests` became `mounted` (read under either name): every
+mounted skill with its digest and, for a `repository:` or `user:` entry, its
+source; a mounted repository or user skill that is gone or hashes to another
+digest fails the turn `bundle_mismatch` by name. What a turn did with its
+skills is recorded: `tools search` and `tools show` note one JSON line each in
+the home's `.branchyard/turn/skills.jsonl` (the term count and the ids found,
+never the query's words), the engine ingests it when the harness exits as
+`skill` events with the manifest's digests, and a script run under a staged
+skill's `scripts/` is an event of its own; `by log` shows them, and three
+metrics count them (`branchyard_skill_searches_total`,
+`branchyard_skill_opens_total`, `branchyard_skill_search_unopened_total`). New
+commands: `by skills list [--source S] [--state S]`, `by skills search
+WORDS... [--plain] [--limit N]` (the turn's own ranker over the tree a turn
+here would mount), `by skills show ID [--references]`, `by skills index --out
+DIR [--skill NAME]...` (that tree, for `tools/skill_eval.py rank --tree`) and
+`by skills usage [--since WINDOW]`; an unknown id is `unknown_skill` (exit 2).
+See [skill registry](docs/skill-registry.md) and [tools model, section
+3](docs/tools-model.md#3-context-a-mounted-tool-tree-searched-not-pasted).
+
+The ranker in a turn's tool tree (`bin/tools search`) indexes a reference by
+what it says: the words of its name without English function words (the slug
+`cut-a-release-with-the-release-script-then-tag` no longer matches a prompt's
+`a`, `with`, `the` and `then` four times each), and its provenance lines
+(`Source:`, `License:`, a memory's `Approved by` and `Evidence:`) are not
+indexed. The 1.5 factor is now on every tool over a reference of equal match
+(`TOOL`), with the factor on a chosen tool over a mounted one (`CHOSEN`) at
+1.0 as measured; a tool the index's overflow line only counts is mounted, not
+chosen. Hermetic result, 7 November 2026 (`tools/skill_eval.py rank`, no
+model): every scenario ranks exactly as before over its own tree; with every
+memory bundle in one tree, top-3 95.7% to 98.6% and MRR 0.798 to 0.825, five of
+the six scenarios M1 found lower are back where they were; with only
+`find-tools` chosen and everything else mounted the ranks are the all-chosen
+tree's. `rank --chosen NAME,NAME` and a scenario's `mounted = "ready"` measure
+that tree. See [ranking without a model](docs/skill-eval.md#ranking-without-a-model).
+
+Memory observations and deterministic consolidation (`docs/memory.md`, slices
+M2 and M3). At every turn's end the engine that ran it derives small typed
+observations from the turn's events alone (a correction sent after the task, a
+review or pull-request comment with its author and whether they are a member,
+a failed check with the tail of its output, a denied tool, a goal's missing
+items, a judge's reasons, a rejected plan, an escalation, the branch's outcome,
+a shell command repeated in one turn), scrubs them with the harness log's
+scrubber extended to free text (every exact secret value the turn was given,
+in its base64 and URL-encoded forms too, then the secret shapes, URL queries
+and non-member emails; one that is more than a quarter secrets is dropped with
+a warning) and stores them once per turn under a key that holds the tenant,
+the private subject, the branch, its incarnation, the turn and the text
+(`memory_observations`; `by_` on PostgreSQL). `by memory consolidate` (and a
+server's dispatcher on the `memory.consolidate` cron) clusters a scope's unread
+observations by normalized text and overlap, records a cluster that matches an
+existing row as evidence (a rejected row stays rejected), proposes a cluster of
+two or more corrections, failed checks or repeated commands verbatim as a
+`proposed` memory row, sends a short repository-wide one to the knowledge store
+as `Proposed` with the new source `consolidation`, and commits everything with a
+compare-and-swap on the scope's watermark in one transaction, so two
+consolidations of one scope never duplicate a row (the loser records
+`lost_race`); each branch read records `memory consolidated`. `by memory list
+--status`, `show ID [--evidence]`, `review`, `approve`, `reject`, `edit ID`,
+`promote`, `forget` and `runs` work on the rows locally and with `--remote`;
+`approve` writes the row into its bundle through the M1 writer (the team's under
+`.agents/skills/`, yours in your skills folder), a person's row is theirs alone,
+and on a server the team's decisions need `admin` or a name in the server's
+`memory.approvers`. `[memory]` in `branchyard.toml` and `memory` in the server's
+configuration carry `capture`, `external_authors`, `members`, `consolidate`,
+`keep_observations_days`, `max_candidates` and `approvers`. New routes under
+`/v1/repos/{repo}/memory`, `branchyard_client::memory_api`, the Python `Repo`'s
+`memories`, `memory`, `memory_evidence`, `approve_memory`, `reject_memory`,
+`edit_memory`, `promote_memory`, `forget_memory`, `consolidate_memory` and
+`memory_runs`, `Activity::Memory`, `Yard::observe_turn`, `observations`,
+`memory_records`, `memory_record`, `memory_evidence`, `approve_memory`,
+`reject_memory`, `edit_memory_record`, `promote_memory`, `forget_memory`,
+`merge_memory`, `consolidate_memory`, `memory_runs`, `memory_scopes_due`,
+`use_memory`. Hermetic, 8 November 2026: the fake ACP agent, SQLite, and the
+PostgreSQL conformance cases `memory_observations` and `memory_rows`, run on a
+local PostgreSQL 16 and in CI's postgres job. Not done: a live run; the
+model-driven distiller (M5);
+publication through the server registry (M4), so a person's row is approved
+locally only; `branchyard::rank`, for which clustering uses a token-overlap
+stand-in; the console's Memory section.
+
 Four workflow skills for a session that runs Branchyard as the person or
 meta-harness (not for a spawned leaf), in the `workflows` topic: `fan-judge`
 (when to fan out, harness choice, a result contract, `by fan`, `by compare`,

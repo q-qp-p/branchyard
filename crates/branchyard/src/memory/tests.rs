@@ -1,0 +1,1152 @@
+//! Observations, hermetically (`docs/memory.md`, section 2): each kind
+//! derived from a synthesized log, the extractor's skip list honoured, an
+//! external author recorded, the idempotency key over the incarnation, and
+//! the scrubber over a generated corpus of secrets with the quarter rule.
+//! No store and no model: the engine's path through a real turn is
+//! `crates/branchyard/tests/memory.rs`.
+
+use super::consolidate::{cluster, pass, title_of, Cluster};
+use super::observe::*;
+use super::scrub::Scrubber;
+use super::store::{MemoryRecord, MemoryStatus, Scope};
+use super::MemoryKind;
+use crate::fleet::{FleetActivity, JudgeMark, TaskKind};
+use crate::goal::{GoalActivity, GoalCheck};
+use crate::plan::PlanActivity;
+use crate::pull_request::{CheckRun, PullRequestActivity};
+use crate::reported::ReportedState;
+use crate::{
+    prompt_digest, Activity, BranchStatus, DecisionSource, Feedback, FeedbackItem, FeedbackKind,
+    FeedbackSource, JudgedBy, Message, MessageKind, RecordedEvent, ToolTarget,
+};
+use branchyard_harness::target::ScrubKind;
+use branchyard_harness::Event;
+
+fn at(activity: Activity) -> RecordedEvent {
+    RecordedEvent {
+        at_ms: 1_000,
+        activity,
+    }
+}
+
+fn prompt(text: &str) -> RecordedEvent {
+    at(Activity::Prompt(text.into()))
+}
+
+/// A feed: `(seq, event)` with seq from 1.
+fn feed(events: Vec<RecordedEvent>) -> Vec<(u64, RecordedEvent)> {
+    events
+        .into_iter()
+        .enumerate()
+        .map(|(n, e)| (n as u64 + 1, e))
+        .collect()
+}
+
+fn tool(command: &str) -> RecordedEvent {
+    at(Activity::Harness(Event::ToolStarted {
+        turn: 1,
+        call_id: "c".into(),
+        name: "bash".into(),
+        target: ToolTarget::command(command),
+    }))
+}
+
+fn context<'a>(turn: u32, members: &'a [String], visibility: &'a Visibility) -> Context<'a> {
+    Context {
+        tenant: "local",
+        repo: "app",
+        branch: "fix",
+        incarnation: 7,
+        turn,
+        visibility,
+        harness: "fake",
+        model: Some("small"),
+        task_kind: Some(TaskKind::Bugfix),
+        members,
+        at_ms: 2_000,
+        turn_after: None,
+    }
+}
+
+fn kinds(drafts: &[Draft]) -> Vec<(ObservationKind, &str)> {
+    drafts.iter().map(|d| (d.kind, d.text.as_str())).collect()
+}
+
+#[test]
+fn every_kind_is_derived_from_its_events_and_the_skip_list_holds() {
+    let review = "File: src/a.rs\nLine: 3\nUser comment: \"Name the constant after its unit\"";
+    let members = vec!["ann".to_owned(), "ann@example.com".to_owned()];
+    let feedback = Feedback {
+        source: FeedbackSource::PullRequest,
+        reference: Some("https://x/4".into()),
+        items: vec![
+            FeedbackItem {
+                kind: FeedbackKind::Comment,
+                path: Some("src/lib.rs".into()),
+                line: Some(3),
+                author: Some("@drive-by".into()),
+                body: "Never unwrap in library code".into(),
+                ..FeedbackItem::default()
+            },
+            FeedbackItem {
+                kind: FeedbackKind::Comment,
+                path: None,
+                author: Some("ann".into()),
+                body: "Keep the changelog in step".into(),
+                ..FeedbackItem::default()
+            },
+            FeedbackItem {
+                kind: FeedbackKind::Check,
+                body: "CI check \"test\" failed on abc".into(),
+                ..FeedbackItem::default()
+            },
+        ],
+        prompt: Some(prompt_digest(review)),
+    };
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        // Turn 2: a correction, a steer, skipped prompts, the lot.
+        at(Activity::Feedback(Box::new(feedback))),
+        prompt(review),
+        at(Activity::Steered {
+            id: 1,
+            by: "by send".into(),
+            text: "Prefer small commits over one big one".into(),
+        }),
+        at(Activity::Steered {
+            id: 2,
+            by: "by send".into(),
+            text: "ok".into(),
+        }),
+        at(Activity::Steered {
+            id: 3,
+            by: "by send".into(),
+            text: "[branchyard plan approved] carry it out".into(),
+        }),
+        at(Activity::Decision {
+            tool: "Bash".into(),
+            allowed: false,
+            message: Some("no".into()),
+            source: DecisionSource::Rule {
+                pattern: "Bash(rm *)".into(),
+            },
+        }),
+        at(Activity::Decision {
+            tool: "Read".into(),
+            allowed: true,
+            message: None,
+            source: DecisionSource::Default,
+        }),
+        at(Activity::PullRequest(Box::new(
+            PullRequestActivity::Checked(CheckRun {
+                commit: "abc".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                passed: false,
+                timed_out: false,
+                output_tail: (1..=45)
+                    .map(|n| format!("line {n}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            }),
+        ))),
+        at(Activity::Goal(Box::new(GoalActivity::Verdict {
+            round: 0,
+            turn: 2,
+            met: false,
+            evidence: vec!["tests ran".into()],
+            missing: vec!["the changelog entry".into(), "a test".into()],
+            deterministic: GoalCheck {
+                check: "failed".into(),
+                changes: true,
+                passed: false,
+            },
+            by: JudgedBy::Deterministic,
+        }))),
+        at(Activity::Fleet(Box::new(FleetActivity::Judged(
+            JudgeMark {
+                score: 40.0,
+                rank: 2,
+                of: 2,
+                picked: false,
+                by: "deterministic".into(),
+                reason: Some("no test for the fix".into()),
+                check: "failed".into(),
+            },
+        )))),
+        at(Activity::Plan(Box::new(PlanActivity::Rejected {
+            by: "ann".into(),
+            reason: Some("too broad".into()),
+            replan: true,
+            round: 1,
+        }))),
+        at(Activity::Message(Message {
+            id: 1,
+            from: "fix".into(),
+            to: "person".into(),
+            kind: MessageKind::Escalation,
+            text: "I need the staging credentials".into(),
+            in_reply_to: None,
+            at_ms: 0,
+            delivered: false,
+            handoff: None,
+            next_turn: false,
+            meta: None,
+        })),
+        at(Activity::StatusReport {
+            state: ReportedState::Blocked,
+            summary: "waiting on a credential".into(),
+            link: None,
+            ttl_seconds: None,
+        }),
+        tool("cargo test -p parser"),
+        tool("cargo test -p parser"),
+        tool("ls"),
+        at(Activity::TurnCost { cost_usd: 1.25 }),
+        at(Activity::Status(BranchStatus::Failed {
+            reason: "the check failed".into(),
+        })),
+        // Turn 3: nothing of this turn belongs to turn 2.
+        prompt("continue"),
+    ]);
+    let shared = Visibility::Shared;
+    let first = derive(&events, &context(1, &members, &shared));
+    assert!(first.is_empty(), "the first prompt is the task: {first:?}");
+    let drafts = derive(&events, &context(2, &members, &shared));
+    assert_eq!(
+        kinds(&drafts),
+        [
+            (
+                ObservationKind::Correction,
+                "[pull request] Never unwrap in library code"
+            ),
+            (
+                ObservationKind::Correction,
+                "[pull request] Keep the changelog in step"
+            ),
+            (
+                ObservationKind::CheckFailed,
+                "CI check \"test\" failed on abc"
+            ),
+            (
+                ObservationKind::Correction,
+                "[steer] Prefer small commits over one big one"
+            ),
+            (
+                ObservationKind::ToolDenied,
+                "Bash denied by rule Bash(rm *)"
+            ),
+            (
+                ObservationKind::CheckFailed,
+                &format!(
+                    "check `cargo test` failed\n{}",
+                    (1..=45)
+                        .map(|n| format!("line {n}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            ),
+            (ObservationKind::GoalMissing, "the changelog entry\na test"),
+            (
+                ObservationKind::JudgeVerdict,
+                "not picked: no test for the fix"
+            ),
+            (ObservationKind::PlanRejected, "too broad"),
+            (
+                ObservationKind::Escalation,
+                "I need the staging credentials"
+            ),
+            (
+                ObservationKind::Escalation,
+                "blocked: waiting on a credential"
+            ),
+            (
+                ObservationKind::Outcome,
+                "failed: the check failed after 2 turns, this turn $1.25"
+            ),
+            (
+                ObservationKind::RepeatedCommand,
+                "cargo test -p parser (2 times)"
+            ),
+        ]
+    );
+    // The author rule: a forge login that is no member is external, a
+    // member's comment is a member's, a steer has no author.
+    let external = &drafts[0];
+    assert_eq!(
+        external.author,
+        Some(Author {
+            name: "@drive-by".into(),
+            association: Association::External,
+        })
+    );
+    assert_eq!(external.paths, ["src/lib.rs"]);
+    assert_eq!(external.seqs, [3, 4], "the feedback record and its prompt");
+    assert_eq!(
+        drafts[1].author.as_ref().map(|a| a.association),
+        Some(Association::Member)
+    );
+    assert_eq!(drafts[3].author, None);
+    assert_eq!(drafts[12].seqs, [16, 17]);
+    // Turn 3's one prompt is a continuation: nothing.
+    assert!(derive(&events, &context(3, &members, &shared)).is_empty());
+    assert!(derive(&events, &context(4, &members, &shared)).is_empty());
+}
+
+#[test]
+fn observations_carry_the_context_and_key_by_incarnation_and_tenant() {
+    let members = Vec::new();
+    let private = Visibility::Private {
+        subject: "ana".into(),
+    };
+    let events = feed(vec![
+        prompt("Fix"),
+        prompt("Run cargo fmt before you finish"),
+    ]);
+    let ctx = context(2, &members, &private);
+    let [draft] = derive(&events, &ctx).try_into().unwrap();
+    let observation =
+        draft
+            .clone()
+            .into_observation(&ctx, draft.text.clone(), vec![ScrubKind::Email]);
+    assert_eq!(observation.tenant, "local");
+    assert_eq!(observation.repo, "app");
+    assert_eq!(
+        observation.events,
+        [EventRef {
+            incarnation: 7,
+            seq: 2
+        }]
+    );
+    assert_eq!(observation.visibility.subject(), Some("ana"));
+    assert_eq!(observation.task_kind, Some(TaskKind::Bugfix));
+    assert_eq!(observation.model.as_deref(), Some("small"));
+    assert_eq!(observation.scrubbed, [ScrubKind::Email]);
+    assert!(!observation.external());
+    let key = observation.key();
+    assert_eq!(key.len(), 64);
+    // The same turn settled twice: the same key. A new incarnation, another
+    // tenant or another person: a new one.
+    let mut again = observation.clone();
+    again.at_ms += 5;
+    again.scrubbed.clear();
+    assert_eq!(again.key(), key);
+    let mut recreated = observation.clone();
+    recreated.incarnation = 8;
+    assert_ne!(recreated.key(), key);
+    let mut other_tenant = observation.clone();
+    other_tenant.tenant = "acme".into();
+    assert_ne!(other_tenant.key(), key);
+    let mut shared = observation.clone();
+    shared.visibility = Visibility::Shared;
+    assert_ne!(shared.key(), key);
+    // Serialized flat, the visibility beside the other fields.
+    let json = serde_json::to_value(&observation).unwrap();
+    assert_eq!(json["visibility"], "private");
+    assert_eq!(json["subject"], "ana");
+    assert_eq!(json["kind"], "correction");
+    let back: NewObservation = serde_json::from_value(json).unwrap();
+    assert_eq!(back, observation);
+    // Long text is cut at the limit.
+    let long = "x".repeat(TEXT_MAX + 50);
+    let cut = draft.into_observation(&ctx, long, Vec::new());
+    assert!(cut.text.chars().count() <= TEXT_MAX);
+    assert!(cut.text.ends_with("..."));
+}
+
+#[test]
+fn turn_events_split_the_feed_at_prompts() {
+    let events = feed(vec![
+        prompt("one"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("two"),
+        prompt("three"),
+    ]);
+    assert_eq!(turn_events(&events, 1).unwrap().len(), 2);
+    assert_eq!(turn_events(&events, 2).unwrap().len(), 1);
+    assert_eq!(turn_events(&events, 3).unwrap().len(), 1);
+    assert!(turn_events(&events, 4).is_none());
+    assert!(turn_events(&events, 0).is_none());
+}
+
+/// A generated corpus: for each shape a value and a sentence that holds
+/// it, with its base64 and URL-encoded forms for the exact values. None is
+/// a real secret.
+fn corpus() -> Vec<(String, String, ScrubKind)> {
+    let mut rows = Vec::new();
+    let filler = "Before you report the numbers, run the benches with the large fixture and \
+                  compare both runs against main, naming the fixture each number came from; ";
+    let mut push = |value: String, kind: ScrubKind| {
+        rows.push((
+            value.clone(),
+            format!("{filler}the value was {value} there."),
+            kind,
+        ));
+    };
+    for n in 0..5u32 {
+        push(
+            format!("AKIA{:0>16}", format!("EXAMPLE{n}")),
+            ScrubKind::Token,
+        );
+        push(
+            format!("ghp_{}", "abcdefghij".repeat(3) + &n.to_string()),
+            ScrubKind::Token,
+        );
+        push(
+            format!("sk-{}", "k0".repeat(12) + &n.to_string()),
+            ScrubKind::Token,
+        );
+        push(format!("xoxb-{n}234567890-abcdefghijkl"), ScrubKind::Token);
+        push(
+            format!("eyJhbGciOiJIUzI1NiJ9.eyJuIjoie{n}fQ.c2lnbmF0dXJl{n}"),
+            ScrubKind::Jwt,
+        );
+        push(format!("password=hunter{n}pw"), ScrubKind::Assignment);
+        push(format!("https://h/x?token=t{n}&page=2"), ScrubKind::Url);
+        push(format!("someone{n}@elsewhere.example"), ScrubKind::Email);
+        push(
+            format!("Bearer {}", "ab12".repeat(5) + &n.to_string()),
+            ScrubKind::Bearer,
+        );
+    }
+    rows
+}
+
+#[test]
+fn every_shape_of_the_corpus_is_scrubbed_and_counted() {
+    let scrubber = Scrubber::new(&[], &[]);
+    for (value, text, kind) in corpus() {
+        let (out, kinds) = scrubber
+            .scrub(&text)
+            .unwrap_or_else(|| panic!("{text:?} was dropped"));
+        let secret = value.split_whitespace().last().unwrap_or(&value);
+        assert!(!out.contains(secret), "{text:?} -> {out:?} keeps the value");
+        assert_eq!(kinds, [kind], "{text:?} -> {out:?}");
+    }
+}
+
+#[test]
+fn injected_values_go_in_every_encoding_and_a_quarter_scrubbed_text_is_dropped() {
+    use base64::Engine as _;
+    let values: Vec<String> = (0..4)
+        .map(|n| format!("inj3cted-value-{n}-{}", "q".repeat(6)))
+        .collect();
+    let scrubber = Scrubber::new(&values, &[]);
+    let filler = "The benches want the large fixture; the small one says nothing about real \
+                  inputs, so compare both runs against main before you report any number and \
+                  name the fixture each came from, every time, in the pull request. ";
+    for value in &values {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(value);
+        let url = percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC)
+            .to_string();
+        let text = format!("{filler}{filler}plain {value}, b64 {b64}, url {url}.");
+        let (out, kinds) = scrubber.scrub(&text).unwrap();
+        for form in [value.as_str(), b64.as_str(), url.as_str()] {
+            assert!(!out.contains(form), "{form} kept in {out}");
+        }
+        assert_eq!(
+            kinds,
+            [ScrubKind::Value, ScrubKind::Value, ScrubKind::Value]
+        );
+        // The same value said four times in a short text is most of it.
+        assert!(scrubber
+            .scrub(&format!("{value} {value} {value} {value} ok"))
+            .is_none());
+    }
+}
+
+fn observation(
+    id: u64,
+    kind: ObservationKind,
+    text: &str,
+    paths: &[&str],
+    external: bool,
+) -> Observation {
+    Observation {
+        id,
+        body: NewObservation {
+            tenant: "local".into(),
+            repo: "app".into(),
+            branch: format!("b{id}"),
+            incarnation: 1,
+            turn: 2,
+            events: vec![EventRef {
+                incarnation: 1,
+                seq: id,
+            }],
+            visibility: Visibility::Shared,
+            kind,
+            text: text.into(),
+            paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+            task_kind: Some(TaskKind::Tests),
+            harness: "fake".into(),
+            model: None,
+            author: external.then(|| Author {
+                name: "drive-by".into(),
+                association: Association::External,
+            }),
+            at_ms: 1,
+            scrubbed: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn clusters_group_normalized_text_and_merge_similar_groups() {
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Run the benches with the 1 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[steer] run the  Benches with the 2 MB fixture",
+            &[],
+            false,
+        ),
+        observation(
+            3,
+            ObservationKind::Correction,
+            "[send] Run the benches with the large fixture first",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            4,
+            ObservationKind::Correction,
+            "[send] Keep the changelog in step with the code",
+            &[],
+            false,
+        ),
+        observation(
+            5,
+            ObservationKind::CheckFailed,
+            "Run the benches with the 1 MB fixture",
+            &[],
+            false,
+        ),
+    ];
+    let clusters: Vec<Cluster> = cluster(&observations);
+    let ids: Vec<Vec<u64>> = clusters.iter().map(|c| c.ids.clone()).collect();
+    assert_eq!(ids, [vec![1, 2, 3], vec![4], vec![5]], "{ids:?}");
+    assert_eq!(clusters[0].kind, ObservationKind::Correction);
+    assert_eq!(clusters[0].paths, ["crates/parser/**"]);
+    assert_eq!(clusters[0].task_kinds, [TaskKind::Tests]);
+    assert_eq!(
+        clusters[2].kind,
+        ObservationKind::CheckFailed,
+        "kinds never mix"
+    );
+}
+
+#[test]
+fn the_pass_proposes_clusters_of_two_matches_evidence_and_skips_external_authors() {
+    let scope = Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    };
+    let existing = MemoryRecord {
+        id: 50,
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: "Keep the changelog in step with the code".into(),
+        body: "Every change ships its changelog line.".into(),
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        status: MemoryStatus::Rejected,
+        provenance: vec![9],
+        seen: 1,
+        first_seen_ms: 1,
+        last_seen_ms: 1,
+        decided_by: Some("ann".into()),
+        decided_ms: Some(2),
+        note: Some("wrong".into()),
+        published: None,
+    };
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Run the benches with the 1 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[steer] Run the benches with the 2 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            3,
+            ObservationKind::Correction,
+            "[send] Keep the changelog in step with the code",
+            &[],
+            false,
+        ),
+        observation(
+            4,
+            ObservationKind::Correction,
+            "[pull request] Rename this helper",
+            &[],
+            true,
+        ),
+        observation(
+            5,
+            ObservationKind::Correction,
+            "[pull request] Rename this helper",
+            &[],
+            true,
+        ),
+        observation(
+            6,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            7,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            8,
+            ObservationKind::ToolDenied,
+            "Bash denied by rule x",
+            &[],
+            false,
+        ),
+        observation(
+            9,
+            ObservationKind::ToolDenied,
+            "Bash denied by rule x",
+            &[],
+            false,
+        ),
+        observation(
+            10,
+            ObservationKind::CheckFailed,
+            "check `cargo test` failed\nassertion failed",
+            &[],
+            false,
+        ),
+    ];
+    let result = pass(
+        &scope,
+        &observations,
+        std::slice::from_ref(&existing),
+        false,
+        20,
+        3,
+        500,
+    );
+    // The rejected memory gained evidence and nothing else.
+    assert_eq!(result.evidence, [(50, vec![3])]);
+    // One memory candidate (paths), one knowledge candidate (short,
+    // repository-wide), and neither the external pair, the denials nor the
+    // lone check.
+    assert_eq!(result.proposals.len(), 1, "{:?}", result.proposals);
+    let proposal = &result.proposals[0];
+    assert_eq!(proposal.title, "Run the benches with the 1 MB fixture");
+    assert_eq!(proposal.kind, MemoryKind::Rule);
+    assert_eq!(proposal.paths, ["crates/parser/**"]);
+    assert_eq!(proposal.provenance, [1, 2]);
+    assert_eq!(proposal.note.as_deref(), Some("deterministic"));
+    assert!(proposal
+        .body
+        .contains("- b1 turn 2: [send] Run the benches with the 1 MB fixture"));
+    assert!(proposal
+        .body
+        .contains("- b2 turn 2: [steer] Run the benches with the 2 MB fixture"));
+    assert_eq!(result.knowledge.len(), 1);
+    assert_eq!(result.knowledge[0].text, "Format before you finish");
+    assert!(matches!(
+        &result.knowledge[0].source,
+        crate::KnowledgeSource::Consolidation { run: 3, observations } if observations == &vec![6, 7]
+    ));
+    // With external authors allowed, their pair is a candidate too.
+    let open = pass(&scope, &observations, &[existing], true, 20, 3, 500);
+    assert_eq!(open.knowledge.len(), 2);
+    assert!(open
+        .knowledge
+        .iter()
+        .any(|k| k.text == "Rename this helper"));
+    // The cap.
+    let capped = pass(&scope, &observations, &[], true, 1, 3, 500);
+    assert_eq!(capped.proposals.len() + capped.knowledge.len(), 1);
+    assert_eq!(
+        title_of(&observations[0].text),
+        "Run the benches with the 1 MB fixture"
+    );
+}
+
+#[test]
+fn a_short_correction_is_knowledge_only_for_the_local_team_scope() {
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+    ];
+    let run = |scope: &Scope| pass(scope, &observations, &[], false, 20, 1, 5);
+    let local = run(&Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    });
+    assert_eq!((local.knowledge.len(), local.proposals.len()), (1, 0));
+    // A served tenant's repository may be another tenant's too: the
+    // correction stays a row of the tenant's own scope.
+    let served = run(&Scope::Repo {
+        tenant: "acme".into(),
+        repo: "app".into(),
+    });
+    assert!(served.knowledge.is_empty(), "{:?}", served.knowledge);
+    assert_eq!(served.proposals.len(), 1);
+    assert_eq!(served.proposals[0].title, "Format before you finish");
+    // A person's private corrections never become team knowledge.
+    for repo in [None, Some("app".to_owned())] {
+        let person = run(&Scope::Person {
+            tenant: "local".into(),
+            subject: "ana".into(),
+            repo,
+        });
+        assert!(person.knowledge.is_empty(), "{:?}", person.knowledge);
+        assert_eq!(person.proposals.len(), 1);
+    }
+}
+
+#[test]
+fn a_cut_body_counts_observations_not_lines() {
+    // Failed checks near the text limit, each of forty lines: the body is
+    // cut after the first and counts the others, not an underflowed number.
+    let line = "x".repeat(97);
+    let text = format!("check `cargo test` failed\n{}", vec![line; 40].join("\n"));
+    let observations = vec![
+        observation(1, ObservationKind::CheckFailed, &text, &[], false),
+        observation(2, ObservationKind::CheckFailed, &text, &[], false),
+        observation(3, ObservationKind::CheckFailed, &text, &[], false),
+    ];
+    let scope = Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    };
+    let result = pass(&scope, &observations, &[], false, 20, 1, 5);
+    assert_eq!(result.proposals.len(), 1);
+    let body = &result.proposals[0].body;
+    assert!(
+        body.ends_with("- ...and 2 more"),
+        "{}",
+        &body[body.len() - 60..]
+    );
+}
+
+#[test]
+fn a_failed_checks_output_is_scrubbed_before_it_is_cut_to_its_last_lines() {
+    // A multi-line secret whose first lines fall before the cut: the lines
+    // that remain in the tail are still removed, and the tail is the last
+    // forty.
+    let value = "PRIVATE KEY BEGIN\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nKgwggSkAgEAAoIBAQC7VJTUt9Us8cKj\nZm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFi\nPRIVATE KEY END";
+    let ordinary = |n: u32| format!("line {n} of ordinary compiler output, long enough to matter");
+    let mut output: Vec<String> = (1..=3).map(ordinary).collect();
+    output.extend(value.lines().map(str::to_owned));
+    output.extend((4..=60).map(ordinary));
+    // The value's later lines come again inside the last forty.
+    let inside = output.len() - 38;
+    output.splice(inside..inside, value.lines().skip(2).map(str::to_owned));
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::PullRequest(Box::new(
+            PullRequestActivity::Checked(CheckRun {
+                commit: "abc".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                passed: false,
+                timed_out: false,
+                output_tail: output.join("\n"),
+            }),
+        ))),
+    ]);
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let ctx = context(1, &members, &visibility);
+    let drafts = derive(&events, &ctx);
+    assert_eq!(drafts.len(), 1);
+    let scrubber = Scrubber::new(&[value.to_owned()], &[]);
+    let draft = drafts.into_iter().next().unwrap();
+    let (text, _) = scrubber.scrub(&draft.text).unwrap();
+    let stored = draft.into_observation(&ctx, text, Vec::new()).text;
+    assert!(
+        stored.starts_with("check `cargo test` failed\n"),
+        "{stored}"
+    );
+    assert_eq!(stored.lines().count(), 41, "{stored}");
+    for part in value.lines().filter(|l| l.len() > 8) {
+        assert!(!stored.contains(part), "{part} kept in {stored}");
+    }
+    assert!(stored.ends_with("line 60 of ordinary compiler output, long enough to matter"));
+}
+
+#[test]
+fn a_pull_request_comment_without_an_author_is_external_and_a_review_comment_is_not() {
+    let members = vec!["ann".to_owned()];
+    let visibility = Visibility::Shared;
+    let pr = "Feedback on pull request #4 (https://x/4):\n\n1. @someone on src/lib.rs:3:\n\
+              > Never unwrap in library code anywhere\nAddress it on this branch.";
+    let events = feed(vec![
+        prompt("task"),
+        prompt(pr),
+        prompt("File: a.txt\nLine: 1\nUser comment: \"Always end the notes with a summary line\""),
+    ]);
+    let author_of = |turn: u32| {
+        derive(&events, &context(turn, &members, &visibility))
+            .into_iter()
+            .map(|d| d.author)
+            .collect::<Vec<_>>()
+    };
+    let from_pr = author_of(2);
+    assert_eq!(from_pr.len(), 1, "{from_pr:?}");
+    assert_eq!(
+        from_pr[0].as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+    // The person's own `by review` comment stays a member's.
+    assert_eq!(author_of(3), [None]);
+    // A recorded pull request comment with no login is external too.
+    let feedback = Feedback {
+        source: FeedbackSource::PullRequest,
+        reference: Some("https://x/4".into()),
+        items: vec![FeedbackItem {
+            kind: FeedbackKind::Comment,
+            body: "Never unwrap in library code anywhere".into(),
+            ..FeedbackItem::default()
+        }],
+        prompt: Some(prompt_digest(pr)),
+    };
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::Feedback(Box::new(feedback))),
+        prompt(pr),
+    ]);
+    let drafts = derive(&events, &context(2, &members, &visibility));
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].author.as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+}
+
+#[test]
+fn a_windowed_feed_derives_the_turn_the_whole_feed_does() {
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always run cargo fmt before you finish"),
+        tool("false"),
+        tool("false"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always keep the changelog in step with the code"),
+        tool("true"),
+        tool("true"),
+    ]);
+    let whole = derive(&events, &context(3, &members, &visibility));
+    assert_eq!(whole.len(), 2, "{whole:?}");
+    // The engine reads from a little before the turn's prompt and names
+    // the newest seq before it (6; the prompt is seq 7).
+    let window = &events[4..];
+    let ctx = Context {
+        turn_after: Some(6),
+        ..context(3, &members, &visibility)
+    };
+    assert_eq!(derive(window, &ctx), whole);
+}
+
+#[test]
+fn a_windowed_feed_derives_its_turn_even_when_a_newer_turn_has_started() {
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always run cargo fmt before you finish"),
+        tool("false"),
+        tool("false"),
+        at(Activity::Status(BranchStatus::Ready)),
+        // A wake started turn 3 before turn 2's observations were derived.
+        prompt("Always keep the changelog in step with the code"),
+        tool("true"),
+        tool("true"),
+    ]);
+    let whole = derive(&events, &context(2, &members, &visibility));
+    assert!(!whole.is_empty());
+    let ctx = Context {
+        turn_after: Some(2),
+        ..context(2, &members, &visibility)
+    };
+    assert_eq!(derive(&events[1..], &ctx), whole);
+}
+
+#[test]
+fn members_are_read_once_per_ttl_and_not_from_pull_request_refs() {
+    let cache = MemberCache::default();
+    let root = std::path::Path::new("/repo");
+    let loads = std::cell::Cell::new(0);
+    let load = || {
+        loads.set(loads.get() + 1);
+        vec!["ann".to_owned()]
+    };
+    for at in [1_000, 2_000, MEMBERS_TTL_MS - 1] {
+        assert_eq!(cache.get_or_load(root, at, load), ["ann"]);
+    }
+    assert_eq!(loads.get(), 1, "one history read for the whole window");
+    cache.get_or_load(root, MEMBERS_TTL_MS + 1_000, load);
+    assert_eq!(loads.get(), 2, "read again once the entry is old");
+    cache.get_or_load(std::path::Path::new("/other"), 1_000, load);
+    assert_eq!(loads.get(), 3, "another repository has its own entry");
+}
+
+#[test]
+fn a_contributor_on_a_fetched_pull_request_ref_is_not_a_member() {
+    let scratch = branchyard_testkit::Scratch::new("members");
+    let root = scratch.path();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=Ann",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "one",
+    ]);
+    git(&["checkout", "-q", "-b", "pr"]);
+    git(&[
+        "-c",
+        "user.name=drive-by",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "two",
+    ]);
+    git(&["update-ref", "refs/pull/5/head", "pr"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["branch", "-q", "-D", "pr"]);
+    let yard = crate::Yard::open(root).unwrap();
+    let members = members(&yard, &["Bob".to_owned()]);
+    assert!(members.contains(&"ann".to_owned()), "{members:?}");
+    assert!(members.contains(&"bob".to_owned()), "{members:?}");
+    assert!(!members.contains(&"drive-by".to_owned()), "{members:?}");
+}
+
+/// A yard on a scratch repository with one commit.
+fn scratch_yard(name: &str) -> (branchyard_testkit::Scratch, crate::Yard) {
+    let scratch = branchyard_testkit::Scratch::new(name);
+    let root = scratch.path().to_path_buf();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+            "-c",
+            "user.name=Ann",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(&root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    let yard = crate::Yard::open(&root).unwrap();
+    (scratch, yard)
+}
+
+fn proposal(scope: &Scope, title: &str) -> super::store::NewMemoryRecord {
+    super::store::NewMemoryRecord {
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: title.into(),
+        body: format!("Body of {title}."),
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        provenance: Vec::new(),
+        note: None,
+        now_ms: 1,
+    }
+}
+
+fn new_memory(title: &str) -> super::NewMemory {
+    super::NewMemory {
+        title: title.into(),
+        body: "Body.".into(),
+        kind: MemoryKind::Rule,
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        topic: None,
+        by: "ana".into(),
+        now_ms: 1,
+        evidence: Vec::new(),
+    }
+}
+
+#[test]
+fn writers_at_once_lose_no_memory_and_share_no_slug() {
+    let (_scratch, yard) = scratch_yard("library-writers");
+    let library = super::Library::team(yard.root());
+    let threads: Vec<_> = (0..6)
+        .map(|n| {
+            let library = super::Library::team(yard.root());
+            std::thread::spawn(move || {
+                (0..3)
+                    .map(|_| library.add(new_memory("Same title")).unwrap().memory.id)
+                    .chain(std::iter::once(
+                        library
+                            .add(new_memory(&format!("Own title {n}")))
+                            .unwrap()
+                            .memory
+                            .id,
+                    ))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut ids: Vec<String> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    ids.sort();
+    let before = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), before, "a slug was given twice");
+    let held: Vec<String> = library.read().unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(held.len(), 24, "{held:?}");
+}
+
+#[test]
+fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
+    let (_scratch, yard) = scratch_yard("approvals");
+    let scope = yard.memory_scope("local");
+    let store = yard.store();
+    let memory = store.memory();
+    // Two rows with one title: their files must not share a slug.
+    let a = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let b = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let racers: Vec<_> = [a, b]
+        .into_iter()
+        .map(|id| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(id, "ana", None).unwrap())
+        })
+        .collect();
+    let approved: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    let paths: Vec<_> = approved
+        .iter()
+        .map(|a| a.record.published.clone().unwrap().path)
+        .collect();
+    assert_ne!(paths[0], paths[1], "{paths:?}");
+    let library = super::Library::team(yard.root());
+    assert_eq!(library.read().unwrap().len(), 2);
+    // Two approvals of the same row: one wins, the other fails and takes
+    // back only its own file.
+    let c = memory
+        .propose(&proposal(&scope, "Keep notes short"))
+        .unwrap();
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(c, "ana", None))
+        })
+        .collect();
+    let results: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let winner = results.into_iter().find_map(Result::ok).unwrap();
+    let slug = winner
+        .record
+        .published
+        .unwrap()
+        .path
+        .trim_start_matches("references/")
+        .trim_end_matches(".md")
+        .to_owned();
+    let held = library.read().unwrap();
+    assert_eq!(held.len(), 3, "{held:?}");
+    assert!(
+        held.iter().any(|m| m.id == slug),
+        "the winner's file is gone"
+    );
+}
+
+#[test]
+fn an_edit_whose_row_swap_loses_leaves_the_file_as_it_was() {
+    let (_scratch, yard) = scratch_yard("edit-loses");
+    let scope = yard.memory_scope("local");
+    let id = yard
+        .store()
+        .memory()
+        .propose(&proposal(&scope, "Run fmt"))
+        .unwrap();
+    let approved = yard.approve_memory(id, "ana", None).unwrap();
+    let current = approved.record;
+    let library = super::Library::team(yard.root());
+    let before = library.read().unwrap();
+    let mut changed = current.clone();
+    changed.title = "Run cargo fmt".into();
+    let edit = super::review::MemoryRecordEdit {
+        title: Some("Run cargo fmt".into()),
+        ..Default::default()
+    };
+    // Someone rejects the row between the file's rewrite and the swap.
+    let error = super::review::edit_row(&yard, &current, changed, &edit, "ana", None, || {
+        let decided = yard
+            .store()
+            .memory()
+            .decide(
+                id,
+                MemoryStatus::Approved,
+                &super::store::Decision {
+                    status: MemoryStatus::Rejected,
+                    by: "bob".into(),
+                    now_ms: 5,
+                    note: None,
+                    published: None,
+                },
+            )
+            .unwrap();
+        assert!(decided);
+    })
+    .unwrap_err();
+    assert!(matches!(error, crate::Error::State(_)), "{error}");
+    assert_eq!(library.read().unwrap(), before, "the file was left edited");
+}
