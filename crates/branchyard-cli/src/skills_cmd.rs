@@ -337,45 +337,19 @@ fn list(source: Option<&str>, state: Option<&str>, json: bool) -> Outcome {
     print(&text)
 }
 
-/// A private scratch directory under the temporary directory, the tree
-/// `search` ranks over; removed on drop.
-struct Scratch {
-    dir: PathBuf,
-}
-
-impl Scratch {
-    fn new() -> std::io::Result<Scratch> {
-        use std::os::unix::fs::DirBuilderExt;
-        let dir = std::env::temp_dir().join(format!(
-            "by-skills-search-{}-{}",
-            std::process::id(),
-            branchyard_support::time::now_nanos()
-        ));
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)?;
-        Ok(Scratch { dir })
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        branchyard_support::best_effort(
-            "remove the skills search scratch directory",
-            std::fs::remove_dir_all(&self.dir),
-        );
-    }
-}
-
 /// `by skills search WORDS... [--plain] [--limit N]`.
 fn search(words: &[String], plain: bool, limit: usize, json: bool) -> Outcome {
     let here = Here::read()?;
-    let scratch = Scratch::new().map_err(|e| {
-        Report::new("io", format!("could not make a scratch directory: {e}"))
-            .next("check the temporary directory's permissions")
-    })?;
-    let index = here.tree(&scratch.dir, None)?;
+    // The tree `search` ranks over: a fresh private directory (0700, a name
+    // nothing else holds), removed when it drops.
+    let scratch = tempfile::Builder::new()
+        .prefix("by-skills-search-")
+        .tempdir()
+        .map_err(|e| {
+            Report::new("io", format!("could not make a scratch directory: {e}"))
+                .next("check the temporary directory's permissions")
+        })?;
+    let index = here.tree(scratch.path(), None)?;
     let hits = registry::search(&index.tree, words, limit, plain)?;
     if hits.is_empty() {
         return Err(Report::new(

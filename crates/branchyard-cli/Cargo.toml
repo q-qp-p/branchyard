@@ -26,6 +26,7 @@ postgres = ["branchyard-server/postgres"]
 schema = ["dep:schemars", "branchyard/schema"]
 
 [dependencies]
+tempfile = { workspace = true }
 branchyard-support = { path = "../branchyard-support" }
 branchyard = { path = "../branchyard" }
 branchyard-client = { path = "../branchyard-client" }
@@ -85,7 +86,6 @@ rustix = { workspace = true }
 branchyard-testkit = { path = "../branchyard-testkit" }
 branchyard-bridge = { path = "../branchyard-bridge" }
 branchyard-substrate = { path = "../branchyard-substrate", features = ["fake"] }
-tempfile = { workspace = true }
 # The OTLP messages tests/telemetry.rs's stand-in collector decodes.
 opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "trace", "metrics"] }
 prost = { workspace = true }

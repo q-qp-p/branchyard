@@ -55,7 +55,7 @@ pub fn main(_env: &Env, target: &Target, args: &Args<'_>) -> Outcome {
     };
     let document = otlp_json(&spans, &service_name());
     if let Some(path) = args.otlp {
-        let text = serde_json::to_string(&document).unwrap_or_default();
+        let text = encode(&document)?;
         std::fs::write(path, text).map_err(|e| {
             Report::new("io", format!("could not write {}: {e}", path.display()))
                 .next("choose a path the current user can write")
@@ -68,9 +68,18 @@ pub fn main(_env: &Env, target: &Target, args: &Args<'_>) -> Outcome {
         ));
     }
     if let Some(url) = args.endpoint {
-        post(url, &document)?;
+        let body = encode(&document)?;
+        let headers_sent = post(url, body.as_bytes(), &Collector::from_env())?;
+        let note = match headers_sent {
+            Sent::WithHeaders => " with the configured collector headers",
+            Sent::WithoutHeaders { configured: true } => {
+                " without the configured collector headers (the URL is not \
+                 OTEL_EXPORTER_OTLP_ENDPOINT)"
+            }
+            Sent::WithoutHeaders { configured: false } => "",
+        };
         return print(&format!(
-            "sent {} spans of trace {} to {url}\n",
+            "sent {} spans of trace {} to {url}{note}\n",
             spans.len(),
             root.trace_id
         ));
@@ -188,22 +197,104 @@ pub fn otlp_json(spans: &[Span], service: &str) -> Json {
     })
 }
 
-/// The `Name: value` headers of `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (else
-/// `OTEL_EXPORTER_OTLP_HEADERS`): `key=value,key2=value2`, percent-decoded.
-fn configured_headers() -> Vec<(String, String)> {
-    let raw = std::env::var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_HEADERS"))
-        .unwrap_or_default();
-    raw.split(',')
-        .filter_map(|pair| pair.split_once('='))
-        .map(|(k, v)| (k.trim().to_owned(), http::decode(v.trim())))
-        .filter(|(k, _)| !k.is_empty())
-        .collect()
+/// The document as JSON text. An encoding failure is an error: an empty
+/// document is never written or sent.
+fn encode(document: &Json) -> Result<String, crate::commands::Failure> {
+    serde_json::to_string(document).map_err(|e| {
+        Report::new("internal", format!("could not encode the trace: {e}"))
+            .next("report this with the branch's event log")
+            .into()
+    })
 }
 
-/// POST `document` to a collector's OTLP/HTTP traces endpoint: `url` as given
-/// when its path ends `/v1/traces`, else with that appended.
-fn post(url: &str, document: &Json) -> Result<(), crate::commands::Failure> {
+/// The collector the environment configures: its endpoint
+/// (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT`) and
+/// the headers meant for it (`OTEL_EXPORTER_OTLP_TRACES_HEADERS`, else
+/// `OTEL_EXPORTER_OTLP_HEADERS`: `key=value,key2=value2`, percent-decoded).
+#[derive(Debug, Default)]
+struct Collector {
+    endpoints: Vec<String>,
+    headers: Vec<(String, String)>,
+}
+
+impl Collector {
+    fn from_env() -> Collector {
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let raw = var("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+            .or_else(|| var("OTEL_EXPORTER_OTLP_HEADERS"))
+            .unwrap_or_default();
+        Collector {
+            endpoints: [
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+            ]
+            .iter()
+            .filter_map(|name| var(name))
+            .collect(),
+            headers: raw
+                .split(',')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(k, v)| (k.trim().to_owned(), http::decode(v.trim())))
+                .filter(|(k, _)| !k.is_empty())
+                .collect(),
+        }
+    }
+
+    /// Whether `url` is the endpoint the environment configures, with or
+    /// without the `/v1/traces` path and a trailing slash.
+    fn is_configured(&self, url: &str) -> bool {
+        let bare = |u: &str| {
+            let u = u.trim().trim_end_matches('/');
+            u.strip_suffix("/v1/traces").unwrap_or(u).to_owned()
+        };
+        let url = bare(url);
+        self.endpoints.iter().any(|e| bare(e) == url)
+    }
+}
+
+/// What `post` sent.
+#[derive(Debug, PartialEq, Eq)]
+enum Sent {
+    /// The configured collector headers went with it.
+    WithHeaders,
+    /// None did; `configured` says headers were set but are for another URL.
+    WithoutHeaders { configured: bool },
+}
+
+/// The headers to send to `endpoint` (`url` as the user gave it): the
+/// configured ones only when `url` is the configured collector, never over
+/// plain http to a host that is not this machine (they are credentials).
+fn collector_headers(
+    collector: &Collector,
+    url: &str,
+    endpoint: &http::Endpoint,
+) -> Result<Vec<(String, String)>, Report> {
+    if collector.headers.is_empty() || !collector.is_configured(url) {
+        return Ok(Vec::new());
+    }
+    let host = endpoint.host.trim_matches(['[', ']']);
+    let local = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if !endpoint.tls && !local {
+        return Err(Report::new(
+            "denied",
+            format!("not sending the collector headers to {url} over plain http"),
+        )
+        .line(
+            "why",
+            "OTEL_EXPORTER_OTLP_HEADERS is credentials, and http would send them in the clear",
+        )
+        .next("use an https:// URL, or unset OTEL_EXPORTER_OTLP_HEADERS and send without them"));
+    }
+    Ok(collector.headers.clone())
+}
+
+/// POST `body` to a collector's OTLP/HTTP traces endpoint: `url` as given
+/// when its path ends `/v1/traces`, else with that appended. The
+/// configured collector headers go only to the configured collector.
+fn post(url: &str, body: &[u8], collector: &Collector) -> Result<Sent, crate::commands::Failure> {
     let failed = |why: String| {
         Report::new(
             "remote_unreachable",
@@ -220,9 +311,8 @@ fn post(url: &str, document: &Json) -> Result<(), crate::commands::Failure> {
         true => Some(http::tls_config(None).map_err(failed)?),
         false => None,
     };
-    let body = serde_json::to_vec(document).unwrap_or_default();
+    let extra = collector_headers(collector, url, &endpoint)?;
     let mut headers = vec![("Content-Type", "application/json".to_owned())];
-    let extra = configured_headers();
     headers.extend(extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
     let target = match endpoint.prefix.is_empty() {
         true => "/".to_owned(),
@@ -237,12 +327,15 @@ fn post(url: &str, document: &Json) -> Result<(), crate::commands::Failure> {
             method: "POST",
             target: &target,
             headers: &headers,
-            body: Some(&body),
+            body: Some(body),
         },
     )
     .map_err(|e| failed(e.to_string()))?;
     match response.status {
-        200..=299 => Ok(()),
+        200..=299 if extra.is_empty() => Ok(Sent::WithoutHeaders {
+            configured: !collector.headers.is_empty(),
+        }),
+        200..=299 => Ok(Sent::WithHeaders),
         status => Err(failed(format!("the collector answered {status}")).into()),
     }
 }
@@ -348,6 +441,88 @@ mod tests {
         assert_eq!(spans[1]["attributes"][2]["value"]["boolValue"], false);
         let resource = &document["resourceSpans"][0]["resource"]["attributes"];
         assert_eq!(resource[0]["value"]["stringValue"], "by-test");
+    }
+
+    fn collector(endpoint: &str) -> Collector {
+        Collector {
+            endpoints: vec![endpoint.to_owned()],
+            headers: vec![("Authorization".into(), "Bearer secret-token".into())],
+        }
+    }
+
+    #[test]
+    fn collector_headers_go_only_to_the_configured_collector() {
+        use branchyard_testkit::{MockHttp, Response};
+        let configured = MockHttp::start(|_| Response::new(200, "{}"));
+        let other = MockHttp::start(|_| Response::new(200, "{}"));
+        let collector = collector(&configured.url());
+        let body = b"{}";
+
+        // The configured collector gets them, with the path appended or not.
+        assert_eq!(
+            post(&configured.url(), body, &collector).unwrap(),
+            Sent::WithHeaders
+        );
+        assert_eq!(
+            post(&format!("{}/v1/traces", configured.url()), body, &collector).unwrap(),
+            Sent::WithHeaders
+        );
+        let seen = configured.await_requests(2);
+        assert!(seen
+            .iter()
+            .all(|r| r.header("authorization") == Some("Bearer secret-token")));
+
+        // Any other URL is sent the trace and none of the credentials.
+        assert_eq!(
+            post(&other.url(), body, &collector).unwrap(),
+            Sent::WithoutHeaders { configured: true }
+        );
+        let seen = other.await_requests(1);
+        assert!(
+            seen.iter().all(|r| r.header("authorization").is_none()),
+            "{seen:?}"
+        );
+        configured.finish();
+        other.finish();
+    }
+
+    #[test]
+    fn collector_headers_are_refused_over_plain_http_to_another_machine() {
+        let collector = collector("http://collector.example.com:4318");
+        let endpoint =
+            http::Endpoint::parse("http://collector.example.com:4318/v1/traces").unwrap();
+        let refused = collector_headers(&collector, "http://collector.example.com:4318", &endpoint)
+            .unwrap_err();
+        assert_eq!(refused.kind, "denied");
+        assert!(refused.message.contains("plain http"), "{refused:?}");
+        // Over https, or to this machine, they go; to a URL that is not the
+        // configured one they never do, whatever the scheme.
+        let https = http::Endpoint::parse("https://collector.example.com/v1/traces").unwrap();
+        let secure = super::Collector {
+            endpoints: vec!["https://collector.example.com".into()],
+            ..collector_with_headers()
+        };
+        assert_eq!(
+            collector_headers(&secure, "https://collector.example.com/v1/traces", &https)
+                .unwrap()
+                .len(),
+            1
+        );
+        let elsewhere =
+            collector_headers(&collector, "http://evil.example.com", &endpoint).unwrap();
+        assert!(elsewhere.is_empty());
+    }
+
+    fn collector_with_headers() -> Collector {
+        collector("")
+    }
+
+    #[test]
+    fn a_trace_that_cannot_be_encoded_is_an_error_not_an_empty_document() {
+        // A JSON value always encodes, so this pins the success path and the
+        // error kind the failure maps to.
+        let text = encode(&json!({"a": 1})).unwrap();
+        assert_eq!(text, r#"{"a":1}"#);
     }
 
     #[test]
