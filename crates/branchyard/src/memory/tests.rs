@@ -64,7 +64,7 @@ fn context<'a>(turn: u32, members: &'a [String], visibility: &'a Visibility) -> 
         task_kind: Some(TaskKind::Bugfix),
         members,
         at_ms: 2_000,
-        windowed: false,
+        turn_after: None,
     }
 }
 
@@ -869,13 +869,39 @@ fn a_windowed_feed_derives_the_turn_the_whole_feed_does() {
     ]);
     let whole = derive(&events, &context(3, &members, &visibility));
     assert_eq!(whole.len(), 2, "{whole:?}");
-    // The engine reads from a little before the turn's prompt.
+    // The engine reads from a little before the turn's prompt and names
+    // the newest seq before it (6; the prompt is seq 7).
     let window = &events[4..];
     let ctx = Context {
-        windowed: true,
+        turn_after: Some(6),
         ..context(3, &members, &visibility)
     };
     assert_eq!(derive(window, &ctx), whole);
+}
+
+#[test]
+fn a_windowed_feed_derives_its_turn_even_when_a_newer_turn_has_started() {
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always run cargo fmt before you finish"),
+        tool("false"),
+        tool("false"),
+        at(Activity::Status(BranchStatus::Ready)),
+        // A wake started turn 3 before turn 2's observations were derived.
+        prompt("Always keep the changelog in step with the code"),
+        tool("true"),
+        tool("true"),
+    ]);
+    let whole = derive(&events, &context(2, &members, &visibility));
+    assert!(!whole.is_empty());
+    let ctx = Context {
+        turn_after: Some(2),
+        ..context(2, &members, &visibility)
+    };
+    assert_eq!(derive(&events[1..], &ctx), whole);
 }
 
 #[test]

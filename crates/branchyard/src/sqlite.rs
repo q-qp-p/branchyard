@@ -4360,10 +4360,14 @@ impl MemoryBackend for Sqlite {
             let mut counts = outcome.counts.clone();
             if let Some(before) = outcome.expire_before_ms {
                 let referenced = referenced_observations(tx)?;
+                // Only the run's own scope: another scope of the tenant has
+                // its own watermark and may not have consolidated these.
+                let (tenant, subject, repo) = memory_store::scope_filter(&run.scope);
                 let mut statement = tx
                     .prepare(
                         "SELECT id FROM memory_observations WHERE at_ms < ?1 AND id <= ?2 \
-                         AND tenant = ?3",
+                         AND tenant = ?3 AND ((?4 IS NULL AND subject IS NULL) OR subject = ?4) \
+                         AND (?5 IS NULL OR repo = ?5)",
                     )
                     .map_err(|e| db("observation", e))?;
                 let old: Vec<i64> = statement
@@ -4371,7 +4375,9 @@ impl MemoryBackend for Sqlite {
                         params![
                             to_db("expire", before)?,
                             to_db("watermark", outcome.watermark_written)?,
-                            run.scope.tenant()
+                            tenant,
+                            subject,
+                            repo
                         ],
                         |r| r.get(0),
                     )

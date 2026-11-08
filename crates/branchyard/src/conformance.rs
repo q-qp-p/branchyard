@@ -3207,6 +3207,19 @@ pub(crate) fn memory_rows(s: Opened) {
         .unwrap();
     assert_eq!((run.watermark_read, run.by.as_str()), (0, "ana"));
     assert!(store.run_renew(&run, 301, 300 + 120_000).unwrap());
+    // Another scope of the same tenant, old and below the run's watermark,
+    // which that scope has not consolidated: the run must not expire it.
+    let private = store
+        .observe(&[observation(
+            &repo,
+            "acme",
+            Some("ana"),
+            "old",
+            3,
+            "Old and private",
+            1,
+        )])
+        .unwrap();
     let old = store
         .observe(&[
             observation(&repo, "acme", None, "old", 1, "Old and unreferenced", 1),
@@ -3269,6 +3282,11 @@ pub(crate) fn memory_rows(s: Opened) {
         .map(|o| o.id)
         .collect();
     assert_eq!(left, [old[1], old[2]]);
+    assert_eq!(
+        store.observations(&private).unwrap().len(),
+        1,
+        "another scope's observation is kept"
+    );
     let rows = store.runs(Some(&scope), 10).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].outcome.as_deref(), Some(PROPOSED));

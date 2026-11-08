@@ -302,10 +302,11 @@ pub struct Context<'a> {
     pub members: &'a [String],
     /// The turn's end, in milliseconds since the Unix epoch.
     pub at_ms: u64,
-    /// The feed is a window that ends with the turn (read from a little
-    /// before its prompt), so the turn is the one after the window's last
-    /// prompt, not the `turn`th prompt from the start.
-    pub windowed: bool,
+    /// The feed is a window read from a little before the turn's prompt:
+    /// this is the newest seq before that prompt, so the turn is the first
+    /// prompt after it, not the `turn`th prompt from the start (and not the
+    /// window's last prompt, which may be a turn started since).
+    pub turn_after: Option<u64>,
 }
 
 /// One observation before scrubbing: what [`derive()`] finds.
@@ -420,13 +421,19 @@ pub fn turn_events(events: &[(u64, RecordedEvent)], turn: u32) -> Option<&[(u64,
     Some(&events[start..end])
 }
 
-/// The events from the last prompt of `events` on: the turn that ends a
-/// window of the feed.
-fn last_turn(events: &[(u64, RecordedEvent)]) -> Option<&[(u64, RecordedEvent)]> {
+/// The turn whose prompt is the first after seq `after`, up to the next
+/// prompt: in a window of the feed, the turn that ended, even when another
+/// turn has started since.
+fn turn_after(events: &[(u64, RecordedEvent)], after: u64) -> Option<&[(u64, RecordedEvent)]> {
+    let is_prompt = |(_, e): &(u64, RecordedEvent)| matches!(e.activity, Activity::Prompt(_));
     let start = events
         .iter()
-        .rposition(|(_, e)| matches!(e.activity, Activity::Prompt(_)))?;
-    Some(&events[start..])
+        .position(|event| event.0 > after && is_prompt(event))?;
+    let end = events[start + 1..]
+        .iter()
+        .position(is_prompt)
+        .map_or(events.len(), |at| start + 1 + at);
+    Some(&events[start..end])
 }
 
 /// The author `name` as a member or not, given the lowercased members.
@@ -465,9 +472,9 @@ fn denial_source(source: &DecisionSource) -> String {
 /// (`events`, in `seq` order): deterministic, no model. The text is not
 /// scrubbed yet.
 pub fn derive(events: &[(u64, RecordedEvent)], ctx: &Context<'_>) -> Vec<Draft> {
-    let range = match ctx.windowed {
-        true => last_turn(events),
-        false => turn_events(events, ctx.turn),
+    let range = match ctx.turn_after {
+        Some(after) => turn_after(events, after),
+        None => turn_events(events, ctx.turn),
     };
     let Some(turn) = range else {
         return Vec::new();
@@ -919,7 +926,7 @@ pub(crate) fn observe_turn(
         task_kind: Some(knowledge::kind_of(&record, &plain)),
         members: &members,
         at_ms: now_ms(),
-        windowed: from.is_some(),
+        turn_after: from,
     };
     let scrubber = super::scrub::Scrubber::new(secrets, &members);
     let mut observed = Observed::default();

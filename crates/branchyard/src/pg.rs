@@ -4791,15 +4791,22 @@ impl MemoryBackend for Postgres {
             let mut counts = outcome.counts.clone();
             if let Some(before) = outcome.expire_before_ms {
                 let referenced = self.referenced_observations(tx)?;
+                // Only the run's own scope: another scope of the tenant has
+                // its own watermark and may not have consolidated these.
+                let (tenant, subject, scope_repo) = memory_store::scope_filter(&run.scope);
                 let old = tx
                     .query(
                         "SELECT id FROM by_memory_observations WHERE repo = $1 AND at_ms < $2 \
-                         AND id <= $3 AND tenant = $4",
+                         AND id <= $3 AND tenant = $4 \
+                         AND (($5::text IS NULL AND subject IS NULL) OR subject = $5) \
+                         AND ($6::text IS NULL OR repo = $6)",
                         &[
                             &self.repo,
                             &to_db("expire", before)?,
                             &to_db("watermark", outcome.watermark_written)?,
-                            &run.scope.tenant(),
+                            &tenant,
+                            &subject,
+                            &scope_repo,
                         ],
                     )
                     .map_err(db("observation"))?;
