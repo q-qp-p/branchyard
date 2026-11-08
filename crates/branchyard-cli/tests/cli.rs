@@ -4368,12 +4368,18 @@ fn the_python_module_waits_for_children_and_integrates_them_together() {
     for expected in [
         "first ['a'] ['held']",
         "timed out running",
-        "all ['held'] []",
         "merged by/root ['a', 'held']",
         "again True",
     ] {
         assert!(said.contains(expected), "{expected:?} missing from\n{said}");
     }
+    // `wait_all()` waits for the children still running, and lists every
+    // child when none is: `held` may see the go file and settle before the
+    // wait reads the statuses, so either answer is right; nothing is pending.
+    assert!(
+        said.contains("all ['held'] []") || said.contains("all ['a', 'held'] []"),
+        "wait_all() answer missing from\n{said}"
+    );
 }
 
 /// The battery's wait-since scenario through the Python module: `wait`
