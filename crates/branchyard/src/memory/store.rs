@@ -314,6 +314,10 @@ pub struct MemoryFilter {
     pub tenant: Option<String>,
     /// Only rows of this status; `None` for every status.
     pub status: Option<MemoryStatus>,
+    /// Only rows with an id above this (a page's cursor); `None` for all.
+    pub after: Option<u64>,
+    /// At most this many rows, lowest id first; `None` for all of them.
+    pub limit: Option<usize>,
 }
 
 /// A decision on a row: compare-and-swap from its current status.

@@ -11,7 +11,9 @@
 //! administrator's read shows that it exists, its scope and its size, not
 //! its text. The caller's name is who decided. `?scope=repo` (the default)
 //! names the caller's tenant's memory of the repository, `?scope=mine` the
-//! caller's own.
+//! caller's own. A listing is a page: `?limit=N` (200 by default, 1,000 at
+//! most) and `?after=ID`, with `next` on the answer while more follow. Every
+//! store read runs off the async runtime.
 //!
 //! A person's approved memory is written to their skills folder, which a
 //! server does not have until the registry publishes it (M4): approving a
@@ -28,7 +30,7 @@ use branchyard::{
 };
 use branchyard_client::memory_api::{
     ConsolidateRequest, MemoryDecisionRequest, MemoryEditRequest, MemoryEvidence, MemoryList,
-    MemoryPromoteRequest, MemoryRuns, SCOPE_MINE, SCOPE_REPO,
+    MemoryPromoteRequest, MemoryRuns, MEMORY_PAGE, MEMORY_PAGE_MAX, SCOPE_MINE, SCOPE_REPO,
 };
 
 use crate::api::{blocking, Caller, JsonBody, Shared};
@@ -67,12 +69,16 @@ fn sdk<T>(result: Result<T, branchyard::Error>) -> Result<T, ApiError> {
 struct Query {
     mine: bool,
     status: Option<MemoryStatus>,
+    limit: usize,
+    after: u64,
 }
 
 fn parse_query(query: Option<&str>) -> Result<Query, ApiError> {
     let mut parsed = Query {
         mine: false,
         status: None,
+        limit: MEMORY_PAGE,
+        after: 0,
     };
     for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
         match pair.split_once('=') {
@@ -89,6 +95,21 @@ fn parse_query(query: Option<&str>) -> Result<Query, ApiError> {
                         .parse::<MemoryStatus>()
                         .map_err(|e| ApiError::bad_request(e.to_string()))?,
                 )
+            }
+            Some(("limit", value)) => {
+                parsed.limit = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|limit| *limit >= 1)
+                    .ok_or_else(|| {
+                        ApiError::bad_request(format!("limit {value:?} is not a positive number"))
+                    })?
+                    .min(MEMORY_PAGE_MAX)
+            }
+            Some(("after", value)) => {
+                parsed.after = value.parse::<u64>().map_err(|_| {
+                    ApiError::bad_request(format!("after {value:?} is not a row number"))
+                })?
             }
             _ => {}
         }
@@ -150,8 +171,9 @@ fn visible(caller: &Caller, record: MemoryRecord) -> Result<MemoryRecord, ApiErr
 
 /// The checks before a decision on `id` as `caller`: the row is theirs to
 /// decide. A `Person` row's subject rule is the engine's.
-fn decidable(caller: &Caller, yard: &Yard, id: u64) -> Result<MemoryRecord, ApiError> {
-    let record = sdk(yard.memory_record(id))?;
+async fn decidable(caller: &Caller, yard: &Yard, id: u64) -> Result<MemoryRecord, ApiError> {
+    let reading = yard.clone();
+    let record = sdk(blocking(move || reading.memory_record(id)).await?)?;
     let record = visible(caller, record)?;
     if matches!(record.scope, MemoryScope::Repo { .. })
         && !may_decide_repo(caller, &yard.memory_settings())
@@ -174,13 +196,23 @@ async fn list_memory(
 ) -> Result<Json<MemoryList>, ApiError> {
     let yard = app.authorized_repo(&caller, &repo, "read")?.yard.clone();
     let query = parse_query(query.as_deref())?;
+    // One row beyond the page says whether another follows.
     let filter = branchyard::MemoryFilter {
         scope: Some(scope_of(&caller, &yard, query.mine)),
         status: query.status,
+        after: Some(query.after),
+        limit: Some(query.limit + 1),
         ..branchyard::MemoryFilter::default()
     };
-    let memories = sdk(blocking(move || yard.memory_records(&filter)).await?)?;
-    Ok(Json(MemoryList { memories }))
+    let mut memories = sdk(blocking(move || yard.memory_records(&filter)).await?)?;
+    let next = match memories.len() > query.limit {
+        true => {
+            memories.truncate(query.limit);
+            memories.last().map(|m| m.id)
+        }
+        false => None,
+    };
+    Ok(Json(MemoryList { memories, next }))
 }
 
 async fn memory_record(
@@ -225,7 +257,7 @@ async fn approve_memory(
 ) -> Result<Json<MemoryRecord>, ApiError> {
     let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
     let id = row_id(&id)?;
-    let record = decidable(&caller, &yard, id)?;
+    let record = decidable(&caller, &yard, id).await?;
     if matches!(record.scope, MemoryScope::Person { .. }) {
         return Err(ApiError::new(
             axum::http::StatusCode::BAD_REQUEST,
@@ -249,7 +281,7 @@ async fn reject_memory(
 ) -> Result<Json<MemoryRecord>, ApiError> {
     let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
     let id = row_id(&id)?;
-    decidable(&caller, &yard, id)?;
+    decidable(&caller, &yard, id).await?;
     let by = caller.name().to_owned();
     Ok(Json(sdk(blocking(move || {
         yard.reject_memory(id, &by, request.reason.as_deref())
@@ -265,7 +297,7 @@ async fn edit_memory(
 ) -> Result<Json<MemoryRecord>, ApiError> {
     let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
     let id = row_id(&id)?;
-    decidable(&caller, &yard, id)?;
+    decidable(&caller, &yard, id).await?;
     let by = caller.name().to_owned();
     let edit = MemoryRecordEdit {
         title: request.title,
@@ -290,7 +322,8 @@ async fn promote_memory(
     let id = row_id(&id)?;
     // A promotion proposes: the subject rule is the engine's, and the
     // team's approvers decide the new row.
-    let record = sdk(yard.memory_record(id))?;
+    let reading = yard.clone();
+    let record = sdk(blocking(move || reading.memory_record(id)).await?)?;
     visible(&caller, record)?;
     let by = caller.name().to_owned();
     let team = scope_of(&caller, &yard, false);
@@ -307,7 +340,7 @@ async fn forget_memory(
 ) -> Result<Json<MemoryRecord>, ApiError> {
     let yard = app.authorized_repo(&caller, &repo, "run")?.yard.clone();
     let id = row_id(&id)?;
-    decidable(&caller, &yard, id)?;
+    decidable(&caller, &yard, id).await?;
     let by = caller.name().to_owned();
     Ok(Json(sdk(blocking(move || {
         yard.forget_memory(id, &by, None)

@@ -4138,16 +4138,22 @@ impl MemoryBackend for Sqlite {
         let scope = filter.scope.as_ref().map(Scope::key);
         let tenant = filter.tenant.clone();
         let status = filter.status.map(|s| s.as_str());
+        let after = to_db("after", filter.after.unwrap_or(0))?;
+        let limit = match filter.limit {
+            Some(limit) => to_db_usize("limit", limit)?,
+            None => i64::MAX,
+        };
         let rows = self.query(|conn| {
             let e = |error| db("memory", error);
             let mut statement = conn
                 .prepare(
                     "SELECT id, body FROM memories WHERE (?1 IS NULL OR scope = ?1) \
-                     AND (?2 IS NULL OR tenant = ?2) AND (?3 IS NULL OR status = ?3) ORDER BY id",
+                     AND (?2 IS NULL OR tenant = ?2) AND (?3 IS NULL OR status = ?3) \
+                     AND id > ?4 ORDER BY id LIMIT ?5",
                 )
                 .map_err(e)?;
             let rows = statement
-                .query_map(params![scope, tenant, status], observation_row)
+                .query_map(params![scope, tenant, status, after, limit], observation_row)
                 .map_err(e)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(e)
         })?;

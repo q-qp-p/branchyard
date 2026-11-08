@@ -4569,12 +4569,17 @@ impl MemoryBackend for Postgres {
         let scope = filter.scope.as_ref().map(Scope::key);
         let tenant = filter.tenant.clone();
         let status = filter.status.map(|s| s.as_str());
+        let after = to_db("after", filter.after.unwrap_or(0))?;
+        let limit = match filter.limit {
+            Some(limit) => to_db_usize("limit", limit)?,
+            None => i64::MAX,
+        };
         let rows = self.query(|client| {
             client.query(
                 "SELECT id, body FROM by_memories WHERE repo = $1 \
                  AND ($2::text IS NULL OR scope = $2) AND ($3::text IS NULL OR tenant = $3) \
-                 AND ($4::text IS NULL OR status = $4) ORDER BY id",
-                &[&self.repo, &scope, &tenant, &status],
+                 AND ($4::text IS NULL OR status = $4) AND id > $5 ORDER BY id LIMIT $6",
+                &[&self.repo, &scope, &tenant, &status, &after, &limit],
             )
         })?;
         rows.iter().map(pg_memory).collect()
