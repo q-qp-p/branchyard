@@ -261,3 +261,79 @@ fn the_dispatcher_consolidates_on_the_configured_schedule() {
     assert_eq!(runs[0].counts.merged, 1, "the third correction is evidence");
     server.stop();
 }
+
+const CAROL_TOKEN: &str = "carol-token-0123456789abc";
+
+#[test]
+fn another_tenants_row_is_unknown_a_non_admin_cannot_read_a_persons_row_and_listings_page() {
+    let f = Fixture::new();
+    let mut config = f.config();
+    config.tokens.push(Token {
+        name: "carol".into(),
+        secret: CAROL_TOKEN.into(),
+    });
+    let mut carol = Principal::default_for("carol");
+    carol.scopes.remove("admin");
+    config.principals.insert("carol".into(), carol);
+    let server = Server::start(config);
+    let client = server.client();
+    let repo = client.repo("app");
+    corrected_twice(&client);
+    let yard = Yard::open(&f.root).unwrap();
+    yard.use_memory(MemorySettings {
+        visibility: Visibility::Private {
+            subject: "tester".into(),
+        },
+        ..MemorySettings::default()
+    });
+    for name in ["one", "two"] {
+        assert_eq!(yard.observe_turn(name, 2, &[]).unwrap().len(), 1);
+    }
+    let mine = repo.consolidate_memory(Some(SCOPE_MINE)).unwrap();
+    let person = mine.proposed[0].id;
+
+    // A caller without admin who is not the subject is refused, row and
+    // evidence alike.
+    let carol = Client::new(&server.url(), CAROL_TOKEN).unwrap();
+    let refused = carol.repo("app").memory(person).unwrap_err();
+    assert_eq!(refused.code(), Some("denied"), "{refused}");
+    let refused = carol.repo("app").memory_evidence(person).unwrap_err();
+    assert_eq!(refused.code(), Some("denied"), "{refused}");
+    let refused = carol.repo("app").promote_memory(person).unwrap_err();
+    assert_eq!(refused.code(), Some("denied"), "{refused}");
+
+    // A row of another tenant does not exist for this one, whatever is
+    // asked of it.
+    let other = yard
+        .promote_memory(person, "tester", yard.memory_scope("other"))
+        .unwrap();
+    let unknown = |error: branchyard_client::Error| {
+        assert_eq!(error.code(), Some("unknown_memory"), "{error}");
+    };
+    unknown(repo.memory(other.id).unwrap_err());
+    unknown(repo.memory_evidence(other.id).unwrap_err());
+    unknown(repo.approve_memory(other.id).unwrap_err());
+    unknown(repo.reject_memory(other.id, None).unwrap_err());
+    unknown(repo.forget_memory(other.id).unwrap_err());
+    unknown(repo.promote_memory(other.id).unwrap_err());
+    unknown(repo.edit_memory(other.id, &Default::default()).unwrap_err());
+    assert!(repo.memories(None, None).unwrap().is_empty());
+
+    // Listings are pages with a cursor.
+    for _ in 0..3 {
+        repo.promote_memory(person).unwrap();
+    }
+    let first = repo.memories_page(None, None, Some(2), None).unwrap();
+    assert_eq!(first.memories.len(), 2);
+    let cursor = first.next.expect("another page follows");
+    assert_eq!(cursor, first.memories[1].id);
+    let second = repo
+        .memories_page(None, None, Some(2), Some(cursor))
+        .unwrap();
+    assert_eq!(second.memories.len(), 1);
+    assert_eq!(second.next, None);
+    assert!(second.memories[0].id > cursor);
+    let bad = repo.memories_page(None, None, Some(0), None).unwrap_err();
+    assert_eq!(bad.code(), Some("invalid_request"), "{bad}");
+    server.stop();
+}

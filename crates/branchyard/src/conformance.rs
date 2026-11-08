@@ -12,7 +12,7 @@ use crate::graph::GraphBackend;
 use crate::knowledge::KnowledgeBackend;
 use crate::memory::store::{
     Decision as MemoryDecision, MemoryBackend, MemoryFilter, MemoryStatus, NewMemoryRecord,
-    RunCounts, RunOutcome, Scope, LOST_RACE, NOTHING_NEW, PROPOSED,
+    RunCounts, RunOutcome, Scope, ABANDONED, LOST_RACE, NOTHING_NEW, PROPOSED,
 };
 use crate::memory::{EventRef, MemoryKind, NewObservation, ObservationKind, Visibility};
 use crate::models::UsageBackend;
@@ -2814,7 +2814,7 @@ pub(crate) fn knowledge(s: Opened) {
 
 /// An observation for the memory cases, of the repository `repo` labels (the
 /// store's own label, as the engine records it).
-fn observation(
+pub(crate) fn observation(
     repo: &str,
     tenant: &str,
     subject: Option<&str>,
@@ -2977,6 +2977,125 @@ pub(crate) fn memory_observations(s: Opened) {
     assert!(!due.iter().any(|sc| sc.tenant() == "globex"));
 }
 
+/// The memory-run fence is enforced: a renewal within the hold moves it, a
+/// renewal after it ran out fails, a later run of the scope closes the
+/// dead run's row as abandoned (and the abandoned run cannot renew even
+/// within its old hold), and a run whose fence is still good is left alone.
+pub(crate) fn memory_fence(s: Opened) {
+    let store = &s.memory;
+    let repo = s.backend.label();
+    let scope = repo_scope(&repo, "fenceco");
+    let dead = store
+        .run_started(&scope, 0, "ana", "asked", 100, 1_100)
+        .unwrap();
+    assert!(store.run_renew(&dead, 1_000, 2_000).unwrap());
+    // Past the renewed hold, it cannot be renewed.
+    assert!(!store.run_renew(&dead, 2_001, 9_000).unwrap());
+    // A live run of the scope, started while the other's fence is good,
+    // leaves it open.
+    let live = store
+        .run_started(&scope, 0, "bob", "schedule", 1_500, 2_500)
+        .unwrap();
+    let rows = store.runs(Some(&scope), 10).unwrap();
+    assert!(rows.iter().all(|r| r.outcome.is_none()), "{rows:?}");
+    // After the dead run's fence, a new run takes over: its row is closed.
+    let next = store
+        .run_started(&scope, 0, "ana", "asked", 3_000, 4_000)
+        .unwrap();
+    let rows = store.runs(Some(&scope), 10).unwrap();
+    let outcome = |id: u64| {
+        rows.iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.outcome.clone())
+    };
+    assert_eq!(outcome(dead.id).as_deref(), Some(ABANDONED), "{rows:?}");
+    assert_eq!(outcome(live.id).as_deref(), Some(ABANDONED), "{rows:?}");
+    assert_eq!(outcome(next.id), None);
+    assert!(
+        !store.run_renew(&dead, 3_000, 9_000).unwrap(),
+        "an abandoned run has no fence"
+    );
+    assert!(store.run_renew(&next, 3_500, 9_000).unwrap());
+}
+
+/// Observations written at once by several engines are read in an order
+/// that never skips one: a reader that polls above its watermark, as a
+/// consolidation does, sees every id exactly once. (PostgreSQL stores
+/// observations under the repository's feed lock, so ids commit in order;
+/// SQLite's writers are serialized.)
+pub(crate) fn memory_commit_order(s: Opened) {
+    const WRITERS: usize = 3;
+    const BATCHES: u32 = 6;
+    let repo = s.backend.label();
+    let scope = repo_scope(&repo, "orderco");
+    let handles: Vec<_> = (0..WRITERS)
+        .map(|writer| {
+            let store = (s.again_memory)();
+            let repo = repo.clone();
+            std::thread::spawn(move || {
+                let mut ids = Vec::new();
+                for batch in 0..BATCHES {
+                    let text = format!("writer {writer} batch {batch}");
+                    let obs = [
+                        observation(
+                            &repo,
+                            "orderco",
+                            None,
+                            &format!("w{writer}"),
+                            batch,
+                            &text,
+                            1,
+                        ),
+                        observation(
+                            &repo,
+                            "orderco",
+                            None,
+                            &format!("w{writer}"),
+                            batch + 100,
+                            &text,
+                            1,
+                        ),
+                    ];
+                    ids.extend(store.observe(&obs).unwrap());
+                }
+                ids
+            })
+        })
+        .collect();
+    let want = WRITERS * BATCHES as usize * 2;
+    let mut seen: Vec<u64> = Vec::new();
+    let mut watermark = 0;
+    let reader = (s.again_memory)();
+    // Read while the writers run, then until every observation is read: a
+    // read that starts after the last writer finished and finds nothing
+    // means an observation was skipped.
+    while seen.len() < want {
+        let done = handles.iter().all(|h| h.is_finished());
+        let batch = reader.observations_since(&scope, watermark, 4).unwrap();
+        if let Some(last) = batch.last() {
+            watermark = last.id;
+        }
+        seen.extend(batch.iter().map(|o| o.id));
+        if batch.is_empty() {
+            assert!(
+                !done,
+                "the writers finished and {} of {want} observations were never read",
+                seen.len()
+            );
+            std::thread::yield_now();
+        }
+    }
+    let mut written: Vec<u64> = handles
+        .into_iter()
+        .flat_map(|h| h.join().unwrap())
+        .collect();
+    written.sort_unstable();
+    let mut read = seen.clone();
+    read.sort_unstable();
+    assert_eq!(read, written, "every id read once, none skipped");
+    assert_eq!(seen.len(), want);
+}
+
 /// Memory rows and runs: a proposal gets an id and is read back by filter;
 /// a decision is a compare-and-swap (two deciders, one wins); an edit
 /// keeps the status; a merge unions provenance and sums `seen`; a run's
@@ -3087,7 +3206,7 @@ pub(crate) fn memory_rows(s: Opened) {
         .run_started(&scope, 0, "ana", "asked", 300, 300 + 60_000)
         .unwrap();
     assert_eq!((run.watermark_read, run.by.as_str()), (0, "ana"));
-    assert!(store.run_renew(&run, 300 + 120_000).unwrap());
+    assert!(store.run_renew(&run, 301, 300 + 120_000).unwrap());
     let old = store
         .observe(&[
             observation(&repo, "acme", None, "old", 1, "Old and unreferenced", 1),
@@ -3128,7 +3247,7 @@ pub(crate) fn memory_rows(s: Opened) {
     assert_eq!(ids.len(), 1);
     assert_eq!(store.watermark(&scope).unwrap(), old[2]);
     assert!(
-        !store.run_renew(&run, 1).unwrap(),
+        !store.run_renew(&run, 402, 1_000_000).unwrap(),
         "a finished run has no fence"
     );
     let from_run = store.memory(ids[0]).unwrap().unwrap();
@@ -3691,7 +3810,7 @@ macro_rules! suite {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
             concurrent_appends, contended_feed, races, storage, artifact_capture, messages, message_logs, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
-            outcomes, knowledge, memory_observations, memory_rows, pools, usage, effects, timers,
+            outcomes, knowledge, memory_observations, memory_rows, memory_fence, memory_commit_order, pools, usage, effects, timers,
             clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {

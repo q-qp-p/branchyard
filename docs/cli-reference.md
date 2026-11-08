@@ -1492,7 +1492,7 @@ by knowledge reject [OPTIONS] <ID>...
 
 | Option | What it does |
 |---|---|
-| `<ID>...` | Entry numbers, as `by knowledge review` lists them |
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them Entry numbers, as `by knowledge review` lists them |
 | `--reason <TEXT>` | Why |
 
 ### `by knowledge edit`
@@ -1642,7 +1642,9 @@ by memory review [OPTIONS]
 
 ### `by memory approve`
 
-Approve proposed rows: each is written into its bundle (the team's under .agents/skills, yours in your skills folder) and marked approved
+Approve proposed rows and write each into its bundle
+
+The team's rows go under .agents/skills, yours in your skills folder.
 
 ```text
 by memory approve [OPTIONS] <ID>...
@@ -1662,7 +1664,7 @@ by memory reject [OPTIONS] <ID>...
 
 | Option | What it does |
 |---|---|
-| `<ID>...` |  |
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them |
 | `--reason <TEXT>` | Why |
 
 ### `by memory promote`
@@ -1675,7 +1677,7 @@ by memory promote [OPTIONS] <ID>
 
 | Option | What it does |
 |---|---|
-| `<ID>` |  |
+| `<ID>` | The number of one of your own rows |
 
 ### `by memory forget`
 
@@ -1687,7 +1689,7 @@ by memory forget [OPTIONS] <ID>
 
 | Option | What it does |
 |---|---|
-| `<ID>` |  |
+| `<ID>` | The number of the row to delete |
 
 ### `by memory consolidate`
 

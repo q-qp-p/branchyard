@@ -40,16 +40,26 @@ pub enum Scope {
 impl Scope {
     /// The scope as the `memory_watermarks` and `memory_runs` tables key
     /// it: `repo:<tenant>:<repo>` or `person:<tenant>:<subject>[:<repo>]`.
+    /// A component holding `:` or `%` is written with `%3A` and `%25`, so
+    /// two scopes never share a key (a tenant `a:b` with subject `c` and a
+    /// tenant `a` with subject `b:c` once did).
     pub fn key(&self) -> String {
         match self {
-            Scope::Repo { tenant, repo } => format!("repo:{tenant}:{repo}"),
+            Scope::Repo { tenant, repo } => {
+                format!("repo:{}:{}", escape(tenant), escape(repo))
+            }
             Scope::Person {
                 tenant,
                 subject,
                 repo,
             } => match repo {
-                Some(repo) => format!("person:{tenant}:{subject}:{repo}"),
-                None => format!("person:{tenant}:{subject}"),
+                Some(repo) => format!(
+                    "person:{}:{}:{}",
+                    escape(tenant),
+                    escape(subject),
+                    escape(repo)
+                ),
+                None => format!("person:{}:{}", escape(tenant), escape(subject)),
             },
         }
     }
@@ -61,19 +71,28 @@ impl Scope {
         match kind {
             "repo" => {
                 let (tenant, repo) = rest.split_once(':').ok_or_else(bad)?;
+                if repo.contains(':') {
+                    return Err(bad());
+                }
                 Ok(Scope::Repo {
-                    tenant: tenant.to_owned(),
-                    repo: repo.to_owned(),
+                    tenant: unescape(tenant).ok_or_else(bad)?,
+                    repo: unescape(repo).ok_or_else(bad)?,
                 })
             }
             "person" => {
-                let mut parts = rest.splitn(3, ':');
+                let mut parts = rest.split(':');
                 let tenant = parts.next().ok_or_else(bad)?;
                 let subject = parts.next().ok_or_else(bad)?;
+                let repo = parts.next();
+                if parts.next().is_some() {
+                    return Err(bad());
+                }
                 Ok(Scope::Person {
-                    tenant: tenant.to_owned(),
-                    subject: subject.to_owned(),
-                    repo: parts.next().map(str::to_owned),
+                    tenant: unescape(tenant).ok_or_else(bad)?,
+                    subject: unescape(subject).ok_or_else(bad)?,
+                    repo: repo
+                        .map(|repo| unescape(repo).ok_or_else(bad))
+                        .transpose()?,
                 })
             }
             _ => Err(bad()),
@@ -110,6 +129,32 @@ impl Scope {
             Scope::Person { subject, .. } => format!("{subject}'s memory"),
         }
     }
+}
+
+/// `component` with `%` and `:` escaped, for a scope key.
+fn escape(component: &str) -> String {
+    component.replace('%', "%25").replace(':', "%3A")
+}
+
+/// [`escape`] undone; `None` for a component with a stray `%`.
+fn unescape(component: &str) -> Option<String> {
+    let mut out = String::with_capacity(component.len());
+    let mut rest = component;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        if let Some(after) = tail.strip_prefix("%25") {
+            out.push('%');
+            rest = after;
+        } else if let Some(after) = tail.strip_prefix("%3A") {
+            out.push(':');
+            rest = after;
+        } else {
+            return None;
+        }
+    }
+    out.push_str(rest);
+    Some(out)
 }
 
 impl fmt::Display for Scope {
@@ -269,6 +314,10 @@ pub struct MemoryFilter {
     pub tenant: Option<String>,
     /// Only rows of this status; `None` for every status.
     pub status: Option<MemoryStatus>,
+    /// Only rows with an id above this (a page's cursor); `None` for all.
+    pub after: Option<u64>,
+    /// At most this many rows, lowest id first; `None` for all of them.
+    pub limit: Option<usize>,
 }
 
 /// A decision on a row: compare-and-swap from its current status.
@@ -294,7 +343,10 @@ pub struct Forgotten {
 }
 
 /// A consolidation run in progress: a row of `memory_runs` with a fence
-/// (`fenced_until_ms`) renewed while it works.
+/// (`fenced_until_ms`) renewed while it works. The fence bounds how long a
+/// run may hold its scope: a renewal after it ran out fails, and the next
+/// run of the scope closes the dead run's row. Correctness does not rest
+/// on it; the watermark's compare-and-swap does.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
@@ -390,6 +442,10 @@ pub struct RunRow {
 
 /// The outcome a run records when another run moved the watermark first.
 pub const LOST_RACE: &str = "lost_race";
+
+/// The outcome of a run that never finished and whose fence ran out: a
+/// later run of the scope closed its row.
+pub const ABANDONED: &str = "abandoned";
 
 /// The outcome of a run that proposed or merged something.
 pub const PROPOSED: &str = "proposed";
@@ -527,6 +583,10 @@ pub(crate) trait MemoryBackend: Send + Sync + fmt::Debug {
     /// consumed, 0 before any.
     fn watermark(&self, scope: &Scope) -> Result<u64, Error>;
     /// Record a run starting at `watermark`, fenced until `fenced_until_ms`.
+    /// An unfinished run of the scope whose fence ran out before `now_ms`
+    /// died: its row is closed as [`ABANDONED`]. A run whose fence has not
+    /// run out is left alone: two runs of a scope may overlap, and the
+    /// watermark's compare-and-swap lets only one write.
     fn run_started(
         &self,
         scope: &Scope,
@@ -536,8 +596,10 @@ pub(crate) trait MemoryBackend: Send + Sync + fmt::Debug {
         now_ms: u64,
         fenced_until_ms: u64,
     ) -> Result<Run, Error>;
-    /// Move the run's fence; false when the run is finished or gone.
-    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error>;
+    /// Move the run's fence to `fenced_until_ms`; false when the run is
+    /// finished, abandoned or gone, or its fence ran out before `now_ms`
+    /// (a run that held its scope past its hold may have been taken over).
+    fn run_renew(&self, run: &Run, now_ms: u64, fenced_until_ms: u64) -> Result<bool, Error>;
     /// Finish the run: in one transaction, swap the scope's watermark from
     /// `run.watermark_read` to `outcome.watermark_written`, write the
     /// proposals, the evidence, the knowledge entries and the expiry, and
@@ -577,6 +639,30 @@ mod tests {
             repo: None,
         };
         assert_eq!(Scope::parse_key("person:local:ana").unwrap(), bare);
+        // A component with a colon or a percent sign keeps its scope's key
+        // its own: these two once shared `person:a:b:c`.
+        let first = Scope::Person {
+            tenant: "a:b".into(),
+            subject: "c".into(),
+            repo: None,
+        };
+        let second = Scope::Person {
+            tenant: "a".into(),
+            subject: "b".into(),
+            repo: Some("c".into()),
+        };
+        assert_ne!(first.key(), second.key());
+        let odd = Scope::Person {
+            tenant: "a:b%c".into(),
+            subject: "s%3A".into(),
+            repo: Some("r:1".into()),
+        };
+        assert_eq!(odd.key(), "person:a%3Ab%25c:s%253A:r%3A1");
+        for scope in [&first, &second, &odd] {
+            assert_eq!(&Scope::parse_key(&scope.key()).unwrap(), scope);
+        }
+        assert!(Scope::parse_key("repo:a:b:c").is_err());
+        assert!(Scope::parse_key("repo:a%:b").is_err());
         assert!(Scope::parse_key("team:x").is_err());
         assert!(Scope::parse_key("repo:acme").is_err());
         assert_eq!(repo.describe(), "the team's memory of app");

@@ -18,12 +18,22 @@ pub const SCOPE_REPO: &str = "repo";
 /// See [`SCOPE_REPO`].
 pub const SCOPE_MINE: &str = "mine";
 
-/// `GET /v1/repos/{repo}/memory[?scope=repo|mine][&status=...]`.
+/// The rows a listing returns when no `limit` is asked for.
+pub const MEMORY_PAGE: usize = 200;
+
+/// The most rows a listing returns, whatever `limit` asks for.
+pub const MEMORY_PAGE_MAX: usize = 1_000;
+
+/// `GET /v1/repos/{repo}/memory[?scope=repo|mine][&status=...][&limit=N][&after=ID]`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryList {
     /// The rows, by id.
     pub memories: Vec<MemoryRecord>,
+    /// Another page follows: pass this as `after` to read it. Absent on
+    /// the last page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<u64>,
 }
 
 /// `GET /v1/repos/{repo}/memory/{id}/evidence`: the row and the
@@ -127,6 +137,36 @@ impl Repo {
             .client()
             .get::<MemoryList>(&self.memory_path(&rest))?
             .memories)
+    }
+
+    /// One page of rows: at most `limit` (the server's default is
+    /// [`MEMORY_PAGE`], its most [`MEMORY_PAGE_MAX`]) with an id above
+    /// `after`; `next` on the result is the cursor of the following page.
+    pub fn memories_page(
+        &self,
+        scope: Option<&str>,
+        status: Option<MemoryStatus>,
+        limit: Option<usize>,
+        after: Option<u64>,
+    ) -> Result<MemoryList, Error> {
+        let mut query = Vec::new();
+        if let Some(scope) = scope {
+            query.push(format!("scope={scope}"));
+        }
+        if let Some(status) = status {
+            query.push(format!("status={}", status.as_str()));
+        }
+        if let Some(limit) = limit {
+            query.push(format!("limit={limit}"));
+        }
+        if let Some(after) = after {
+            query.push(format!("after={after}"));
+        }
+        let rest = match query.is_empty() {
+            true => String::new(),
+            false => format!("?{}", query.join("&")),
+        };
+        self.client().get(&self.memory_path(&rest))
     }
 
     /// One row; `unknown_memory` when there is none, `denied` for another person's.

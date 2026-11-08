@@ -213,6 +213,7 @@ pub enum KnowledgeAction {
     },
     /// Reject entries: they are not used, and the same text is not proposed again
     Reject {
+        /// Row numbers, as `by memory list --status proposed` shows them
         #[arg(required = true, value_name = "ID")]
         /// Entry numbers, as `by knowledge review` lists them
         ids: Vec<u64>,
@@ -1035,8 +1036,9 @@ pub enum MemoryAction {
         #[arg(long, value_name = "EDITOR")]
         editor: Option<String>,
     },
-    /// Approve proposed rows: each is written into its bundle (the team's under .agents/skills,
-    /// yours in your skills folder) and marked approved
+    /// Approve proposed rows and write each into its bundle
+    ///
+    /// The team's rows go under .agents/skills, yours in your skills folder.
     Approve {
         /// Row numbers, as `by memory list --status proposed` shows them
         #[arg(required = true, value_name = "ID", value_parser = memory_id)]
@@ -1044,6 +1046,7 @@ pub enum MemoryAction {
     },
     /// Reject proposed rows; the rejection sticks against new evidence
     Reject {
+        /// Row numbers, as `by memory list --status proposed` shows them
         #[arg(required = true, value_name = "ID", value_parser = memory_id)]
         ids: Vec<u64>,
         /// Why
@@ -1052,11 +1055,13 @@ pub enum MemoryAction {
     },
     /// Offer one of your own rows to the team: a new proposed row; yours stays
     Promote {
+        /// The number of one of your own rows
         #[arg(value_name = "ID", value_parser = memory_id)]
         id: u64,
     },
     /// Delete a row and its bundle file; the branches it came from record it, without the text
     Forget {
+        /// The number of the row to delete
         #[arg(value_name = "ID", value_parser = memory_id)]
         id: u64,
     },

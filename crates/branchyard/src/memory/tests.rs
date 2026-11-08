@@ -64,6 +64,7 @@ fn context<'a>(turn: u32, members: &'a [String], visibility: &'a Visibility) -> 
         task_kind: Some(TaskKind::Bugfix),
         members,
         at_ms: 2_000,
+        windowed: false,
     }
 }
 
@@ -239,7 +240,7 @@ fn every_kind_is_derived_from_its_events_and_the_skip_list_holds() {
                 ObservationKind::CheckFailed,
                 &format!(
                     "check `cargo test` failed\n{}",
-                    (6..=45)
+                    (1..=45)
                         .map(|n| format!("line {n}"))
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -685,4 +686,441 @@ fn the_pass_proposes_clusters_of_two_matches_evidence_and_skips_external_authors
         title_of(&observations[0].text),
         "Run the benches with the 1 MB fixture"
     );
+}
+
+#[test]
+fn a_short_correction_is_knowledge_only_for_the_local_team_scope() {
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+    ];
+    let run = |scope: &Scope| pass(scope, &observations, &[], false, 20, 1, 5);
+    let local = run(&Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    });
+    assert_eq!((local.knowledge.len(), local.proposals.len()), (1, 0));
+    // A served tenant's repository may be another tenant's too: the
+    // correction stays a row of the tenant's own scope.
+    let served = run(&Scope::Repo {
+        tenant: "acme".into(),
+        repo: "app".into(),
+    });
+    assert!(served.knowledge.is_empty(), "{:?}", served.knowledge);
+    assert_eq!(served.proposals.len(), 1);
+    assert_eq!(served.proposals[0].title, "Format before you finish");
+    // A person's private corrections never become team knowledge.
+    for repo in [None, Some("app".to_owned())] {
+        let person = run(&Scope::Person {
+            tenant: "local".into(),
+            subject: "ana".into(),
+            repo,
+        });
+        assert!(person.knowledge.is_empty(), "{:?}", person.knowledge);
+        assert_eq!(person.proposals.len(), 1);
+    }
+}
+
+#[test]
+fn a_cut_body_counts_observations_not_lines() {
+    // Failed checks near the text limit, each of forty lines: the body is
+    // cut after the first and counts the others, not an underflowed number.
+    let line = "x".repeat(97);
+    let text = format!("check `cargo test` failed\n{}", vec![line; 40].join("\n"));
+    let observations = vec![
+        observation(1, ObservationKind::CheckFailed, &text, &[], false),
+        observation(2, ObservationKind::CheckFailed, &text, &[], false),
+        observation(3, ObservationKind::CheckFailed, &text, &[], false),
+    ];
+    let scope = Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    };
+    let result = pass(&scope, &observations, &[], false, 20, 1, 5);
+    assert_eq!(result.proposals.len(), 1);
+    let body = &result.proposals[0].body;
+    assert!(
+        body.ends_with("- ...and 2 more"),
+        "{}",
+        &body[body.len() - 60..]
+    );
+}
+
+#[test]
+fn a_failed_checks_output_is_scrubbed_before_it_is_cut_to_its_last_lines() {
+    // A multi-line secret whose first lines fall before the cut: the lines
+    // that remain in the tail are still removed, and the tail is the last
+    // forty.
+    let value = "PRIVATE KEY BEGIN\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nKgwggSkAgEAAoIBAQC7VJTUt9Us8cKj\nZm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFi\nPRIVATE KEY END";
+    let ordinary = |n: u32| format!("line {n} of ordinary compiler output, long enough to matter");
+    let mut output: Vec<String> = (1..=3).map(ordinary).collect();
+    output.extend(value.lines().map(str::to_owned));
+    output.extend((4..=60).map(ordinary));
+    // The value's later lines come again inside the last forty.
+    let inside = output.len() - 38;
+    output.splice(inside..inside, value.lines().skip(2).map(str::to_owned));
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::PullRequest(Box::new(
+            PullRequestActivity::Checked(CheckRun {
+                commit: "abc".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                passed: false,
+                timed_out: false,
+                output_tail: output.join("\n"),
+            }),
+        ))),
+    ]);
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let ctx = context(1, &members, &visibility);
+    let drafts = derive(&events, &ctx);
+    assert_eq!(drafts.len(), 1);
+    let scrubber = Scrubber::new(&[value.to_owned()], &[]);
+    let draft = drafts.into_iter().next().unwrap();
+    let (text, _) = scrubber.scrub(&draft.text).unwrap();
+    let stored = draft.into_observation(&ctx, text, Vec::new()).text;
+    assert!(
+        stored.starts_with("check `cargo test` failed\n"),
+        "{stored}"
+    );
+    assert_eq!(stored.lines().count(), 41, "{stored}");
+    for part in value.lines().filter(|l| l.len() > 8) {
+        assert!(!stored.contains(part), "{part} kept in {stored}");
+    }
+    assert!(stored.ends_with("line 60 of ordinary compiler output, long enough to matter"));
+}
+
+#[test]
+fn a_pull_request_comment_without_an_author_is_external_and_a_review_comment_is_not() {
+    let members = vec!["ann".to_owned()];
+    let visibility = Visibility::Shared;
+    let pr = "Feedback on pull request #4 (https://x/4):\n\n1. @someone on src/lib.rs:3:\n\
+              > Never unwrap in library code anywhere\nAddress it on this branch.";
+    let events = feed(vec![
+        prompt("task"),
+        prompt(pr),
+        prompt("File: a.txt\nLine: 1\nUser comment: \"Always end the notes with a summary line\""),
+    ]);
+    let author_of = |turn: u32| {
+        derive(&events, &context(turn, &members, &visibility))
+            .into_iter()
+            .map(|d| d.author)
+            .collect::<Vec<_>>()
+    };
+    let from_pr = author_of(2);
+    assert_eq!(from_pr.len(), 1, "{from_pr:?}");
+    assert_eq!(
+        from_pr[0].as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+    // The person's own `by review` comment stays a member's.
+    assert_eq!(author_of(3), [None]);
+    // A recorded pull request comment with no login is external too.
+    let feedback = Feedback {
+        source: FeedbackSource::PullRequest,
+        reference: Some("https://x/4".into()),
+        items: vec![FeedbackItem {
+            kind: FeedbackKind::Comment,
+            body: "Never unwrap in library code anywhere".into(),
+            ..FeedbackItem::default()
+        }],
+        prompt: Some(prompt_digest(pr)),
+    };
+    let events = feed(vec![
+        prompt("task"),
+        at(Activity::Feedback(Box::new(feedback))),
+        prompt(pr),
+    ]);
+    let drafts = derive(&events, &context(2, &members, &visibility));
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].author.as_ref().map(|a| a.association),
+        Some(Association::External)
+    );
+}
+
+#[test]
+fn a_windowed_feed_derives_the_turn_the_whole_feed_does() {
+    let members = Vec::new();
+    let visibility = Visibility::Shared;
+    let events = feed(vec![
+        prompt("Fix the parser"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always run cargo fmt before you finish"),
+        tool("false"),
+        tool("false"),
+        at(Activity::Status(BranchStatus::Ready)),
+        prompt("Always keep the changelog in step with the code"),
+        tool("true"),
+        tool("true"),
+    ]);
+    let whole = derive(&events, &context(3, &members, &visibility));
+    assert_eq!(whole.len(), 2, "{whole:?}");
+    // The engine reads from a little before the turn's prompt.
+    let window = &events[4..];
+    let ctx = Context {
+        windowed: true,
+        ..context(3, &members, &visibility)
+    };
+    assert_eq!(derive(window, &ctx), whole);
+}
+
+#[test]
+fn members_are_read_once_per_ttl_and_not_from_pull_request_refs() {
+    let cache = MemberCache::default();
+    let root = std::path::Path::new("/repo");
+    let loads = std::cell::Cell::new(0);
+    let load = || {
+        loads.set(loads.get() + 1);
+        vec!["ann".to_owned()]
+    };
+    for at in [1_000, 2_000, MEMBERS_TTL_MS - 1] {
+        assert_eq!(cache.get_or_load(root, at, load), ["ann"]);
+    }
+    assert_eq!(loads.get(), 1, "one history read for the whole window");
+    cache.get_or_load(root, MEMBERS_TTL_MS + 1_000, load);
+    assert_eq!(loads.get(), 2, "read again once the entry is old");
+    cache.get_or_load(std::path::Path::new("/other"), 1_000, load);
+    assert_eq!(loads.get(), 3, "another repository has its own entry");
+}
+
+#[test]
+fn a_contributor_on_a_fetched_pull_request_ref_is_not_a_member() {
+    let scratch = branchyard_testkit::Scratch::new("members");
+    let root = scratch.path();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=Ann",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "one",
+    ]);
+    git(&["checkout", "-q", "-b", "pr"]);
+    git(&[
+        "-c",
+        "user.name=drive-by",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "two",
+    ]);
+    git(&["update-ref", "refs/pull/5/head", "pr"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["branch", "-q", "-D", "pr"]);
+    let yard = crate::Yard::open(root).unwrap();
+    let members = members(&yard, &["Bob".to_owned()]);
+    assert!(members.contains(&"ann".to_owned()), "{members:?}");
+    assert!(members.contains(&"bob".to_owned()), "{members:?}");
+    assert!(!members.contains(&"drive-by".to_owned()), "{members:?}");
+}
+
+/// A yard on a scratch repository with one commit.
+fn scratch_yard(name: &str) -> (branchyard_testkit::Scratch, crate::Yard) {
+    let scratch = branchyard_testkit::Scratch::new(name);
+    let root = scratch.path().to_path_buf();
+    let git = |args: &[&str]| {
+        let mut full = vec![
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.email=x@example.com",
+            "-c",
+            "user.name=Ann",
+        ];
+        full.extend_from_slice(args);
+        crate::git::run(&root, &full).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "one"]);
+    let yard = crate::Yard::open(&root).unwrap();
+    (scratch, yard)
+}
+
+fn proposal(scope: &Scope, title: &str) -> super::store::NewMemoryRecord {
+    super::store::NewMemoryRecord {
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: title.into(),
+        body: format!("Body of {title}."),
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        provenance: Vec::new(),
+        note: None,
+        now_ms: 1,
+    }
+}
+
+fn new_memory(title: &str) -> super::NewMemory {
+    super::NewMemory {
+        title: title.into(),
+        body: "Body.".into(),
+        kind: MemoryKind::Rule,
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        topic: None,
+        by: "ana".into(),
+        now_ms: 1,
+        evidence: Vec::new(),
+    }
+}
+
+#[test]
+fn writers_at_once_lose_no_memory_and_share_no_slug() {
+    let (_scratch, yard) = scratch_yard("library-writers");
+    let library = super::Library::team(yard.root());
+    let threads: Vec<_> = (0..6)
+        .map(|n| {
+            let library = super::Library::team(yard.root());
+            std::thread::spawn(move || {
+                (0..3)
+                    .map(|_| library.add(new_memory("Same title")).unwrap().memory.id)
+                    .chain(std::iter::once(
+                        library
+                            .add(new_memory(&format!("Own title {n}")))
+                            .unwrap()
+                            .memory
+                            .id,
+                    ))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let mut ids: Vec<String> = threads
+        .into_iter()
+        .flat_map(|t| t.join().unwrap())
+        .collect();
+    ids.sort();
+    let before = ids.len();
+    ids.dedup();
+    assert_eq!(ids.len(), before, "a slug was given twice");
+    let held: Vec<String> = library.read().unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(held.len(), 24, "{held:?}");
+}
+
+#[test]
+fn two_approvals_of_one_row_keep_the_winners_file_and_two_rows_both_land() {
+    let (_scratch, yard) = scratch_yard("approvals");
+    let scope = yard.memory_scope("local");
+    let store = yard.store();
+    let memory = store.memory();
+    // Two rows with one title: their files must not share a slug.
+    let a = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let b = memory.propose(&proposal(&scope, "Run fmt")).unwrap();
+    let racers: Vec<_> = [a, b]
+        .into_iter()
+        .map(|id| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(id, "ana", None).unwrap())
+        })
+        .collect();
+    let approved: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    let paths: Vec<_> = approved
+        .iter()
+        .map(|a| a.record.published.clone().unwrap().path)
+        .collect();
+    assert_ne!(paths[0], paths[1], "{paths:?}");
+    let library = super::Library::team(yard.root());
+    assert_eq!(library.read().unwrap().len(), 2);
+    // Two approvals of the same row: one wins, the other fails and takes
+    // back only its own file.
+    let c = memory
+        .propose(&proposal(&scope, "Keep notes short"))
+        .unwrap();
+    let racers: Vec<_> = (0..2)
+        .map(|_| {
+            let yard = yard.clone();
+            std::thread::spawn(move || yard.approve_memory(c, "ana", None))
+        })
+        .collect();
+    let results: Vec<_> = racers.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(
+        results.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{results:?}"
+    );
+    let winner = results.into_iter().find_map(Result::ok).unwrap();
+    let slug = winner
+        .record
+        .published
+        .unwrap()
+        .path
+        .trim_start_matches("references/")
+        .trim_end_matches(".md")
+        .to_owned();
+    let held = library.read().unwrap();
+    assert_eq!(held.len(), 3, "{held:?}");
+    assert!(
+        held.iter().any(|m| m.id == slug),
+        "the winner's file is gone"
+    );
+}
+
+#[test]
+fn an_edit_whose_row_swap_loses_leaves_the_file_as_it_was() {
+    let (_scratch, yard) = scratch_yard("edit-loses");
+    let scope = yard.memory_scope("local");
+    let id = yard
+        .store()
+        .memory()
+        .propose(&proposal(&scope, "Run fmt"))
+        .unwrap();
+    let approved = yard.approve_memory(id, "ana", None).unwrap();
+    let current = approved.record;
+    let library = super::Library::team(yard.root());
+    let before = library.read().unwrap();
+    let mut changed = current.clone();
+    changed.title = "Run cargo fmt".into();
+    let edit = super::review::MemoryRecordEdit {
+        title: Some("Run cargo fmt".into()),
+        ..Default::default()
+    };
+    // Someone rejects the row between the file's rewrite and the swap.
+    let error = super::review::edit_row(&yard, &current, changed, &edit, "ana", None, || {
+        let decided = yard
+            .store()
+            .memory()
+            .decide(
+                id,
+                MemoryStatus::Approved,
+                &super::store::Decision {
+                    status: MemoryStatus::Rejected,
+                    by: "bob".into(),
+                    now_ms: 5,
+                    note: None,
+                    published: None,
+                },
+            )
+            .unwrap();
+        assert!(decided);
+    })
+    .unwrap_err();
+    assert!(matches!(error, crate::Error::State(_)), "{error}");
+    assert_eq!(library.read().unwrap(), before, "the file was left edited");
 }
