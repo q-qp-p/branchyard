@@ -39202,6 +39202,28 @@
             {
               "type": "object",
               "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "message": {
                   "$ref": "#/$defs/Message"
                 }
@@ -45584,6 +45606,28 @@
               "type": "string",
               "const": "resumed",
               "description": "Activity was observed after [`Activity::Stalled`]; the branch is no\nlonger stalled."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
             },
             {
               "type": "object",
@@ -58823,6 +58867,28 @@
               "type": "string",
               "const": "resumed",
               "description": "Activity was observed after [`Activity::Stalled`]; the branch is no\nlonger stalled."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "traced": {
+                  "type": "object",
+                  "properties": {
+                    "traceparent": {
+                      "description": "The turn span's `traceparent`.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "traceparent"
+                  ]
+                }
+              },
+              "required": [
+                "traced"
+              ],
+              "additionalProperties": false,
+              "description": "The turn that just began is traced live: its spans are exported as\nthe events are recorded, under this W3C `traceparent`. Recorded right\nafter the turn's [`Activity::Prompt`] by the process that traces it,\nso a reader in any process (a server writing spans after the fact)\nknows the turn is already traced and writes no second set."
             },
             {
               "type": "object",

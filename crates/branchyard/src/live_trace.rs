@@ -13,11 +13,13 @@
 //! `error.type`); a tool call carries the harness's bounded, scrubbed
 //! [`ToolTarget`](branchyard_harness::ToolTarget) and never its inputs.
 //!
-//! A turn that had live spans is remembered ([`was_live`]) so the server,
+//! A turn that had live spans is marked in its event log
+//! ([`Activity::Traced`], recorded right after its prompt), so the server,
 //! which writes spans after the fact for turns it has no live data for,
-//! does not write a second set for it: one turn is traced once.
+//! does not write a second set for it, whichever process traced the turn:
+//! one turn is traced once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use branchyard_harness::Event;
@@ -29,15 +31,9 @@ use tracing::Span;
 
 use crate::{Activity, BranchStatus};
 
-/// Turns remembered as traced live, until their after-the-fact pass asks.
-const REMEMBERED: usize = 8192;
-
 /// A live turn's `traceparent`, by branch, for the spans other threads
 /// open under it (a delegation, a connector call).
 static PARENTS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
-
-/// `(branch, prompt time)` of turns that had live spans.
-static LIVE: Mutex<Option<HashSet<(String, u64)>>> = Mutex::new(None);
 
 /// The `traceparent` of `branch`'s live turn span, while a turn runs and
 /// spans are exported.
@@ -46,23 +42,6 @@ pub(crate) fn turn_traceparent(branch: &str) -> Option<String> {
         .lock_recovering("live turn parents")
         .as_ref()
         .and_then(|m| m.get(branch).cloned())
-}
-
-/// Whether the turn of `branch` whose prompt was recorded at `prompt_ms`
-/// was traced live in this process. Asking forgets the turn.
-pub fn was_live(branch: &str, prompt_ms: u64) -> bool {
-    LIVE.lock_recovering("live turns")
-        .as_mut()
-        .is_some_and(|set| set.remove(&(branch.to_owned(), prompt_ms)))
-}
-
-fn remember_live(branch: &str, prompt_ms: u64) {
-    let mut guard = LIVE.lock_recovering("live turns");
-    let set = guard.get_or_insert_with(HashSet::new);
-    if set.len() >= REMEMBERED {
-        set.clear();
-    }
-    set.insert((branch.to_owned(), prompt_ms));
 }
 
 /// The `kind` (or `state`) tag of a serde-tagged value.
@@ -125,7 +104,14 @@ impl LiveTrace {
         }
     }
 
-    fn start(&mut self, at_ms: u64) {
+    /// The `traceparent` of the open turn's span, when the turn is traced.
+    pub(crate) fn traceparent(&self) -> Option<String> {
+        self.turn
+            .as_ref()
+            .and_then(|turn| trace::traceparent(&turn.span))
+    }
+
+    fn start(&mut self) {
         if !trace::enabled() {
             return;
         }
@@ -150,7 +136,6 @@ impl LiveTrace {
         if let Some(parent) = &self.parent {
             trace::adopt(&span, parent);
         }
-        remember_live(&self.branch, at_ms);
         if let Some(own) = trace::traceparent(&span) {
             PARENTS
                 .lock_recovering("live turn parents")
@@ -204,14 +189,14 @@ impl LiveTrace {
         drop(turn);
     }
 
-    /// Follow one recorded activity, stamped `at_ms`.
-    pub(crate) fn observe(&mut self, at_ms: u64, activity: &Activity) {
+    /// Follow one recorded activity.
+    pub(crate) fn observe(&mut self, activity: &Activity) {
         if !trace::enabled() {
             return;
         }
         if matches!(activity, Activity::Prompt(_)) {
             self.end("unknown");
-            self.start(at_ms);
+            self.start();
             return;
         }
         let Some(turn) = self.turn.as_mut() else {

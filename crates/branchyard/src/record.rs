@@ -71,8 +71,14 @@ impl Recorder {
         self.store
             .append(&self.branch, &entry, self.fence.as_ref())?;
         if let Some(live) = &mut self.live {
-            live.observe(entry.at_ms, &entry.activity);
+            live.observe(&entry.activity);
         }
+        // A prompt that opened a live turn span is marked in the log, so no
+        // reader in another process traces the turn again.
+        let traced = match entry.activity {
+            Activity::Prompt(_) => self.live.as_ref().and_then(LiveTrace::traceparent),
+            _ => None,
+        };
         if let Some(observer) = &self.observer {
             observe(
                 observer,
@@ -81,6 +87,9 @@ impl Recorder {
                     activity: entry.activity,
                 },
             );
+        }
+        if let Some(traceparent) = traced {
+            self.record(Activity::Traced { traceparent })?;
         }
         Ok(entry.at_ms)
     }
@@ -106,7 +115,7 @@ impl Recorder {
         };
         lease.finish(Some(record), Some(&entry))?;
         if let Some(live) = &mut self.live {
-            live.observe(entry.at_ms, &entry.activity);
+            live.observe(&entry.activity);
         }
         if let Some(observer) = &self.observer {
             observe(

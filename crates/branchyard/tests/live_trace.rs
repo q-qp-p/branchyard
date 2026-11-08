@@ -74,6 +74,20 @@ fn a_turn_is_a_live_span_with_genai_attributes_and_its_tool_calls_beneath() {
     let turns = named(&spans, "turn");
     assert_eq!(turns.len(), 1, "{spans:#?}");
     let turn = turns[0];
+    // The log marks the turn as traced, right after its prompt and naming its
+    // span, so a reader in another process writes no second set.
+    let events = record.events().unwrap();
+    let at = events
+        .iter()
+        .position(|e| matches!(e.activity, branchyard::Activity::Prompt(_)))
+        .expect("a prompt");
+    match &events[at + 1].activity {
+        branchyard::Activity::Traced { traceparent: own } => {
+            assert_eq!(trace_id_of(own), trace_id_of(&traceparent));
+            assert!(own.contains(&turn.span_id), "{own} names {}", turn.span_id);
+        }
+        other => panic!("expected the turn marked traced, got {other:?}"),
+    }
     let root_span = named(&spans, "test root")[0];
     assert_eq!(turn.parent_id.as_deref(), Some(root_span.span_id.as_str()));
     assert_eq!(attr(turn, "by.live"), "true");

@@ -3369,6 +3369,15 @@ pub enum Activity {
     /// Activity was observed after [`Activity::Stalled`]; the branch is no
     /// longer stalled.
     Resumed,
+    /// The turn that just began is traced live: its spans are exported as
+    /// the events are recorded, under this W3C `traceparent`. Recorded right
+    /// after the turn's [`Activity::Prompt`] by the process that traces it,
+    /// so a reader in any process (a server writing spans after the fact)
+    /// knows the turn is already traced and writes no second set.
+    Traced {
+        /// The turn span's `traceparent`.
+        traceparent: String,
+    },
     /// A harness-to-harness message was sent or delivered; see
     /// [`crate::inbox`]. Recorded on both the sending and the receiving
     /// branch's event log.

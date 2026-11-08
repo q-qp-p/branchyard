@@ -268,7 +268,7 @@ fn collector_headers(
     collector: &Collector,
     url: &str,
     endpoint: &http::Endpoint,
-) -> Result<Vec<(String, String)>, Report> {
+) -> Result<Vec<(String, String)>, Box<Report>> {
     if collector.headers.is_empty() || !collector.is_configured(url) {
         return Ok(Vec::new());
     }
@@ -278,15 +278,17 @@ fn collector_headers(
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback());
     if !endpoint.tls && !local {
-        return Err(Report::new(
-            "denied",
-            format!("not sending the collector headers to {url} over plain http"),
-        )
-        .line(
-            "why",
-            "OTEL_EXPORTER_OTLP_HEADERS is credentials, and http would send them in the clear",
-        )
-        .next("use an https:// URL, or unset OTEL_EXPORTER_OTLP_HEADERS and send without them"));
+        return Err(Box::new(
+            Report::new(
+                "denied",
+                format!("not sending the collector headers to {url} over plain http"),
+            )
+            .line(
+                "why",
+                "OTEL_EXPORTER_OTLP_HEADERS is credentials, and http would send them in the clear",
+            )
+            .next("use an https:// URL, or unset OTEL_EXPORTER_OTLP_HEADERS and send without them"),
+        ));
     }
     Ok(collector.headers.clone())
 }
@@ -311,7 +313,7 @@ fn post(url: &str, body: &[u8], collector: &Collector) -> Result<Sent, crate::co
         true => Some(http::tls_config(None).map_err(failed)?),
         false => None,
     };
-    let extra = collector_headers(collector, url, &endpoint)?;
+    let extra = collector_headers(collector, url, &endpoint).map_err(|report| *report)?;
     let mut headers = vec![("Content-Type", "application/json".to_owned())];
     headers.extend(extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
     let target = match endpoint.prefix.is_empty() {

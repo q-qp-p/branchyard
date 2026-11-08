@@ -72,8 +72,9 @@ struct Turn {
     start_ms: u64,
     saw_event: bool,
     tool: Option<Tool>,
-    /// The engine traced this turn while it ran (see
-    /// `branchyard::live_trace`): its spans are not written again here.
+    /// The turn's log carries `Activity::Traced` (see
+    /// `branchyard::live_trace`): a process traced it while it ran, and its
+    /// spans are not written again here.
     live: bool,
     /// Spans inside the turn, written with the turn's span as their parent
     /// once it is known.
@@ -293,11 +294,18 @@ pub fn record_events(
                         start_ms: at,
                         saw_event: false,
                         tool: None,
-                        live: branchyard::live_trace::was_live(branch, at),
+                        live: false,
                         children: Vec::new(),
                         searches_unopened: 0,
                     },
                 );
+            }
+            // The turn's spans were exported live, by this process or
+            // another: none are written from the log.
+            Activity::Traced { .. } => {
+                if let Some(open) = turns.get_mut(branch) {
+                    open.live = true;
+                }
             }
             Activity::Harness(Event::TurnAccepted { turn, .. }) => {
                 if let Some(open) = turns.get_mut(branch) {
@@ -1194,6 +1202,57 @@ mod tests {
             .get("by.branch")
             .map(String::as_str)
             == Some("solo")));
+    }
+
+    #[test]
+    fn a_turn_marked_traced_in_its_log_is_not_written_again_by_any_process() {
+        let capture = capture().unwrap();
+        let observability = Observability::default();
+        let turn = |branch: &str, marked: bool, id: u64| {
+            let mut entries = vec![entry(id, branch, 1_000, Activity::Prompt("p".into()))];
+            if marked {
+                entries.push(entry(
+                    id + 1,
+                    branch,
+                    1_001,
+                    Activity::Traced {
+                        traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+                            .into(),
+                    },
+                ));
+            }
+            entries.push(entry(
+                id + 2,
+                branch,
+                2_000,
+                Activity::Harness(Event::TurnEnded {
+                    turn: 1,
+                    outcome: TurnOutcome::Completed,
+                }),
+            ));
+            entries
+        };
+        let trace = branchyard_client::new_key();
+        let parent = format!("00-{trace}-b7ad6b7169203331-01");
+        let branches: BTreeSet<String> = ["marked".to_owned(), "plain".to_owned()].into();
+        let mut entries = turn("marked", true, 1);
+        entries.extend(turn("plain", false, 10));
+        // This process holds no memory of the "marked" turn: the marker is in
+        // its log, written by whichever process traced it.
+        record_events(
+            &observability,
+            &branches,
+            &|_| "pi".into(),
+            &entries,
+            Some(&parent),
+        );
+        let written: Vec<_> = capture
+            .trace(&trace)
+            .into_iter()
+            .filter(|s| s.name == "turn")
+            .map(|s| s.attributes.get("by.branch").cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(written, ["plain"], "only the untraced turn is written");
     }
 
     #[test]
