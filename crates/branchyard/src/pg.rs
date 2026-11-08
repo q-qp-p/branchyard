@@ -4484,8 +4484,14 @@ impl Postgres {
 }
 
 impl MemoryBackend for Postgres {
+    /// Observations are stored under the repository's feed lock, taken
+    /// before the transaction's snapshot and released after its commit, so
+    /// they commit one at a time and in the order their ids are assigned.
+    /// A reader that has seen id N has therefore seen every id below N that
+    /// will ever commit, and a consolidation's watermark never skips an
+    /// observation that was still in flight when it read.
     fn observe(&self, obs: &[NewObservation]) -> Result<Vec<u64>, Error> {
-        self.tx(true, |tx| {
+        self.appending(true, |tx, _locked| {
             let mut ids = Vec::with_capacity(obs.len());
             for observation in obs {
                 let key = observation.key();
@@ -4668,6 +4674,17 @@ impl MemoryBackend for Postgres {
         fenced_until_ms: u64,
     ) -> Result<Run, Error> {
         let id: i64 = self.tx(true, |tx| {
+            tx.execute(
+                "UPDATE by_memory_runs SET finished_ms = $3, outcome = $4 WHERE repo = $1 \
+                 AND scope = $2 AND finished_ms IS NULL AND fenced_until_ms < $3",
+                &[
+                    &self.repo,
+                    &scope.key(),
+                    &to_db("started_ms", now_ms)?,
+                    &memory_store::ABANDONED,
+                ],
+            )
+            .map_err(db("memory run"))?;
             Ok(tx
                 .query_one(
                     "INSERT INTO by_memory_runs (repo, scope, watermark_read, started_ms, \
@@ -4698,16 +4715,17 @@ impl MemoryBackend for Postgres {
         })
     }
 
-    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error> {
+    fn run_renew(&self, run: &Run, now_ms: u64, fenced_until_ms: u64) -> Result<bool, Error> {
         self.tx(true, |tx| {
             let changed = tx
                 .execute(
                     "UPDATE by_memory_runs SET fenced_until_ms = $3 WHERE repo = $1 AND id = $2 \
-                     AND finished_ms IS NULL",
+                     AND finished_ms IS NULL AND fenced_until_ms >= $4",
                     &[
                         &self.repo,
                         &to_db("id", run.id)?,
                         &to_db("fenced_until_ms", fenced_until_ms)?,
+                        &to_db("now_ms", now_ms)?,
                     ],
                 )
                 .map_err(db("memory run"))?;
@@ -5205,6 +5223,42 @@ mod contention_tests {
     use crate::state::Backend;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
+
+    /// An observation is stored under the repository's feed lock, so a
+    /// writer that holds the lock (a transaction still to commit) keeps a
+    /// later observation from committing before it: ids commit in order and
+    /// a consolidation's watermark cannot skip one.
+    #[test]
+    fn an_observation_waits_behind_the_feed_lock_so_ids_commit_in_order() {
+        let Some(base) = postgres_url() else {
+            eprintln!("skipped: set BY_TEST_POSTGRES_URL to run the PostgreSQL conformance tests");
+            return;
+        };
+        let opened = postgres_at(base.clone(), "observation-lock");
+        let repo = opened.backend.label();
+        let mut holder = connect(&base).unwrap();
+        holder
+            .execute(super::FEED_LOCK, &[&repo])
+            .unwrap();
+        let store = opened.memory.clone();
+        let observation = crate::conformance::observation(&repo, "acme", None, "fix", 1, "Run fmt", 1);
+        let writer = std::thread::spawn(move || store.observe(&[observation]));
+        // The writer is queued on the lock this session holds.
+        branchyard_testkit::wait::until("the observation to wait for the feed lock", || {
+            holder
+                .query_one(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+                    &[],
+                )
+                .map(|row| row.get::<_, i64>(0) >= 1)
+                .unwrap_or(false)
+        });
+        assert!(!writer.is_finished(), "it stored before the lock was free");
+        holder.query_one(super::FEED_UNLOCK, &[&repo]).unwrap();
+        let ids = writer.join().unwrap().unwrap();
+        assert_eq!(ids.len(), 1);
+        drop(opened);
+    }
 
     /// Engines appending to one repository's feed at once never conflict:
     /// the feed lock runs their transactions one at a time, each with a

@@ -4250,6 +4250,16 @@ impl MemoryBackend for Sqlite {
     ) -> Result<Run, Error> {
         let id = self.tx(true, |tx| {
             tx.execute(
+                "UPDATE memory_runs SET finished_ms = ?2, outcome = ?3 WHERE scope = ?1 \
+                 AND finished_ms IS NULL AND fenced_until_ms < ?2",
+                params![
+                    scope.key(),
+                    to_db("started_ms", now_ms)?,
+                    memory_store::ABANDONED
+                ],
+            )
+            .map_err(|e| db("memory run", e))?;
+            tx.execute(
                 "INSERT INTO memory_runs (scope, watermark_read, started_ms, fenced_until_ms, \
                  actor, cause, counts, proposed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]')",
                 params![
@@ -4276,15 +4286,16 @@ impl MemoryBackend for Sqlite {
         })
     }
 
-    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error> {
+    fn run_renew(&self, run: &Run, now_ms: u64, fenced_until_ms: u64) -> Result<bool, Error> {
         self.tx(true, |tx| {
             let changed = tx
                 .execute(
                     "UPDATE memory_runs SET fenced_until_ms = ?2 WHERE id = ?1 \
-                     AND finished_ms IS NULL",
+                     AND finished_ms IS NULL AND fenced_until_ms >= ?3",
                     params![
                         to_db("id", run.id)?,
-                        to_db("fenced_until_ms", fenced_until_ms)?
+                        to_db("fenced_until_ms", fenced_until_ms)?,
+                        to_db("now_ms", now_ms)?
                     ],
                 )
                 .map_err(|e| db("memory run", e))?;

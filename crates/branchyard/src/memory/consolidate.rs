@@ -498,11 +498,16 @@ pub(crate) fn consolidate(
     });
     let last = observations.last().map_or(watermark, |o| o.id);
     // The fence is renewed before the commit, as a longer pass (the
-    // distiller's turn, M5) renews it while it works.
-    if !memory.run_renew(&run, now_ms() + HOLD_MS)? {
+    // distiller's turn, M5) renews it while it works. A run that held its
+    // scope past its hold, or whose row a later run closed as abandoned,
+    // stops here instead of writing.
+    let renewed_at = now_ms();
+    if !memory.run_renew(&run, renewed_at, renewed_at + HOLD_MS)? {
         return Err(Error::State(format!(
-            "memory run {} lost its fence before it finished",
-            run.id
+            "memory run {} held its scope past its hold ({} minutes) or was closed as abandoned; \
+             run the consolidation again",
+            run.id,
+            HOLD_MS / 60_000
         )));
     }
     let keep_ms = u64::from(settings.keep_observations_days) * 24 * 60 * 60 * 1_000;

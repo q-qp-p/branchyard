@@ -294,7 +294,10 @@ pub struct Forgotten {
 }
 
 /// A consolidation run in progress: a row of `memory_runs` with a fence
-/// (`fenced_until_ms`) renewed while it works.
+/// (`fenced_until_ms`) renewed while it works. The fence bounds how long a
+/// run may hold its scope: a renewal after it ran out fails, and the next
+/// run of the scope closes the dead run's row. Correctness does not rest
+/// on it; the watermark's compare-and-swap does.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
@@ -390,6 +393,10 @@ pub struct RunRow {
 
 /// The outcome a run records when another run moved the watermark first.
 pub const LOST_RACE: &str = "lost_race";
+
+/// The outcome of a run that never finished and whose fence ran out: a
+/// later run of the scope closed its row.
+pub const ABANDONED: &str = "abandoned";
 
 /// The outcome of a run that proposed or merged something.
 pub const PROPOSED: &str = "proposed";
@@ -527,6 +534,10 @@ pub(crate) trait MemoryBackend: Send + Sync + fmt::Debug {
     /// consumed, 0 before any.
     fn watermark(&self, scope: &Scope) -> Result<u64, Error>;
     /// Record a run starting at `watermark`, fenced until `fenced_until_ms`.
+    /// An unfinished run of the scope whose fence ran out before `now_ms`
+    /// died: its row is closed as [`ABANDONED`]. A run whose fence has not
+    /// run out is left alone: two runs of a scope may overlap, and the
+    /// watermark's compare-and-swap lets only one write.
     fn run_started(
         &self,
         scope: &Scope,
@@ -536,8 +547,10 @@ pub(crate) trait MemoryBackend: Send + Sync + fmt::Debug {
         now_ms: u64,
         fenced_until_ms: u64,
     ) -> Result<Run, Error>;
-    /// Move the run's fence; false when the run is finished or gone.
-    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error>;
+    /// Move the run's fence to `fenced_until_ms`; false when the run is
+    /// finished, abandoned or gone, or its fence ran out before `now_ms`
+    /// (a run that held its scope past its hold may have been taken over).
+    fn run_renew(&self, run: &Run, now_ms: u64, fenced_until_ms: u64) -> Result<bool, Error>;
     /// Finish the run: in one transaction, swap the scope's watermark from
     /// `run.watermark_read` to `outcome.watermark_written`, write the
     /// proposals, the evidence, the knowledge entries and the expiry, and
