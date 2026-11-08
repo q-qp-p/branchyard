@@ -341,10 +341,33 @@ CREATE TABLE IF NOT EXISTS memory_observations (
     body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS memory_observations_scope ON memory_observations (tenant, subject, id);
+CREATE TABLE IF NOT EXISTS memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    tenant TEXT NOT NULL,
+    status TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memories_scope ON memories (scope, status, id);
 CREATE TABLE IF NOT EXISTS memory_watermarks (
     scope TEXT PRIMARY KEY,
     watermark INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope TEXT NOT NULL,
+    watermark_read INTEGER NOT NULL,
+    watermark_written INTEGER,
+    started_ms INTEGER NOT NULL,
+    fenced_until_ms INTEGER NOT NULL,
+    finished_ms INTEGER,
+    outcome TEXT,
+    actor TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    counts TEXT NOT NULL,
+    proposed TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memory_runs_scope ON memory_runs (scope, id);
 ";
 
 #[derive(Debug)]
@@ -3765,32 +3788,41 @@ fn knowledge_entry(c: KnowledgeColumns) -> Result<crate::KnowledgeEntry, Error> 
     })
 }
 
+/// Insert `entry` into `knowledge` within `tx`, with `created` as its
+/// `created_ms`; the row id. The one INSERT of the table, shared by
+/// [`crate::knowledge::KnowledgeBackend::add_knowledge`] and a memory
+/// consolidation's knowledge candidates.
+fn insert_knowledge(
+    tx: &Transaction<'_>,
+    entry: &crate::KnowledgeEntry,
+    created: u64,
+) -> Result<i64, Error> {
+    tx.execute(
+        "INSERT INTO knowledge (scope_path, scope_kind, text, source, status, created_ms, \
+         adopted_by, decided_ms, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            entry.scope.path,
+            entry.scope.kind.map(|k| k.as_str()),
+            entry.text,
+            encode("knowledge source", &entry.source)?,
+            entry.status.as_str(),
+            to_db("created", created)?,
+            entry.adopted_by,
+            to_db_opt("decided_ms", entry.decided_ms)?,
+            entry.note
+        ],
+    )
+    .map_err(|e| db("knowledge", e))?;
+    Ok(tx.last_insert_rowid())
+}
+
 impl crate::knowledge::KnowledgeBackend for Sqlite {
     fn add_knowledge(&self, entry: &crate::KnowledgeEntry) -> Result<crate::KnowledgeEntry, Error> {
-        let source = encode("knowledge source", &entry.source)?;
         let created = match entry.created_ms {
             0 => now_ms(),
             at => at,
         };
-        let id = self.tx(true, |tx| {
-            tx.execute(
-                "INSERT INTO knowledge (scope_path, scope_kind, text, source, status, created_ms, \
-                 adopted_by, decided_ms, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    entry.scope.path,
-                    entry.scope.kind.map(|k| k.as_str()),
-                    entry.text,
-                    source,
-                    entry.status.as_str(),
-                    to_db("created", created)?,
-                    entry.adopted_by,
-                    to_db_opt("decided_ms", entry.decided_ms)?,
-                    entry.note
-                ],
-            )
-            .map_err(|e| db("knowledge", e))?;
-            Ok(tx.last_insert_rowid())
-        })?;
+        let id = self.tx(true, |tx| insert_knowledge(tx, entry, created))?;
         Ok(crate::KnowledgeEntry {
             id: from_db("id", id)?,
             created_ms: created,
@@ -3869,10 +3901,13 @@ impl crate::knowledge::KnowledgeBackend for Sqlite {
 }
 
 // ---------------------------------------------------------------------------
-// Memory: observations and their watermarks (`crate::memory::store`).
+// Memory: observations, rows, watermarks and runs (`crate::memory::store`).
 // Rows are JSON bodies beside the columns they are filtered by.
 
-use crate::memory::store::{self as memory_store, MemoryBackend, Scope};
+use crate::memory::store::{
+    self as memory_store, Decision as MemoryDecision, Forgotten, MemoryBackend, MemoryFilter,
+    MemoryRecord, MemoryStatus, NewMemoryRecord, Run, RunCounts, RunOutcome, RunRow, Scope,
+};
 use crate::memory::{NewObservation, Observation};
 
 const OBSERVATION_COLUMNS: &str = "id, body";
@@ -3886,6 +3921,126 @@ fn observation_from((id, body): (i64, String)) -> Result<Observation, Error> {
         id: from_db("id", id)?,
         body: decode("observation", &body)?,
     })
+}
+
+fn memory_from((id, body): (i64, String)) -> Result<MemoryRecord, Error> {
+    let mut record: MemoryRecord = decode("memory", &body)?;
+    record.id = from_db("id", id)?;
+    Ok(record)
+}
+
+/// The row `id` of `memories`, within `tx`.
+fn read_memory(tx: &Transaction<'_>, id: u64) -> Result<Option<MemoryRecord>, Error> {
+    tx.query_row(
+        "SELECT id, body FROM memories WHERE id = ?1",
+        params![to_db("id", id)?],
+        observation_row,
+    )
+    .optional()
+    .map_err(|e| db("memory", e))?
+    .map(memory_from)
+    .transpose()
+}
+
+/// Replace the row `id`'s body (and the columns it is filtered by).
+fn write_memory(tx: &Transaction<'_>, record: &MemoryRecord) -> Result<(), Error> {
+    tx.execute(
+        "UPDATE memories SET scope = ?2, tenant = ?3, status = ?4, body = ?5 WHERE id = ?1",
+        params![
+            to_db("id", record.id)?,
+            record.scope.key(),
+            record.scope.tenant(),
+            record.status.as_str(),
+            encode("memory", record)?
+        ],
+    )
+    .map_err(|e| db("memory", e))?;
+    Ok(())
+}
+
+/// Insert a proposed row; its id.
+fn insert_memory(tx: &Transaction<'_>, new: &NewMemoryRecord) -> Result<u64, Error> {
+    let record = memory_store::proposed_record(new);
+    tx.execute(
+        "INSERT INTO memories (scope, tenant, status, body) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            record.scope.key(),
+            record.scope.tenant(),
+            record.status.as_str(),
+            encode("memory", &record)?
+        ],
+    )
+    .map_err(|e| db("memory", e))?;
+    let id = from_db("id", tx.last_insert_rowid())?;
+    // The body carries its id too, so a read of the body alone is whole.
+    write_memory(tx, &MemoryRecord { id, ..record })?;
+    Ok(id)
+}
+
+const RUN_COLUMNS: &str = "id, scope, watermark_read, watermark_written, started_ms, \
+     finished_ms, outcome, actor, cause, counts, proposed";
+
+type RunColumns = (
+    i64,
+    String,
+    i64,
+    Option<i64>,
+    i64,
+    Option<i64>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunColumns> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+        r.get(6)?,
+        r.get(7)?,
+        r.get(8)?,
+        r.get(9)?,
+        r.get(10)?,
+    ))
+}
+
+fn run_from(c: RunColumns) -> Result<RunRow, Error> {
+    Ok(RunRow {
+        id: from_db("id", c.0)?,
+        scope: Scope::parse_key(&c.1)?,
+        watermark_read: from_db("watermark_read", c.2)?,
+        watermark_written: from_db_opt("watermark_written", c.3)?,
+        started_ms: from_db("started_ms", c.4)?,
+        finished_ms: from_db_opt("finished_ms", c.5)?,
+        outcome: c.6,
+        by: c.7,
+        trigger: c.8,
+        counts: decode("run counts", &c.9)?,
+        proposed: decode("run proposed", &c.10)?,
+    })
+}
+
+/// Every observation id some memory row's provenance names.
+fn referenced_observations(tx: &Transaction<'_>) -> Result<std::collections::BTreeSet<u64>, Error> {
+    let mut statement = tx
+        .prepare("SELECT id, body FROM memories")
+        .map_err(|e| db("memory", e))?;
+    let rows = statement
+        .query_map([], observation_row)
+        .map_err(|e| db("memory", e))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| db("memory", e))?;
+    let mut referenced = std::collections::BTreeSet::new();
+    for row in rows {
+        referenced.extend(memory_from(row)?.provenance);
+    }
+    Ok(referenced)
 }
 
 impl MemoryBackend for Sqlite {
@@ -3958,6 +4113,119 @@ impl MemoryBackend for Sqlite {
         rows.into_iter().map(observation_from).collect()
     }
 
+    fn observations(&self, ids: &[u64]) -> Result<Vec<Observation>, Error> {
+        let mut out = Vec::new();
+        for id in ids {
+            let found = self.query(|conn| {
+                conn.query_row(
+                    &format!("SELECT {OBSERVATION_COLUMNS} FROM memory_observations WHERE id = ?1"),
+                    params![to_db("id", *id)?],
+                    observation_row,
+                )
+                .optional()
+                .map_err(|e| db("observation", e))
+            })?;
+            if let Some(row) = found {
+                out.push(observation_from(row)?);
+            }
+        }
+        out.sort_by_key(|o| o.id);
+        out.dedup_by_key(|o| o.id);
+        Ok(out)
+    }
+
+    fn memories(&self, filter: &MemoryFilter) -> Result<Vec<MemoryRecord>, Error> {
+        let scope = filter.scope.as_ref().map(Scope::key);
+        let tenant = filter.tenant.clone();
+        let status = filter.status.map(|s| s.as_str());
+        let rows = self.query(|conn| {
+            let e = |error| db("memory", error);
+            let mut statement = conn
+                .prepare(
+                    "SELECT id, body FROM memories WHERE (?1 IS NULL OR scope = ?1) \
+                     AND (?2 IS NULL OR tenant = ?2) AND (?3 IS NULL OR status = ?3) ORDER BY id",
+                )
+                .map_err(e)?;
+            let rows = statement
+                .query_map(params![scope, tenant, status], observation_row)
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        rows.into_iter().map(memory_from).collect()
+    }
+
+    fn memory(&self, id: u64) -> Result<Option<MemoryRecord>, Error> {
+        let found = self.query(|conn| {
+            conn.query_row(
+                "SELECT id, body FROM memories WHERE id = ?1",
+                params![to_db("id", id)?],
+                observation_row,
+            )
+            .optional()
+            .map_err(|e| db("memory", e))
+        })?;
+        found.map(memory_from).transpose()
+    }
+
+    fn propose(&self, m: &NewMemoryRecord) -> Result<u64, Error> {
+        self.tx(true, |tx| insert_memory(tx, m))
+    }
+
+    fn decide(&self, id: u64, from: MemoryStatus, to: &MemoryDecision) -> Result<bool, Error> {
+        self.tx(true, |tx| match read_memory(tx, id)? {
+            Some(record) if record.status == from => {
+                write_memory(tx, &memory_store::decided(&record, to))?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        })
+    }
+
+    fn put_memory(&self, m: &MemoryRecord, expected: MemoryStatus) -> Result<bool, Error> {
+        self.tx(true, |tx| match read_memory(tx, m.id)? {
+            Some(record) if record.status == expected => {
+                write_memory(
+                    tx,
+                    &MemoryRecord {
+                        status: record.status,
+                        ..m.clone()
+                    },
+                )?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        })
+    }
+
+    fn merge(&self, into: u64, from: u64) -> Result<(), Error> {
+        self.tx(true, |tx| {
+            let target =
+                read_memory(tx, into)?.ok_or_else(|| Error::UnknownMemory(format!("#{into}")))?;
+            let source =
+                read_memory(tx, from)?.ok_or_else(|| Error::UnknownMemory(format!("#{from}")))?;
+            write_memory(tx, &memory_store::merged(&target, &source))?;
+            tx.execute(
+                "DELETE FROM memories WHERE id = ?1",
+                params![to_db("id", from)?],
+            )
+            .map_err(|e| db("memory", e))?;
+            Ok(())
+        })
+    }
+
+    fn forget(&self, id: u64) -> Result<Forgotten, Error> {
+        self.tx(true, |tx| {
+            let memory =
+                read_memory(tx, id)?.ok_or_else(|| Error::UnknownMemory(format!("#{id}")))?;
+            tx.execute(
+                "DELETE FROM memories WHERE id = ?1",
+                params![to_db("id", id)?],
+            )
+            .map_err(|e| db("memory", e))?;
+            Ok(Forgotten { memory })
+        })
+    }
+
     fn watermark(&self, scope: &Scope) -> Result<u64, Error> {
         let found: Option<i64> = self.query(|conn| {
             conn.query_row(
@@ -3969,6 +4237,172 @@ impl MemoryBackend for Sqlite {
             .map_err(|e| db("watermark", e))
         })?;
         Ok(from_db_opt("watermark", found)?.unwrap_or(0))
+    }
+
+    fn run_started(
+        &self,
+        scope: &Scope,
+        watermark: u64,
+        by: &str,
+        trigger: &str,
+        now_ms: u64,
+        fenced_until_ms: u64,
+    ) -> Result<Run, Error> {
+        let id = self.tx(true, |tx| {
+            tx.execute(
+                "INSERT INTO memory_runs (scope, watermark_read, started_ms, fenced_until_ms, \
+                 actor, cause, counts, proposed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]')",
+                params![
+                    scope.key(),
+                    to_db("watermark", watermark)?,
+                    to_db("started_ms", now_ms)?,
+                    to_db("fenced_until_ms", fenced_until_ms)?,
+                    by,
+                    trigger,
+                    encode("run counts", &RunCounts::default())?
+                ],
+            )
+            .map_err(|e| db("memory run", e))?;
+            Ok(tx.last_insert_rowid())
+        })?;
+        Ok(Run {
+            id: from_db("id", id)?,
+            scope: scope.clone(),
+            watermark_read: watermark,
+            started_ms: now_ms,
+            fenced_until_ms,
+            by: by.to_owned(),
+            trigger: trigger.to_owned(),
+        })
+    }
+
+    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error> {
+        self.tx(true, |tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE memory_runs SET fenced_until_ms = ?2 WHERE id = ?1 \
+                     AND finished_ms IS NULL",
+                    params![
+                        to_db("id", run.id)?,
+                        to_db("fenced_until_ms", fenced_until_ms)?
+                    ],
+                )
+                .map_err(|e| db("memory run", e))?;
+            Ok(changed == 1)
+        })
+    }
+
+    fn run_finished(&self, run: &Run, outcome: &RunOutcome) -> Result<Option<Vec<u64>>, Error> {
+        self.tx(true, |tx| {
+            let scope = run.scope.key();
+            tx.execute(
+                "INSERT OR IGNORE INTO memory_watermarks (scope, watermark) VALUES (?1, 0)",
+                params![scope],
+            )
+            .map_err(|e| db("watermark", e))?;
+            let swapped = tx
+                .execute(
+                    "UPDATE memory_watermarks SET watermark = ?2 WHERE scope = ?1 AND watermark = ?3",
+                    params![
+                        scope,
+                        to_db("watermark", outcome.watermark_written)?,
+                        to_db("watermark", run.watermark_read)?
+                    ],
+                )
+                .map_err(|e| db("watermark", e))?;
+            if swapped != 1 {
+                tx.execute(
+                    "UPDATE memory_runs SET finished_ms = ?2, outcome = ?3 WHERE id = ?1",
+                    params![
+                        to_db("id", run.id)?,
+                        to_db("finished_ms", outcome.now_ms)?,
+                        memory_store::LOST_RACE
+                    ],
+                )
+                .map_err(|e| db("memory run", e))?;
+                return Ok(None);
+            }
+            let mut ids = Vec::new();
+            for proposal in &outcome.proposals {
+                ids.push(insert_memory(tx, proposal)?);
+            }
+            for (memory, observations) in &outcome.evidence {
+                if let Some(record) = read_memory(tx, *memory)? {
+                    write_memory(
+                        tx,
+                        &memory_store::with_evidence(&record, observations, outcome.now_ms),
+                    )?;
+                }
+            }
+            for entry in &outcome.knowledge {
+                insert_knowledge(tx, entry, entry.created_ms)?;
+            }
+            let mut counts = outcome.counts.clone();
+            if let Some(before) = outcome.expire_before_ms {
+                let referenced = referenced_observations(tx)?;
+                let mut statement = tx
+                    .prepare(
+                        "SELECT id FROM memory_observations WHERE at_ms < ?1 AND id <= ?2 \
+                         AND tenant = ?3",
+                    )
+                    .map_err(|e| db("observation", e))?;
+                let old: Vec<i64> = statement
+                    .query_map(
+                        params![
+                            to_db("expire", before)?,
+                            to_db("watermark", outcome.watermark_written)?,
+                            run.scope.tenant()
+                        ],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| db("observation", e))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| db("observation", e))?;
+                for id in old {
+                    if referenced.contains(&from_db("id", id)?) {
+                        continue;
+                    }
+                    tx.execute(
+                        "DELETE FROM memory_observations WHERE id = ?1",
+                        params![id],
+                    )
+                    .map_err(|e| db("observation", e))?;
+                    counts.expired += 1;
+                }
+            }
+            tx.execute(
+                "UPDATE memory_runs SET watermark_written = ?2, finished_ms = ?3, outcome = ?4, \
+                 counts = ?5, proposed = ?6 WHERE id = ?1",
+                params![
+                    to_db("id", run.id)?,
+                    to_db("watermark", outcome.watermark_written)?,
+                    to_db("finished_ms", outcome.now_ms)?,
+                    memory_store::outcome_label(outcome),
+                    encode("run counts", &counts)?,
+                    encode("run proposed", &ids)?
+                ],
+            )
+            .map_err(|e| db("memory run", e))?;
+            Ok(Some(ids))
+        })
+    }
+
+    fn runs(&self, scope: Option<&Scope>, limit: usize) -> Result<Vec<RunRow>, Error> {
+        let scope = scope.map(Scope::key);
+        let rows = self.query(|conn| {
+            let e = |error| db("memory run", error);
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT {RUN_COLUMNS} FROM memory_runs WHERE (?1 IS NULL OR scope = ?1) \
+                     ORDER BY id DESC LIMIT ?2"
+                ))
+                .map_err(e)?;
+            let rows = statement
+                .query_map(params![scope, to_db_usize("limit", limit)?], run_row)
+                .map_err(e)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(e)
+        })?;
+        rows.into_iter().map(run_from).collect()
     }
 
     fn scopes_with_observations(&self) -> Result<Vec<Scope>, Error> {

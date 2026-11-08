@@ -251,6 +251,10 @@ A run that **failed**, or a fired run whose task's **outcome** was not ok, count
 - **Stopping.** A run that cannot be admitted because its server is shutting down is not a failure: it stays pending, held 30 seconds, after which any dispatcher fires it. A server on a data directory releases its predecessor's holds when it starts, so a run left by a crash or a restart fires at once.
 - **Clocks.** Due times and holds use the dispatchers' clocks, not the database's: keep hosts on NTP. Tests inject a clock and never depend on wall-clock timing.
 
+### Memory consolidation
+
+The dispatcher runs one internal job that is not a trigger: [memory consolidation](memory.md#4-consolidation-deterministic), when the server's `memory.consolidate` names a cron (five fields, UTC). Each tick, for each served repository, it asks whether that cron came due since this dispatcher last ran the job for the repository (the first time is the cron's next time after the server came up), and if so consolidates every scope with observations no run has read (`Yard::memory_scopes_due`, then `consolidate_memory` as `the dispatcher`, trigger `schedule`). The job has no trigger row, no run key and no operation, so its exactly-once is not the registry's: two dispatchers on one store that both find a repository due both run it, and the memory store makes that harmless instead of impossible. A run commits with a compare-and-swap on the scope's watermark in the transaction that writes its proposals; the run whose swap changes no row writes nothing and records `lost_race` (`by memory runs` shows it). A minute with no unread observations runs no scope at all. Hermetic: `crates/branchyard-server/tests/memory.rs` on a manual clock; the race itself is the conformance case `memory_rows` on both stores.
+
 ## Through the API
 
 | Method and path | Does | Needs | Returns |

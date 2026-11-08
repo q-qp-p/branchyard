@@ -5,8 +5,11 @@
 //! No store and no model: the engine's path through a real turn is
 //! `crates/branchyard/tests/memory.rs`.
 
+use super::consolidate::{cluster, pass, title_of, Cluster};
 use super::observe::*;
 use super::scrub::Scrubber;
+use super::store::{MemoryRecord, MemoryStatus, Scope};
+use super::MemoryKind;
 use crate::fleet::{FleetActivity, JudgeMark, TaskKind};
 use crate::goal::{GoalActivity, GoalCheck};
 use crate::plan::PlanActivity;
@@ -449,4 +452,237 @@ fn injected_values_go_in_every_encoding_and_a_quarter_scrubbed_text_is_dropped()
             .scrub(&format!("{value} {value} {value} {value} ok"))
             .is_none());
     }
+}
+
+fn observation(
+    id: u64,
+    kind: ObservationKind,
+    text: &str,
+    paths: &[&str],
+    external: bool,
+) -> Observation {
+    Observation {
+        id,
+        body: NewObservation {
+            tenant: "local".into(),
+            repo: "app".into(),
+            branch: format!("b{id}"),
+            incarnation: 1,
+            turn: 2,
+            events: vec![EventRef {
+                incarnation: 1,
+                seq: id,
+            }],
+            visibility: Visibility::Shared,
+            kind,
+            text: text.into(),
+            paths: paths.iter().map(|p| (*p).to_owned()).collect(),
+            task_kind: Some(TaskKind::Tests),
+            harness: "fake".into(),
+            model: None,
+            author: external.then(|| Author {
+                name: "drive-by".into(),
+                association: Association::External,
+            }),
+            at_ms: 1,
+            scrubbed: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn clusters_group_normalized_text_and_merge_similar_groups() {
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Run the benches with the 1 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[steer] run the  Benches with the 2 MB fixture",
+            &[],
+            false,
+        ),
+        observation(
+            3,
+            ObservationKind::Correction,
+            "[send] Run the benches with the large fixture first",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            4,
+            ObservationKind::Correction,
+            "[send] Keep the changelog in step with the code",
+            &[],
+            false,
+        ),
+        observation(
+            5,
+            ObservationKind::CheckFailed,
+            "Run the benches with the 1 MB fixture",
+            &[],
+            false,
+        ),
+    ];
+    let clusters: Vec<Cluster> = cluster(&observations);
+    let ids: Vec<Vec<u64>> = clusters.iter().map(|c| c.ids.clone()).collect();
+    assert_eq!(ids, [vec![1, 2, 3], vec![4], vec![5]], "{ids:?}");
+    assert_eq!(clusters[0].kind, ObservationKind::Correction);
+    assert_eq!(clusters[0].paths, ["crates/parser/**"]);
+    assert_eq!(clusters[0].task_kinds, [TaskKind::Tests]);
+    assert_eq!(
+        clusters[2].kind,
+        ObservationKind::CheckFailed,
+        "kinds never mix"
+    );
+}
+
+#[test]
+fn the_pass_proposes_clusters_of_two_matches_evidence_and_skips_external_authors() {
+    let scope = Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    };
+    let existing = MemoryRecord {
+        id: 50,
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: "Keep the changelog in step with the code".into(),
+        body: "Every change ships its changelog line.".into(),
+        paths: Vec::new(),
+        task_kinds: Vec::new(),
+        status: MemoryStatus::Rejected,
+        provenance: vec![9],
+        seen: 1,
+        first_seen_ms: 1,
+        last_seen_ms: 1,
+        decided_by: Some("ann".into()),
+        decided_ms: Some(2),
+        note: Some("wrong".into()),
+        published: None,
+    };
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Run the benches with the 1 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[steer] Run the benches with the 2 MB fixture",
+            &["crates/parser/**"],
+            false,
+        ),
+        observation(
+            3,
+            ObservationKind::Correction,
+            "[send] Keep the changelog in step with the code",
+            &[],
+            false,
+        ),
+        observation(
+            4,
+            ObservationKind::Correction,
+            "[pull request] Rename this helper",
+            &[],
+            true,
+        ),
+        observation(
+            5,
+            ObservationKind::Correction,
+            "[pull request] Rename this helper",
+            &[],
+            true,
+        ),
+        observation(
+            6,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            7,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            8,
+            ObservationKind::ToolDenied,
+            "Bash denied by rule x",
+            &[],
+            false,
+        ),
+        observation(
+            9,
+            ObservationKind::ToolDenied,
+            "Bash denied by rule x",
+            &[],
+            false,
+        ),
+        observation(
+            10,
+            ObservationKind::CheckFailed,
+            "check `cargo test` failed\nassertion failed",
+            &[],
+            false,
+        ),
+    ];
+    let result = pass(
+        &scope,
+        &observations,
+        std::slice::from_ref(&existing),
+        false,
+        20,
+        3,
+        500,
+    );
+    // The rejected memory gained evidence and nothing else.
+    assert_eq!(result.evidence, [(50, vec![3])]);
+    // One memory candidate (paths), one knowledge candidate (short,
+    // repository-wide), and neither the external pair, the denials nor the
+    // lone check.
+    assert_eq!(result.proposals.len(), 1, "{:?}", result.proposals);
+    let proposal = &result.proposals[0];
+    assert_eq!(proposal.title, "Run the benches with the 1 MB fixture");
+    assert_eq!(proposal.kind, MemoryKind::Rule);
+    assert_eq!(proposal.paths, ["crates/parser/**"]);
+    assert_eq!(proposal.provenance, [1, 2]);
+    assert_eq!(proposal.note.as_deref(), Some("deterministic"));
+    assert!(proposal
+        .body
+        .contains("- b1 turn 2: [send] Run the benches with the 1 MB fixture"));
+    assert!(proposal
+        .body
+        .contains("- b2 turn 2: [steer] Run the benches with the 2 MB fixture"));
+    assert_eq!(result.knowledge.len(), 1);
+    assert_eq!(result.knowledge[0].text, "Format before you finish");
+    assert!(matches!(
+        &result.knowledge[0].source,
+        crate::KnowledgeSource::Consolidation { run: 3, observations } if observations == &vec![6, 7]
+    ));
+    // With external authors allowed, their pair is a candidate too.
+    let open = pass(&scope, &observations, &[existing], true, 20, 3, 500);
+    assert_eq!(open.knowledge.len(), 2);
+    assert!(open
+        .knowledge
+        .iter()
+        .any(|k| k.text == "Rename this helper"));
+    // The cap.
+    let capped = pass(&scope, &observations, &[], true, 1, 3, 500);
+    assert_eq!(capped.proposals.len() + capped.knowledge.len(), 1);
+    assert_eq!(
+        title_of(&observations[0].text),
+        "Run the benches with the 1 MB fixture"
+    );
 }

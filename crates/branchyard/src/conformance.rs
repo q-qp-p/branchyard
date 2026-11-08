@@ -10,8 +10,11 @@ use crate::effects::EffectBackend;
 use crate::fleet::{BranchOutcome, OutcomeBackend, OutcomeRecord, TaskKind};
 use crate::graph::GraphBackend;
 use crate::knowledge::KnowledgeBackend;
-use crate::memory::store::{MemoryBackend, Scope};
-use crate::memory::{EventRef, NewObservation, ObservationKind, Visibility};
+use crate::memory::store::{
+    Decision as MemoryDecision, MemoryBackend, MemoryFilter, MemoryStatus, NewMemoryRecord,
+    RunCounts, RunOutcome, Scope, LOST_RACE, NOTHING_NEW, PROPOSED,
+};
+use crate::memory::{EventRef, MemoryKind, NewObservation, ObservationKind, Visibility};
 use crate::models::UsageBackend;
 use crate::state::{
     Acquired, Backend, Begun, Fence, Owner, PoolBackend, PortBackend, ProcessRow, Record,
@@ -2867,7 +2870,7 @@ fn person_scope(tenant: &str, subject: &str) -> Scope {
 /// one set, a new incarnation a new one), read per scope above a watermark
 /// in id order with a limit, two tenants on one repository kept apart, a
 /// private observation read by its person's scope alone, and the scopes
-/// with observations listed.
+/// with unread observations listed.
 pub(crate) fn memory_observations(s: Opened) {
     let store = &s.memory;
     let repo = s.backend.label();
@@ -2942,15 +2945,269 @@ pub(crate) fn memory_observations(s: Opened) {
         [third[0]]
     );
     assert_eq!(store.observations_since(&acme, 0, 1).unwrap().len(), 1);
-    // Every scope with observations above its watermark (0, before any
-    // consolidation): each tenant's, and the person's.
+    // By id, missing ones skipped.
+    let by_id = store.observations(&[first[2], 9_999, first[0]]).unwrap();
+    assert_eq!(
+        by_id.iter().map(|o| o.id).collect::<Vec<_>>(),
+        [first[0], first[2]]
+    );
+    // Every scope with unread observations, until a run reads them.
     let due = store.scopes_with_observations().unwrap();
     assert_eq!(due.len(), 3, "{due:?}");
     assert!(due
         .iter()
         .any(|sc| sc.tenant() == "globex" && sc.subject().is_none()));
     assert!(due.iter().any(|sc| sc.subject() == Some("ana")));
-    assert_eq!(store.watermark(&acme).unwrap(), 0);
+    let run = store
+        .run_started(&globex, 0, "test", "asked", 1_000, 2_000)
+        .unwrap();
+    assert!(store
+        .run_finished(
+            &run,
+            &RunOutcome {
+                watermark_written: first[1],
+                now_ms: 1_001,
+                ..RunOutcome::default()
+            }
+        )
+        .unwrap()
+        .is_some());
+    let due = store.scopes_with_observations().unwrap();
+    assert_eq!(due.len(), 2, "{due:?}");
+    assert!(!due.iter().any(|sc| sc.tenant() == "globex"));
+}
+
+/// Memory rows and runs: a proposal gets an id and is read back by filter;
+/// a decision is a compare-and-swap (two deciders, one wins); an edit
+/// keeps the status; a merge unions provenance and sums `seen`; a run's
+/// finish swaps the watermark and writes proposals, evidence, knowledge
+/// and expiry in one transaction, and a run whose watermark moved
+/// meanwhile writes nothing and records `lost_race`; runs list newest
+/// first; forget deletes.
+pub(crate) fn memory_rows(s: Opened) {
+    let store = &s.memory;
+    let repo = s.backend.label();
+    let again = (s.again_memory)();
+    let scope = repo_scope(&repo, "acme");
+    let new = |title: &str, provenance: Vec<u64>| NewMemoryRecord {
+        scope: scope.clone(),
+        kind: MemoryKind::Rule,
+        title: title.into(),
+        body: format!("Body of {title}."),
+        paths: vec!["src/**".into()],
+        task_kinds: vec![TaskKind::Bugfix],
+        provenance,
+        note: Some("deterministic".into()),
+        now_ms: 100,
+    };
+    assert_eq!(store.watermark(&scope).unwrap(), 0);
+    assert!(store.memories(&MemoryFilter::default()).unwrap().is_empty());
+    // Provenance ids no observation of this case has: 901 and on.
+    let a = store.propose(&new("Run fmt", vec![901, 902])).unwrap();
+    let b = again
+        .propose(&new("Keep commits small", vec![903]))
+        .unwrap();
+    assert!(a >= 1 && b > a);
+    let row = store.memory(a).unwrap().unwrap();
+    assert_eq!(
+        (row.id, row.status, row.seen),
+        (a, MemoryStatus::Proposed, 1)
+    );
+    assert_eq!(row.provenance, [901, 902]);
+    assert_eq!(row.scope, scope);
+    assert_eq!(store.memory(b + 1_000).unwrap(), None);
+    let proposed = again
+        .memories(&MemoryFilter {
+            scope: Some(scope.clone()),
+            status: Some(MemoryStatus::Proposed),
+            ..MemoryFilter::default()
+        })
+        .unwrap();
+    assert_eq!(proposed.iter().map(|m| m.id).collect::<Vec<_>>(), [a, b]);
+    assert!(store
+        .memories(&MemoryFilter {
+            scope: Some(repo_scope(&repo, "globex")),
+            ..MemoryFilter::default()
+        })
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .memories(&MemoryFilter {
+                tenant: Some("acme".into()),
+                ..MemoryFilter::default()
+            })
+            .unwrap()
+            .len(),
+        2
+    );
+    // Two deciders: one wins.
+    let approve = MemoryDecision {
+        status: MemoryStatus::Approved,
+        by: "ana".into(),
+        now_ms: 200,
+        note: None,
+        published: Some(crate::memory::Published {
+            skill: "memory-src".into(),
+            digest: "d".into(),
+            path: "references/run-fmt.md".into(),
+        }),
+    };
+    let reject = MemoryDecision {
+        status: MemoryStatus::Rejected,
+        by: "bob".into(),
+        now_ms: 201,
+        note: Some("wrong".into()),
+        published: None,
+    };
+    assert!(store.decide(a, MemoryStatus::Proposed, &approve).unwrap());
+    assert!(!again.decide(a, MemoryStatus::Proposed, &reject).unwrap());
+    let approved = store.memory(a).unwrap().unwrap();
+    assert_eq!(approved.status, MemoryStatus::Approved);
+    assert_eq!(approved.decided_by.as_deref(), Some("ana"));
+    assert_eq!(
+        approved.published.as_ref().map(|p| p.skill.as_str()),
+        Some("memory-src")
+    );
+    assert!(store.decide(b, MemoryStatus::Proposed, &reject).unwrap());
+    assert_eq!(
+        store.memory(b).unwrap().unwrap().note.as_deref(),
+        Some("wrong")
+    );
+    // An edit keeps the status and needs the expected one.
+    let edited = crate::memory::MemoryRecord {
+        title: "Run cargo fmt".into(),
+        ..approved.clone()
+    };
+    assert!(!store.put_memory(&edited, MemoryStatus::Proposed).unwrap());
+    assert!(again.put_memory(&edited, MemoryStatus::Approved).unwrap());
+    assert_eq!(store.memory(a).unwrap().unwrap().title, "Run cargo fmt");
+    // A run: proposals, evidence, knowledge and the watermark in one go.
+    let run = store
+        .run_started(&scope, 0, "ana", "asked", 300, 300 + 60_000)
+        .unwrap();
+    assert_eq!((run.watermark_read, run.by.as_str()), (0, "ana"));
+    assert!(store.run_renew(&run, 300 + 120_000).unwrap());
+    let old = store
+        .observe(&[
+            observation(&repo, "acme", None, "old", 1, "Old and unreferenced", 1),
+            observation(&repo, "acme", None, "old", 2, "Old but referenced", 2),
+            observation(&repo, "acme", None, "new", 1, "New", 400),
+        ])
+        .unwrap();
+    let outcome = RunOutcome {
+        watermark_written: old[2],
+        proposals: vec![new("From the run", vec![old[1]])],
+        evidence: vec![(a, vec![old[2]])],
+        knowledge: vec![KnowledgeEntry {
+            id: 0,
+            scope: KnowledgeScope::repo(),
+            text: "Short rule".into(),
+            source: KnowledgeSource::Consolidation {
+                run: run.id,
+                observations: vec![old[2]],
+            },
+            status: KnowledgeStatus::Proposed,
+            created_ms: 400,
+            adopted_by: None,
+            decided_ms: None,
+            note: None,
+        }],
+        expire_before_ms: Some(3),
+        counts: RunCounts {
+            observations: 3,
+            clusters: 2,
+            proposed: 1,
+            merged: 1,
+            knowledge: 1,
+            expired: 0,
+        },
+        now_ms: 401,
+    };
+    let ids = store.run_finished(&run, &outcome).unwrap().unwrap();
+    assert_eq!(ids.len(), 1);
+    assert_eq!(store.watermark(&scope).unwrap(), old[2]);
+    assert!(
+        !store.run_renew(&run, 1).unwrap(),
+        "a finished run has no fence"
+    );
+    let from_run = store.memory(ids[0]).unwrap().unwrap();
+    assert_eq!(from_run.title, "From the run");
+    let with_evidence = store.memory(a).unwrap().unwrap();
+    assert_eq!(with_evidence.provenance, [old[2], 901, 902]);
+    assert_eq!((with_evidence.seen, with_evidence.last_seen_ms), (2, 401));
+    let knowledge = s.knowledge.knowledge_entries().unwrap();
+    assert_eq!(knowledge.len(), 1);
+    assert!(matches!(
+        &knowledge[0].source,
+        KnowledgeSource::Consolidation { run: r, observations } if *r == run.id && observations == &vec![old[2]]
+    ));
+    // Expiry took the old unreferenced observation and kept the referenced one.
+    let left: Vec<u64> = store
+        .observations(&old)
+        .unwrap()
+        .iter()
+        .map(|o| o.id)
+        .collect();
+    assert_eq!(left, [old[1], old[2]]);
+    let rows = store.runs(Some(&scope), 10).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome.as_deref(), Some(PROPOSED));
+    assert_eq!(rows[0].counts.expired, 1);
+    assert_eq!(rows[0].proposed, ids);
+    assert_eq!(rows[0].watermark_written, Some(old[2]));
+    // A run that read the old watermark loses the race and writes nothing.
+    let stale = again
+        .run_started(&scope, 0, "bob", "schedule", 500, 500 + 60_000)
+        .unwrap();
+    let racing = RunOutcome {
+        watermark_written: old[2],
+        proposals: vec![new("Never stored", vec![old[2]])],
+        now_ms: 501,
+        ..RunOutcome::default()
+    };
+    assert_eq!(again.run_finished(&stale, &racing).unwrap(), None);
+    assert_eq!(
+        store.memories(&MemoryFilter::default()).unwrap().len(),
+        3,
+        "the loser's proposal was not stored"
+    );
+    let rows = store.runs(None, 10).unwrap();
+    assert_eq!(rows.len(), 2, "newest first");
+    assert_eq!(rows[0].id, stale.id);
+    assert_eq!(rows[0].outcome.as_deref(), Some(LOST_RACE));
+    assert_eq!(rows[1].id, run.id);
+    // Nothing new: the watermark holds, the run says so.
+    let quiet = store
+        .run_started(&scope, old[2], "ana", "asked", 600, 600 + 60_000)
+        .unwrap();
+    assert_eq!(
+        store
+            .run_finished(
+                &quiet,
+                &RunOutcome {
+                    watermark_written: old[2],
+                    now_ms: 601,
+                    ..RunOutcome::default()
+                }
+            )
+            .unwrap(),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        store.runs(Some(&scope), 1).unwrap()[0].outcome.as_deref(),
+        Some(NOTHING_NEW)
+    );
+    // Merge unions provenance and sums seen; forget deletes.
+    store.merge(a, ids[0]).unwrap();
+    assert_eq!(store.memory(ids[0]).unwrap(), None);
+    let merged = store.memory(a).unwrap().unwrap();
+    assert_eq!(merged.provenance, [old[1], old[2], 901, 902]);
+    assert_eq!(merged.seen, 3);
+    let forgotten = again.forget(b).unwrap();
+    assert_eq!(forgotten.memory.title, "Keep commits small");
+    assert_eq!(store.memory(b).unwrap(), None);
+    assert!(matches!(store.forget(b), Err(Error::UnknownMemory(_))));
 }
 
 /// Warm pool slots: inserted once by id, listed per place oldest first,
@@ -3434,8 +3691,8 @@ macro_rules! suite {
         suite!($open; fencing, expiry, steps, cancels, steers, records, removed_children,
             reservations, events,
             concurrent_appends, contended_feed, races, storage, artifact_capture, messages, message_logs, delivery, handoffs, handoff_fencing, handoff_retries, graph, ports, sandboxes,
-            outcomes, knowledge, memory_observations, pools, usage, effects, timers, clock,
-            limits, corrupt);
+            outcomes, knowledge, memory_observations, memory_rows, pools, usage, effects, timers,
+            clock, limits, corrupt);
     };
     ($open:expr; $($check:ident),*) => {
         $(

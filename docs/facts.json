@@ -73,7 +73,7 @@
     }
   },
   "http": {
-    "route_count": 149,
+    "route_count": 158,
     "routes": [
       "/.well-known/branchyard",
       "/.well-known/jwks.json",
@@ -171,6 +171,15 @@
       "/v1/repos/{repo}/maps",
       "/v1/repos/{repo}/maps/{name}",
       "/v1/repos/{repo}/maps/{name}/resume",
+      "/v1/repos/{repo}/memory",
+      "/v1/repos/{repo}/memory/consolidate",
+      "/v1/repos/{repo}/memory/runs",
+      "/v1/repos/{repo}/memory/{id}",
+      "/v1/repos/{repo}/memory/{id}/approve",
+      "/v1/repos/{repo}/memory/{id}/edit",
+      "/v1/repos/{repo}/memory/{id}/evidence",
+      "/v1/repos/{repo}/memory/{id}/promote",
+      "/v1/repos/{repo}/memory/{id}/reject",
       "/v1/repos/{repo}/operations",
       "/v1/repos/{repo}/scratch/{name}/lock",
       "/v1/repos/{repo}/task-records",

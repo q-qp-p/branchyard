@@ -281,7 +281,7 @@ fn add_list_show_edit_remove_and_export_write_the_bundles_of_a_topic() {
     assert_eq!(error["kind"], "unknown_memory");
     assert_eq!(
         error["next"],
-        serde_json::json!(["by memory list shows every slug"])
+        serde_json::json!(["by memory list shows every slug and row number"])
     );
     let removed = repo.json(&[
         "memory",
@@ -566,19 +566,26 @@ fn a_personal_memory_is_staged_for_the_branches_the_person_starts() {
     assert!(out.status.success(), "{}", stderr(&out));
 }
 
-/// The review correction two branches are sent after their task.
+/// The review correction two branches are sent: a path, so the candidate
+/// is a memory row and not a knowledge entry.
 const REVIEW: &str = "File: notes.txt\nLine: 1\nUser comment: \"Always end notes with a summary \
                       line, and date it\"";
 
-#[test]
-fn turns_leave_scrubbed_observations_that_the_hidden_listing_shows() {
-    let repo = Repo::new();
+/// Two branches, each sent the same correction after its task.
+fn corrected_twice(repo: &Repo) {
     for name in ["one", "two"] {
         let out = repo.by_agent(&["run", "Add notes WRITE notes.txt=1", "--name", name]);
         assert!(out.status.success(), "{}", stderr(&out));
         let out = repo.by_agent(&["send", name, REVIEW]);
         assert!(out.status.success(), "{}", stderr(&out));
     }
+}
+
+#[test]
+fn turns_leave_observations_that_consolidate_into_rows_a_person_reviews() {
+    let repo = Repo::new();
+    corrected_twice(&repo);
+    // The hidden listing: each turn's correction, scrubbed, with its branch.
     let observations = repo.json(&["memory", "observations", "--json"]);
     let listed = observations.as_array().unwrap();
     assert_eq!(listed.len(), 2, "{observations}");
@@ -591,17 +598,146 @@ fn turns_leave_scrubbed_observations_that_the_hidden_listing_shows() {
         .as_str()
         .unwrap()
         .starts_with("[review] Always end notes"));
-    let text = stdout(&repo.ok(&["memory", "observations"]));
-    assert!(text.contains("one turn 2 correction:"), "{text}");
-    assert!(text.contains("two turn 2 correction:"), "{text}");
-    let since = listed[0]["id"].as_u64().unwrap().to_string();
-    let rest = repo.json(&["memory", "observations", "--since", &since, "--json"]);
-    assert_eq!(rest.as_array().unwrap().len(), 1);
-    // A private scope holds nothing: no session was private.
-    assert_eq!(
-        stdout(&repo.ok(&["memory", "observations", "--mine"])),
-        "no observations\n"
+
+    let consolidated = repo.json(&["memory", "consolidate", "--json"]);
+    assert_eq!(consolidated["lost_race"], false, "{consolidated}");
+    assert_eq!(consolidated["run"]["counts"]["observations"], 2);
+    assert_eq!(consolidated["proposed"].as_array().unwrap().len(), 1);
+    let id = consolidated["proposed"][0]["id"].as_u64().unwrap();
+    assert_eq!(consolidated["proposed"][0]["status"], "proposed");
+    let text = stdout(&repo.ok(&["memory", "consolidate"]));
+    assert!(
+        text.contains("nothing_new") || text.contains("0 proposed"),
+        "{text}"
     );
+
+    // The proposed row is listed under the bundles, and by status.
+    let text = stdout(&repo.ok(&["memory", "list"]));
+    assert!(
+        text.contains("proposed (1), waiting for a decision"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("#{id:<4} proposed  rule      team  notes.txt  Always end notes with a summary line, and date it (seen 1)")),
+        "{text}"
+    );
+    let rows = repo.json(&["memory", "list", "--status", "proposed", "--json"]);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert!(repo
+        .json(&["memory", "list", "--status", "approved", "--json"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let shown = repo.json(&["memory", "show", &format!("#{id}"), "--evidence", "--json"]);
+    assert_eq!(shown["memory"]["id"], id);
+    assert_eq!(shown["evidence"].as_array().unwrap().len(), 2);
+    let text = stdout(&repo.ok(&["memory", "show", &id.to_string(), "--evidence"]));
+    assert!(text.contains("evidence (2):"), "{text}");
+    assert!(text.contains("one turn 2 correction:"), "{text}");
+    assert!(text.contains("the team's memory of"), "{text}");
+    let runs = stdout(&repo.ok(&["memory", "runs"]));
+    assert!(runs.contains("by ana (asked)"), "{runs}");
+    assert!(
+        runs.contains("proposed") && runs.contains("nothing_new"),
+        "{runs}"
+    );
+
+    // A harness cannot decide; a person can, on stdin.
+    let out = repo.in_harness("one", &["memory", "approve", &id.to_string(), "--json"]);
+    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    assert_eq!(envelope(&out)["kind"], "denied");
+    let out = repo.by_with_stdin(&["memory", "review", "--json"], "s\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let decisions: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(decisions["decisions"].as_array().unwrap().is_empty());
+    let prompt = stderr(&out);
+    assert!(prompt.contains("[1/1]"), "{prompt}");
+    assert!(prompt.contains("evidence (2, from one, two)"), "{prompt}");
+    assert!(
+        prompt.contains("[a]pprove, [r]eject, [e]dit then approve, [s]kip, [q]uit?"),
+        "{prompt}"
+    );
+    let out = repo.by_with_stdin(&["memory", "review", "--json"], "a\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let decisions: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(decisions["decisions"][0]["decision"], "approved");
+    assert_eq!(decisions["decisions"][0]["memory"]["status"], "approved");
+    assert_eq!(decisions["decisions"][0]["memory"]["decided_by"], "ana");
+    // Approved: the bundle is in the checkout, with the evidence footer.
+    let reference = repo
+        .root
+        .join(".agents/skills/memory-notes-txt/references/always-end-notes-with-a-summary-line-and-date-it.md");
+    let text = fs::read_to_string(&reference).unwrap();
+    assert!(text.contains("Approved by ana on 20"), "{text}");
+    assert!(
+        text.contains("Evidence: one turn 2 (correction), two turn 2 (correction)."),
+        "{text}"
+    );
+    let listed = repo.json(&["memory", "list", "--json"]);
+    assert_eq!(listed["repository"].as_array().unwrap().len(), 1);
+    assert!(listed["proposed"].as_array().unwrap().is_empty());
+    let text = stdout(&repo.ok(&["memory", "review"]));
+    assert_eq!(text, "nothing to review: no proposed memory\n");
+
+    // An edit by number rewrites the row and the file; forget removes both.
+    let edited = repo.json(&[
+        "memory",
+        "edit",
+        &id.to_string(),
+        "--title",
+        "End every note with a dated summary line",
+        "--json",
+    ]);
+    assert_eq!(edited["title"], "End every note with a dated summary line");
+    assert_eq!(edited["status"], "approved");
+    assert!(fs::read_to_string(&reference)
+        .unwrap()
+        .starts_with("# End every note with a dated summary line\n"));
+    let out = repo.ok(&["memory", "forget", &id.to_string()]);
+    assert!(stdout(&out).starts_with(&format!("forgot #{id}: End every note")));
+    assert!(!repo.root.join(".agents/skills/memory-notes-txt").exists());
+    let out = repo.by(&["memory", "show", &id.to_string(), "--json"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(envelope(&out)["kind"], "unknown_memory");
+}
+
+#[test]
+fn a_rejection_sticks_and_row_commands_work_with_remote() {
+    let repo = Repo::new();
+    corrected_twice(&repo);
+    let consolidated = repo.json(&["memory", "consolidate", "--json"]);
+    let id = consolidated["proposed"][0]["id"].as_u64().unwrap();
+    let out = repo.by_with_stdin(&["memory", "review", "--json"], "r\ntoo narrow\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let decisions: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(decisions["decisions"][0]["decision"], "rejected");
+    assert_eq!(decisions["decisions"][0]["memory"]["note"], "too narrow");
+    let rows = repo.json(&["memory", "list", "--status", "rejected", "--json"]);
+    assert_eq!(rows[0]["id"], id);
+    // Approving a rejected row is refused.
+    let out = repo.by(&["memory", "approve", &id.to_string(), "--json"]);
+    assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
+    assert_eq!(envelope(&out)["kind"], "denied");
+    // The row commands reach a server; the file commands do not. With a
+    // server nobody answers, the row command fails on transport, not usage.
+    let token = repo.write("token", "abc\n");
+    let remote = |args: &[&str]| {
+        let mut all = vec![
+            "--remote",
+            "http://127.0.0.1:1",
+            "--token-file",
+            token.to_str().unwrap(),
+            "--repo",
+            "app",
+        ];
+        all.extend_from_slice(args);
+        repo.by(&all)
+    };
+    let out = remote(&["memory", "list", "--status", "proposed", "--json"]);
+    assert_ne!(out.status.code(), Some(0));
+    assert_ne!(envelope(&out)["kind"], "usage", "{}", stdout(&out));
+    let out = remote(&["memory", "export", "--json"]);
+    assert_eq!(envelope(&out)["kind"], "usage", "{}", stdout(&out));
 }
 
 #[cfg(unix)]

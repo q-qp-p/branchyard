@@ -111,6 +111,18 @@ Checked strictly like the rest of `branchyard.toml` (an unknown trigger or harne
 
 Reading needs the `read` scope; everything else `run`. Delegation has no knowledge operations: a harness cannot adopt what it is told.
 
+## What memory hands back
+
+A [memory consolidation](memory.md#4-consolidation-deterministic) that finds
+two or more turns corrected the same way, in one sentence of at most 600
+characters and about the whole repository, proposes it here rather than as a
+memory: a `Proposed` entry with the source `{"from": "consolidation", "run":
+N, "observations": [ids]}` (`KnowledgeSource::Consolidation`; `by knowledge
+show` says `from memory consolidation run N (M observations)`). The duplicate
+rule applies as to any proposal, and a person adopts or rejects it as any
+other. Hermetic: `crates/branchyard/tests/memory.rs` and the conformance case
+`memory_rows`.
+
 ## What is handed to memory
 
 An entry is at most 600 characters. A correction the deterministic extractor

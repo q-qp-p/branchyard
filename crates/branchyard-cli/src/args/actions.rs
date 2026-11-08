@@ -944,19 +944,77 @@ pub enum MemoryAction {
         #[arg(long)]
         mine: bool,
     },
-    /// Every memory of the repository's bundles and your own, by topic
+    /// Every memory of the repository's bundles and your own, by topic, then the proposed rows
+    ///
+    /// With --status, the rows of that status alone (proposed, approved, rejected): what
+    /// consolidation proposed and people decided, by number.
     List {
         /// Only your own
         #[arg(long)]
         mine: bool,
+        /// Rows of this status: proposed, approved or rejected
+        #[arg(long, value_name = "STATUS", value_parser = memory_status)]
+        status: Option<branchyard::MemoryStatus>,
     },
-    /// One memory, whole
+    /// One memory, whole: a slug for a bundle's file, a number (12 or #12) for a row
     Show {
-        /// Its slug, as `by memory list` shows it
+        /// Its slug, as `by memory list` shows it, or a row's number
         slug: String,
-        /// Look only in your own skills folder
+        /// Look only in your own skills folder, or your own rows
         #[arg(long)]
         mine: bool,
+        /// With a row: each observation it came from, its branch, turn, kind and author
+        #[arg(long)]
+        evidence: bool,
+    },
+    /// Walk the proposed rows: a approve, r reject, e edit then approve, p promote, s skip, q quit
+    Review {
+        /// Your own rows instead of the team's
+        #[arg(long)]
+        mine: bool,
+        /// The editor for edits (default: $VISUAL, then $EDITOR)
+        #[arg(long, value_name = "EDITOR")]
+        editor: Option<String>,
+    },
+    /// Approve proposed rows: each is written into its bundle (the team's under .agents/skills,
+    /// yours in your skills folder) and marked approved
+    Approve {
+        /// Row numbers, as `by memory list --status proposed` shows them
+        #[arg(required = true, value_name = "ID", value_parser = memory_id)]
+        ids: Vec<u64>,
+    },
+    /// Reject proposed rows; the rejection sticks against new evidence
+    Reject {
+        #[arg(required = true, value_name = "ID", value_parser = memory_id)]
+        ids: Vec<u64>,
+        /// Why
+        #[arg(long, value_name = "TEXT")]
+        reason: Option<String>,
+    },
+    /// Offer one of your own rows to the team: a new proposed row; yours stays
+    Promote {
+        #[arg(value_name = "ID", value_parser = memory_id)]
+        id: u64,
+    },
+    /// Delete a row and its bundle file; the branches it came from record it, without the text
+    Forget {
+        #[arg(value_name = "ID", value_parser = memory_id)]
+        id: u64,
+    },
+    /// Run one deterministic consolidation now: cluster the new observations, propose rows
+    Consolidate {
+        /// Your own observations (a private session's) instead of the team's
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Consolidation runs, newest first, with their counts and outcomes
+    Runs {
+        /// Your own scope's runs
+        #[arg(long)]
+        mine: bool,
+        /// At most this many
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        limit: usize,
     },
     /// The scrubbed observations a scope holds, oldest first (for the curious and the tests)
     #[command(hide = true)]
@@ -972,8 +1030,10 @@ pub enum MemoryAction {
         limit: usize,
     },
     /// Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+    ///
+    /// A slug edits a bundle's file; a row number edits the row, and its file once approved.
     Edit {
-        /// Its slug
+        /// Its slug, or a row's number
         slug: String,
         /// A new title
         #[arg(long, value_name = "TEXT", value_parser = non_blank)]
@@ -1016,6 +1076,18 @@ pub enum MemoryAction {
 /// A `--kind` for `by memory`: rule, procedure, fact or pitfall.
 pub(crate) fn memory_kind(text: &str) -> Result<branchyard::MemoryKind, String> {
     text.parse().map_err(|e: branchyard::Error| e.to_string())
+}
+
+/// A `--status` for `by memory list`: proposed, approved or rejected.
+pub(crate) fn memory_status(text: &str) -> Result<branchyard::MemoryStatus, String> {
+    text.parse().map_err(|e: branchyard::Error| e.to_string())
+}
+
+/// A memory row's number: `12` or `#12`.
+pub(crate) fn memory_id(text: &str) -> Result<u64, String> {
+    text.trim_start_matches('#')
+        .parse()
+        .map_err(|_| format!("{text:?} is not a memory row number such as 12 or #12"))
 }
 
 /// `by workspace ...`; see docs/workspace.md.

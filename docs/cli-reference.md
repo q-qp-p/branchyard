@@ -1600,7 +1600,9 @@ by memory add [OPTIONS]
 
 ### `by memory list`
 
-Every memory of the repository's bundles and your own, by topic
+Every memory of the repository's bundles and your own, by topic, then the proposed rows
+
+With --status, the rows of that status alone (proposed, approved, rejected): what consolidation proposed and people decided, by number.
 
 ```text
 by memory list [OPTIONS]
@@ -1609,10 +1611,11 @@ by memory list [OPTIONS]
 | Option | What it does |
 |---|---|
 | `--mine` | Only your own |
+| `--status <STATUS>` | Rows of this status: proposed, approved or rejected |
 
 ### `by memory show`
 
-One memory, whole
+One memory, whole: a slug for a bundle's file, a number (12 or #12) for a row
 
 ```text
 by memory show [OPTIONS] <SLUG>
@@ -1620,12 +1623,102 @@ by memory show [OPTIONS] <SLUG>
 
 | Option | What it does |
 |---|---|
-| `<SLUG>` | Its slug, as `by memory list` shows it |
-| `--mine` | Look only in your own skills folder |
+| `<SLUG>` | Its slug, as `by memory list` shows it, or a row's number |
+| `--mine` | Look only in your own skills folder, or your own rows |
+| `--evidence` | With a row: each observation it came from, its branch, turn, kind and author |
+
+### `by memory review`
+
+Walk the proposed rows: a approve, r reject, e edit then approve, p promote, s skip, q quit
+
+```text
+by memory review [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own rows instead of the team's |
+| `--editor <EDITOR>` | The editor for edits (default: $VISUAL, then $EDITOR) |
+
+### `by memory approve`
+
+Approve proposed rows: each is written into its bundle (the team's under .agents/skills, yours in your skills folder) and marked approved
+
+```text
+by memory approve [OPTIONS] <ID>...
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>...` | Row numbers, as `by memory list --status proposed` shows them |
+
+### `by memory reject`
+
+Reject proposed rows; the rejection sticks against new evidence
+
+```text
+by memory reject [OPTIONS] <ID>...
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>...` |  |
+| `--reason <TEXT>` | Why |
+
+### `by memory promote`
+
+Offer one of your own rows to the team: a new proposed row; yours stays
+
+```text
+by memory promote [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` |  |
+
+### `by memory forget`
+
+Delete a row and its bundle file; the branches it came from record it, without the text
+
+```text
+by memory forget [OPTIONS] <ID>
+```
+
+| Option | What it does |
+|---|---|
+| `<ID>` |  |
+
+### `by memory consolidate`
+
+Run one deterministic consolidation now: cluster the new observations, propose rows
+
+```text
+by memory consolidate [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own observations (a private session's) instead of the team's |
+
+### `by memory runs`
+
+Consolidation runs, newest first, with their counts and outcomes
+
+```text
+by memory runs [OPTIONS]
+```
+
+| Option | What it does |
+|---|---|
+| `--mine` | Your own scope's runs |
+| `--limit <N>` | At most this many (default `20`) |
 
 ### `by memory edit`
 
 Change a memory's title, body, kind, paths or task kinds; its bundle is rewritten
+
+A slug edits a bundle's file; a row number edits the row, and its file once approved.
 
 ```text
 by memory edit [OPTIONS] <SLUG>
@@ -1633,7 +1726,7 @@ by memory edit [OPTIONS] <SLUG>
 
 | Option | What it does |
 |---|---|
-| `<SLUG>` | Its slug |
+| `<SLUG>` | Its slug, or a row's number |
 | `--title <TEXT>` | A new title |
 | `--body-file <FILE>` | A new body, read from this file |
 | `--kind <KIND>` | A new kind: rule, procedure, fact or pitfall |

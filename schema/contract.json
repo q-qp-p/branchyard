@@ -6773,6 +6773,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -8991,6 +9021,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -14382,6 +14442,36 @@
                 "via"
               ],
               "description": "Proposed by a distiller from a branch: from the correction sent\nbefore turn `turn`, or (`turn` unset) from the branch as a whole.\n`via` is what it came from: `send`, `steer`, `review`,\n`pull_request`, or `harness <id>` for a harness distiller."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "observations": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The observation ids the candidate came from."
+                },
+                "from": {
+                  "type": "string",
+                  "const": "consolidation"
+                }
+              },
+              "required": [
+                "from",
+                "run",
+                "observations"
+              ],
+              "description": "Proposed by a memory consolidation (`docs/memory.md`, section 4):\na short repository-wide candidate, from the observations named. A\nconsolidation has no branch of its own."
             }
           ],
           "description": "Where an entry came from. Serialized as an object tagged by `from`:\n`{\"from\": \"person\", \"name\": \"ana\"}` or `{\"from\": \"branch\", \"branch\":\n\"fix-parser\", \"turn\": 2, \"via\": \"send\"}`."
@@ -39295,6 +39385,19 @@
             {
               "type": "object",
               "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "plan": {
                   "$ref": "#/$defs/PlanActivity"
                 }
@@ -43594,6 +43697,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [
@@ -45363,6 +45625,19 @@
             {
               "type": "object",
               "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "plan": {
                   "$ref": "#/$defs/PlanActivity"
                 }
@@ -49662,6 +49937,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [
@@ -58284,6 +58718,19 @@
             {
               "type": "object",
               "properties": {
+                "memory": {
+                  "$ref": "#/$defs/MemoryActivity"
+                }
+              },
+              "required": [
+                "memory"
+              ],
+              "additionalProperties": false,
+              "description": "Memory: a consolidation consumed this branch's observations, or a\nmemory they fed was forgotten. See [`memory::MemoryActivity`] and\n`docs/memory.md`."
+            },
+            {
+              "type": "object",
+              "properties": {
                 "plan": {
                   "$ref": "#/$defs/PlanActivity"
                 }
@@ -62583,6 +63030,165 @@
             }
           ],
           "description": "Knowledge activity on a branch, recorded as [`Activity::Knowledge`].\nSerialized as an object tagged by `type`."
+        },
+        "MemoryActivity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The `memory_runs` row."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope the run consolidated."
+                },
+                "observations": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "How many of this branch's observations the run read."
+                },
+                "clusters": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters the run's observations formed, across the whole run."
+                },
+                "proposed": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "description": "The memory rows proposed, across the whole run."
+                },
+                "merged": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "description": "Clusters that became evidence for existing rows."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who started the run."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`asked`, `schedule`, or a trigger's name."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "consolidated"
+                }
+              },
+              "required": [
+                "type",
+                "run",
+                "scope",
+                "observations",
+                "clusters",
+                "proposed",
+                "merged",
+                "by",
+                "trigger"
+              ],
+              "description": "A consolidation consumed this branch's observations."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "integer",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "description": "The row's id, as it was."
+                },
+                "scope": {
+                  "$ref": "#/$defs/Scope",
+                  "description": "The scope it belonged to."
+                },
+                "by": {
+                  "type": "string",
+                  "description": "Who forgot it."
+                },
+                "type": {
+                  "type": "string",
+                  "const": "forgotten"
+                }
+              },
+              "required": [
+                "type",
+                "memory",
+                "scope",
+                "by"
+              ],
+              "description": "A memory whose provenance named this branch's observations was\nforgotten; no text is kept."
+            }
+          ],
+          "description": "Memory activity on a branch, recorded as [`Activity::Memory`].\nSerialized as an object tagged by `type`."
+        },
+        "Scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant whose sessions fed it."
+                },
+                "repo": {
+                  "type": "string",
+                  "description": "The repository, as its store labels it."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "repo"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "repo"
+              ],
+              "description": "The team memory of one repository, on one tenant."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "tenant": {
+                  "type": "string",
+                  "description": "The tenant the person belongs to."
+                },
+                "subject": {
+                  "type": "string",
+                  "description": "The person."
+                },
+                "repo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A repository the memory is about; `None` for all of them."
+                },
+                "scope": {
+                  "type": "string",
+                  "const": "person"
+                }
+              },
+              "required": [
+                "scope",
+                "tenant",
+                "subject"
+              ],
+              "description": "One person's memory: read only by that person's turns and `by\nmemory` run as them."
+            }
+          ],
+          "description": "The owner, and the audience, of a memory."
         },
         "PlanActivity": {
           "oneOf": [

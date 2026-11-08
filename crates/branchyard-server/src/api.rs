@@ -914,6 +914,8 @@ pub fn router(app: Shared) -> Router {
         .merge(crate::companion::router())
         // Repository knowledge and plan approval: `knowledge_routes`.
         .merge(crate::knowledge_routes::router())
+        // Memory rows, review and consolidation: `memory_routes`.
+        .merge(crate::memory_routes::router())
         // Approvals, the effect ledger and undo: `effects_routes`.
         .merge(crate::effects_routes::router())
         // A running turn's sandbox fetching its gateway token: `turn_token`.

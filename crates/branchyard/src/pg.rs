@@ -487,6 +487,21 @@ const STEPS: &[(&str, &str)] = &[
          (repo, tenant, subject, id)",
     ),
     (
+        "by_memories",
+        "CREATE TABLE IF NOT EXISTS by_memories (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            repo TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            tenant TEXT NOT NULL,
+            status TEXT NOT NULL,
+            body TEXT NOT NULL
+        )",
+    ),
+    (
+        "by_memories_scope",
+        "CREATE INDEX IF NOT EXISTS by_memories_scope ON by_memories (repo, scope, status, id)",
+    ),
+    (
         "by_memory_watermarks",
         "CREATE TABLE IF NOT EXISTS by_memory_watermarks (
             repo TEXT NOT NULL,
@@ -494,6 +509,28 @@ const STEPS: &[(&str, &str)] = &[
             watermark BIGINT NOT NULL,
             PRIMARY KEY (repo, scope)
         )",
+    ),
+    (
+        "by_memory_runs",
+        "CREATE TABLE IF NOT EXISTS by_memory_runs (
+            id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            repo TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            watermark_read BIGINT NOT NULL,
+            watermark_written BIGINT,
+            started_ms BIGINT NOT NULL,
+            fenced_until_ms BIGINT NOT NULL,
+            finished_ms BIGINT,
+            outcome TEXT,
+            actor TEXT NOT NULL,
+            cause TEXT NOT NULL,
+            counts TEXT NOT NULL,
+            proposed TEXT NOT NULL
+        )",
+    ),
+    (
+        "by_memory_runs_scope",
+        "CREATE INDEX IF NOT EXISTS by_memory_runs_scope ON by_memory_runs (repo, scope, id)",
     ),
 ];
 
@@ -4219,35 +4256,47 @@ fn knowledge_row(r: &Row) -> Result<crate::KnowledgeEntry, Error> {
     })
 }
 
+impl Postgres {
+    /// Insert `entry` into `by_knowledge` within `tx`, with `created` as
+    /// its `created_ms`; the row id. The one INSERT of the table, shared by
+    /// [`crate::knowledge::KnowledgeBackend::add_knowledge`] and a memory
+    /// consolidation's knowledge candidates.
+    fn insert_knowledge(
+        &self,
+        tx: &mut Transaction<'_>,
+        entry: &crate::KnowledgeEntry,
+        created: u64,
+    ) -> R<i64> {
+        Ok(tx
+            .query_one(
+                "INSERT INTO by_knowledge (repo, scope_path, scope_kind, text, source, status, \
+                 created_ms, adopted_by, decided_ms, note) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+                &[
+                    &self.repo,
+                    &entry.scope.path,
+                    &entry.scope.kind.map(|k| k.as_str()),
+                    &entry.text,
+                    &encode("knowledge source", &entry.source)?,
+                    &entry.status.as_str(),
+                    &to_db("created", created)?,
+                    &entry.adopted_by,
+                    &to_db_opt("decided_ms", entry.decided_ms)?,
+                    &entry.note,
+                ],
+            )
+            .map_err(db("knowledge"))?
+            .get(0))
+    }
+}
+
 impl crate::knowledge::KnowledgeBackend for Postgres {
     fn add_knowledge(&self, entry: &crate::KnowledgeEntry) -> Result<crate::KnowledgeEntry, Error> {
-        let source = encode("knowledge source", &entry.source)?;
         let created = match entry.created_ms {
             0 => now_ms(),
             at => at,
         };
-        let id: i64 = self.tx(true, |tx| {
-            Ok(tx
-                .query_one(
-                    "INSERT INTO by_knowledge (repo, scope_path, scope_kind, text, source, status, \
-                     created_ms, adopted_by, decided_ms, note) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
-                    &[
-                        &self.repo,
-                        &entry.scope.path,
-                        &entry.scope.kind.map(|k| k.as_str()),
-                        &entry.text,
-                        &source,
-                        &entry.status.as_str(),
-                        &to_db("created", created)?,
-                        &entry.adopted_by,
-                        &to_db_opt("decided_ms", entry.decided_ms)?,
-                        &entry.note,
-                    ],
-                )
-                .map_err(db("knowledge"))?
-                .get(0))
-        })?;
+        let id: i64 = self.tx(true, |tx| self.insert_knowledge(tx, entry, created))?;
         Ok(crate::KnowledgeEntry {
             id: from_db("id", id)?,
             created_ms: created,
@@ -4325,11 +4374,14 @@ impl crate::knowledge::KnowledgeBackend for Postgres {
 }
 
 // ---------------------------------------------------------------------------
-// Memory: observations and their watermarks (`crate::memory::store`), the
-// SQLite implementation's mirror: JSON bodies beside the columns the rows
-// are filtered by, every table keyed by `repo`.
+// Memory: observations, rows, watermarks and runs (`crate::memory::store`),
+// the SQLite implementation's mirror: JSON bodies beside the columns the
+// rows are filtered by, every table keyed by `repo`.
 
-use crate::memory::store::{self as memory_store, MemoryBackend, Scope};
+use crate::memory::store::{
+    self as memory_store, Decision as MemoryDecision, Forgotten, MemoryBackend, MemoryFilter,
+    MemoryRecord, MemoryStatus, NewMemoryRecord, Run, RunCounts, RunOutcome, RunRow, Scope,
+};
 use crate::memory::{NewObservation, Observation};
 
 fn pg_observation(r: &Row) -> Result<Observation, Error> {
@@ -4337,6 +4389,98 @@ fn pg_observation(r: &Row) -> Result<Observation, Error> {
         id: from_db("id", r.get::<_, i64>(0))?,
         body: decode("observation", &r.get::<_, String>(1))?,
     })
+}
+
+fn pg_memory(r: &Row) -> Result<MemoryRecord, Error> {
+    let mut record: MemoryRecord = decode("memory", &r.get::<_, String>(1))?;
+    record.id = from_db("id", r.get::<_, i64>(0))?;
+    Ok(record)
+}
+
+const PG_RUN_COLUMNS: &str = "id, scope, watermark_read, watermark_written, started_ms, \
+     finished_ms, outcome, actor, cause, counts, proposed";
+
+fn pg_run(r: &Row) -> Result<RunRow, Error> {
+    Ok(RunRow {
+        id: from_db("id", r.get::<_, i64>(0))?,
+        scope: Scope::parse_key(&r.get::<_, String>(1))?,
+        watermark_read: from_db("watermark_read", r.get::<_, i64>(2))?,
+        watermark_written: from_db_opt("watermark_written", r.get::<_, Option<i64>>(3))?,
+        started_ms: from_db("started_ms", r.get::<_, i64>(4))?,
+        finished_ms: from_db_opt("finished_ms", r.get::<_, Option<i64>>(5))?,
+        outcome: r.get(6),
+        by: r.get(7),
+        trigger: r.get(8),
+        counts: decode("run counts", &r.get::<_, String>(9))?,
+        proposed: decode("run proposed", &r.get::<_, String>(10))?,
+    })
+}
+
+impl Postgres {
+    fn memory_for_update(&self, tx: &mut Transaction<'_>, id: u64) -> R<Option<MemoryRecord>> {
+        let row = tx
+            .query_opt(
+                "SELECT id, body FROM by_memories WHERE repo = $1 AND id = $2 FOR UPDATE",
+                &[&self.repo, &to_db("id", id)?],
+            )
+            .map_err(db("memory"))?;
+        Ok(row.as_ref().map(pg_memory).transpose()?)
+    }
+
+    fn write_memory(&self, tx: &mut Transaction<'_>, record: &MemoryRecord) -> R<()> {
+        tx.execute(
+            "UPDATE by_memories SET scope = $3, tenant = $4, status = $5, body = $6 \
+             WHERE repo = $1 AND id = $2",
+            &[
+                &self.repo,
+                &to_db("id", record.id)?,
+                &record.scope.key(),
+                &record.scope.tenant(),
+                &record.status.as_str(),
+                &encode("memory", record)?,
+            ],
+        )
+        .map_err(db("memory"))?;
+        Ok(())
+    }
+
+    fn insert_memory(&self, tx: &mut Transaction<'_>, new: &NewMemoryRecord) -> R<u64> {
+        let record = memory_store::proposed_record(new);
+        let id: i64 = tx
+            .query_one(
+                "INSERT INTO by_memories (repo, scope, tenant, status, body) \
+                 VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                &[
+                    &self.repo,
+                    &record.scope.key(),
+                    &record.scope.tenant(),
+                    &record.status.as_str(),
+                    &encode("memory", &record)?,
+                ],
+            )
+            .map_err(db("memory"))?
+            .get(0);
+        let id = from_db("id", id)?;
+        self.write_memory(tx, &MemoryRecord { id, ..record })?;
+        Ok(id)
+    }
+
+    fn referenced_observations(
+        &self,
+        tx: &mut Transaction<'_>,
+    ) -> R<std::collections::BTreeSet<u64>> {
+        let rows = tx
+            .query(
+                "SELECT id, body FROM by_memories WHERE repo = $1",
+                &[&self.repo],
+            )
+            .map_err(db("memory"))?;
+        let mut referenced = std::collections::BTreeSet::new();
+        for row in &rows {
+            referenced.extend(pg_memory(row)?.provenance);
+        }
+        Ok(referenced)
+    }
 }
 
 impl MemoryBackend for Postgres {
@@ -4400,6 +4544,109 @@ impl MemoryBackend for Postgres {
         rows.iter().map(pg_observation).collect()
     }
 
+    fn observations(&self, ids: &[u64]) -> Result<Vec<Observation>, Error> {
+        let mut wanted = Vec::with_capacity(ids.len());
+        for id in ids {
+            wanted.push(to_db("id", *id)?);
+        }
+        let rows = self.query(|client| {
+            client.query(
+                "SELECT id, body FROM by_memory_observations WHERE repo = $1 \
+                 AND id = ANY($2) ORDER BY id",
+                &[&self.repo, &wanted],
+            )
+        })?;
+        rows.iter().map(pg_observation).collect()
+    }
+
+    fn memories(&self, filter: &MemoryFilter) -> Result<Vec<MemoryRecord>, Error> {
+        let scope = filter.scope.as_ref().map(Scope::key);
+        let tenant = filter.tenant.clone();
+        let status = filter.status.map(|s| s.as_str());
+        let rows = self.query(|client| {
+            client.query(
+                "SELECT id, body FROM by_memories WHERE repo = $1 \
+                 AND ($2::text IS NULL OR scope = $2) AND ($3::text IS NULL OR tenant = $3) \
+                 AND ($4::text IS NULL OR status = $4) ORDER BY id",
+                &[&self.repo, &scope, &tenant, &status],
+            )
+        })?;
+        rows.iter().map(pg_memory).collect()
+    }
+
+    fn memory(&self, id: u64) -> Result<Option<MemoryRecord>, Error> {
+        let id = to_db("id", id)?;
+        let row = self.query(|client| {
+            client.query_opt(
+                "SELECT id, body FROM by_memories WHERE repo = $1 AND id = $2",
+                &[&self.repo, &id],
+            )
+        })?;
+        row.as_ref().map(pg_memory).transpose()
+    }
+
+    fn propose(&self, m: &NewMemoryRecord) -> Result<u64, Error> {
+        self.tx(true, |tx| self.insert_memory(tx, m))
+    }
+
+    fn decide(&self, id: u64, from: MemoryStatus, to: &MemoryDecision) -> Result<bool, Error> {
+        self.tx(true, |tx| match self.memory_for_update(tx, id)? {
+            Some(record) if record.status == from => {
+                self.write_memory(tx, &memory_store::decided(&record, to))?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        })
+    }
+
+    fn put_memory(&self, m: &MemoryRecord, expected: MemoryStatus) -> Result<bool, Error> {
+        self.tx(true, |tx| match self.memory_for_update(tx, m.id)? {
+            Some(record) if record.status == expected => {
+                self.write_memory(
+                    tx,
+                    &MemoryRecord {
+                        status: record.status,
+                        ..m.clone()
+                    },
+                )?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        })
+    }
+
+    fn merge(&self, into: u64, from: u64) -> Result<(), Error> {
+        self.tx(true, |tx| {
+            let target = self
+                .memory_for_update(tx, into)?
+                .ok_or_else(|| Error::UnknownMemory(format!("#{into}")))?;
+            let source = self
+                .memory_for_update(tx, from)?
+                .ok_or_else(|| Error::UnknownMemory(format!("#{from}")))?;
+            self.write_memory(tx, &memory_store::merged(&target, &source))?;
+            tx.execute(
+                "DELETE FROM by_memories WHERE repo = $1 AND id = $2",
+                &[&self.repo, &to_db("id", from)?],
+            )
+            .map_err(db("memory"))?;
+            Ok(())
+        })
+    }
+
+    fn forget(&self, id: u64) -> Result<Forgotten, Error> {
+        self.tx(true, |tx| {
+            let memory = self
+                .memory_for_update(tx, id)?
+                .ok_or_else(|| Error::UnknownMemory(format!("#{id}")))?;
+            tx.execute(
+                "DELETE FROM by_memories WHERE repo = $1 AND id = $2",
+                &[&self.repo, &to_db("id", id)?],
+            )
+            .map_err(db("memory"))?;
+            Ok(Forgotten { memory })
+        })
+    }
+
     fn watermark(&self, scope: &Scope) -> Result<u64, Error> {
         let key = scope.key();
         let row = self.query(|client| {
@@ -4409,6 +4656,174 @@ impl MemoryBackend for Postgres {
             )
         })?;
         Ok(from_db_opt("watermark", row.map(|r| r.get::<_, i64>(0)))?.unwrap_or(0))
+    }
+
+    fn run_started(
+        &self,
+        scope: &Scope,
+        watermark: u64,
+        by: &str,
+        trigger: &str,
+        now_ms: u64,
+        fenced_until_ms: u64,
+    ) -> Result<Run, Error> {
+        let id: i64 = self.tx(true, |tx| {
+            Ok(tx
+                .query_one(
+                    "INSERT INTO by_memory_runs (repo, scope, watermark_read, started_ms, \
+                     fenced_until_ms, actor, cause, counts, proposed) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '[]') RETURNING id",
+                    &[
+                        &self.repo,
+                        &scope.key(),
+                        &to_db("watermark", watermark)?,
+                        &to_db("started_ms", now_ms)?,
+                        &to_db("fenced_until_ms", fenced_until_ms)?,
+                        &by,
+                        &trigger,
+                        &encode("run counts", &RunCounts::default())?,
+                    ],
+                )
+                .map_err(db("memory run"))?
+                .get(0))
+        })?;
+        Ok(Run {
+            id: from_db("id", id)?,
+            scope: scope.clone(),
+            watermark_read: watermark,
+            started_ms: now_ms,
+            fenced_until_ms,
+            by: by.to_owned(),
+            trigger: trigger.to_owned(),
+        })
+    }
+
+    fn run_renew(&self, run: &Run, fenced_until_ms: u64) -> Result<bool, Error> {
+        self.tx(true, |tx| {
+            let changed = tx
+                .execute(
+                    "UPDATE by_memory_runs SET fenced_until_ms = $3 WHERE repo = $1 AND id = $2 \
+                     AND finished_ms IS NULL",
+                    &[
+                        &self.repo,
+                        &to_db("id", run.id)?,
+                        &to_db("fenced_until_ms", fenced_until_ms)?,
+                    ],
+                )
+                .map_err(db("memory run"))?;
+            Ok(changed == 1)
+        })
+    }
+
+    fn run_finished(&self, run: &Run, outcome: &RunOutcome) -> Result<Option<Vec<u64>>, Error> {
+        self.tx(true, |tx| {
+            let scope = run.scope.key();
+            tx.execute(
+                "INSERT INTO by_memory_watermarks (repo, scope, watermark) VALUES ($1, $2, 0) \
+                 ON CONFLICT (repo, scope) DO NOTHING",
+                &[&self.repo, &scope],
+            )
+            .map_err(db("watermark"))?;
+            let swapped = tx
+                .execute(
+                    "UPDATE by_memory_watermarks SET watermark = $3 WHERE repo = $1 \
+                     AND scope = $2 AND watermark = $4",
+                    &[
+                        &self.repo,
+                        &scope,
+                        &to_db("watermark", outcome.watermark_written)?,
+                        &to_db("watermark", run.watermark_read)?,
+                    ],
+                )
+                .map_err(db("watermark"))?;
+            if swapped != 1 {
+                tx.execute(
+                    "UPDATE by_memory_runs SET finished_ms = $3, outcome = $4 \
+                     WHERE repo = $1 AND id = $2",
+                    &[
+                        &self.repo,
+                        &to_db("id", run.id)?,
+                        &to_db("finished_ms", outcome.now_ms)?,
+                        &memory_store::LOST_RACE,
+                    ],
+                )
+                .map_err(db("memory run"))?;
+                return Ok(None);
+            }
+            let mut ids = Vec::new();
+            for proposal in &outcome.proposals {
+                ids.push(self.insert_memory(tx, proposal)?);
+            }
+            for (memory, observations) in &outcome.evidence {
+                if let Some(record) = self.memory_for_update(tx, *memory)? {
+                    self.write_memory(
+                        tx,
+                        &memory_store::with_evidence(&record, observations, outcome.now_ms),
+                    )?;
+                }
+            }
+            for entry in &outcome.knowledge {
+                self.insert_knowledge(tx, entry, entry.created_ms)?;
+            }
+            let mut counts = outcome.counts.clone();
+            if let Some(before) = outcome.expire_before_ms {
+                let referenced = self.referenced_observations(tx)?;
+                let old = tx
+                    .query(
+                        "SELECT id FROM by_memory_observations WHERE repo = $1 AND at_ms < $2 \
+                         AND id <= $3 AND tenant = $4",
+                        &[
+                            &self.repo,
+                            &to_db("expire", before)?,
+                            &to_db("watermark", outcome.watermark_written)?,
+                            &run.scope.tenant(),
+                        ],
+                    )
+                    .map_err(db("observation"))?;
+                for row in &old {
+                    let id: i64 = row.get(0);
+                    if referenced.contains(&from_db("id", id)?) {
+                        continue;
+                    }
+                    tx.execute(
+                        "DELETE FROM by_memory_observations WHERE repo = $1 AND id = $2",
+                        &[&self.repo, &id],
+                    )
+                    .map_err(db("observation"))?;
+                    counts.expired += 1;
+                }
+            }
+            tx.execute(
+                "UPDATE by_memory_runs SET watermark_written = $3, finished_ms = $4, \
+                 outcome = $5, counts = $6, proposed = $7 WHERE repo = $1 AND id = $2",
+                &[
+                    &self.repo,
+                    &to_db("id", run.id)?,
+                    &to_db("watermark", outcome.watermark_written)?,
+                    &to_db("finished_ms", outcome.now_ms)?,
+                    &memory_store::outcome_label(outcome),
+                    &encode("run counts", &counts)?,
+                    &encode("run proposed", &ids)?,
+                ],
+            )
+            .map_err(db("memory run"))?;
+            Ok(Some(ids))
+        })
+    }
+
+    fn runs(&self, scope: Option<&Scope>, limit: usize) -> Result<Vec<RunRow>, Error> {
+        let scope = scope.map(Scope::key);
+        let limit = to_db_usize("limit", limit)?;
+        let rows = self.query(|client| {
+            client.query(
+                &format!(
+                    "SELECT {PG_RUN_COLUMNS} FROM by_memory_runs WHERE repo = $1 \
+                     AND ($2::text IS NULL OR scope = $2) ORDER BY id DESC LIMIT $3"
+                ),
+                &[&self.repo, &scope, &limit],
+            )
+        })?;
+        rows.iter().map(pg_run).collect()
     }
 
     fn scopes_with_observations(&self) -> Result<Vec<Scope>, Error> {

@@ -136,6 +136,15 @@ pub enum KnowledgeSource {
         turn: Option<u32>,
         via: String,
     },
+    /// Proposed by a memory consolidation (`docs/memory.md`, section 4):
+    /// a short repository-wide candidate, from the observations named. A
+    /// consolidation has no branch of its own.
+    Consolidation {
+        /// The `memory_runs` row.
+        run: u64,
+        /// The observation ids the candidate came from.
+        observations: Vec<u64>,
+    },
 }
 
 impl KnowledgeSource {
@@ -147,6 +156,11 @@ impl KnowledgeSource {
                 Some(turn) => format!("from {branch} turn {turn} ({via})"),
                 None => format!("from {branch} ({via})"),
             },
+            KnowledgeSource::Consolidation { run, observations } => format!(
+                "from memory consolidation run {run} ({} observation{})",
+                observations.len(),
+                if observations.len() == 1 { "" } else { "s" }
+            ),
         }
     }
 }
@@ -426,8 +440,9 @@ fn clean(text: &str) -> Result<String, Error> {
 }
 
 /// The key two entries are duplicates by: their text, case and spacing
-/// aside, and their scope.
-fn same(a: &KnowledgeEntry, text: &str, scope: &KnowledgeScope) -> bool {
+/// aside, and their scope. The rule every proposal goes through, a memory
+/// consolidation's included.
+pub(crate) fn same(a: &KnowledgeEntry, text: &str, scope: &KnowledgeScope) -> bool {
     let key = |t: &str| {
         t.split_whitespace()
             .collect::<Vec<_>>()

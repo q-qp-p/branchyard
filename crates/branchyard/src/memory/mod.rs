@@ -28,10 +28,13 @@
 //! person to read and add (`docs/knowledge.md`): a file in a worktree,
 //! never a bundle.
 //!
-//! What will feed the bundles without a person writing each memory by
-//! hand (`docs/memory.md`, sections 2 to 5): [`observe`] derives scrubbed
-//! observations from each turn's events and [`store`] keeps them, per
-//! scope, for the consolidation M3 adds.
+//! What feeds the bundles without a person writing each memory by hand
+//! (`docs/memory.md`, sections 2 to 5): [`observe`] derives scrubbed
+//! observations from each turn's events, [`store`] keeps them with the
+//! proposed memory rows and the consolidation runs, [`consolidate`] turns
+//! clusters of observations into proposals, and [`review`] is what a
+//! person does with a proposal: approve (which writes the bundle through
+//! the [`Library`]), reject, edit, promote, forget.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -42,14 +45,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, TaskKind};
 
+pub mod consolidate;
 pub mod observe;
+pub mod review;
 pub mod scrub;
 pub mod store;
 
+pub use consolidate::{Consolidated, MemoryActivity};
 pub use observe::{
     Association, Author, EventRef, NewObservation, Observation, ObservationKind, Visibility,
 };
-pub use store::Scope;
+pub use store::{
+    Decision, MemoryFilter, MemoryRecord, MemoryStatus, NewMemoryRecord, Published, Run, RunCounts,
+    RunRow, Scope,
+};
 
 /// How a yard captures observations and consolidates them; see
 /// [`crate::Yard::use_memory`] and `[memory]` in `docs/memory.md`.
