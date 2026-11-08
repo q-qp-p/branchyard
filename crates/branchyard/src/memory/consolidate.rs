@@ -312,12 +312,14 @@ pub fn title_of(text: &str) -> String {
 /// turn, within [`BODY_MAX`].
 fn body_of(cluster: &Cluster) -> String {
     let mut body = String::new();
-    for (branch, turn, text) in &cluster.texts {
+    for (kept, (branch, turn, text)) in cluster.texts.iter().enumerate() {
         let line = format!("- {branch} turn {turn}: {}\n", text.replace('\n', "\n  "));
         if body.chars().count() + line.chars().count() > BODY_MAX - 40 {
+            // Count observations, not lines: an observation's text has
+            // lines of its own.
             body.push_str(&format!(
                 "- ...and {} more\n",
-                cluster.texts.len() - body.lines().count()
+                cluster.texts.len().saturating_sub(kept)
             ));
             break;
         }
@@ -351,6 +353,19 @@ pub struct Pass {
     pub proposals: Vec<NewMemoryRecord>,
     /// Short repository-wide candidates, for the knowledge store.
     pub knowledge: Vec<KnowledgeEntry>,
+}
+
+/// Whether a scope's short corrections may become knowledge entries.
+///
+/// A knowledge entry has no tenant and no owner: the knowledge store and
+/// `/v1/repos/{repo}/knowledge` are per repository, and an adopted entry
+/// is given to every turn on it. So only the team scope of a session
+/// without a server ([`super::observe::LOCAL_TENANT`]) may feed it. On a
+/// server a repository can be on several tenants' allowlists, and a
+/// person's scope is private: both keep the correction as a memory row of
+/// their own scope, which only they can read.
+pub fn proposes_knowledge(scope: &Scope) -> bool {
+    matches!(scope, Scope::Repo { tenant, .. } if tenant == super::observe::LOCAL_TENANT)
 }
 
 /// The deterministic pass over `observations` against `existing`.
@@ -392,6 +407,7 @@ pub fn pass(
         }
     }
     candidates.truncate(max_candidates);
+    let knowledge_allowed = proposes_knowledge(scope);
     let mut proposals = Vec::new();
     let mut knowledge = Vec::new();
     for cluster in candidates {
@@ -400,8 +416,10 @@ pub fn pass(
             Some(rest) => rest.split_once("] ").map_or(text, |(_, after)| after),
             None => text,
         };
-        // A short repository-wide candidate is a knowledge entry.
-        if cluster.paths.is_empty()
+        // A short repository-wide candidate is a knowledge entry, but only
+        // where the scope's repository belongs to the session alone.
+        if knowledge_allowed
+            && cluster.paths.is_empty()
             && cluster.kind == ObservationKind::Correction
             && plain.chars().count() <= crate::knowledge::TEXT_MAX
             && !plain.contains('\n')

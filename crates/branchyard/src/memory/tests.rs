@@ -686,3 +686,69 @@ fn the_pass_proposes_clusters_of_two_matches_evidence_and_skips_external_authors
         "Run the benches with the 1 MB fixture"
     );
 }
+
+#[test]
+fn a_short_correction_is_knowledge_only_for_the_local_team_scope() {
+    let observations = vec![
+        observation(
+            1,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+        observation(
+            2,
+            ObservationKind::Correction,
+            "[send] Format before you finish",
+            &[],
+            false,
+        ),
+    ];
+    let run = |scope: &Scope| pass(scope, &observations, &[], false, 20, 1, 5);
+    let local = run(&Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    });
+    assert_eq!((local.knowledge.len(), local.proposals.len()), (1, 0));
+    // A served tenant's repository may be another tenant's too: the
+    // correction stays a row of the tenant's own scope.
+    let served = run(&Scope::Repo {
+        tenant: "acme".into(),
+        repo: "app".into(),
+    });
+    assert!(served.knowledge.is_empty(), "{:?}", served.knowledge);
+    assert_eq!(served.proposals.len(), 1);
+    assert_eq!(served.proposals[0].title, "Format before you finish");
+    // A person's private corrections never become team knowledge.
+    for repo in [None, Some("app".to_owned())] {
+        let person = run(&Scope::Person {
+            tenant: "local".into(),
+            subject: "ana".into(),
+            repo,
+        });
+        assert!(person.knowledge.is_empty(), "{:?}", person.knowledge);
+        assert_eq!(person.proposals.len(), 1);
+    }
+}
+
+#[test]
+fn a_cut_body_counts_observations_not_lines() {
+    // Failed checks near the text limit, each of forty lines: the body is
+    // cut after the first and counts the others, not an underflowed number.
+    let line = "x".repeat(97);
+    let text = format!("check `cargo test` failed\n{}", vec![line; 40].join("\n"));
+    let observations = vec![
+        observation(1, ObservationKind::CheckFailed, &text, &[], false),
+        observation(2, ObservationKind::CheckFailed, &text, &[], false),
+        observation(3, ObservationKind::CheckFailed, &text, &[], false),
+    ];
+    let scope = Scope::Repo {
+        tenant: "local".into(),
+        repo: "app".into(),
+    };
+    let result = pass(&scope, &observations, &[], false, 20, 1, 5);
+    assert_eq!(result.proposals.len(), 1);
+    let body = &result.proposals[0].body;
+    assert!(body.ends_with("- ...and 2 more"), "{}", &body[body.len() - 60..]);
+}
