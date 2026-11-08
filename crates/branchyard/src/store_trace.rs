@@ -133,6 +133,14 @@ impl Backend for Traced {
         self.query("leases", || self.inner.leases())
     }
 
+    fn incarnation(&self, name: &str) -> Result<Option<i64>, Error> {
+        self.query("incarnation", || self.inner.incarnation(name))
+    }
+
+    fn label(&self) -> String {
+        self.inner.label()
+    }
+
     fn clock_ms(&self) -> Result<u64, Error> {
         self.query("clock_ms", || self.inner.clock_ms())
     }
