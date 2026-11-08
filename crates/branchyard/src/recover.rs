@@ -276,6 +276,10 @@ fn lease(yard: &Yard, row: &LeaseRow, why: &str) -> Result<Option<Recovery>, Err
         // What the turn spent as it ran is in the record it wrote.
         live_cost: None,
         held_on: Vec::new(),
+        // The engine that held the turn's secrets is gone, so no
+        // observation is derived here: the scrubber could not remove the
+        // values (`docs/memory.md`, section 2).
+        secret_values: Vec::new(),
     };
     let finished = (|| {
         engine::conclude(yard, &prompt, &fence, &mut record, &mut recorder, driven)?;

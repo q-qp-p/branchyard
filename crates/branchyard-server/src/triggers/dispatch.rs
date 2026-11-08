@@ -465,6 +465,36 @@ fn fleet_of(repo: &RepoState) -> Result<Fleet, String> {
     Ok(Fleet { entries })
 }
 
+/// Who a scheduled consolidation's rows name as their proposer.
+pub const CONSOLIDATION_BY: &str = "the dispatcher";
+
+/// One scheduled consolidation of `repo`: every scope with observations no
+/// run has read, in turn, each logged. A failure of one scope leaves the
+/// others to run.
+pub fn consolidate_due(yard: &branchyard::Yard, repo: &str) {
+    let scopes = match yard.memory_scopes_due() {
+        Ok(scopes) => scopes,
+        Err(e) => {
+            tracing::error!(%repo, error = %e, "listing memory scopes due for consolidation");
+            return;
+        }
+    };
+    for scope in scopes {
+        match yard.consolidate_memory(&scope, CONSOLIDATION_BY, "schedule") {
+            Ok(done) => tracing::info!(
+                %repo,
+                %scope,
+                run = done.run.id,
+                proposed = done.proposed.len(),
+                knowledge = done.knowledge.len(),
+                lost_race = done.lost_race,
+                "memory consolidation"
+            ),
+            Err(e) => tracing::error!(%repo, %scope, error = %e, "memory consolidation"),
+        }
+    }
+}
+
 /// Tick the dispatcher until shutdown: every `settings.tick`, and at once
 /// when a webhook records a run.
 pub fn spawn(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> tokio::task::JoinHandle<()> {
@@ -481,6 +511,12 @@ pub fn spawn(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> tokio::task:
             rested_at: AtomicU64::new(0),
             resting: AtomicBool::new(false),
         });
+        // When this dispatcher last ran each repository's memory
+        // consolidation (`memory.consolidate`), from its start: the first
+        // run is at the cron's next time after the server came up.
+        let mut memory_last: std::collections::BTreeMap<String, u64> =
+            std::collections::BTreeMap::new();
+        let started = hub.settings.clock.now();
         loop {
             tokio::select! {
                 _ = hub.wake.notified() => {}
@@ -529,6 +565,29 @@ pub fn spawn(app: Arc<App>, mut shutdown: watch::Receiver<bool>) -> tokio::task:
                 }
                 Err(e) => tracing::error!(error = %e, "resting trigger branches"),
             });
+            // Scheduled memory consolidation (docs/memory.md, section 4):
+            // each served repository whose `memory.consolidate` cron came
+            // due since this dispatcher last ran it has every scope with
+            // unread observations consolidated. Two dispatchers that both
+            // find it due are harmless: the watermark's compare-and-swap
+            // lets one write and the other record `lost_race`.
+            let now = hub.settings.clock.now();
+            for (name, state) in &app.repos {
+                let Some(cron) = state.yard.memory_settings().consolidate.clone() else {
+                    continue;
+                };
+                let Ok(cron) = super::cron::Cron::parse(&cron, "UTC") else {
+                    continue;
+                };
+                let last = memory_last.get(name).copied().unwrap_or(started);
+                if cron.next_after(last).is_none_or(|due| due > now) {
+                    continue;
+                }
+                memory_last.insert(name.clone(), now);
+                let yard = state.yard.clone();
+                let repo = name.clone();
+                tokio::task::spawn_blocking(move || consolidate_due(&yard, &repo));
+            }
             // Each run on a thread of its own: a precheck may take minutes.
             for (run, fence) in claimed {
                 let firing = engine.clone();

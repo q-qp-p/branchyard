@@ -554,3 +554,383 @@ mod symlinks {
         );
     }
 }
+
+/// Observations and consolidation through real turns of the fake agent
+/// (docs/memory.md, sections 2 to 5): a correction and a repeated command
+/// observed at the turn's end and stored once per turn; two consolidations
+/// proposing once and recording evidence the second time; a rejection that
+/// sticks; approval writing the M1 bundle; edit, promote and forget; a
+/// private session feeding one person's scope.
+mod engine {
+    use std::fs;
+
+    use branchyard::memory::{Association, Visibility};
+    use branchyard::{
+        Activity, Error, MemoryActivity, MemoryFilter, MemoryRecordEdit, MemorySettings,
+        MemoryStatus, ObservationKind,
+    };
+
+    use crate::common::Fixture;
+
+    const REVIEW: &str = "File: notes.txt\nLine: 1\nUser comment: \"Always end notes with a \
+                          summary line, and date it\"";
+
+    fn kinds(f: &Fixture, since: u64) -> Vec<(ObservationKind, String, String, u32)> {
+        f.yard
+            .observations(&f.yard.memory_scope("local"), since, 100)
+            .unwrap()
+            .into_iter()
+            .map(|o| (o.kind, o.text.clone(), o.branch.clone(), o.turn))
+            .collect()
+    }
+
+    #[test]
+    fn a_turns_end_derives_its_observations_once_and_a_recreated_branch_is_new() {
+        let f = Fixture::new();
+        let branch = f.task("Add notes WRITE notes.txt=1").run().unwrap();
+        assert!(
+            kinds(&f, 0).is_empty(),
+            "the first turn is the task: {:?}",
+            kinds(&f, 0)
+        );
+        let sent = branch
+            .send(&format!("{REVIEW}\nSH false\nSH false"), f.options())
+            .unwrap();
+        let observed = kinds(&f, 0);
+        assert_eq!(
+            observed,
+            [
+                (
+                    ObservationKind::Correction,
+                    "[review] Always end notes with a summary line, and date it".to_owned(),
+                    sent.info().name.clone(),
+                    2
+                ),
+                (
+                    ObservationKind::RepeatedCommand,
+                    "false (2 times)".to_owned(),
+                    sent.info().name.clone(),
+                    2
+                ),
+            ],
+            "{observed:?}"
+        );
+        let first = f
+            .yard
+            .observations(&f.yard.memory_scope("local"), 0, 10)
+            .unwrap();
+        assert_eq!(first[0].paths, ["notes.txt"]);
+        assert_eq!(first[0].harness, "gemini-cli");
+        assert_eq!(first[0].incarnation, first[0].events[0].incarnation);
+        assert!(first[0].author.is_none(), "a review comment has no author");
+        // The same turn derived again (a settle replayed) yields the same
+        // set.
+        let again = f.yard.observe_turn(&sent.info().name, 2, &[]).unwrap();
+        assert_eq!(
+            again,
+            first.iter().map(|o| o.id).collect::<Vec<_>>(),
+            "idempotent per turn"
+        );
+        // Capture off: a turn derives nothing.
+        f.yard.use_memory(MemorySettings {
+            capture: false,
+            ..MemorySettings::default()
+        });
+        branch
+            .send("Keep every note short WRITE notes.txt=3", f.options())
+            .unwrap();
+        assert_eq!(kinds(&f, 0).len(), 2);
+        f.yard.use_memory(MemorySettings::default());
+        // A branch removed and recreated is a new incarnation: a new source
+        // for the same correction, and the old observations keep their text.
+        let name = sent.info().name.clone();
+        f.yard.remove(&name).unwrap();
+        let recreated = f
+            .task("Add notes WRITE notes.txt=1")
+            .name(&name)
+            .run()
+            .unwrap();
+        recreated.send(REVIEW, f.options()).unwrap();
+        let all = f
+            .yard
+            .observations(&f.yard.memory_scope("local"), 0, 10)
+            .unwrap();
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_ne!(all[0].incarnation, all[2].incarnation);
+        assert_eq!(all[0].text, all[2].text);
+    }
+
+    #[test]
+    fn two_consolidations_propose_once_then_record_evidence_and_a_rejection_sticks() {
+        let f = Fixture::new();
+        let scope = f.yard.memory_scope("local");
+        for name in ["one", "two"] {
+            let branch = f
+                .task("Add notes WRITE notes.txt=1")
+                .name(name)
+                .run()
+                .unwrap();
+            branch.send(REVIEW, f.options()).unwrap();
+            // A short repository-wide correction: a knowledge candidate.
+            branch
+                .send(
+                    "Run cargo fmt before you finish WRITE notes.txt=2",
+                    f.options(),
+                )
+                .unwrap();
+        }
+        let first = f.yard.consolidate_memory(&scope, "ana", "asked").unwrap();
+        assert!(!first.lost_race);
+        assert_eq!(first.run.counts.observations, 4);
+        assert_eq!(first.proposed.len(), 1, "{:?}", first.proposed);
+        let proposal = &first.proposed[0];
+        assert_eq!(proposal.status, MemoryStatus::Proposed);
+        assert_eq!(
+            proposal.title,
+            "Always end notes with a summary line, and date it"
+        );
+        assert_eq!(proposal.paths, ["notes.txt"]);
+        assert_eq!(proposal.provenance.len(), 2);
+        assert_eq!(proposal.note.as_deref(), Some("deterministic"));
+        assert_eq!(first.knowledge.len(), 1);
+        let knowledge = f.yard.knowledge_entry(first.knowledge[0]).unwrap();
+        assert_eq!(
+            knowledge.text,
+            "Run cargo fmt before you finish WRITE notes.txt=2"
+        );
+        assert_eq!(knowledge.status, branchyard::KnowledgeStatus::Proposed);
+        assert!(matches!(
+            &knowledge.source,
+            branchyard::KnowledgeSource::Consolidation { run, observations } if *run == first.run.id && observations.len() == 2
+        ));
+        let mut branches = first.branches.clone();
+        branches.sort();
+        assert_eq!(branches, ["one", "two"]);
+        let events = f.yard.branch("one").unwrap().events().unwrap();
+        assert!(events.iter().any(|e| matches!(
+            &e.activity,
+            Activity::Memory(m) if matches!(m.as_ref(), MemoryActivity::Consolidated { run, observations: 2, proposed, .. } if *run == first.run.id && proposed == &vec![proposal.id])
+        )));
+        // The evidence names each observation with its author (none here).
+        let evidence = f.yard.memory_evidence(proposal.id).unwrap();
+        assert_eq!(evidence.len(), 2);
+        assert!(evidence
+            .iter()
+            .all(|o| o.author.as_ref().map(|a| a.association) != Some(Association::External)));
+
+        // Nothing new: the watermark holds and nothing is proposed twice.
+        let quiet = f.yard.consolidate_memory(&scope, "ana", "asked").unwrap();
+        assert_eq!(quiet.run.outcome.as_deref(), Some("nothing_new"));
+        assert!(quiet.proposed.is_empty());
+
+        // Rejected, then seen again: evidence is recorded, the rejection
+        // stays, nothing is proposed.
+        let rejected = f
+            .yard
+            .reject_memory(proposal.id, "ana", Some("too narrow"))
+            .unwrap();
+        assert_eq!(rejected.status, MemoryStatus::Rejected);
+        assert_eq!(rejected.note.as_deref(), Some("too narrow"));
+        let three = f
+            .task("Add notes WRITE notes.txt=1")
+            .name("three")
+            .run()
+            .unwrap();
+        three.send(REVIEW, f.options()).unwrap();
+        let second = f.yard.consolidate_memory(&scope, "ana", "asked").unwrap();
+        assert!(second.proposed.is_empty(), "{:?}", second.proposed);
+        assert_eq!(second.run.counts.merged, 1);
+        let still = f.yard.memory_record(proposal.id).unwrap();
+        assert_eq!(still.status, MemoryStatus::Rejected);
+        assert_eq!(still.seen, 2);
+        assert_eq!(still.provenance.len(), 3);
+        let runs = f.yard.memory_runs(Some(&scope), 10).unwrap();
+        assert_eq!(runs.len(), 3, "newest first");
+        assert_eq!(runs[0].id, second.run.id);
+        assert_eq!(runs[2].proposed, [proposal.id]);
+        // Approving a rejected memory is refused; so is approving #999.
+        assert!(matches!(
+            f.yard.approve_memory(proposal.id, "ana", None),
+            Err(Error::Denied(_))
+        ));
+        assert!(matches!(
+            f.yard.approve_memory(999, "ana", None),
+            Err(Error::UnknownMemory(_))
+        ));
+    }
+
+    #[test]
+    fn approve_writes_the_bundle_edit_rewrites_it_and_forget_removes_it_without_text() {
+        let f = Fixture::new();
+        let scope = f.yard.memory_scope("local");
+        for name in ["one", "two"] {
+            let branch = f
+                .task("Add notes WRITE notes.txt=1")
+                .name(name)
+                .run()
+                .unwrap();
+            branch.send(REVIEW, f.options()).unwrap();
+        }
+        let proposed = f.yard.consolidate_memory(&scope, "ana", "asked").unwrap();
+        let id = proposed.proposed[0].id;
+        // Proposed: in no bundle, so nothing a turn can find.
+        assert!(f.yard.memories().unwrap().is_empty());
+        let approved = f.yard.approve_memory(id, "ana", None).unwrap();
+        assert_eq!(approved.record.status, MemoryStatus::Approved);
+        assert_eq!(approved.record.decided_by.as_deref(), Some("ana"));
+        let published = approved.record.published.clone().unwrap();
+        assert_eq!(published.skill, "memory-notes-txt");
+        assert!(!published.digest.is_empty());
+        let reference = f
+            .root
+            .join(".agents/skills/memory-notes-txt")
+            .join(&published.path);
+        let text = fs::read_to_string(&reference).unwrap();
+        assert!(
+            text.starts_with(
+                "# Always end notes with a summary line, and date it\n\n- one turn 2: [review]"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\nApproved by ana on 20"), "{text}");
+        assert!(
+            text.contains("Evidence: one turn 2 (correction), two turn 2 (correction)."),
+            "{text}"
+        );
+        let memories = f.yard.memories().unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].topic, "notes-txt");
+        assert_eq!(memories[0].evidence.len(), 2);
+        // Listing by status and scope.
+        let approved_rows = f
+            .yard
+            .memory_records(&MemoryFilter {
+                scope: Some(scope.clone()),
+                status: Some(MemoryStatus::Approved),
+                ..MemoryFilter::default()
+            })
+            .unwrap();
+        assert_eq!(approved_rows.iter().map(|m| m.id).collect::<Vec<_>>(), [id]);
+        // An edit rewrites the row and the file.
+        let edited = f
+            .yard
+            .edit_memory_record(
+                id,
+                &MemoryRecordEdit {
+                    title: Some("End every note with a dated summary line".into()),
+                    kind: Some(branchyard::MemoryKind::Procedure),
+                    ..MemoryRecordEdit::default()
+                },
+                "bo",
+                None,
+            )
+            .unwrap();
+        assert_eq!(edited.status, MemoryStatus::Approved);
+        assert_eq!(edited.title, "End every note with a dated summary line");
+        // The slug is the file's name and stays, as M1's edit keeps it.
+        let path = edited.published.clone().unwrap().path;
+        assert_eq!(path, published.path);
+        let rewritten = fs::read_to_string(&reference).unwrap();
+        assert!(rewritten.starts_with("# End every note with a dated summary line\n"));
+        assert!(rewritten.contains("Approved by bo on"));
+        assert_eq!(
+            f.yard.memories().unwrap()[0].kind,
+            branchyard::MemoryKind::Procedure
+        );
+        // Forget: the row and the file go; the branches hear of it without
+        // the text.
+        let forgotten = f.yard.forget_memory(id, "ana", None).unwrap();
+        assert_eq!(forgotten.id, id);
+        assert!(matches!(
+            f.yard.memory_record(id),
+            Err(Error::UnknownMemory(_))
+        ));
+        assert!(!f.root.join(".agents/skills/memory-notes-txt").exists());
+        let events = f.yard.branch("two").unwrap().events().unwrap();
+        let forgotten_event = events
+            .iter()
+            .find_map(|e| match &e.activity {
+                Activity::Memory(m) => match m.as_ref() {
+                    MemoryActivity::Forgotten { memory, by, .. } => Some((*memory, by.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("recorded on the branch");
+        assert_eq!(forgotten_event, (id, "ana".to_owned()));
+        let json = serde_json::to_string(&events).unwrap();
+        assert!(!json.contains("dated summary line"), "no text is kept");
+    }
+
+    #[test]
+    fn a_private_session_feeds_one_persons_scope_which_only_they_decide() {
+        let f = Fixture::new();
+        f.yard.use_memory(MemorySettings {
+            visibility: Visibility::Private {
+                subject: "ana".into(),
+            },
+            ..MemorySettings::default()
+        });
+        for name in ["one", "two"] {
+            let branch = f
+                .task("Add notes WRITE notes.txt=1")
+                .name(name)
+                .run()
+                .unwrap();
+            branch.send(REVIEW, f.options()).unwrap();
+        }
+        let team = f.yard.memory_scope("local");
+        let mine = f.yard.person_memory_scope("local", "ana");
+        assert!(f.yard.observations(&team, 0, 10).unwrap().is_empty());
+        let private = f.yard.observations(&mine, 0, 10).unwrap();
+        assert_eq!(private.len(), 2);
+        assert_eq!(private[0].visibility.subject(), Some("ana"));
+        assert!(f
+            .yard
+            .consolidate_memory(&team, "ana", "asked")
+            .unwrap()
+            .proposed
+            .is_empty());
+        let consolidated = f.yard.consolidate_memory(&mine, "ana", "schedule").unwrap();
+        assert_eq!(consolidated.proposed.len(), 1);
+        let id = consolidated.proposed[0].id;
+        assert_eq!(consolidated.proposed[0].scope, mine);
+        // Another person cannot decide it; the subject needs their folder.
+        assert!(matches!(
+            f.yard.approve_memory(id, "bob", None),
+            Err(Error::Denied(_))
+        ));
+        assert!(matches!(
+            f.yard.approve_memory(id, "ana", None),
+            Err(Error::Unsupported(_))
+        ));
+        let folder = f.dir.join("skills");
+        let approved = f.yard.approve_memory(id, "ana", Some(&folder)).unwrap();
+        assert!(folder
+            .join("memory-notes-txt")
+            .join(&approved.record.published.unwrap().path)
+            .is_file());
+        assert!(!f.root.join(".agents/skills").exists());
+        // Promote: a new proposal for the team; the original stays.
+        let promoted = f.yard.promote_memory(id, "ana", team.clone()).unwrap();
+        assert_eq!(promoted.scope, team);
+        assert_eq!(promoted.status, MemoryStatus::Proposed);
+        assert_eq!(promoted.title, consolidated.proposed[0].title);
+        assert_eq!(promoted.provenance, consolidated.proposed[0].provenance);
+        assert!(promoted
+            .note
+            .unwrap()
+            .starts_with(&format!("promoted from #{id} by ana")));
+        assert_eq!(
+            f.yard.memory_record(id).unwrap().status,
+            MemoryStatus::Approved
+        );
+        assert!(matches!(
+            f.yard.promote_memory(promoted.id, "ana", team.clone()),
+            Err(Error::Denied(_))
+        ));
+        // The due scopes name what has unread observations.
+        let due = f.yard.memory_scopes_due().unwrap();
+        assert!(due.is_empty(), "{due:?}");
+    }
+}

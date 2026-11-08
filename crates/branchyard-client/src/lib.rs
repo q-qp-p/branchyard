@@ -49,6 +49,7 @@ pub mod effects_api;
 pub mod http;
 pub mod knowledge_api;
 pub mod manager_api;
+pub mod memory_api;
 #[cfg(feature = "schema")]
 pub mod schema;
 pub mod sse;

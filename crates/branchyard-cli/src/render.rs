@@ -716,6 +716,7 @@ pub fn activity_line(activity: &Activity, style: Style) -> Option<String> {
         ),
         Activity::Knowledge(activity) => style.paint(Tone::Cyan, &activity.describe()),
         Activity::Skill(activity) => style.paint(Tone::Dim, &activity.describe()),
+        Activity::Memory(activity) => style.paint(Tone::Cyan, &activity.describe()),
         Activity::Plan(activity) => style.paint(
             match activity.as_ref() {
                 branchyard::PlanActivity::Proposed(_)

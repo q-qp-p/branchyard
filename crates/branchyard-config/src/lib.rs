@@ -147,6 +147,13 @@ pub struct ProjectConfig {
     /// distilled into proposals, and by which distiller.
     #[serde(default, skip_serializing_if = "KnowledgeConfig::is_empty")]
     pub knowledge: KnowledgeConfig,
+    /// Memory (docs/memory.md): whether each turn's end derives
+    /// observations, whose corrections become candidates, how long
+    /// observations are kept, how many candidates a consolidation
+    /// proposes, the consolidation schedule a server runs, and who may
+    /// approve the team's memory there.
+    #[serde(default, skip_serializing_if = "MemoryConfig::is_empty")]
+    pub memory: MemoryConfig,
     /// The model gateway (docs/model-gateway.md): its backends, routes,
     /// budgets and prices, and the models a new branch may call through it
     /// when `--model-gateway` gives none.
@@ -576,6 +583,51 @@ pub struct DistillerConfig {
 
 /// The values `[knowledge] distill_on` takes.
 pub const DISTILL_TRIGGERS: &[&str] = &["merged", "judged_best", "ready"];
+
+/// `[memory]`; see docs/memory.md.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// Derive scrubbed observations at each turn's end. Default true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<bool>,
+    /// Corrections by people who are not members (the repository's
+    /// committers, a server's principals, `members`) become candidates.
+    /// Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_authors: Option<bool>,
+    /// Names (forge logins, git names or emails) that count as members
+    /// besides the repository's committers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    /// A five-field cron expression, in UTC, for the consolidation job a
+    /// `by serve` or `by worker` dispatcher runs; unset or `""` for only
+    /// `by memory consolidate`. Locally it is never run on a schedule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consolidate: Option<String>,
+    /// Observations older than this are deleted at the next consolidation
+    /// unless a memory's provenance names them. Default 90.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub keep_observations_days: Option<u32>,
+    /// The most candidates one consolidation proposes per scope. Default 20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub max_candidates: Option<u32>,
+    /// Who may approve the team's memory on a server besides `admin`:
+    /// principal names and `group:<name>` entries. Locally whoever runs
+    /// `by memory approve` decides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
+}
+
+impl MemoryConfig {
+    /// Whether every key is unset: the table is then left out of a written
+    /// `branchyard.toml`.
+    pub fn is_empty(&self) -> bool {
+        *self == MemoryConfig::default()
+    }
+}
 
 /// `[usage]`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -2417,6 +2469,30 @@ impl ProjectConfig {
                 .or_else(|(what, why)| fail(&format!("knowledge.distiller.{what}"), why))?;
             check_command(distiller.command.as_deref())
                 .or_else(|why| fail("knowledge.distiller.command", why))?;
+        }
+        if self.memory.keep_observations_days == Some(0) {
+            return fail("memory.keep_observations_days", "must be at least 1".into());
+        }
+        if self.memory.max_candidates == Some(0) {
+            return fail("memory.max_candidates", "must be at least 1".into());
+        }
+        if let Some(cron) = self.memory.consolidate.as_deref().filter(|c| !c.is_empty()) {
+            if cron.split_whitespace().count() != 5 {
+                return fail(
+                    "memory.consolidate",
+                    format!("{cron:?} is not a five-field cron expression"),
+                );
+            }
+        }
+        for name in &self.memory.members {
+            if name.trim().is_empty() {
+                return fail("memory.members", "a member's name is not empty".into());
+            }
+        }
+        for name in &self.memory.approvers {
+            if name.trim().is_empty() {
+                return fail("memory.approvers", "an approver's name is not empty".into());
+            }
         }
         for (kind, entry) in &self.fleet {
             if !FLEET_KEYS.contains(&kind.as_str()) {

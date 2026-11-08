@@ -319,8 +319,11 @@ pub use map_input::{
     parse_items as parse_map_items, render as render_map_prompt, ItemFormat, MapItem,
     TemplateContext,
 };
+pub use memory::review::{Approved as MemoryApproved, MemoryRecordEdit};
 pub use memory::{
-    Memory, MemoryDraft, MemoryEdit, MemoryKind, NewMemory, BODY_MAX as MEMORY_BODY_MAX,
+    Consolidated, Memory, MemoryActivity, MemoryDraft, MemoryEdit, MemoryFilter, MemoryKind,
+    MemoryRecord, MemorySettings, MemoryStatus, NewMemory, NewObservation, Observation,
+    ObservationKind, RunRow as MemoryRun, Scope as MemoryScope, BODY_MAX as MEMORY_BODY_MAX,
     TITLE_MAX as MEMORY_TITLE_MAX,
 };
 pub use obligations::{Obligation, ObligationKind};
@@ -1350,6 +1353,167 @@ impl Yard {
         projection::lock(&self.hub.knowledge)
             .clone()
             .unwrap_or_default()
+    }
+
+    /// How this yard (and its clones) captures memory observations and
+    /// consolidates them; see `docs/memory.md`. Replaces the settings set
+    /// before; without a call, [`MemorySettings::default`].
+    pub fn use_memory(&self, settings: MemorySettings) {
+        *projection::lock(&self.hub.memory) = Some(Arc::new(settings));
+    }
+
+    /// The settings [`Yard::use_memory`] set, or the defaults.
+    pub fn memory_settings(&self) -> Arc<MemorySettings> {
+        projection::lock(&self.hub.memory)
+            .clone()
+            .unwrap_or_default()
+    }
+
+    /// The team's memory scope of this repository on `tenant`
+    /// ([`memory::observe::LOCAL_TENANT`] without a server).
+    pub fn memory_scope(&self, tenant: &str) -> MemoryScope {
+        MemoryScope::Repo {
+            tenant: tenant.to_owned(),
+            repo: self.store.label(),
+        }
+    }
+
+    /// One person's memory scope on `tenant`.
+    pub fn person_memory_scope(&self, tenant: &str, subject: &str) -> MemoryScope {
+        MemoryScope::Person {
+            tenant: tenant.to_owned(),
+            subject: subject.to_owned(),
+            repo: None,
+        }
+    }
+
+    /// Derive, scrub and store the observations of `branch`'s turn `turn`
+    /// now, with `secrets` the values to scrub: what the engine does at
+    /// every turn's end. Idempotent per turn; returns the observation ids.
+    pub fn observe_turn(
+        &self,
+        branch: &str,
+        turn: u32,
+        secrets: &[String],
+    ) -> Result<Vec<u64>, Error> {
+        let incarnation = memory::observe::incarnation_of(self, branch)?;
+        Ok(memory::observe::observe_turn(self, branch, incarnation, turn, secrets)?.ids)
+    }
+
+    /// The observations of `scope` with an id above `since`, oldest
+    /// first, at most `limit`; for `by memory observations` and the tests.
+    pub fn observations(
+        &self,
+        scope: &MemoryScope,
+        since: u64,
+        limit: usize,
+    ) -> Result<Vec<Observation>, Error> {
+        self.store.memory().observations_since(scope, since, limit)
+    }
+
+    /// Memory rows matching `filter`, by id.
+    pub fn memory_records(&self, filter: &MemoryFilter) -> Result<Vec<MemoryRecord>, Error> {
+        memory::review::list(self, filter)
+    }
+
+    /// One memory row.
+    pub fn memory_record(&self, id: u64) -> Result<MemoryRecord, Error> {
+        memory::review::get(self, id)
+    }
+
+    /// The observations a memory row's provenance names.
+    pub fn memory_evidence(&self, id: u64) -> Result<Vec<Observation>, Error> {
+        memory::review::evidence(self, id)
+    }
+
+    /// Approve memory row `id` as `by`: it is written into its scope's
+    /// bundle (`.agents/skills/` of the checkout for the team's;
+    /// `person_dir`, the subject's skills folder, for a person's) and
+    /// marked approved. A person's memory is approved only by its subject.
+    pub fn approve_memory(
+        &self,
+        id: u64,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryApproved, Error> {
+        memory::review::approve(self, id, by, person_dir)
+    }
+
+    /// Reject memory row `id` as `by`, with `reason`; the rejection sticks
+    /// against new evidence.
+    pub fn reject_memory(
+        &self,
+        id: u64,
+        by: &str,
+        reason: Option<&str>,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::reject(self, id, by, reason)
+    }
+
+    /// Change memory row `id`; an approved memory's file is rewritten too.
+    pub fn edit_memory_record(
+        &self,
+        id: u64,
+        edit: &MemoryRecordEdit,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::edit(self, id, edit, by, person_dir)
+    }
+
+    /// Offer a person's memory `id` to the team: a new proposed row in
+    /// `repo`; the original stays.
+    pub fn promote_memory(
+        &self,
+        id: u64,
+        by: &str,
+        repo: MemoryScope,
+    ) -> Result<MemoryRecord, Error> {
+        memory::review::promote(self, id, by, repo)
+    }
+
+    /// Fold memory row `from` into `into`: provenance union, `seen` summed;
+    /// `from` is deleted. For two proposals that say one thing.
+    pub fn merge_memory(&self, into: u64, from: u64) -> Result<MemoryRecord, Error> {
+        self.store.memory().merge(into, from)?;
+        memory::review::get(self, into)
+    }
+
+    /// Delete memory row `id` and its bundle file, recording it without the
+    /// text on the branches it came from.
+    pub fn forget_memory(
+        &self,
+        id: u64,
+        by: &str,
+        person_dir: Option<&Path>,
+    ) -> Result<MemoryRecord, Error> {
+        Ok(memory::review::forget(self, id, by, person_dir)?.memory)
+    }
+
+    /// Run one deterministic consolidation of `scope` now, as `by`; see
+    /// `docs/memory.md`, section 4. Nothing is approved.
+    pub fn consolidate_memory(
+        &self,
+        scope: &MemoryScope,
+        by: &str,
+        trigger: &str,
+    ) -> Result<Consolidated, Error> {
+        memory::consolidate::consolidate(self, scope, by, trigger)
+    }
+
+    /// The scopes with observations no consolidation has read yet.
+    pub fn memory_scopes_due(&self) -> Result<Vec<MemoryScope>, Error> {
+        memory::consolidate::due_scopes(self)
+    }
+
+    /// Consolidation runs, newest first, at most `limit`; of `scope` when
+    /// given.
+    pub fn memory_runs(
+        &self,
+        scope: Option<&MemoryScope>,
+        limit: usize,
+    ) -> Result<Vec<MemoryRun>, Error> {
+        self.store.memory().runs(scope, limit)
     }
 
     /// The repository's knowledge entries, or those of `status`, by id.
@@ -3277,6 +3441,10 @@ pub enum Activity {
     /// Repository knowledge: the branch was distilled into proposed
     /// entries. See [`KnowledgeActivity`] and `docs/knowledge.md`.
     Knowledge(Box<KnowledgeActivity>),
+    /// Memory: a consolidation consumed this branch's observations, or a
+    /// memory they fed was forgotten. See [`memory::MemoryActivity`] and
+    /// `docs/memory.md`.
+    Memory(Box<memory::MemoryActivity>),
     /// Plan approval: planning, a proposed plan, its approval, rejection or
     /// escalation. See [`PlanActivity`] and `docs/plans-and-goals.md`.
     Plan(Box<PlanActivity>),

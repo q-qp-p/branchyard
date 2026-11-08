@@ -570,6 +570,11 @@ pub(crate) trait Backend: Send + Sync + fmt::Debug {
     ) -> Result<(), Error>;
     /// Every held lease.
     fn leases(&self) -> Result<Vec<LeaseRow>, Error>;
+    /// The branch's current incarnation; `None` for no such branch.
+    fn incarnation(&self, name: &str) -> Result<Option<i64>, Error>;
+    /// How the store names its repository: the PostgreSQL scope, or the
+    /// repository directory's name for a `state.db` of its own.
+    fn label(&self) -> String;
     /// The store's clock, in milliseconds since the Unix epoch: what lease
     /// expiry is measured against. SQLite, one host's file, uses this
     /// host's clock; PostgreSQL uses the database's, so engines on several
@@ -928,6 +933,7 @@ pub(crate) trait Extras:
     + SandboxBackend
     + crate::fleet::OutcomeBackend
     + crate::knowledge::KnowledgeBackend
+    + crate::memory::store::MemoryBackend
     + PoolBackend
     + crate::models::UsageBackend
     + crate::effects::EffectBackend
@@ -940,6 +946,7 @@ impl<
             + SandboxBackend
             + crate::fleet::OutcomeBackend
             + crate::knowledge::KnowledgeBackend
+            + crate::memory::store::MemoryBackend
             + PoolBackend
             + crate::models::UsageBackend
             + crate::effects::EffectBackend
@@ -1053,6 +1060,19 @@ impl Store {
     /// The `.branchyard` directory.
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// How the store names its repository: the PostgreSQL scope, or the
+    /// repository directory's name for a `state.db` of its own. What a
+    /// memory observation records as its `repo`.
+    pub fn label(&self) -> String {
+        self.backend.label()
+    }
+
+    /// Memory observations, rows and runs; see
+    /// `crate::memory::store::MemoryBackend`.
+    pub fn memory(&self) -> &dyn crate::memory::store::MemoryBackend {
+        self.extras.as_ref()
     }
 
     pub fn owner(&self) -> &Owner {

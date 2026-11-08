@@ -27,6 +27,14 @@
 //! A [`MemoryDraft`] is a long correction the knowledge extractor set aside for a
 //! person to read and add (`docs/knowledge.md`): a file in a worktree,
 //! never a bundle.
+//!
+//! What feeds the bundles without a person writing each memory by hand
+//! (`docs/memory.md`, sections 2 to 5): [`observe`] derives scrubbed
+//! observations from each turn's events, [`store`] keeps them with the
+//! proposed memory rows and the consolidation runs, [`consolidate`] turns
+//! clusters of observations into proposals, and [`review`] is what a
+//! person does with a proposal: approve (which writes the bundle through
+//! the [`Library`]), reject, edit, promote, forget.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -36,6 +44,68 @@ use branchyard_provision::skillset::{self, Skill};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, TaskKind};
+
+pub mod consolidate;
+pub mod observe;
+pub mod review;
+pub mod scrub;
+pub mod store;
+
+pub use consolidate::{Consolidated, MemoryActivity};
+pub use observe::{
+    Association, Author, EventRef, NewObservation, Observation, ObservationKind, Visibility,
+};
+pub use store::{
+    Decision, MemoryFilter, MemoryRecord, MemoryStatus, NewMemoryRecord, Published, Run, RunCounts,
+    RunRow, Scope,
+};
+
+/// How a yard captures observations and consolidates them; see
+/// [`crate::Yard::use_memory`] and `[memory]` in `docs/memory.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemorySettings {
+    /// Derive observations at each turn's end. Default on.
+    pub capture: bool,
+    /// Corrections by non-members become candidates. Default off.
+    pub external_authors: bool,
+    /// Names (forge logins, git names or emails) that count as members
+    /// besides the repository's committers.
+    pub members: Vec<String>,
+    /// The visibility every observation this yard derives takes. Default
+    /// shared.
+    pub visibility: Visibility,
+    /// A cron expression for the dispatcher's consolidation job on a
+    /// server; `None` for only `by memory consolidate`.
+    pub consolidate: Option<String>,
+    /// Observations older than this are deleted at the next consolidation.
+    pub keep_observations_days: u32,
+    /// The most candidates one consolidation proposes per scope.
+    pub max_candidates: usize,
+    /// Who may approve `Repo` memories on a server, besides `admin`:
+    /// principal names and `group:<name>` entries. Empty: `admin` alone.
+    pub approvers: Vec<String>,
+}
+
+impl Default for MemorySettings {
+    fn default() -> MemorySettings {
+        MemorySettings {
+            capture: true,
+            external_authors: false,
+            members: Vec::new(),
+            visibility: Visibility::Shared,
+            consolidate: None,
+            keep_observations_days: DEFAULT_KEEP_DAYS,
+            max_candidates: DEFAULT_MAX_CANDIDATES,
+            approvers: Vec::new(),
+        }
+    }
+}
+
+/// Default `[memory] keep_observations_days`.
+pub const DEFAULT_KEEP_DAYS: u32 = 90;
+
+/// Default `[memory] max_candidates`.
+pub const DEFAULT_MAX_CANDIDATES: usize = 20;
 
 /// The manifest's schema.
 pub const SCHEMA: &str = "branchyard.memory-bundle/v1";
@@ -1177,7 +1247,10 @@ pub fn parse_draft(text: &str) -> Result<DraftFile, Error> {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod bundle_tests {
     use super::*;
 
     fn memory(topic: &str, id: &str, kind: MemoryKind) -> Memory {

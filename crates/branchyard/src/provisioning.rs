@@ -65,6 +65,10 @@ pub(crate) struct Provisioned {
     /// What to record after it, as [`Activity::Warning`]s: a secret the
     /// harness's provisioner passed over, and why.
     pub warnings: Vec<String>,
+    /// The exact values of the turn's secrets, for the scrubber that runs
+    /// at the turn's end (`crate::memory::scrub`): this process is the one
+    /// that still holds them. Never recorded.
+    pub secret_values: Vec<String>,
 }
 
 /// Where per-turn files go, under the state directory.
@@ -397,6 +401,7 @@ pub(crate) fn prepare(
         crate::manifest::MANIFEST_FILE
     );
     let secrets = resolve(&spec.secrets)?;
+    let secret_values: Vec<String> = secrets.iter().map(|s| s.value.clone()).collect();
     let capability_home = match &record.home {
         Some(home) => home.clone(),
         None => crate::capabilities::local_home(state, &record.info.name)?,
@@ -583,6 +588,7 @@ pub(crate) fn prepare(
         scrub,
         activity,
         warnings: plan.warnings,
+        secret_values,
     })
 }
 

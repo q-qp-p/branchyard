@@ -3353,6 +3353,83 @@ class Repo:
         `proposed` (the new entries), `duplicates`, `by`, `trigger`."""
         return Record(self.client.post(self._branch(branch, "/distill"), {}, key=new_key()))
 
+    # -- memory rows (docs/memory.md, sections 3 to 5) ---------------------
+
+    def _memory(self, rest: str = "") -> str:
+        return f"{self._base}/memory{rest}"
+
+    def memories(self, scope: Optional[str] = None, status: Optional[str] = None) -> list[Record]:
+        """The memory rows consolidation proposed and people decided: the
+        team's (`scope="repo"`, the default) or the caller's own
+        (`scope="mine"`), or those of `status` (`proposed`, `approved`,
+        `rejected`); like `by memory list --status`. Each `MemoryRecord`
+        has `id`, `scope`, `kind`, `title`, `body`, `paths`, `task_kinds`,
+        `status`, `provenance` (observation ids), `seen`, `first_seen_ms`,
+        `last_seen_ms`, and `decided_by`, `decided_ms`, `note`,
+        `published` once decided."""
+        return [Record(m) for m in self.client.get(self._memory(), scope=scope, status=status).get("memories", [])]
+
+    def memory(self, id: int) -> Record:
+        """One row; `NotFoundError` (`unknown_memory`) when there is none,
+        `NotAllowedError` for another person's."""
+        return Record(self.client.get(self._memory(f"/{id}")))
+
+    def memory_evidence(self, id: int) -> Record:
+        """The row and the observations it came from: `memory`, and
+        `observations`, each with its `branch`, `turn`, `kind`, `text`,
+        `author` (`{name, association}`) and `events`."""
+        return Record(self.client.get(self._memory(f"/{id}/evidence")))
+
+    def approve_memory(self, id: int) -> Record:
+        """Approve a proposed row as the caller: it is written into its
+        bundle. The team's needs `admin` or a name in the server's
+        `memory.approvers`."""
+        return Record(self.client.post(self._memory(f"/{id}/approve"), {}, key=new_key()))
+
+    def reject_memory(self, id: int, reason: Optional[str] = None) -> Record:
+        """Reject a proposed row, with `reason`; the rejection sticks
+        against new evidence."""
+        return Record(self.client.post(self._memory(f"/{id}/reject"), _drop_none({"reason": reason}), key=new_key()))
+
+    def edit_memory(
+        self,
+        id: int,
+        *,
+        title: Optional[str] = None,
+        body: Optional[str] = None,
+        kind: Optional[str] = None,
+        paths: Optional[Sequence[str]] = None,
+        task_kinds: Optional[Sequence[str]] = None,
+    ) -> Record:
+        """Change a row's fields, each when given; an empty `paths` or
+        `task_kinds` clears it. An approved row's file is rewritten too."""
+        fields = {"title": title, "body": body, "kind": kind, "paths": paths, "task_kinds": task_kinds}
+        body_ = {k: (list(v) if isinstance(v, (list, tuple)) else v) for k, v in fields.items() if v is not None}
+        return Record(self.client.post(self._memory(f"/{id}/edit"), body_, key=new_key()))
+
+    def promote_memory(self, id: int) -> Record:
+        """Offer the caller's own row to the team: a new proposed row; the
+        original stays."""
+        return Record(self.client.post(self._memory(f"/{id}/promote"), {}, key=new_key()))
+
+    def forget_memory(self, id: int) -> Record:
+        """Delete a row and its bundle file; the row as it was."""
+        return Record(self.client.delete(self._memory(f"/{id}")))
+
+    def consolidate_memory(self, scope: Optional[str] = None) -> Record:
+        """Run one deterministic consolidation now, of the team's memory or
+        the caller's own (`scope="mine"`); like `by memory consolidate`.
+        `Consolidated`: `run` (its counts and outcome), `proposed` (the new
+        rows), `knowledge` (entry ids), `lost_race`, `branches`."""
+        return Record(self.client.post(self._memory("/consolidate"), _drop_none({"scope": scope}), key=new_key()))
+
+    def memory_runs(self, scope: Optional[str] = None) -> list[Record]:
+        """Consolidation runs, newest first: `id`, `scope`,
+        `watermark_read`, `watermark_written`, `started_ms`,
+        `finished_ms`, `outcome` (`proposed`, `nothing_new`, `lost_race`),
+        `by`, `trigger`, `counts`, `proposed`."""
+        return [Record(r) for r in self.client.get(self._memory("/runs"), scope=scope).get("runs", [])]
+
     # -- approvals and effects ---------------------------------------------
 
     def decisions(self) -> list[Decision]:
